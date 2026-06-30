@@ -49,3 +49,35 @@ def test_reset_config():
     reset_config()
     b = get_config()
     assert a is not b
+
+
+def test_register_returns_class_path_when_available():
+    from unittest.mock import patch, MagicMock
+    import sys
+    import vllm_webgpu
+
+    # Mock vllm.envs if not available
+    if "vllm" not in sys.modules:
+        sys.modules["vllm"] = MagicMock()
+        sys.modules["vllm.envs"] = MagicMock()
+
+    with patch("vllm_webgpu.platform.WebGPUPlatform.is_available", return_value=True):
+        with patch("vllm.envs.environment_variables", {}):
+            result = vllm_webgpu.register()
+    assert result == "vllm_webgpu.platform.WebGPUPlatform"
+
+
+def test_register_returns_none_when_unavailable():
+    from unittest.mock import patch, MagicMock
+    import sys
+    import vllm_webgpu
+
+    # Mock vllm.envs if not available
+    if "vllm" not in sys.modules:
+        sys.modules["vllm"] = MagicMock()
+        sys.modules["vllm.envs"] = MagicMock()
+
+    with patch("vllm_webgpu.platform.WebGPUPlatform.is_available", return_value=False):
+        with patch("vllm.envs.environment_variables", {}):
+            result = vllm_webgpu.register()
+    assert result is None
