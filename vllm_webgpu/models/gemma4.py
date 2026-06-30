@@ -120,7 +120,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             s_key = f"{p}.self_attn.{proj}.scales"
             self._dispatch("matmul_quant",
                            [normed, self.weights[w_key], self.weights.get(s_key, normed), out_buf],
-                           {"K": hidden, "N": dim, "USE_QUANT": use_quant}, (dim, 1, 1))
+                           {"K": hidden, "N": dim, "USE_QUANT": use_quant}, ((dim + 255) // 256, 1, 1))
 
         # Fused per-head norm + RoPE for Q and K
         pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
@@ -184,7 +184,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         s_key = f"{p}.self_attn.o_proj.scales"
         self._dispatch("matmul_quant", [attn_out, self.weights[w_key],
                                         self.weights.get(s_key, attn_out), o_proj_out],
-                       {"K": q_dim, "N": hidden, "USE_QUANT": use_quant}, (hidden, 1, 1))
+                       {"K": q_dim, "N": hidden, "USE_QUANT": use_quant}, ((hidden + 255) // 256, 1, 1))
 
         # Residual add
         residual = WebGPUBuffer.empty(dev, x_buf.nbytes, usage=rw)
@@ -205,7 +205,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             s_k = f"{p}.mlp.{proj}.scales"
             self._dispatch("matmul_quant", [ffn_normed, self.weights[w_k],
                                             self.weights.get(s_k, ffn_normed), out_b],
-                           {"K": hidden, "N": inter, "USE_QUANT": use_quant}, (inter, 1, 1))
+                           {"K": hidden, "N": inter, "USE_QUANT": use_quant}, ((inter + 255) // 256, 1, 1))
 
         # SwiGLU
         ffn_act = WebGPUBuffer.empty(dev, num_tokens * inter * 2, usage=rw)
@@ -218,7 +218,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         s_k = f"{p}.mlp.down_proj.scales"
         self._dispatch("matmul_quant", [ffn_act, self.weights[w_k],
                                         self.weights.get(s_k, ffn_act), ffn_out],
-                       {"K": inter, "N": hidden, "USE_QUANT": use_quant}, (hidden, 1, 1))
+                       {"K": inter, "N": hidden, "USE_QUANT": use_quant}, ((hidden + 255) // 256, 1, 1))
 
         # Final residual
         out = WebGPUBuffer.empty(dev, residual.nbytes, usage=rw)
