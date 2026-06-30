@@ -19,18 +19,23 @@ fn main(
     let half     = HEAD_DIM / 2u;
     let tid      = lid.x;   // iterates over [0, half)
 
-    if (tid >= half) { return; }
-
-    let pos     = f32(positions[seq_idx]);
-    let theta_i = pow(ROPE_BASE, -f32(tid * 2u) / f32(HEAD_DIM));
-    let angle   = pos * theta_i;
-    let cos_v   = cos(angle);
-    let sin_v   = sin(angle);
-
     let base = (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
-    let x1   = f32(input[base + tid]);
-    let x2   = f32(input[base + half + tid]);
+    let pos  = f32(positions[seq_idx]);
 
-    output[base + tid]        = f16(x1 * cos_v - x2 * sin_v);
-    output[base + half + tid] = f16(x2 * cos_v + x1 * sin_v);
+    // Loop so HEAD_DIM > 2*WG_SIZE is handled correctly (e.g. HEAD_DIM=256 with WG_SIZE=64).
+    var i = tid;
+    loop {
+        if (i >= half) { break; }
+        let theta_i = pow(ROPE_BASE, -f32(i * 2u) / f32(HEAD_DIM));
+        let angle   = pos * theta_i;
+        let cos_v   = cos(angle);
+        let sin_v   = sin(angle);
+
+        let x1 = f32(input[base + i]);
+        let x2 = f32(input[base + half + i]);
+
+        output[base + i]        = f16(x1 * cos_v - x2 * sin_v);
+        output[base + half + i] = f16(x2 * cos_v + x1 * sin_v);
+        i += 64u;
+    }
 }

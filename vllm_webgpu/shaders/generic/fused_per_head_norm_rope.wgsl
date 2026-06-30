@@ -49,21 +49,25 @@ fn main(
     let w_base  = head_idx * HEAD_DIM;
 
     // --- Phase 2: apply norm weight then RoPE ---
-    if (tid < half) {
-        let pos     = f32(positions[seq_idx]);
-        let theta_i = pow(ROPE_BASE, -f32(tid * 2u) / f32(HEAD_DIM));
+    // Loop so each thread covers HEAD_DIM/2 / WG_SIZE pairs (handles HEAD_DIM > 2*WG_SIZE).
+    let pos = f32(positions[seq_idx]);
+    var i = tid;
+    loop {
+        if (i >= half) { break; }
+        let theta_i = pow(ROPE_BASE, -f32(i * 2u) / f32(HEAD_DIM));
         let angle   = pos * theta_i;
         let cos_v   = cos(angle);
         let sin_v   = sin(angle);
 
-        var n1 = f32(input[base + tid]) * rms_inv;
-        var n2 = f32(input[base + half + tid]) * rms_inv;
+        var n1 = f32(input[base + i]) * rms_inv;
+        var n2 = f32(input[base + half + i]) * rms_inv;
         if (HAS_WEIGHT != 0u) {
-            n1 *= f32(weight[w_base + tid]);
-            n2 *= f32(weight[w_base + half + tid]);
+            n1 *= f32(weight[w_base + i]);
+            n2 *= f32(weight[w_base + half + i]);
         }
 
-        output[base + tid]        = f16(n1 * cos_v - n2 * sin_v);
-        output[base + half + tid] = f16(n2 * cos_v + n1 * sin_v);
+        output[base + i]        = f16(n1 * cos_v - n2 * sin_v);
+        output[base + half + i] = f16(n2 * cos_v + n1 * sin_v);
+        i += WG_SIZE;
     }
 }
