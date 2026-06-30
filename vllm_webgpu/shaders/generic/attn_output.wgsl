@@ -23,19 +23,23 @@ fn main(
 ) {
     let q_head  = wgid.x;
     let kv_head = q_head / (NUM_Q_HEADS / NUM_KV_HEADS);
-    let dim_idx = lid.x;
 
-    if (dim_idx >= HEAD_DIM) { return; }
-
-    var acc: f32 = 0.0;
-    var ctx = 0u;
+    // Loop so HEAD_DIM > 128 is handled correctly (e.g. HEAD_DIM=256 with 128-thread workgroup).
+    var dim_idx = lid.x;
     loop {
-        if (ctx >= CTX_LEN) { break; }
-        let block_idx = block_table[ctx / BLOCK_SIZE];
-        let block_off = ctx % BLOCK_SIZE;
-        let v_base    = ((block_idx * BLOCK_SIZE + block_off) * NUM_KV_HEADS + kv_head) * HEAD_DIM;
-        acc += f32(scores[q_head * CTX_LEN + ctx]) * f32(V_cache[v_base + dim_idx]);
-        ctx += 1u;
+        if (dim_idx >= HEAD_DIM) { break; }
+
+        var acc: f32 = 0.0;
+        var ctx = 0u;
+        loop {
+            if (ctx >= CTX_LEN) { break; }
+            let block_idx = block_table[ctx / BLOCK_SIZE];
+            let block_off = ctx % BLOCK_SIZE;
+            let v_base    = ((block_idx * BLOCK_SIZE + block_off) * NUM_KV_HEADS + kv_head) * HEAD_DIM;
+            acc += f32(scores[q_head * CTX_LEN + ctx]) * f32(V_cache[v_base + dim_idx]);
+            ctx += 1u;
+        }
+        out[q_head * HEAD_DIM + dim_idx] = f16(acc);
+        dim_idx += 128u;
     }
-    out[q_head * HEAD_DIM + dim_idx] = f16(acc);
 }
