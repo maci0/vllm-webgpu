@@ -25,7 +25,9 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         mask[i] = 0u;
         i += WG_SIZE;
     }
-    workgroupBarrier();
+    // storageBarrier() is required for storage buffer visibility across threads;
+    // workgroupBarrier() only covers var<workgroup> memory.
+    storageBarrier();
 
     for (var k = 0u; k < K; k++) {
         // Find max among non-masked entries
@@ -62,6 +64,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
             topk_val[k] = sh_max[0];
             mask[sh_idx[0]] = 1u;  // mark this index as selected
         }
-        workgroupBarrier();
+        // storageBarrier() so all threads see mask[sh_idx[0]] = 1 before next K pass.
+        storageBarrier();
     }
 }
