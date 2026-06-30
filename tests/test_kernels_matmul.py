@@ -54,6 +54,54 @@ def test_gelu_mul(wgpu_device):
                                rtol=1e-2, atol=1e-2)
 
 
+def test_matmul_quant_f16(wgpu_device):
+    """Verify matmul_quant f16 GEMV against numpy reference."""
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    K, N = 64, 32
+    x = np.random.randn(K).astype(np.float16)
+    W = np.random.randn(N, K).astype(np.float16)  # weight matrix [N, K]
+    expected = (W.astype(np.float32) @ x.astype(np.float32)).astype(np.float16)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    x_buf = WebGPUBuffer.from_numpy(dev, x)
+    # Pack W as u32 (pairs of f16), layout [N, K]
+    w_packed = np.ascontiguousarray(W).view(np.uint32)
+    w_buf = WebGPUBuffer.from_numpy(dev, w_packed)
+    # dummy scales (not used in f16 path)
+    scales_buf = WebGPUBuffer.from_numpy(dev, np.ones(N, dtype=np.float16))
+    out_buf = WebGPUBuffer.empty(dev, N * 2, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("matmul_quant", (("K", K), ("N", N), ("USE_QUANT", 0)))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": x_buf.buf}},
+            {"binding": 1, "resource": {"buffer": w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": scales_buf.buf}},
+            {"binding": 3, "resource": {"buffer": out_buf.buf}},
+        ],
+    )
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups((N + 255) // 256, 1, 1)
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+    result = out_buf.to_numpy().view(np.float16)
+    np.testing.assert_allclose(result.astype(np.float32), expected.astype(np.float32),
+                               rtol=1e-2, atol=1e-2)
+
+
 def test_embedding_lookup(wgpu_device):
     import wgpu
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
