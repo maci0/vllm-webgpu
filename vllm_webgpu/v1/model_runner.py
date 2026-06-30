@@ -81,11 +81,7 @@ class WebGPUModelRunner:
         block_size = self.webgpu_config.block_size
 
         num_blocks = cc.num_gpu_blocks
-        planner = WebGPUCachePlanner.__new__(WebGPUCachePlanner)
-        planner._worker = type("_W", (), {
-            "wgpu_device": self.wgpu_device,
-            "model_runner": self,
-        })()
+        planner = WebGPUCachePlanner.from_runner(self.wgpu_device, self)
         planner.allocate_kv_pool(
             num_blocks=num_blocks,
             num_layers=hf.num_hidden_layers,
@@ -160,9 +156,9 @@ class WebGPUModelRunner:
                 pooler_output=[],
                 finished_sending=None,
             )
-        except Exception:
-            logger.exception("execute_model failed")
-            return None
+        except Exception as e:
+            logger.exception("execute_model failed: %s", e)
+            raise
 
     def sample_tokens(self, grammar_output: "GrammarOutput | None") -> Any:
         # Structured output / grammar sampling not supported.

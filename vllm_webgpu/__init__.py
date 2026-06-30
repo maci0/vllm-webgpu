@@ -30,6 +30,12 @@ def _register() -> str | None:
     except ImportError:
         pass
 
+    try:
+        from vllm_webgpu.compat import apply_compat_patches
+        apply_compat_patches()
+    except ImportError:
+        pass
+
     from vllm_webgpu.platform import WebGPUPlatform
     if WebGPUPlatform.is_available():
         return "vllm_webgpu.platform.WebGPUPlatform"

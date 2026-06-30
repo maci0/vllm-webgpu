@@ -14,6 +14,13 @@ class WebGPUCachePlanner:
     def __init__(self, worker: "WebGPUWorker") -> None:
         self._worker = worker
 
+    @classmethod
+    def from_runner(cls, wgpu_device: object, model_runner: object) -> "WebGPUCachePlanner":
+        """Construct a planner from a device and model_runner without a full worker."""
+        inst = object.__new__(cls)
+        inst._worker = type("_W", (), {"wgpu_device": wgpu_device, "model_runner": model_runner})()
+        return inst
+
     def get_model_memory_usage(self) -> int:
         """Sum of all weight buffer sizes in bytes."""
         model = getattr(self._worker.model_runner, "model", None)
@@ -30,7 +37,7 @@ class WebGPUCachePlanner:
 
         config = get_config()
         limits = self._worker.wgpu_device.limits
-        total = limits.get("max_buffer_size", 4 * 1024 ** 3)  # 4GB default cap
+        total = limits.get("max-buffer-size", 4 * 1024 ** 3)  # 4GB default cap; wgpu uses hyphenated keys
         model_mem = self.get_model_memory_usage()
 
         if config.is_auto_memory:
@@ -40,7 +47,7 @@ class WebGPUCachePlanner:
                 total // 2**20, model_mem // 2**20, available // 2**20,
             )
             return max(available, 0)
-        return int(total * config.memory_fraction) - model_mem
+        return max(int(total * config.memory_fraction) - model_mem, 0)
 
     def allocate_kv_pool(
         self,

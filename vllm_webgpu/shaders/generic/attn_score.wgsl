@@ -9,12 +9,14 @@ override MAX_SEQ_LEN: u32  = 4096u;
 // Q: [num_q_heads, head_dim]  f16  (single decode token)
 // K_cache: [num_blocks, block_size, num_kv_heads, head_dim]  f16
 // block_table: [max_blocks]  u32
-// scores_out: [num_q_heads, MAX_SEQ_LEN]  f32
+// scores_out: [num_q_heads, MAX_SEQ_LEN]  f16
 
 @group(0) @binding(0) var<storage, read>       Q           : array<f16>;
 @group(0) @binding(1) var<storage, read>       K_cache     : array<f16>;
 @group(0) @binding(2) var<storage, read>       block_table : array<u32>;
-@group(0) @binding(3) var<storage, read_write> scores_out  : array<f32>;
+@group(0) @binding(3) var<storage, read_write> scores_out  : array<f16>;
+
+var<workgroup> sh_dot: array<f32, 16>;
 
 @compute @workgroup_size(16, 1, 1)
 fn main(
@@ -35,7 +37,7 @@ fn main(
     let q_base = q_head * HEAD_DIM;
     let k_base = ((block_idx * BLOCK_SIZE + block_off) * NUM_KV_HEADS + kv_head) * HEAD_DIM;
 
-    // Each thread computes a partial dot product over HEAD_DIM / 16 elements
+    // Each thread accumulates a partial dot product over HEAD_DIM / 16 elements
     var dot: f32 = 0.0;
     var d = tid;
     loop {
@@ -44,7 +46,23 @@ fn main(
         d += 16u;
     }
 
-    // Write partial score; for a smoke-test kernel this is sufficient.
-    // A production kernel would reduce across the 16 threads in the workgroup.
-    scores_out[q_head * MAX_SEQ_LEN + ctx_idx] = dot * scale;
+    // Write partial sum to workgroup shared memory
+    sh_dot[tid] = dot;
+    workgroupBarrier();
+
+    // Halving reduction: sum all 16 partial sums into sh_dot[0]
+    var stride = 8u;
+    loop {
+        if (stride == 0u) { break; }
+        if (tid < stride) {
+            sh_dot[tid] += sh_dot[tid + stride];
+        }
+        workgroupBarrier();
+        stride /= 2u;
+    }
+
+    // Thread 0 writes the final reduced score as f16
+    if (tid == 0u) {
+        scores_out[q_head * MAX_SEQ_LEN + ctx_idx] = f16(sh_dot[0] * scale);
+    }
 }
