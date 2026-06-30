@@ -27,7 +27,7 @@ def test_softmax(wgpu_device):
                                  usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
-    key = PipelineKey("softmax", (("SEQ_LEN", n), ("BATCH", seq)))
+    key = PipelineKey("softmax", (("SEQ_LEN", n),))
     pipeline = cache.get_or_create(key)
 
     bg = dev.create_bind_group(

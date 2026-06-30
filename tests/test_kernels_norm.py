@@ -50,7 +50,7 @@ def test_rms_norm(wgpu_device):
     out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
-    key = PipelineKey("rms_norm", (("HIDDEN_DIM", hidden), ("SEQ_LEN", seq)))
+    key = PipelineKey("rms_norm", (("HIDDEN_DIM", hidden),))
     pipeline = cache.get_or_create(key)
 
     bg = dev.create_bind_group(
