@@ -3,6 +3,7 @@ import pytest
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "requires_gpu: mark test as requiring a real WebGPU adapter")
+    config.addinivalue_line("markers", "integration: mark test as an end-to-end integration test requiring a real GPU")
 
 
 @pytest.fixture(scope="session")

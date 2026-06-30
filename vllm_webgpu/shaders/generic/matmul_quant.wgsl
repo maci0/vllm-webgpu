@@ -47,12 +47,12 @@ fn main(
             }
         }
     } else {
-        // f16 path: each u32 holds two packed f16 values
+        // f16 path: each u32 holds two packed f16 values (lo=bits[15:0], hi=bits[31:16])
         for (var k = 0u; k < K; k += 2u) {
             let w_u32 = weights[(row * K + k) / 2u];
-            let w_vec = bitcast<vec2<f16>>(w_u32);
-            acc += f32(w_vec.x) * f32(x[k]);
-            if (k + 1u < K) { acc += f32(w_vec.y) * f32(x[k + 1u]); }
+            let w_vec = unpack2x16float(w_u32);  // returns vec2<f32>
+            acc += w_vec.x * f32(x[k]);
+            if (k + 1u < K) { acc += w_vec.y * f32(x[k + 1u]); }
         }
     }
 
