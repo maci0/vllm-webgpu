@@ -15,7 +15,7 @@ def test_round_trip_f32(wgpu_device):
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     arr = np.random.randn(4, 8).astype(np.float32)
     buf = WebGPUBuffer.from_numpy(wgpu_device.wgpu_device, arr)
-    result = buf.to_numpy().reshape(arr.shape)
+    result = buf.to_numpy().view(np.float32).reshape(arr.shape)
     np.testing.assert_array_equal(result, arr)
 
 
