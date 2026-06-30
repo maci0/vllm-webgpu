@@ -17,10 +17,13 @@ override MR: u32       = 4u;    // micro-tile rows per workgroup
 @group(0) @binding(2) var<storage, read>       scales  : array<f16>;
 @group(0) @binding(3) var<storage, read_write> output  : array<f16>;  // [M, N]
 
-@compute @workgroup_size(64, 1, 1)
+// workgroup_size(1): one thread per workgroup. Parallelism is across workgroups
+// (each workgroup owns one (M-tile, N-column) pair). A 64-thread workgroup with
+// all threads computing the same output and writing to the same locations is a
+// data race and undefined behavior — even though the values are identical.
+@compute @workgroup_size(1, 1, 1)
 fn main(
-    @builtin(global_invocation_id) gid  : vec3<u32>,
-    @builtin(workgroup_id)         wgid : vec3<u32>,
+    @builtin(workgroup_id) wgid : vec3<u32>,
 ) {
     // wgid.x = which micro-tile block of M rows, wgid.y = output column (weight row)
     let out_col   = wgid.y;
