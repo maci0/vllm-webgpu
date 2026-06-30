@@ -74,7 +74,7 @@ def test_embedding_lookup(wgpu_device):
     )
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
-    key = PipelineKey("embedding_lookup", (("HIDDEN_DIM", hidden), ("NUM_TOKENS", num_tokens)))
+    key = PipelineKey("embedding_lookup", (("HIDDEN_DIM", hidden),))
     pipeline = cache.get_or_create(key)
 
     bg = dev.create_bind_group(

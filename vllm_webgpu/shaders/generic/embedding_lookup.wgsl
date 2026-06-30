@@ -1,7 +1,7 @@
 enable f16;
 
 override HIDDEN_DIM: u32 = 4096u;
-override NUM_TOKENS: u32 = 1u;
+// NUM_TOKENS is handled by dispatch workgroups, not a shader constant.
 
 @group(0) @binding(0) var<storage, read>       table     : array<f16>;  // [vocab, hidden_dim]
 @group(0) @binding(1) var<storage, read>       token_ids : array<u32>;

@@ -1,7 +1,7 @@
 enable f16;
 
 override SEQ_LEN: u32 = 128u;
-override BATCH: u32   = 1u;
+// BATCH (num rows) is handled by dispatch workgroups, not a shader constant.
 
 var<workgroup> sh_max: array<f32, 256>;
 var<workgroup> sh_sum: array<f32, 256>;

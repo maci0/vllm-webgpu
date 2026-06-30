@@ -40,7 +40,7 @@ class BaseWebGPUModel:
         self,
         shader_name: str,
         bindings: "list[WebGPUBuffer]",
-        constants: dict[str, int],
+        constants: dict[str, int | float],
         workgroups: tuple[int, int, int],
         shader_subdir: str = "generic",
     ) -> None:

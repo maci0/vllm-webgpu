@@ -68,7 +68,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "embedding_lookup",
             [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
-            {"HIDDEN_DIM": hidden, "NUM_TOKENS": num_tokens},
+            {"HIDDEN_DIM": hidden},
             (num_tokens, 1, 1),
         )
 
@@ -183,7 +183,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         sm_buf = WebGPUBuffer.empty(dev, scores_buf.nbytes, usage=rw)
         self._dispatch("softmax", [scores_buf, sm_buf],
-                       {"SEQ_LEN": ctx_len, "BATCH": self.num_q_heads}, (self.num_q_heads, 1, 1))
+                       {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
 
         attn_out = WebGPUBuffer.empty(dev, num_tokens * self.num_q_heads * self.head_dim * 2, usage=rw)
         self._dispatch("attn_output", [sm_buf, v_cache, bt_buf, attn_out],
