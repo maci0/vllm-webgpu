@@ -10,7 +10,8 @@ override N: u32 = 4096u;
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= N) { return; }
-    let u_val  = f32(up[i]);
-    let silu_u = u_val / (1.0 + exp(-u_val));
-    output[i]  = f16(f32(gate[i]) * silu_u);
+    // SwiGLU: silu(gate) * up  (Llama/Qwen convention: activation on gate_proj, not up_proj)
+    let g_val  = f32(gate[i]);
+    let silu_g = g_val / (1.0 + exp(-g_val));
+    output[i]  = f16(silu_g * f32(up[i]));
 }

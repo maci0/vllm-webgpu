@@ -6,11 +6,11 @@ SHADERS_DIR = Path(__file__).parent.parent / "vllm_webgpu" / "shaders"
 
 
 def gelu_mul_ref(gate: np.ndarray, up: np.ndarray) -> np.ndarray:
-    """SwiGLU: gate * silu(up)."""
+    """SwiGLU: silu(gate) * up  (Llama/Qwen: activation on gate_proj, not up_proj)."""
     g = gate.astype(np.float32)
     u = up.astype(np.float32)
-    silu_u = u * (1.0 / (1.0 + np.exp(-u)))
-    return (g * silu_u).astype(np.float16)
+    silu_g = g * (1.0 / (1.0 + np.exp(-g)))
+    return (silu_g * u).astype(np.float16)
 
 
 def test_gelu_mul(wgpu_device):
