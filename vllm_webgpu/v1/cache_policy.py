@@ -68,7 +68,7 @@ class WebGPUCachePlanner:
         model = self._worker.model_runner.model
         model.kv_pool.clear()
 
-        for layer_i in range(num_layers):
+        for _ in range(num_layers):
             k_buf = WebGPUBuffer.empty(dev, bytes_per_layer, usage=rw)
             v_buf = WebGPUBuffer.empty(dev, bytes_per_layer, usage=rw)
             model.kv_pool.append((k_buf, v_buf))

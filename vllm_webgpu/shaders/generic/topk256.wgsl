@@ -4,24 +4,25 @@ override VOCAB_SIZE: u32 = 32000u;
 override K: u32          = 50u;
 override WG_SIZE: u32    = 256u;
 
-var<workgroup> sh_max:    array<f32, 256>;
-var<workgroup> sh_idx:    array<u32, 256>;
-// bool is not storable in workgroup memory; use u32 with 0=false, 1=true
-var<workgroup> sh_masked: array<u32, 256>;
+var<workgroup> sh_max: array<f32, 256>;
+var<workgroup> sh_idx: array<u32, 256>;
 
-@group(0) @binding(0) var<storage, read>       logits   : array<f16>;
-@group(0) @binding(1) var<storage, read_write> topk_idx : array<u32>;
-@group(0) @binding(2) var<storage, read_write> topk_val : array<f32>;
+// mask is a storage buffer (not workgroup) so it correctly tracks all VOCAB_SIZE indices.
+// Workgroup-memory masks alias when VOCAB_SIZE > WG_SIZE (j % WG_SIZE collision).
+@group(0) @binding(0) var<storage, read>            logits   : array<f16>;
+@group(0) @binding(1) var<storage, read_write>      topk_idx : array<u32>;
+@group(0) @binding(2) var<storage, read_write>      topk_val : array<f32>;
+@group(0) @binding(3) var<storage, read_write>      mask     : array<u32>;  // [VOCAB_SIZE], 0=available 1=selected
 
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
     let tid = lid.x;
 
-    // Initialize mask to unmasked (0 = not selected)
+    // Initialize mask to 0 (all available)
     var i = tid;
     loop {
-        if (i >= 256u) { break; }
-        sh_masked[i] = 0u;
+        if (i >= VOCAB_SIZE) { break; }
+        mask[i] = 0u;
         i += WG_SIZE;
     }
     workgroupBarrier();
@@ -33,7 +34,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         var j = tid;
         loop {
             if (j >= VOCAB_SIZE) { break; }
-            if (sh_masked[j % WG_SIZE] == 0u) {
+            if (mask[j] == 0u) {
                 let v = f32(logits[j]);
                 if (v > local_max) { local_max = v; local_idx = j; }
             }
@@ -59,7 +60,7 @@ fn main(@builtin(local_invocation_id) lid: vec3<u32>) {
         if (tid == 0u) {
             topk_idx[k] = sh_idx[0];
             topk_val[k] = sh_max[0];
-            sh_masked[sh_idx[0] % WG_SIZE] = 1u;
+            mask[sh_idx[0]] = 1u;  // mark this index as selected
         }
         workgroupBarrier();
     }

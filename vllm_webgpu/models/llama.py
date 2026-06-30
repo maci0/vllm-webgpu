@@ -36,6 +36,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self.vocab_size: int = model_config.vocab_size
         self.head_dim: int = self.hidden_size // self.num_q_heads
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
+        from vllm_webgpu.config import get_config
+        self.block_size: int = get_config().block_size
 
     def forward(
         self,
@@ -146,7 +148,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 self._dispatch("fused_per_head_norm_rope",
                                [src, norm_w, pos_buf, dst],
                                {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
-                                "ROPE_BASE": int(self.rope_theta), "HAS_WEIGHT": 1},
+                                "ROPE_BASE": float(self.rope_theta), "HAS_WEIGHT": 1},
                                (n_heads, num_tokens, 1))
             else:
                 self._dispatch("rope", [src, pos_buf, dst],
@@ -158,24 +160,24 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
         k_cache, v_cache = self.kv_pool[layer_idx]
         self._dispatch("kv_cache_store", [k_rope, k_cache, slot_map],
-                       {"BLOCK_SIZE": 16, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
+                       {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
                        (num_tokens, self.num_kv_heads, 1))
         self._dispatch("kv_cache_store", [v_buf, v_cache, slot_map],
-                       {"BLOCK_SIZE": 16, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
+                       {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
                        (num_tokens, self.num_kv_heads, 1))
 
         # Attention scores + output
         # MVP limitation: only single-sequence decode is supported.
         assert not hasattr(attn_metadata, "block_tables") or len(attn_metadata.block_tables) <= 1, \
             "multi-sequence batching not supported in this build"
-        ctx_len = int(attn_metadata.max_decode_seq_len or num_tokens)
+        ctx_len = int(attn_metadata.max_decode_seq_len if attn_metadata.max_decode_seq_len is not None else num_tokens)
         bt_arr = np.array(attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
                           dtype=np.uint32)
         bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
 
         scores_buf = WebGPUBuffer.empty(dev, self.num_q_heads * ctx_len * 2, usage=rw)  # f16: 2 bytes/element
         self._dispatch("attn_score", [q_rope, k_cache, bt_buf, scores_buf],
-                       {"BLOCK_SIZE": 16, "NUM_Q_HEADS": self.num_q_heads,
+                       {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                         "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
                         "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
 
@@ -185,7 +187,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         attn_out = WebGPUBuffer.empty(dev, num_tokens * self.num_q_heads * self.head_dim * 2, usage=rw)
         self._dispatch("attn_output", [sm_buf, v_cache, bt_buf, attn_out],
-                       {"BLOCK_SIZE": 16, "NUM_Q_HEADS": self.num_q_heads,
+                       {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                         "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
                         "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
 

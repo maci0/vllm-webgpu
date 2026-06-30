@@ -5,9 +5,7 @@ Skips if no GPU or no checkpoint available.
 """
 import json
 import logging
-import os
 import struct
-import tempfile
 from pathlib import Path
 
 import numpy as np

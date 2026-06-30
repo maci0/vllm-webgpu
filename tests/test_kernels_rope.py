@@ -41,7 +41,7 @@ def test_rope(wgpu_device):
                                  usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
-    key = PipelineKey("rope", (("HEAD_DIM", head_dim), ("NUM_HEADS", num_heads), ("SEQ_LEN", seq)))
+    key = PipelineKey("rope", (("HEAD_DIM", head_dim), ("NUM_HEADS", num_heads)))
     pipeline = cache.get_or_create(key)
 
     bg = dev.create_bind_group(

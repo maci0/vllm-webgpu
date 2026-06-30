@@ -63,6 +63,9 @@ def test_topk256(wgpu_device):
                                  usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
     val_buf = WebGPUBuffer.empty(dev, k * 4,
                                  usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
+    # mask buffer: one u32 per vocab element, initialized to 0 (shader writes 1 for selected)
+    mask_buf = WebGPUBuffer.empty(dev, vocab * 4,
+                                  usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     key = PipelineKey("topk256", (("VOCAB_SIZE", vocab), ("K", k)))
@@ -74,6 +77,7 @@ def test_topk256(wgpu_device):
             {"binding": 0, "resource": {"buffer": logits_buf.buf}},
             {"binding": 1, "resource": {"buffer": idx_buf.buf}},
             {"binding": 2, "resource": {"buffer": val_buf.buf}},
+            {"binding": 3, "resource": {"buffer": mask_buf.buf}},
         ],
     )
     encoder = dev.create_command_encoder()

@@ -1,12 +1,10 @@
 from __future__ import annotations
 import logging
 from abc import abstractmethod
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.utils import shaders_dir, _OVERHEAD_BYTES
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:
