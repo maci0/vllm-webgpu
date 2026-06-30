@@ -1,0 +1,113 @@
+import numpy as np
+import pytest
+from pathlib import Path
+
+
+SHADERS_DIR = Path(__file__).parent.parent / "vllm_webgpu" / "shaders"
+
+
+def rms_norm_ref(x: np.ndarray, weight: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    rms = np.sqrt(np.mean(x.astype(np.float32) ** 2, axis=-1, keepdims=True) + eps)
+    return ((x.astype(np.float32) / rms) * weight.astype(np.float32)).astype(np.float16)
+
+
+def dispatch_kernel(wgpu_device, pipeline_cache, shader_name, bindings, constants, n_groups):
+    """Helper: bind buffers and dispatch a compute shader."""
+    import wgpu
+    dev = wgpu_device.wgpu_device
+    pipeline = pipeline_cache.get_or_create(
+        __import__("vllm_webgpu.webgpu.pipeline", fromlist=["PipelineKey"]).PipelineKey(
+            shader_name, tuple(sorted(constants.items()))
+        )
+    )
+    bg_layout = pipeline.get_bind_group_layout(0)
+    entries = [{"binding": i, "resource": {"buffer": b.buf}} for i, b in enumerate(bindings)]
+    bg = dev.create_bind_group(layout=bg_layout, entries=entries)
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(*n_groups)
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+
+def test_rms_norm(wgpu_device):
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    hidden = 64
+    seq = 4
+    x = np.random.randn(seq, hidden).astype(np.float16)
+    w = np.random.randn(hidden).astype(np.float16)
+
+    expected = rms_norm_ref(x, w)
+
+    dev = wgpu_device.wgpu_device
+    x_buf = WebGPUBuffer.from_numpy(dev, x)
+    w_buf = WebGPUBuffer.from_numpy(dev, w)
+    out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("rms_norm", (("HIDDEN_DIM", hidden), ("SEQ_LEN", seq)))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": x_buf.buf}},
+            {"binding": 1, "resource": {"buffer": w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": out_buf.buf}},
+        ],
+    )
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(seq, 1, 1)   # one workgroup per row
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+    result = out_buf.to_numpy().view(np.float16).reshape(seq, hidden)
+    np.testing.assert_allclose(result.astype(np.float32), expected.astype(np.float32),
+                               rtol=1e-2, atol=1e-2)
+
+
+def test_add(wgpu_device):
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    n = 256
+    a = np.random.randn(n).astype(np.float16)
+    b = np.random.randn(n).astype(np.float16)
+    expected = (a.astype(np.float32) + b.astype(np.float32)).astype(np.float16)
+
+    dev = wgpu_device.wgpu_device
+    a_buf = WebGPUBuffer.from_numpy(dev, a)
+    b_buf = WebGPUBuffer.from_numpy(dev, b)
+    out_buf = WebGPUBuffer.empty(dev, a.nbytes, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("add", (("N", n),))
+    pipeline = cache.get_or_create(key)
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": a_buf.buf}},
+            {"binding": 1, "resource": {"buffer": b_buf.buf}},
+            {"binding": 2, "resource": {"buffer": out_buf.buf}},
+        ],
+    )
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups((n + 255) // 256, 1, 1)
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+    result = out_buf.to_numpy().view(np.float16)
+    np.testing.assert_allclose(result.astype(np.float32), expected.astype(np.float32),
+                               rtol=1e-2, atol=1e-2)
