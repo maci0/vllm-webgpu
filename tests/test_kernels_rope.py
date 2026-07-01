@@ -23,13 +23,6 @@ def rope_ref(x: np.ndarray, positions: np.ndarray, head_dim: int, base: float = 
     return out.astype(np.float16)
 
 
-def rms_norm_ref(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
-    """Per-element RMSNorm without weight (used in fused_per_head_norm_rope test)."""
-    x32 = x.astype(np.float32)
-    rms = np.sqrt(np.mean(x32 ** 2, axis=-1, keepdims=True) + eps)
-    return (x32 / rms).astype(np.float32)
-
-
 def test_fused_per_head_norm_rope(wgpu_device):
     """Verify fused per-head RMSNorm + RoPE shader (used in Qwen3 q_norm/k_norm path)."""
     import wgpu
