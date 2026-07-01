@@ -10,11 +10,6 @@ _DTYPE_MAP = {
 }
 
 
-def _usage_storage_copy_dst_src():
-    import wgpu
-    return wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC
-
-
 def _usage_storage_rw():
     import wgpu
     return wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC
@@ -34,7 +29,7 @@ class WebGPUBuffer:
     @staticmethod
     def from_numpy(wgpu_device, arr: np.ndarray, usage: int | None = None) -> "WebGPUBuffer":
         if usage is None:
-            usage = _usage_storage_copy_dst_src()
+            usage = _usage_storage_rw()
         data = np.ascontiguousarray(arr)
         buf = wgpu_device.create_buffer_with_data(data=data.tobytes(), usage=usage)
         dtype = _DTYPE_MAP.get(arr.dtype.type, "u8")
