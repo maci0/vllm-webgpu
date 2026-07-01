@@ -36,6 +36,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
         from vllm_webgpu.config import get_config
         self.block_size: int = get_config().block_size
+        for name, val in [("hidden_size", self.hidden_size),
+                          ("intermediate_size", self.intermediate_size),
+                          ("head_dim", self.head_dim)]:
+            if val % 2 != 0:
+                raise ValueError(f"{name}={val} must be even for f16 GEMV")
 
     def forward(
         self,
