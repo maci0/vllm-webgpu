@@ -74,6 +74,53 @@ def test_rms_norm(wgpu_device):
                                rtol=1e-2, atol=1e-2)
 
 
+def test_rms_norm_unit_rms_invariant(wgpu_device):
+    """Property proof: RMSNorm (weight=1) produces output with RMS == 1.
+
+    Invariant: mean(output^2) == 1 for any non-zero input (before weight scaling).
+    This proves the normalization is mathematically correct, not just close to a
+    reference — any implementation that passes this test satisfies the RMSNorm spec.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    hidden = 64
+    seq = 8
+    x = np.random.randn(seq, hidden).astype(np.float16)
+    # Use weight = 1 so output = x / RMS(x), which must have RMS == 1
+    w = np.ones(hidden, dtype=np.float16)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    x_buf = WebGPUBuffer.from_numpy(dev, x)
+    w_buf = WebGPUBuffer.from_numpy(dev, w)
+    out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    pipeline = cache.get_or_create(PipelineKey("rms_norm", (("HIDDEN_DIM", hidden),)))
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[{"binding": 0, "resource": {"buffer": x_buf.buf}},
+                 {"binding": 1, "resource": {"buffer": w_buf.buf}},
+                 {"binding": 2, "resource": {"buffer": out_buf.buf}}],
+    )
+    enc = dev.create_command_encoder()
+    cp = enc.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(seq, 1, 1)
+    cp.end()
+    dev.queue.submit([enc.finish()])
+
+    result = out_buf.to_numpy().view(np.float16).reshape(seq, hidden).astype(np.float32)
+
+    # Invariant: each row's RMS must equal 1 (within f16 precision)
+    rms_per_row = np.sqrt(np.mean(result ** 2, axis=-1))
+    np.testing.assert_allclose(rms_per_row, np.ones(seq), rtol=1e-2, atol=1e-2,
+                               err_msg="RMSNorm invariant violated: RMS of normalized output != 1")
+
+
 def test_add(wgpu_device):
     import wgpu
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer

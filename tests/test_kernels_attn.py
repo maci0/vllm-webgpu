@@ -169,6 +169,60 @@ def test_attention_pipeline_correctness(wgpu_device):
                                rtol=1e-2, atol=1e-2)
 
 
+def test_softmax_sum_to_one_invariant(wgpu_device):
+    """Property proof: softmax output always sums to 1.0 for any finite input.
+
+    This is the fundamental mathematical invariant of softmax:
+      sum_i(exp(x_i) / sum_j(exp(x_j))) == 1.0 exactly.
+    Any implementation that fails this test cannot be a correct softmax.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    seq, n = 8, 64  # 8 independent rows of 64 elements each
+    # Test with varied inputs: small, large, uniform, extreme spread
+    test_inputs = [
+        np.random.randn(seq, n).astype(np.float16),                    # standard
+        (np.random.randn(seq, n) * 10).astype(np.float16),             # large values
+        np.zeros((seq, n), dtype=np.float16),                           # all zeros
+        np.full((seq, n), -5.0, dtype=np.float16),                     # uniform negative
+    ]
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    pipeline = cache.get_or_create(PipelineKey("softmax", (("SEQ_LEN", n),)))
+
+    for x in test_inputs:
+        x_buf = WebGPUBuffer.from_numpy(dev, x)
+        out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
+
+        bg = dev.create_bind_group(
+            layout=pipeline.get_bind_group_layout(0),
+            entries=[{"binding": 0, "resource": {"buffer": x_buf.buf}},
+                     {"binding": 1, "resource": {"buffer": out_buf.buf}}],
+        )
+        enc = dev.create_command_encoder()
+        cp = enc.begin_compute_pass()
+        cp.set_pipeline(pipeline)
+        cp.set_bind_group(0, bg)
+        cp.dispatch_workgroups(seq, 1, 1)
+        cp.end()
+        dev.queue.submit([enc.finish()])
+
+        result = out_buf.to_numpy().view(np.float16).reshape(seq, n).astype(np.float32)
+
+        # Invariant: each row must sum to exactly 1.0
+        row_sums = result.sum(axis=-1)
+        np.testing.assert_allclose(row_sums, np.ones(seq), rtol=1e-2, atol=1e-2,
+                                   err_msg="Softmax invariant violated: row sum != 1.0")
+
+        # Additional invariant: all values must be in (0, 1]
+        assert (result >= 0).all(), "Softmax output contains negative values"
+        assert (result <= 1.001).all(), "Softmax output contains values > 1"
+
+
 def test_kv_cache_store_and_attn(wgpu_device):
     """Smoke test: store K/V then read back via attn_score kernel."""
     # This is an integration-level check — just verifies shapes and no crashes

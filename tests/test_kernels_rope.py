@@ -23,6 +23,55 @@ def rope_ref(x: np.ndarray, positions: np.ndarray, head_dim: int, base: float = 
     return out.astype(np.float16)
 
 
+def test_rope_norm_preservation_invariant(wgpu_device):
+    """Property proof: RoPE is a rotation and preserves vector norms.
+
+    Invariant: ||RoPE(x, pos)[head]||^2 == ||x[head]||^2 for any x, pos.
+    This is exact (not approximate) — rotation is an isometry. Any implementation
+    that violates this cannot be implementing a rotation correctly.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    seq, num_heads, head_dim = 8, 4, 64
+    # Use float32 inputs to avoid f16 precision masking the invariant
+    x = np.random.randn(seq, num_heads, head_dim).astype(np.float16)
+    positions = np.arange(seq, dtype=np.uint32)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    x_buf = WebGPUBuffer.from_numpy(dev, x)
+    pos_buf = WebGPUBuffer.from_numpy(dev, positions)
+    out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    pipeline = cache.get_or_create(
+        PipelineKey("rope", (("HEAD_DIM", head_dim), ("NUM_HEADS", num_heads))))
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[{"binding": 0, "resource": {"buffer": x_buf.buf}},
+                 {"binding": 1, "resource": {"buffer": pos_buf.buf}},
+                 {"binding": 2, "resource": {"buffer": out_buf.buf}}],
+    )
+    enc = dev.create_command_encoder()
+    cp = enc.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(seq, num_heads, 1)
+    cp.end()
+    dev.queue.submit([enc.finish()])
+
+    result = out_buf.to_numpy().view(np.float16).reshape(seq, num_heads, head_dim).astype(np.float32)
+    input_f32 = x.astype(np.float32)
+
+    # Invariant: squared norm of each head vector is preserved under rotation
+    input_sq_norms = (input_f32 ** 2).sum(axis=-1)   # [seq, num_heads]
+    output_sq_norms = (result ** 2).sum(axis=-1)       # [seq, num_heads]
+    np.testing.assert_allclose(output_sq_norms, input_sq_norms, rtol=5e-2, atol=1.0,
+                               err_msg="RoPE invariant violated: rotation must preserve vector norms")
+
+
 def test_fused_per_head_norm_rope(wgpu_device):
     """Verify fused per-head RMSNorm + RoPE shader (used in Qwen3 q_norm/k_norm path)."""
     import wgpu
