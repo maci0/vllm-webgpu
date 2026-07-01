@@ -56,7 +56,9 @@ def test_register_returns_class_path_when_available():
     import sys
     import vllm_webgpu
 
-    # Mock vllm.envs if not available
+    # Install vllm mock if not present so patch("vllm.envs.environment_variables") works.
+    # This uses a permanent injection (not patch.dict) because importlib.reload() in
+    # test_platform.py requires vllm_webgpu.platform to remain in sys.modules after this test.
     if "vllm" not in sys.modules:
         sys.modules["vllm"] = MagicMock()
         sys.modules["vllm.envs"] = MagicMock()
@@ -72,7 +74,6 @@ def test_register_returns_none_when_unavailable():
     import sys
     import vllm_webgpu
 
-    # Mock vllm.envs if not available
     if "vllm" not in sys.modules:
         sys.modules["vllm"] = MagicMock()
         sys.modules["vllm.envs"] = MagicMock()
