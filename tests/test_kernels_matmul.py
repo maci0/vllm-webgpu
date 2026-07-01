@@ -102,6 +102,61 @@ def test_matmul_quant_f16(wgpu_device):
                                rtol=1e-2, atol=1e-2)
 
 
+def test_matmul_linearity_invariant(wgpu_device):
+    """Property proof: matmul_quant is linear in its input vector.
+
+    Invariant: mat @ (α*x) == α * (mat @ x) for any scalar α.
+    Linearity is a fundamental property of matrix multiplication.
+    Any shader that violates this is not computing a matrix product.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    K, N = 64, 32
+    alpha = np.float16(2.5)
+    x = np.random.randn(K).astype(np.float16)
+    W = np.random.randn(N, K).astype(np.float16)
+    x_scaled = (x.astype(np.float32) * float(alpha)).astype(np.float16)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    w_packed = np.ascontiguousarray(W).view(np.uint32)
+    w_buf = WebGPUBuffer.from_numpy(dev, w_packed)
+    scales_buf = WebGPUBuffer.from_numpy(dev, np.ones(N, dtype=np.float16))
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("matmul_quant", (("K", K), ("N", N), ("USE_QUANT", 0)))
+    pipeline = cache.get_or_create(key)
+
+    results = []
+    for inp in [x, x_scaled]:
+        x_buf = WebGPUBuffer.from_numpy(dev, inp)
+        out_buf = WebGPUBuffer.empty(dev, N * 2, usage=rw)
+        bg = dev.create_bind_group(
+            layout=pipeline.get_bind_group_layout(0),
+            entries=[{"binding": 0, "resource": {"buffer": x_buf.buf}},
+                     {"binding": 1, "resource": {"buffer": w_buf.buf}},
+                     {"binding": 2, "resource": {"buffer": scales_buf.buf}},
+                     {"binding": 3, "resource": {"buffer": out_buf.buf}}],
+        )
+        enc = dev.create_command_encoder()
+        cp = enc.begin_compute_pass()
+        cp.set_pipeline(pipeline)
+        cp.set_bind_group(0, bg)
+        cp.dispatch_workgroups((N + 255) // 256, 1, 1)
+        cp.end()
+        dev.queue.submit([enc.finish()])
+        results.append(out_buf.to_numpy().view(np.float16).astype(np.float32))
+
+    result_x, result_x_scaled = results
+    expected_scaled = result_x * float(alpha)
+
+    # Invariant: mat @ (α*x) == α * (mat @ x)
+    np.testing.assert_allclose(result_x_scaled, expected_scaled, rtol=5e-2, atol=0.1,
+                               err_msg="matmul linearity invariant violated: mat@(α*x) != α*(mat@x)")
+
+
 def test_embedding_lookup(wgpu_device):
     import wgpu
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer

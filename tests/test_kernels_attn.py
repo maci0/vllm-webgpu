@@ -223,6 +223,53 @@ def test_softmax_sum_to_one_invariant(wgpu_device):
         assert (result <= 1.001).all(), "Softmax output contains values > 1"
 
 
+def test_softmax_monotonicity_invariant(wgpu_device):
+    """Property proof: softmax preserves the ordering of its inputs.
+
+    Invariant: if x[i] > x[j] then softmax(x)[i] > softmax(x)[j].
+    This follows from exp being strictly monotone increasing. Any softmax
+    that violates this cannot be computing exp(x_i) / sum(exp(x_j)).
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    n = 32
+    # Construct input where we know the ordering: x[0] is the max
+    x = np.random.randn(1, n).astype(np.float16)
+    max_idx = int(np.argmax(x[0]))
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    x_buf = WebGPUBuffer.from_numpy(dev, x)
+    out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    pipeline = cache.get_or_create(PipelineKey("softmax", (("SEQ_LEN", n),)))
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[{"binding": 0, "resource": {"buffer": x_buf.buf}},
+                 {"binding": 1, "resource": {"buffer": out_buf.buf}}],
+    )
+    enc = dev.create_command_encoder()
+    cp = enc.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(1, 1, 1)
+    cp.end()
+    dev.queue.submit([enc.finish()])
+
+    result = out_buf.to_numpy().view(np.float16).reshape(1, n).astype(np.float32)[0]
+
+    # Invariant: the argmax of softmax output must equal argmax of input
+    assert int(np.argmax(result)) == max_idx, (
+        f"Softmax monotonicity violated: argmax(softmax(x))={np.argmax(result)} "
+        f"but argmax(x)={max_idx}"
+    )
+    # Invariant: the max element of softmax must be > 1/n (it has more than uniform probability)
+    assert result[max_idx] > 1.0 / n, "Softmax monotonicity violated: max element not largest"
+
+
 def test_kv_cache_store_and_attn(wgpu_device):
     """Smoke test: store K/V then read back via attn_score kernel."""
     # This is an integration-level check — just verifies shapes and no crashes
