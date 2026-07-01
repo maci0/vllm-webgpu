@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class PipelineKey:
     shader_name: str
-    defines: tuple[tuple[str, int], ...]
+    defines: tuple[tuple[str, int | float], ...]
 
 
 class PipelineCache:
