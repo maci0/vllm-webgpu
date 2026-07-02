@@ -45,6 +45,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                           ("head_dim", self.head_dim)]:
             if val % 2 != 0:
                 raise ValueError(f"{name}={val} must be even for f16 GEMV")
+        # add.wgsl and gelu_mul.wgsl use vec4<f16>: dimensions must be divisible by 4.
+        for name, val in [("hidden_size", self.hidden_size),
+                          ("intermediate_size", self.intermediate_size)]:
+            if val % 4 != 0:
+                raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         self._init_scratch_buffers(max_ctx)
 
@@ -141,6 +146,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
+        # WebGPU spec guarantees maxComputeWorkgroupsPerDimension >= 65535.
+        # attn_score dispatches (num_q_heads, ctx_len, 1) — cap ctx_len to 65535.
+        if ctx_len > 65535:
+            raise RuntimeError(
+                f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535. "
+                "Long-context support requires splitting the attention computation."
+            )
 
         # Hoist per-forward buffers that are identical across all layers.
         pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))

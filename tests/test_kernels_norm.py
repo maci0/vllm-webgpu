@@ -204,7 +204,8 @@ def test_add(wgpu_device):
     cp = encoder.begin_compute_pass()
     cp.set_pipeline(pipeline)
     cp.set_bind_group(0, bg)
-    cp.dispatch_workgroups((n + 255) // 256, 1, 1)
+    # add.wgsl is vec4<f16>: each thread handles 4 elements, so dispatch N/4 threads.
+    cp.dispatch_workgroups((n // 4 + 255) // 256, 1, 1)
     cp.end()
     dev.queue.submit([encoder.finish()])
 

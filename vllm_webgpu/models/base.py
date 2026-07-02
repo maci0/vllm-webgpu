@@ -37,9 +37,11 @@ class BaseWebGPUModel:
         self._active_encoder = encoder
         try:
             yield
+            # Submit only on clean exit: an exception mid-layer would submit partial
+            # GPU work and corrupt the KV cache even though Python raised an error.
+            dev.queue.submit([encoder.finish()])
         finally:
             self._active_encoder = None
-            dev.queue.submit([encoder.finish()])
 
     def load_weights(self, path: str) -> None:
         from vllm_webgpu.quant.gguf_loader import (

@@ -8,7 +8,10 @@ override HAS_WEIGHT: u32    = 1u;   // 0 for weightless variant (Gemma V heads)
 override WG_SIZE: u32       = 64u;
 
 var<workgroup> shared_sq:    array<f32, 64>;
-var<workgroup> shared_input: array<f32, 128>;  // HEAD_DIM elements as f32
+// shared_input caches HEAD_DIM f32 values for reuse in phase 2.
+// WGSL allows override constants as workgroup array sizes.
+// HEAD_DIM ≤ 256 (1024 bytes) keeps us well within the 16384-byte limit.
+var<workgroup> shared_input: array<f32, HEAD_DIM>;
 
 @group(0) @binding(0) var<storage, read>       input     : array<f16>;
 @group(0) @binding(1) var<storage, read>       weight    : array<f16>;  // [num_heads, head_dim] or unused

@@ -41,6 +41,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                           ("head_dim", self.head_dim)]:
             if val % 2 != 0:
                 raise ValueError(f"{name}={val} must be even for f16 GEMV")
+        for name, val in [("hidden_size", self.hidden_size),
+                          ("intermediate_size", self.intermediate_size)]:
+            if val % 4 != 0:
+                raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         self._init_scratch_buffers(max_ctx)
 
@@ -121,6 +125,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
+        if ctx_len > 65535:
+            raise RuntimeError(
+                f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535."
+            )
 
         pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
         slot_map = WebGPUBuffer.from_numpy(
