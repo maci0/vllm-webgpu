@@ -80,8 +80,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         )
 
         # MVP guard: single-sequence decode only — check once before any GPU work.
-        assert not hasattr(attn_metadata, "block_tables") or len(attn_metadata.block_tables) <= 1, \
-            "multi-sequence batching not supported in this build"
+        # Use RuntimeError not assert: assert is silently removed by python -O.
+        if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
+            raise RuntimeError("multi-sequence batching not supported in this build")
 
         # ctx_len must be at least 1 (0 would allocate a zero-byte scores_buf and
         # dispatch zero workgroups, producing empty attention output with no error).

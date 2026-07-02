@@ -77,7 +77,8 @@ class WebGPUModelRunner:
         hf = mc.hf_config
 
         num_kv_heads = hf.num_key_value_heads
-        head_dim = hf.hidden_size // hf.num_attention_heads
+        # Use explicit head_dim when present (Gemma4 sets it independently of hidden/heads).
+        head_dim = getattr(hf, "head_dim", hf.hidden_size // hf.num_attention_heads)
         block_size = self.webgpu_config.block_size
 
         num_blocks = cc.num_gpu_blocks
@@ -99,7 +100,7 @@ class WebGPUModelRunner:
                 spec[f"model.layers.{i}.self_attn"] = FullAttentionSpec(
                     block_size=block_size,
                     num_kv_heads=mc.num_key_value_heads,
-                    head_size=mc.hidden_size // mc.num_attention_heads,
+                    head_size=getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads),
                     dtype=np.float16,
                     use_mla=False,
                 )
@@ -108,7 +109,7 @@ class WebGPUModelRunner:
     def get_cache_block_size_bytes(self) -> int:
         mc = self.vllm_config.model_config.hf_config
         block_size = self.webgpu_config.block_size
-        head_dim = mc.hidden_size // mc.num_attention_heads
+        head_dim = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
         return block_size * mc.num_key_value_heads * head_dim * 2 * 2  # K + V, f16
 
     def warm_up(self) -> None:

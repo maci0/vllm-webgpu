@@ -23,6 +23,11 @@ class PipelineCache:
             return self._cache[key]
 
         shader_path = self._shaders_dir / f"{key.shader_name}.wgsl"
+        if not shader_path.exists():
+            raise FileNotFoundError(
+                f"Shader not found: {shader_path}. "
+                f"Check shader_subdir and shader_name in the _dispatch call."
+            )
         wgsl_source = shader_path.read_text()
 
         module = self._device.create_shader_module(code=wgsl_source)

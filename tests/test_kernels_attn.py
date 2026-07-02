@@ -430,7 +430,9 @@ def test_attention_equal_keys_uniform_weights(wgpu_device):
 
     # Invariant: identical K vectors → uniform attention weights → output = mean(V)
     # Both Q-heads use the same KV cache (single KV head, GQA ratio=2)
-    v_mean = v_vectors.mean(axis=0).astype(np.float16)  # mean of 4 V vectors
+    # Compute reference mean in float32 to match shader's f32 accumulation precision.
+    # v_vectors.mean() in f16 accumulates in f16, diverging from the shader's f32 path.
+    v_mean = v_vectors.astype(np.float32).mean(axis=0).astype(np.float16)
     for q_head in range(num_q_heads):
         np.testing.assert_allclose(
             result[q_head].astype(np.float32), v_mean.astype(np.float32),

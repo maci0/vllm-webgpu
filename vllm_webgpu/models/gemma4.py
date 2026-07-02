@@ -64,8 +64,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                        {"HIDDEN_DIM": hidden},
                        (num_tokens, 1, 1))
 
-        assert not hasattr(attn_metadata, "block_tables") or len(attn_metadata.block_tables) <= 1, \
-            "multi-sequence batching not supported in this build"
+        if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
+            raise RuntimeError("multi-sequence batching not supported in this build")
 
         ctx_len = int(attn_metadata.max_decode_seq_len
                       if attn_metadata.max_decode_seq_len is not None
