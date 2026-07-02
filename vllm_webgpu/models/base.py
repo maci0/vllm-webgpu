@@ -45,11 +45,14 @@ class BaseWebGPUModel:
 
     def load_weights(self, path: str) -> None:
         from vllm_webgpu.quant.gguf_loader import (
-            detect_weight_format, load_safetensors_weights, load_gguf_weights,
+            detect_weight_format, load_safetensors_weights,
+            load_safetensors_weights_sharded, load_gguf_weights,
         )
         fmt = detect_weight_format(path)
         if fmt == "safetensors":
             self.weights = load_safetensors_weights(path, self.wgpu_device.wgpu_device)
+        elif fmt == "safetensors_sharded":
+            self.weights = load_safetensors_weights_sharded(path, self.wgpu_device.wgpu_device)
         elif fmt == "gguf":
             self.weights = load_gguf_weights(path, self.wgpu_device.wgpu_device)
         else:

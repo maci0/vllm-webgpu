@@ -12,6 +12,13 @@ _GGUF_MAGIC = b"GGUF"
 
 def detect_weight_format(path: str) -> str:
     p = Path(path)
+    if p.is_dir():
+        if (p / "model.safetensors.index.json").exists():
+            return "safetensors_sharded"
+        if (p / "model.safetensors").exists():
+            return "safetensors"
+        # Fall through to magic-byte check if single file found
+        return "safetensors"
     if p.suffix == ".gguf":
         return "gguf"
     if p.suffix in {".safetensors", ".bin"}:
@@ -22,6 +29,23 @@ def detect_weight_format(path: str) -> str:
     if magic == _GGUF_MAGIC:
         return "gguf"
     return "safetensors"
+
+
+def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
+    """Load multi-shard safetensors from a directory with model.safetensors.index.json."""
+    import json
+    index_path = Path(model_dir) / "model.safetensors.index.json"
+    with open(index_path) as f:
+        index = json.load(f)
+    shard_files = sorted(set(index["weight_map"].values()))
+    weights: dict = {}
+    for shard in shard_files:
+        shard_path = str(Path(model_dir) / shard)
+        logger.info("Loading shard %s", shard)
+        shard_weights = load_safetensors_weights(shard_path, wgpu_device)
+        weights.update(shard_weights)
+    logger.info("Loaded %d tensors from %d shards in %s", len(weights), len(shard_files), model_dir)
+    return weights
 
 
 def load_safetensors_weights(path: str, wgpu_device) -> dict:

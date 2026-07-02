@@ -34,7 +34,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self.hidden_size: int = model_config.hidden_size
         self.intermediate_size: int = model_config.intermediate_size
         self.vocab_size: int = model_config.vocab_size
-        self.head_dim: int = self.hidden_size // self.num_q_heads
+        # Use explicit head_dim when present (e.g. Qwen3: head_dim=128, hidden=2560, heads=32,
+        # so hidden//heads=80 but actual Q dim per head is 128).
+        self.head_dim: int = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
         from vllm_webgpu.config import get_config
         self.block_size: int = get_config().block_size
@@ -98,6 +100,47 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         }
         # Index into hidden-state rotation: the layer output cycles h0 -> h1 -> h2 -> h0 ...
         self._hstate: int = 0
+
+    def _postprocess_weights(self) -> None:
+        """Fix weight shapes that differ between model variants.
+
+        Qwen3's q_norm/k_norm weights are shared across all heads: shape (head_dim,).
+        Our fused_per_head_norm_rope shader indexes weight[head_idx * HEAD_DIM + i],
+        expecting shape (num_heads * head_dim,). Tile if the loaded shape is just (head_dim,).
+        """
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+        dev = self.wgpu_device.wgpu_device
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+
+        for i in range(self.num_layers):
+            p = f"model.layers.{i}"
+            for norm_key, num_heads in [
+                (f"{p}.self_attn.q_norm.weight", self.num_q_heads),
+                (f"{p}.self_attn.k_norm.weight", self.num_kv_heads),
+            ]:
+                buf = self.weights.get(norm_key)
+                if buf is None:
+                    continue
+                expected = (num_heads * self.head_dim,)
+                if buf.shape == expected:
+                    continue
+                if buf.shape == (self.head_dim,):
+                    # Shared norm: tile to (num_heads * head_dim,) so each head uses same weights.
+                    w_np = buf.to_numpy().view("float16")
+                    tiled = "float16" and __import__("numpy").tile(w_np, num_heads)
+                    import numpy as _np
+                    tiled = _np.tile(buf.to_numpy().view(_np.float16), num_heads)
+                    self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled, usage=rw)
+                else:
+                    raise ValueError(
+                        f"{norm_key}: unexpected shape {buf.shape}, "
+                        f"expected {expected} or ({self.head_dim},)"
+                    )
+
+    def load_weights(self, path: str) -> None:
+        super().load_weights(path)
+        self._postprocess_weights()
 
     def forward(
         self,
@@ -177,15 +220,18 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         )
 
         # LM head projection: [num_tokens, hidden] x [vocab, hidden]^T -> [num_tokens, vocab]
+        # Use matmul_quant (GEMV) for the LM head. vocab can be >65535 (e.g. 151936 for Qwen),
+        # which would exceed the WebGPU Y-dispatch limit in matmul_quant_mr4's (M, vocab, 1) layout.
+        # matmul_quant dispatches (ceil(vocab/256), 1, 1) — all dimensions fit in 65535.
         vocab = self.vocab_size
         logits_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw_usage)
         self._dispatch(
-            "matmul_quant_mr4",
+            "matmul_quant",
             [norm_out, self.weights.get("lm_head.weight", self.weights["model.embed_tokens.weight"]),
              self.weights.get("lm_head.scales", norm_out),  # unused for f16
              logits_buf],
-            {"K": hidden, "N": vocab, "M": num_tokens, "USE_QUANT": 0},
-            ((num_tokens + 3) // 4, vocab, 1),
+            {"K": hidden, "N": vocab, "USE_QUANT": 0},
+            ((vocab + 255) // 256, 1, 1),
         )
 
         return logits_buf.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)

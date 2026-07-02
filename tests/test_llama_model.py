@@ -15,6 +15,8 @@ def make_tiny_llama_config():
     cfg.max_position_embeddings = 128
     cfg.rope_theta = 10000.0
     cfg.architectures = ["LlamaForCausalLM"]
+    # Explicit head_dim so MagicMock.head_dim doesn't auto-create a MagicMock object.
+    cfg.head_dim = 64 // 4  # 16
     return cfg
 
 

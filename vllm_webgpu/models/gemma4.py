@@ -150,10 +150,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         logits_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw)
         lm_head_w = self.weights.get("lm_head.weight", self.weights["model.embed_tokens.weight"])
-        self._dispatch("matmul_quant_mr4",
+        self._dispatch("matmul_quant",
                        [norm_out, lm_head_w, self.weights.get("lm_head.scales", norm_out), logits_buf],
-                       {"K": hidden, "N": vocab, "M": num_tokens, "USE_QUANT": 0},
-                       ((num_tokens + 3) // 4, vocab, 1))
+                       {"K": hidden, "N": vocab, "USE_QUANT": 0},
+                       ((vocab + 255) // 256, 1, 1))
 
         # Apply Gemma logit softcap; CAP is f32 in WGSL, must pass as float
         capped = WebGPUBuffer.empty(dev, logits_buf.nbytes, usage=rw)
