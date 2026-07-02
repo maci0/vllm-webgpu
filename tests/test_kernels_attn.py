@@ -223,6 +223,56 @@ def test_softmax_sum_to_one_invariant(wgpu_device):
         assert (result <= 1.001).all(), "Softmax output contains values > 1"
 
 
+def test_softmax_translation_invariance(wgpu_device):
+    """Property proof: softmax is translation-invariant.
+
+    Mathematical invariant: softmax(x + c) == softmax(x) for any constant c.
+    This follows from exp(x_i + c) / sum(exp(x_j + c)) = exp(x_i)*exp(c) / (exp(c)*sum(exp(x_j)))
+    = exp(x_i) / sum(exp(x_j)) = softmax(x)_i.
+
+    Any implementation that fails this cannot be computing softmax correctly —
+    and specifically, our numerically stable implementation (subtract max)
+    uses this property internally. If it fails, the subtraction is wrong.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    n = 32
+    x = np.random.randn(1, n).astype(np.float16)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    pipeline = cache.get_or_create(PipelineKey("softmax", (("SEQ_LEN", n),)))
+
+    results = []
+    for shift in [0.0, 5.0, -5.0, 100.0]:  # large shift stresses numeric stability
+        x_shifted = (x.astype(np.float32) + shift).astype(np.float16)
+        xb = WebGPUBuffer.from_numpy(dev, x_shifted)
+        ob = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
+        bg = dev.create_bind_group(
+            layout=pipeline.get_bind_group_layout(0),
+            entries=[{"binding": 0, "resource": {"buffer": xb.buf}},
+                     {"binding": 1, "resource": {"buffer": ob.buf}}],
+        )
+        enc = dev.create_command_encoder()
+        cp = enc.begin_compute_pass()
+        cp.set_pipeline(pipeline)
+        cp.set_bind_group(0, bg)
+        cp.dispatch_workgroups(1, 1, 1)
+        cp.end()
+        dev.queue.submit([enc.finish()])
+        results.append(ob.to_numpy().view(np.float16).reshape(1, n).astype(np.float32))
+
+    # Invariant: shift doesn't change softmax output
+    for i, shift in enumerate([0.0, 5.0, -5.0, 100.0]):
+        np.testing.assert_allclose(
+            results[i], results[0], rtol=5e-2, atol=1e-2,
+            err_msg=f"Softmax translation invariance violated: shift={shift}"
+        )
+
+
 def test_softmax_monotonicity_invariant(wgpu_device):
     """Property proof: softmax preserves the ordering of its inputs.
 

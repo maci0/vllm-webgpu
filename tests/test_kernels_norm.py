@@ -74,6 +74,59 @@ def test_rms_norm(wgpu_device):
                                rtol=1e-2, atol=1e-2)
 
 
+def test_rms_norm_scale_invariance(wgpu_device):
+    """Property proof: RMSNorm is scale-invariant (homogeneous of degree 0).
+
+    Mathematical invariant: rms_norm(α*x, weight) == rms_norm(x, weight)
+    for any scalar α > 0. This holds because RMS(α*x) = α*RMS(x), so
+    the α cancels: (α*x)/(α*RMS(x)) = x/RMS(x).
+
+    Any implementation that fails this test is computing something other
+    than RMSNorm — it's confusing the scale with the content.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    hidden = 64
+    seq = 4
+    x = np.random.randn(seq, hidden).astype(np.float16)
+    w = np.random.randn(hidden).astype(np.float16)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    w_buf = WebGPUBuffer.from_numpy(dev, w)
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    pipeline = cache.get_or_create(PipelineKey("rms_norm", (("HIDDEN_DIM", hidden),)))
+
+    results = []
+    for scale in [1.0, 2.0, 0.5, 10.0]:
+        x_scaled = (x.astype(np.float32) * scale).astype(np.float16)
+        x_buf = WebGPUBuffer.from_numpy(dev, x_scaled)
+        out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
+        bg = dev.create_bind_group(
+            layout=pipeline.get_bind_group_layout(0),
+            entries=[{"binding": 0, "resource": {"buffer": x_buf.buf}},
+                     {"binding": 1, "resource": {"buffer": w_buf.buf}},
+                     {"binding": 2, "resource": {"buffer": out_buf.buf}}],
+        )
+        enc = dev.create_command_encoder()
+        cp = enc.begin_compute_pass()
+        cp.set_pipeline(pipeline)
+        cp.set_bind_group(0, bg)
+        cp.dispatch_workgroups(seq, 1, 1)
+        cp.end()
+        dev.queue.submit([enc.finish()])
+        results.append(out_buf.to_numpy().view(np.float16).reshape(seq, hidden).astype(np.float32))
+
+    # Invariant: all scaled versions must produce the same output
+    for i, scale in enumerate([1.0, 2.0, 0.5, 10.0]):
+        np.testing.assert_allclose(
+            results[i], results[0], rtol=5e-2, atol=1e-2,
+            err_msg=f"RMSNorm scale invariance violated: scale={scale} changed the output"
+        )
+
+
 def test_rms_norm_unit_rms_invariant(wgpu_device):
     """Property proof: RMSNorm (weight=1) produces output with RMS == 1.
 
