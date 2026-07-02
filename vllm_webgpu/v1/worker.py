@@ -166,11 +166,20 @@ class WebGPUWorker(WorkerBase):
         logger.warning("Wake mode not supported on WebGPU")
 
     def check_health(self) -> None:
-        """Verify the WebGPU device is alive by querying device limits."""
+        """Verify the WebGPU device is alive by submitting a no-op compute pass.
+
+        Reading Python-side `limits` only proves the Python object exists, not
+        that the GPU is responsive. A submitted no-op forces the command queue
+        to acknowledge the device.
+        """
         if self.wgpu_device is None:
             raise RuntimeError("WebGPU device not initialized")
         try:
-            _ = self.wgpu_device.limits
+            import wgpu as wgpu_lib
+            dev = self.wgpu_device.wgpu_device
+            # Empty command encoder — flush forces the queue to process.
+            encoder = dev.create_command_encoder()
+            dev.queue.submit([encoder.finish()])
         except Exception as e:
             raise RuntimeError(f"WebGPU device health check failed: {e}") from e
 

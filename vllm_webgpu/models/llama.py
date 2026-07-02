@@ -79,9 +79,30 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             (num_tokens, 1, 1),
         )
 
+        # MVP guard: single-sequence decode only — check once before any GPU work.
+        assert not hasattr(attn_metadata, "block_tables") or len(attn_metadata.block_tables) <= 1, \
+            "multi-sequence batching not supported in this build"
+
+        # ctx_len must be at least 1 (0 would allocate a zero-byte scores_buf and
+        # dispatch zero workgroups, producing empty attention output with no error).
+        ctx_len = int(attn_metadata.max_decode_seq_len
+                      if attn_metadata.max_decode_seq_len is not None
+                      else num_tokens)
+        if ctx_len <= 0:
+            ctx_len = num_tokens
+
+        # Hoist per-forward buffers that are identical across all layers.
+        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
+        slot_map = WebGPUBuffer.from_numpy(
+            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
+        bt_arr = np.array(attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
+                          dtype=np.uint32)
+        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
+
         # Transformer layers
         for i in range(self.num_layers):
-            x_buf = self._transformer_layer(i, x_buf, positions, attn_metadata, num_tokens)
+            x_buf = self._transformer_layer(
+                i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
         # Final norm
         norm_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw_usage)
@@ -110,8 +131,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self,
         layer_idx: int,
         x_buf: "WebGPUBuffer",
-        positions: np.ndarray,
-        attn_metadata: object,
+        pos_buf: "WebGPUBuffer",
+        slot_map: "WebGPUBuffer",
+        bt_buf: "WebGPUBuffer",
+        ctx_len: int,
         num_tokens: int,
     ) -> "WebGPUBuffer":
         import wgpu as wgpu_lib
@@ -127,14 +150,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._dispatch("rms_norm", [x_buf, self.weights[f"{p}.input_layernorm.weight"], normed],
                        {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
 
-        # QKV projection (combined or separate depending on checkpoint)
+        # QKV projection
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
         q_buf = WebGPUBuffer.empty(dev, num_tokens * q_dim * 2, usage=rw)
         k_buf = WebGPUBuffer.empty(dev, num_tokens * kv_dim * 2, usage=rw)
         v_buf = WebGPUBuffer.empty(dev, num_tokens * kv_dim * 2, usage=rw)
 
-        use_quant = 0 if self.weights.get(f"{p}.self_attn.q_proj.weight", None) is not None else 1
+        use_quant = 0 if self.weights.get(f"{p}.self_attn.q_proj.weight") is not None else 1
         for out_buf, proj, dim in [(q_buf, "q_proj", q_dim), (k_buf, "k_proj", kv_dim), (v_buf, "v_proj", kv_dim)]:
             w_key = f"{p}.self_attn.{proj}.weight"
             s_key = f"{p}.self_attn.{proj}.scales"
@@ -142,8 +165,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            [normed, self.weights[w_key], self.weights.get(s_key, normed), out_buf],
                            {"K": hidden, "N": dim, "USE_QUANT": use_quant}, ((dim + 255) // 256, 1, 1))
 
-        # Fused per-head norm + RoPE for Q and K
-        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
+        # Fused per-head norm + RoPE for Q and K (pos_buf hoisted from forward())
         q_rope = WebGPUBuffer.empty(dev, q_buf.nbytes, usage=rw)
         k_rope = WebGPUBuffer.empty(dev, k_buf.nbytes, usage=rw)
         for src, dst, n_heads, w_key in [
@@ -162,9 +184,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads},
                                (num_tokens, n_heads, 1))
 
-        # KV cache store
-        slot_map = WebGPUBuffer.from_numpy(
-            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
+        # KV cache store (slot_map hoisted from forward())
         k_cache, v_cache = self.kv_pool[layer_idx]
         self._dispatch("kv_cache_store", [k_rope, k_cache, slot_map],
                        {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
@@ -173,15 +193,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                        {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
                        (num_tokens, self.num_kv_heads, 1))
 
-        # Attention scores + output
-        # MVP limitation: only single-sequence decode is supported.
-        assert not hasattr(attn_metadata, "block_tables") or len(attn_metadata.block_tables) <= 1, \
-            "multi-sequence batching not supported in this build"
-        ctx_len = int(attn_metadata.max_decode_seq_len if attn_metadata.max_decode_seq_len is not None else num_tokens)
-        bt_arr = np.array(attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-                          dtype=np.uint32)
-        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
-
+        # Attention scores + output (ctx_len, bt_buf hoisted from forward())
         scores_buf = WebGPUBuffer.empty(dev, self.num_q_heads * ctx_len * 2, usage=rw)  # f16: 2 bytes/element
         self._dispatch("attn_score", [q_rope, k_cache, bt_buf, scores_buf],
                        {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,

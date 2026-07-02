@@ -64,8 +64,25 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                        {"HIDDEN_DIM": hidden},
                        (num_tokens, 1, 1))
 
+        assert not hasattr(attn_metadata, "block_tables") or len(attn_metadata.block_tables) <= 1, \
+            "multi-sequence batching not supported in this build"
+
+        ctx_len = int(attn_metadata.max_decode_seq_len
+                      if attn_metadata.max_decode_seq_len is not None
+                      else num_tokens)
+        if ctx_len <= 0:
+            ctx_len = num_tokens
+
+        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
+        slot_map = WebGPUBuffer.from_numpy(
+            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
+        bt_arr = np.array(attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
+                          dtype=np.uint32)
+        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
+
         for i in range(self.num_layers):
-            x_buf = self._transformer_layer(i, x_buf, positions, attn_metadata, num_tokens)
+            x_buf = self._transformer_layer(
+                i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
             if i in self.ple_layer_indices:
                 x_buf = self._ple_block(i, x_buf, ids_buf, num_tokens)
 
@@ -94,11 +111,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self,
         layer_idx: int,
         x_buf: "WebGPUBuffer",
-        positions: np.ndarray,
-        attn_metadata: object,
+        pos_buf: "WebGPUBuffer",
+        slot_map: "WebGPUBuffer",
+        bt_buf: "WebGPUBuffer",
+        ctx_len: int,
         num_tokens: int,
     ) -> "WebGPUBuffer":
-        """Llama-style transformer layer. Gemma4 differs from Llama in V-norm and PLE injection."""
+        """Gemma4 transformer layer. Same as Llama but V heads get per-head RMSNorm (no weight)."""
         import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -127,8 +146,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            [normed, self.weights[w_key], self.weights.get(s_key, normed), out_buf],
                            {"K": hidden, "N": dim, "USE_QUANT": use_quant}, ((dim + 255) // 256, 1, 1))
 
-        # Fused per-head norm + RoPE for Q and K
-        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
+        # Fused per-head norm + RoPE for Q and K (pos_buf hoisted from forward())
         q_rope = WebGPUBuffer.empty(dev, q_buf.nbytes, usage=rw)
         k_rope = WebGPUBuffer.empty(dev, k_buf.nbytes, usage=rw)
         for src, dst, n_heads, w_key in [
@@ -147,26 +165,23 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads},
                                (num_tokens, n_heads, 1))
 
-        # KV cache store
-        slot_map = WebGPUBuffer.from_numpy(
-            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
+        # Gemma4 per-head RMSNorm (no weight) on V before caching.
+        v_normed = WebGPUBuffer.empty(dev, v_buf.nbytes, usage=rw)
+        self._dispatch("per_head_rms_norm_no_weight", [v_buf, v_normed],
+                       {"HEAD_DIM": self.head_dim, "NUM_HEADS": self.num_kv_heads,
+                        "WG_SIZE": 128},
+                       (self.num_kv_heads, num_tokens, 1), shader_subdir="gemma")
+
+        # KV cache store (slot_map hoisted from forward())
         k_cache, v_cache = self.kv_pool[layer_idx]
         self._dispatch("kv_cache_store", [k_rope, k_cache, slot_map],
                        {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
                        (num_tokens, self.num_kv_heads, 1))
-        self._dispatch("kv_cache_store", [v_buf, v_cache, slot_map],
+        self._dispatch("kv_cache_store", [v_normed, v_cache, slot_map],
                        {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
                        (num_tokens, self.num_kv_heads, 1))
 
-        # Attention scores + output
-        # MVP limitation: only single-sequence decode is supported.
-        assert not hasattr(attn_metadata, "block_tables") or len(attn_metadata.block_tables) <= 1, \
-            "multi-sequence batching not supported in this build"
-        ctx_len = int(attn_metadata.max_decode_seq_len if attn_metadata.max_decode_seq_len is not None else num_tokens)
-        bt_arr = np.array(attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-                          dtype=np.uint32)
-        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
-
+        # Attention scores + output (ctx_len, bt_buf hoisted from forward())
         scores_buf = WebGPUBuffer.empty(dev, self.num_q_heads * ctx_len * 2, usage=rw)  # f16: 2 bytes/element
         self._dispatch("attn_score", [q_rope, k_cache, bt_buf, scores_buf],
                        {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
