@@ -41,6 +41,52 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                           ("head_dim", self.head_dim)]:
             if val % 2 != 0:
                 raise ValueError(f"{name}={val} must be even for f16 GEMV")
+        max_ctx = getattr(model_config, "max_position_embeddings", 8192)
+        self._init_scratch_buffers(max_ctx)
+
+    def _init_scratch_buffers(self, max_ctx: int) -> None:
+        """Pre-allocate all intermediate scratch buffers used in _transformer_layer.
+
+        Eliminates 18 GPU buffer allocations per layer per decode token.
+        Gemma4 has one extra buffer (v_normed) vs Llama.
+        """
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+        dev = self.wgpu_device.wgpu_device
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        T = 1
+        H = self.hidden_size
+        I = self.intermediate_size
+        Q = self.num_q_heads * self.head_dim
+        KV = self.num_kv_heads * self.head_dim
+        NQ = self.num_q_heads
+
+        def mk(n: int) -> "WebGPUBuffer":
+            return WebGPUBuffer.empty(dev, n, usage=rw)
+
+        self._sc: dict[str, "WebGPUBuffer"] = {
+            "normed":     mk(T * H * 2),
+            "q_buf":      mk(T * Q * 2),
+            "k_buf":      mk(T * KV * 2),
+            "v_buf":      mk(T * KV * 2),
+            "v_normed":   mk(T * KV * 2),  # Gemma4-specific: per-head RMSNorm on V
+            "q_rope":     mk(T * Q * 2),
+            "k_rope":     mk(T * KV * 2),
+            "scores_buf": mk(NQ * max_ctx * 2),
+            "sm_buf":     mk(NQ * max_ctx * 2),
+            "attn_out":   mk(T * Q * 2),
+            "o_proj_out": mk(T * H * 2),
+            "ffn_normed": mk(T * H * 2),
+            "gate_buf":   mk(T * I * 2),
+            "up_buf":     mk(T * I * 2),
+            "ffn_act":    mk(T * I * 2),
+            "ffn_out":    mk(T * H * 2),
+            "h0":         mk(T * H * 2),
+            "h1":         mk(T * H * 2),
+            "h2":         mk(T * H * 2),
+        }
+        self._hstate: int = 0
 
     def forward(
         self,
@@ -56,6 +102,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         hidden = self.hidden_size
         vocab = self.vocab_size
         rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+
+        # Reset hidden-state rotation at the start of each forward pass
+        self._hstate = 0
 
         ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
         x_buf = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
@@ -117,134 +166,127 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         ctx_len: int,
         num_tokens: int,
     ) -> "WebGPUBuffer":
-        """Gemma4 transformer layer. Same as Llama but V heads get per-head RMSNorm (no weight)."""
-        import wgpu as wgpu_lib
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+        """Gemma4 transformer layer using pre-allocated scratch buffers and batched dispatch."""
+        import math
 
-        dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        sc = self._sc
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}"
-
-        # Pre-norm
-        normed = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
-        self._dispatch("rms_norm", [x_buf, self.weights[f"{p}.input_layernorm.weight"], normed],
-                       {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
-
-        # QKV projection
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
-        q_buf = WebGPUBuffer.empty(dev, num_tokens * q_dim * 2, usage=rw)
-        k_buf = WebGPUBuffer.empty(dev, num_tokens * kv_dim * 2, usage=rw)
-        v_buf = WebGPUBuffer.empty(dev, num_tokens * kv_dim * 2, usage=rw)
-
-        use_quant = 0 if self.weights.get(f"{p}.self_attn.q_proj.weight") is not None else 1
-        for out_buf, proj, dim in [(q_buf, "q_proj", q_dim), (k_buf, "k_proj", kv_dim), (v_buf, "v_proj", kv_dim)]:
-            w_key = f"{p}.self_attn.{proj}.weight"
-            s_key = f"{p}.self_attn.{proj}.scales"
-            self._dispatch("matmul_quant",
-                           [normed, self.weights[w_key], self.weights.get(s_key, normed), out_buf],
-                           {"K": hidden, "N": dim, "USE_QUANT": use_quant}, ((dim + 255) // 256, 1, 1))
-
-        # Fused per-head norm + RoPE for Q and K (pos_buf hoisted from forward())
-        q_rope = WebGPUBuffer.empty(dev, q_buf.nbytes, usage=rw)
-        k_rope = WebGPUBuffer.empty(dev, k_buf.nbytes, usage=rw)
-        for src, dst, n_heads, w_key in [
-            (q_buf, q_rope, self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
-            (k_buf, k_rope, self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
-        ]:
-            norm_w = self.weights.get(w_key)
-            if norm_w is not None:
-                self._dispatch("fused_per_head_norm_rope",
-                               [src, norm_w, pos_buf, dst],
-                               {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
-                                "ROPE_BASE": float(self.rope_theta), "HAS_WEIGHT": 1},
-                               (n_heads, num_tokens, 1))
-            else:
-                self._dispatch("rope", [src, pos_buf, dst],
-                               {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads},
-                               (num_tokens, n_heads, 1))
-
-        # Gemma4 per-head RMSNorm (no weight) on V before caching.
-        v_normed = WebGPUBuffer.empty(dev, v_buf.nbytes, usage=rw)
-        self._dispatch("per_head_rms_norm_no_weight", [v_buf, v_normed],
-                       {"HEAD_DIM": self.head_dim, "NUM_HEADS": self.num_kv_heads,
-                        "WG_SIZE": 128},
-                       (self.num_kv_heads, num_tokens, 1), shader_subdir="gemma")
-
-        # KV cache store (slot_map hoisted from forward())
-        k_cache, v_cache = self.kv_pool[layer_idx]
-        self._dispatch("kv_cache_store", [k_rope, k_cache, slot_map],
-                       {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
-                       (num_tokens, self.num_kv_heads, 1))
-        self._dispatch("kv_cache_store", [v_normed, v_cache, slot_map],
-                       {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
-                       (num_tokens, self.num_kv_heads, 1))
-
-        # Attention scores + output (ctx_len, bt_buf hoisted from forward())
-        scores_buf = WebGPUBuffer.empty(dev, self.num_q_heads * ctx_len * 2, usage=rw)  # f16: 2 bytes/element
-        self._dispatch("attn_score", [q_rope, k_cache, bt_buf, scores_buf],
-                       {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                        "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                        "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
-
-        sm_buf = WebGPUBuffer.empty(dev, scores_buf.nbytes, usage=rw)
-        self._dispatch("softmax", [scores_buf, sm_buf],
-                       {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-
-        attn_out = WebGPUBuffer.empty(dev, num_tokens * self.num_q_heads * self.head_dim * 2, usage=rw)
-        self._dispatch("attn_output", [sm_buf, v_cache, bt_buf, attn_out],
-                       {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                        "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                        "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-
-        # Output projection
-        o_proj_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
-        w_key = f"{p}.self_attn.o_proj.weight"
-        s_key = f"{p}.self_attn.o_proj.scales"
-        self._dispatch("matmul_quant", [attn_out, self.weights[w_key],
-                                        self.weights.get(s_key, attn_out), o_proj_out],
-                       {"K": q_dim, "N": hidden, "USE_QUANT": use_quant}, ((hidden + 255) // 256, 1, 1))
-
-        # Residual add
-        residual = WebGPUBuffer.empty(dev, x_buf.nbytes, usage=rw)
-        self._dispatch("add", [x_buf, o_proj_out, residual],
-                       {"N": num_tokens * hidden}, ((num_tokens * hidden + 255) // 256, 1, 1))
-
-        # FFN pre-norm
-        ffn_normed = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
-        self._dispatch("rms_norm", [residual, self.weights[f"{p}.post_attention_layernorm.weight"], ffn_normed],
-                       {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
-
-        # Gate + up projection
         inter = self.intermediate_size
-        gate_buf = WebGPUBuffer.empty(dev, num_tokens * inter * 2, usage=rw)
-        up_buf = WebGPUBuffer.empty(dev, num_tokens * inter * 2, usage=rw)
-        for out_b, proj in [(gate_buf, "gate_proj"), (up_buf, "up_proj")]:
-            w_k = f"{p}.mlp.{proj}.weight"
-            s_k = f"{p}.mlp.{proj}.scales"
-            self._dispatch("matmul_quant", [ffn_normed, self.weights[w_k],
-                                            self.weights.get(s_k, ffn_normed), out_b],
-                           {"K": hidden, "N": inter, "USE_QUANT": use_quant}, ((inter + 255) // 256, 1, 1))
+        ln_rope = math.log(self.rope_theta)
+        use_quant = 0 if self.weights.get(f"{p}.self_attn.q_proj.weight") is not None else 1
 
-        # SwiGLU
-        ffn_act = WebGPUBuffer.empty(dev, num_tokens * inter * 2, usage=rw)
-        self._dispatch("gelu_mul", [gate_buf, up_buf, ffn_act],
-                       {"N": num_tokens * inter}, ((num_tokens * inter + 255) // 256, 1, 1))
+        h_names = ["h0", "h1", "h2"]
+        residual = sc[h_names[(self._hstate + 1) % 3]]
+        out = sc[h_names[(self._hstate + 2) % 3]]
+        add_n = num_tokens * hidden
+        gelu_n = num_tokens * inter
 
-        # Down projection
-        ffn_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
-        w_k = f"{p}.mlp.down_proj.weight"
-        s_k = f"{p}.mlp.down_proj.scales"
-        self._dispatch("matmul_quant", [ffn_act, self.weights[w_k],
-                                        self.weights.get(s_k, ffn_act), ffn_out],
-                       {"K": inter, "N": hidden, "USE_QUANT": use_quant}, ((hidden + 255) // 256, 1, 1))
+        k_cache, v_cache = self.kv_pool[layer_idx]
 
-        # Final residual
-        out = WebGPUBuffer.empty(dev, residual.nbytes, usage=rw)
-        self._dispatch("add", [residual, ffn_out, out],
-                       {"N": num_tokens * hidden}, ((num_tokens * hidden + 255) // 256, 1, 1))
+        with self._batched_dispatch():
+            # Pre-norm
+            self._dispatch("rms_norm", [x_buf, self.weights[f"{p}.input_layernorm.weight"], sc["normed"]],
+                           {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
 
+            # QKV projection
+            for out_buf, proj, dim in [(sc["q_buf"], "q_proj", q_dim),
+                                       (sc["k_buf"], "k_proj", kv_dim),
+                                       (sc["v_buf"], "v_proj", kv_dim)]:
+                w_key = f"{p}.self_attn.{proj}.weight"
+                s_key = f"{p}.self_attn.{proj}.scales"
+                self._dispatch("matmul_quant",
+                               [sc["normed"], self.weights[w_key], self.weights.get(s_key, sc["normed"]), out_buf],
+                               {"K": hidden, "N": dim, "USE_QUANT": use_quant}, ((dim + 255) // 256, 1, 1))
+
+            # Fused per-head norm + RoPE for Q and K
+            for src, dst, n_heads, w_key in [
+                (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
+                (sc["k_buf"], sc["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
+            ]:
+                norm_w = self.weights.get(w_key)
+                if norm_w is not None:
+                    self._dispatch("fused_per_head_norm_rope",
+                                   [src, norm_w, pos_buf, dst],
+                                   {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
+                                    "ROPE_BASE": float(self.rope_theta),
+                                    "LN_ROPE_BASE": ln_rope,
+                                    "HAS_WEIGHT": 1},
+                                   (n_heads, num_tokens, 1))
+                else:
+                    self._dispatch("rope", [src, pos_buf, dst],
+                                   {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
+                                    "LN_ROPE_BASE": ln_rope},
+                                   (num_tokens, n_heads, 1))
+
+            # Gemma4 per-head RMSNorm (no weight) on V before caching
+            self._dispatch("per_head_rms_norm_no_weight", [sc["v_buf"], sc["v_normed"]],
+                           {"HEAD_DIM": self.head_dim, "NUM_HEADS": self.num_kv_heads, "WG_SIZE": 128},
+                           (self.num_kv_heads, num_tokens, 1), shader_subdir="gemma")
+
+            # KV cache store
+            self._dispatch("kv_cache_store", [sc["k_rope"], k_cache, slot_map],
+                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
+                           (num_tokens, self.num_kv_heads, 1))
+            self._dispatch("kv_cache_store", [sc["v_normed"], v_cache, slot_map],
+                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim},
+                           (num_tokens, self.num_kv_heads, 1))
+
+            # Attention scores + output
+            self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
+                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                            "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
+
+            self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
+                           {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+
+            self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
+                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                            "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+
+            # Output projection
+            w_key = f"{p}.self_attn.o_proj.weight"
+            s_key = f"{p}.self_attn.o_proj.scales"
+            self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
+                                            self.weights.get(s_key, sc["attn_out"]), sc["o_proj_out"]],
+                           {"K": q_dim, "N": hidden, "USE_QUANT": use_quant}, ((hidden + 255) // 256, 1, 1))
+
+            # Residual add (vec4 path)
+            self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
+                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+
+            # FFN pre-norm
+            self._dispatch("rms_norm", [residual, self.weights[f"{p}.post_attention_layernorm.weight"], sc["ffn_normed"]],
+                           {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
+
+            # Gate + up projection
+            for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
+                w_k = f"{p}.mlp.{proj}.weight"
+                s_k = f"{p}.mlp.{proj}.scales"
+                self._dispatch("matmul_quant", [sc["ffn_normed"], self.weights[w_k],
+                                                self.weights.get(s_k, sc["ffn_normed"]), out_b],
+                               {"K": hidden, "N": inter, "USE_QUANT": use_quant}, ((inter + 255) // 256, 1, 1))
+
+            # SwiGLU (vec4 path)
+            self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+
+            # Down projection
+            w_k = f"{p}.mlp.down_proj.weight"
+            s_k = f"{p}.mlp.down_proj.scales"
+            self._dispatch("matmul_quant", [sc["ffn_act"], self.weights[w_k],
+                                            self.weights.get(s_k, sc["ffn_act"]), sc["ffn_out"]],
+                           {"K": inter, "N": hidden, "USE_QUANT": use_quant}, ((hidden + 255) // 256, 1, 1))
+
+            # Final residual (vec4 path)
+            self._dispatch("add", [residual, sc["ffn_out"], out],
+                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+
+        self._hstate = (self._hstate + 2) % 3
         return out
 
     def _ple_block(self, layer_idx: int, x_buf: "WebGPUBuffer", ids_buf: "WebGPUBuffer", num_tokens: int) -> "WebGPUBuffer":

@@ -1,8 +1,9 @@
 enable f16;
 
-override HEAD_DIM: u32  = 128u;
-override NUM_HEADS: u32 = 32u;
-override ROPE_BASE: f32 = 10000.0;
+override HEAD_DIM: u32      = 128u;
+override NUM_HEADS: u32     = 32u;
+override ROPE_BASE: f32     = 10000.0;
+override LN_ROPE_BASE: f32  = 9.210340372;  // = log(ROPE_BASE); host sets this
 
 @group(0) @binding(0) var<storage, read>       input     : array<f16>;
 @group(0) @binding(1) var<storage, read>       positions : array<u32>;
@@ -26,7 +27,7 @@ fn main(
     var i = tid;
     loop {
         if (i >= half) { break; }
-        let theta_i = pow(ROPE_BASE, -f32(i * 2u) / f32(HEAD_DIM));
+        let theta_i = exp(-f32(i * 2u) / f32(HEAD_DIM) * LN_ROPE_BASE);
         let angle   = pos * theta_i;
         let cos_v   = cos(angle);
         let sin_v   = sin(angle);

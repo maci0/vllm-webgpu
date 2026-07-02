@@ -4,7 +4,8 @@ override HEAD_DIM: u32  = 256u;
 override NUM_HEADS: u32 = 8u;
 override WG_SIZE: u32   = 128u;
 
-var<workgroup> shared_sq: array<f32, 128>;
+var<workgroup> shared_sq:    array<f32, 128>;
+var<workgroup> shared_input: array<f32, 256>;  // HEAD_DIM elements as f32; 1KB
 
 @group(0) @binding(0) var<storage, read>       input  : array<f16>;
 @group(0) @binding(1) var<storage, read_write> output : array<f16>;
@@ -25,11 +26,12 @@ fn main(
     loop {
         if (col >= HEAD_DIM) { break; }
         let v = f32(input[base + col]);
+        shared_input[col] = v;
         sq_sum += v * v;
         col += WG_SIZE;
     }
     shared_sq[tid] = sq_sum;
-    workgroupBarrier();
+    workgroupBarrier();  // covers both shared_sq and shared_input writes
 
     var stride = WG_SIZE / 2u;
     loop {
@@ -43,7 +45,7 @@ fn main(
     col = tid;
     loop {
         if (col >= HEAD_DIM) { break; }
-        output[base + col] = f16(f32(input[base + col]) * rms_inv);
+        output[base + col] = f16(shared_input[col] * rms_inv);
         col += WG_SIZE;
     }
 }

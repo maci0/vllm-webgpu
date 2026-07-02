@@ -10,7 +10,8 @@ override CAP: f32 = 30.0;
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= N) { return; }
-    let v = f32(input[i]) / CAP;
+    let inv_cap: f32 = 1.0 / CAP;
+    let v = f32(input[i]) * inv_cap;
     // Numerically stable tanh: branch on |v| to avoid exp overflow.
     // For |v| >= 20: tanh(v) is within 2e-9 of ±1.0, so return ±1.0 exactly.
     // For |v| < 20:  exp(2v) is in (exp(-40), exp(40)) = (4.1e-18, 2.4e17),

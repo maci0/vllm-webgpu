@@ -16,9 +16,11 @@ override MAX_SEQ_LEN: u32  = 4096u;
 @group(0) @binding(2) var<storage, read>       block_table : array<u32>;
 @group(0) @binding(3) var<storage, read_write> scores_out  : array<f16>;
 
-var<workgroup> sh_dot: array<f32, 16>;
+// 128 threads: one per HEAD_DIM element for HEAD_DIM=128 (optimal step count = 1+7=8 vs old 8+4=12).
+// For HEAD_DIM < 128, threads with d >= HEAD_DIM store 0.0 and don't corrupt the reduction.
+var<workgroup> sh_dot: array<f32, 128>;
 
-@compute @workgroup_size(16, 1, 1)
+@compute @workgroup_size(128, 1, 1)
 fn main(
     @builtin(global_invocation_id) gid  : vec3<u32>,
     @builtin(workgroup_id)         wgid : vec3<u32>,
@@ -37,21 +39,23 @@ fn main(
     let q_base = q_head * HEAD_DIM;
     let k_base = ((block_idx * BLOCK_SIZE + block_off) * NUM_KV_HEADS + kv_head) * HEAD_DIM;
 
-    // Each thread accumulates a partial dot product over HEAD_DIM / 16 elements
+    // Each thread accumulates a partial dot product. For HEAD_DIM=128, each thread handles 1 element.
+    // For HEAD_DIM < 128, threads with tid >= HEAD_DIM produce dot=0.0 (loop never executes).
     var dot: f32 = 0.0;
     var d = tid;
     loop {
         if (d >= HEAD_DIM) { break; }
         dot += f32(Q[q_base + d]) * f32(K_cache[k_base + d]);
-        d += 16u;
+        d += 128u;
     }
 
     // Write partial sum to workgroup shared memory
     sh_dot[tid] = dot;
     workgroupBarrier();
 
-    // Halving reduction: sum all 16 partial sums into sh_dot[0]
-    var stride = 8u;
+    // 7-step halving reduction for 128 threads (log2(128)=7 vs old log2(16)=4).
+    // Total steps: 1 compute + 7 reduce = 8 vs old 8 compute + 4 reduce = 12.
+    var stride = 64u;
     loop {
         if (stride == 0u) { break; }
         if (tid < stride) {

@@ -7,10 +7,15 @@ enable f16;
 // Weight layout for f16 (USE_QUANT=0):
 //   weights: [N, K] packed as f16 in u32 array (two f16 values per u32)
 
-override K: u32        = 4096u;
-override N: u32        = 4096u;
-override BLOCK_K: u32  = 32u;   // Q4_K_M block size
-override USE_QUANT: u32 = 1u;   // 1=Q4_K_M, 0=f16
+override K: u32         = 4096u;
+override N: u32         = 4096u;
+override BLOCK_K: u32   = 32u;   // Q4_K_M block size
+override USE_QUANT: u32 = 1u;    // 1=Q4_K_M, 0=f16
+
+// Shared memory for the input vector x: loaded cooperatively once per workgroup.
+// All 256 threads read different rows of the weight matrix but the same x[],
+// so caching x in shared memory reduces global reads from 256*K to K.
+var<workgroup> sh_x: array<f32, 4096>;  // max K=4096 f32 values
 
 @group(0) @binding(0) var<storage, read>       x       : array<f16>;  // [K]
 @group(0) @binding(1) var<storage, read>       weights : array<u32>;  // raw bytes, reinterpreted
@@ -20,8 +25,21 @@ override USE_QUANT: u32 = 1u;   // 1=Q4_K_M, 0=f16
 @compute @workgroup_size(256, 1, 1)
 fn main(
     @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_id)  lid: vec3<u32>,
 ) {
     let row = gid.x;
+    let tid = lid.x;
+
+    // Cooperative load: all 256 threads collectively fill sh_x[] from global x[].
+    // Each thread loads K/256 elements with stride 256.
+    var ki = tid;
+    loop {
+        if (ki >= K) { break; }
+        sh_x[ki] = f32(x[ki]);
+        ki += 256u;
+    }
+    workgroupBarrier();
+
     if (row >= N) { return; }
 
     var acc: f32 = 0.0;
@@ -42,8 +60,8 @@ fn main(
                 let lo       = f32(i32(packed & 0x0Fu) - 8);
                 let hi       = f32(i32(packed >> 4u) - 8);
                 let k_base   = blk * BLOCK_K + b * 2u;
-                acc += lo * scale * f32(x[k_base]);
-                acc += hi * scale * f32(x[k_base + 1u]);
+                acc += lo * scale * sh_x[k_base];
+                acc += hi * scale * sh_x[k_base + 1u];
             }
         }
     } else {
@@ -51,8 +69,8 @@ fn main(
         for (var k = 0u; k < K; k += 2u) {
             let w_u32 = weights[(row * K + k) / 2u];
             let w_vec = unpack2x16float(w_u32);  // returns vec2<f32>
-            acc += w_vec.x * f32(x[k]);
-            if (k + 1u < K) { acc += w_vec.y * f32(x[k + 1u]); }
+            acc += w_vec.x * sh_x[k];
+            if (k + 1u < K) { acc += w_vec.y * sh_x[k + 1u]; }
         }
     }
 

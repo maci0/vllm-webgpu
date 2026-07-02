@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 from abc import abstractmethod
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -22,6 +23,23 @@ class BaseWebGPUModel:
         self.pipeline_cache = pipeline_cache
         self.weights: dict[str, "WebGPUBuffer"] = {}
         self.kv_pool: list[tuple["WebGPUBuffer", "WebGPUBuffer"]] = []
+        self._active_encoder = None  # set when inside a _batched_dispatch() context
+
+    @contextmanager
+    def _batched_dispatch(self):
+        """Record all _dispatch() calls inside this block into a single CommandEncoder.
+
+        Reduces queue.submit() calls from N (one per dispatch) to 1 per block exit.
+        Semantically identical to separate submits since the queue serializes in order.
+        """
+        dev = self.wgpu_device.wgpu_device
+        encoder = dev.create_command_encoder()
+        self._active_encoder = encoder
+        try:
+            yield
+        finally:
+            self._active_encoder = None
+            dev.queue.submit([encoder.finish()])
 
     def load_weights(self, path: str) -> None:
         from vllm_webgpu.quant.gguf_loader import (
@@ -60,13 +78,21 @@ class BaseWebGPUModel:
         ]
         bg = dev.create_bind_group(layout=bg_layout, entries=entries)
 
-        encoder = dev.create_command_encoder()
+        if self._active_encoder is not None:
+            # Batch mode: record into the shared encoder; submit happens at context manager exit.
+            encoder = self._active_encoder
+        else:
+            # Standalone mode: create a fresh encoder and submit immediately.
+            encoder = dev.create_command_encoder()
+
         cp = encoder.begin_compute_pass()
         cp.set_pipeline(pipeline)
         cp.set_bind_group(0, bg)
         cp.dispatch_workgroups(*workgroups)
         cp.end()
-        dev.queue.submit([encoder.finish()])
+
+        if self._active_encoder is None:
+            dev.queue.submit([encoder.finish()])
 
     @abstractmethod
     def forward(

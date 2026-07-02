@@ -17,7 +17,21 @@ fn main(
     var local_max: f32 = -1e30;
     var local_idx: u32 = 0u;
 
+    // 4x unrolled scan: reduces loop iterations from VOCAB_SIZE/WG_SIZE to VOCAB_SIZE/(4*WG_SIZE).
     var i = tid;
+    loop {
+        if (i + 3u * WG_SIZE >= VOCAB_SIZE) { break; }
+        let v0 = f32(logits[i]);
+        let v1 = f32(logits[i + WG_SIZE]);
+        let v2 = f32(logits[i + 2u * WG_SIZE]);
+        let v3 = f32(logits[i + 3u * WG_SIZE]);
+        if (v0 > local_max) { local_max = v0; local_idx = i; }
+        if (v1 > local_max) { local_max = v1; local_idx = i + WG_SIZE; }
+        if (v2 > local_max) { local_max = v2; local_idx = i + 2u * WG_SIZE; }
+        if (v3 > local_max) { local_max = v3; local_idx = i + 3u * WG_SIZE; }
+        i += 4u * WG_SIZE;
+    }
+    // Tail: handle remainder when VOCAB_SIZE is not divisible by 4*WG_SIZE.
     loop {
         if (i >= VOCAB_SIZE) { break; }
         let v = f32(logits[i]);
