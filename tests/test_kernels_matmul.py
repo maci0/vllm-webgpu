@@ -102,6 +102,60 @@ def test_matmul_quant_f16(wgpu_device):
                                rtol=1e-2, atol=1e-2)
 
 
+def test_matmul_additivity_invariant(wgpu_device):
+    """Property proof: matmul_quant is additive in its input vector.
+
+    Invariant: mat @ (x + y) == (mat @ x) + (mat @ y) for any vectors x, y.
+    Together with the scalar case (linearity), this proves mat@ is a LINEAR MAP.
+    A linear map is precisely what matrix-vector multiplication must be.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    K, N = 32, 16
+    x = np.random.randn(K).astype(np.float16)
+    y = np.random.randn(K).astype(np.float16)
+    xy = (x.astype(np.float32) + y.astype(np.float32)).astype(np.float16)
+    W = np.random.randn(N, K).astype(np.float16)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    w_packed = np.ascontiguousarray(W).view(np.uint32)
+    w_buf = WebGPUBuffer.from_numpy(dev, w_packed)
+    scales_buf = WebGPUBuffer.from_numpy(dev, np.ones(N, dtype=np.float16))
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("matmul_quant", (("K", K), ("N", N), ("USE_QUANT", 0)))
+    pipeline = cache.get_or_create(key)
+
+    results = {}
+    for name, inp in [("x", x), ("y", y), ("x+y", xy)]:
+        xb = WebGPUBuffer.from_numpy(dev, inp)
+        ob = WebGPUBuffer.empty(dev, N * 2, usage=rw)
+        bg = dev.create_bind_group(
+            layout=pipeline.get_bind_group_layout(0),
+            entries=[{"binding": 0, "resource": {"buffer": xb.buf}},
+                     {"binding": 1, "resource": {"buffer": w_buf.buf}},
+                     {"binding": 2, "resource": {"buffer": scales_buf.buf}},
+                     {"binding": 3, "resource": {"buffer": ob.buf}}],
+        )
+        enc = dev.create_command_encoder()
+        cp = enc.begin_compute_pass()
+        cp.set_pipeline(pipeline)
+        cp.set_bind_group(0, bg)
+        cp.dispatch_workgroups((N + 255) // 256, 1, 1)
+        cp.end()
+        dev.queue.submit([enc.finish()])
+        results[name] = ob.to_numpy().view(np.float16).astype(np.float32)
+
+    expected_sum = (results["x"].astype(np.float64) + results["y"].astype(np.float64)).astype(np.float32)
+
+    # Invariant: mat @ (x+y) == (mat@x) + (mat@y)
+    np.testing.assert_allclose(results["x+y"], expected_sum, rtol=5e-2, atol=0.1,
+                               err_msg="matmul additivity violated: mat@(x+y) != mat@x + mat@y")
+
+
 def test_matmul_linearity_invariant(wgpu_device):
     """Property proof: matmul_quant is linear in its input vector.
 

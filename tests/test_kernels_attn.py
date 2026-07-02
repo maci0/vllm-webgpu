@@ -320,6 +320,126 @@ def test_softmax_monotonicity_invariant(wgpu_device):
     assert result[max_idx] > 1.0 / n, "Softmax monotonicity violated: max element not largest"
 
 
+def test_attention_equal_keys_uniform_weights(wgpu_device):
+    """Property proof: when all K vectors are identical, attention output is mean(V).
+
+    Mathematical invariant:
+    If K_0 = K_1 = ... = K_{n-1} = K, then:
+      scores_i = Q·K / sqrt(d) = same for all i
+      softmax(scores) = [1/n, 1/n, ..., 1/n]
+      output = (1/n) * sum(V_i) = mean(V)
+
+    This is an exact, verifiable result for any Q, K, and set of V vectors.
+    Tested with n=4 positions: output must be the arithmetic mean of the 4 V vectors.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    num_q_heads, num_kv_heads, head_dim = 2, 1, 16  # 2 Q-heads share 1 KV-head
+    block_size, num_blocks, ctx_len = 16, 4, 4  # 4 positions with identical K
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    # Q: arbitrary; K: all identical; V: 4 distinct vectors
+    q = np.random.randn(num_q_heads, head_dim).astype(np.float16)
+    k_repeated = np.random.randn(head_dim).astype(np.float16)   # same K for all positions
+    v_vectors = np.random.randn(ctx_len, head_dim).astype(np.float16)  # distinct V
+
+    # Build KV caches with the same K but different V at each position
+    k_cache = WebGPUBuffer.empty(dev, num_blocks * block_size * num_kv_heads * head_dim * 2, usage=rw)
+    v_cache = WebGPUBuffer.empty(dev, num_blocks * block_size * num_kv_heads * head_dim * 2, usage=rw)
+    block_table = WebGPUBuffer.from_numpy(dev, np.zeros(num_blocks, dtype=np.uint32))
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    kv_pip = cache.get_or_create(PipelineKey("kv_cache_store",
+                 (("BLOCK_SIZE", block_size), ("HEAD_DIM", head_dim), ("NUM_KV_HEADS", num_kv_heads))))
+
+    # Store K (identical) and distinct V at each position
+    for pos in range(ctx_len):
+        slot_map = WebGPUBuffer.from_numpy(dev, np.array([pos], dtype=np.uint32))
+        k_tok = k_repeated.reshape(1, head_dim)   # shape [1, head_dim]
+        v_tok = v_vectors[pos].reshape(1, head_dim)
+        for kv_in, kv_out in [(WebGPUBuffer.from_numpy(dev, k_tok), k_cache),
+                              (WebGPUBuffer.from_numpy(dev, v_tok), v_cache)]:
+            bg = dev.create_bind_group(layout=kv_pip.get_bind_group_layout(0),
+                 entries=[{"binding": 0, "resource": {"buffer": kv_in.buf}},
+                          {"binding": 1, "resource": {"buffer": kv_out.buf}},
+                          {"binding": 2, "resource": {"buffer": slot_map.buf}}])
+            enc = dev.create_command_encoder()
+            cp = enc.begin_compute_pass()
+            cp.set_pipeline(kv_pip)
+            cp.set_bind_group(0, bg)
+            cp.dispatch_workgroups(1, num_kv_heads, 1)
+            cp.end()
+            dev.queue.submit([enc.finish()])
+
+    # attn_score
+    q_buf = WebGPUBuffer.from_numpy(dev, q)
+    scores_buf = WebGPUBuffer.empty(dev, num_q_heads * ctx_len * 2, usage=rw)
+    sc_pip = cache.get_or_create(PipelineKey("attn_score",
+                 (("BLOCK_SIZE", block_size), ("HEAD_DIM", head_dim), ("MAX_SEQ_LEN", ctx_len),
+                  ("NUM_Q_HEADS", num_q_heads), ("NUM_KV_HEADS", num_kv_heads))))
+    bg = dev.create_bind_group(layout=sc_pip.get_bind_group_layout(0),
+         entries=[{"binding": 0, "resource": {"buffer": q_buf.buf}},
+                  {"binding": 1, "resource": {"buffer": k_cache.buf}},
+                  {"binding": 2, "resource": {"buffer": block_table.buf}},
+                  {"binding": 3, "resource": {"buffer": scores_buf.buf}}])
+    enc = dev.create_command_encoder()
+    cp = enc.begin_compute_pass()
+    cp.set_pipeline(sc_pip)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(num_q_heads, ctx_len, 1)
+    cp.end()
+    dev.queue.submit([enc.finish()])
+
+    # softmax
+    sm_buf = WebGPUBuffer.empty(dev, scores_buf.nbytes, usage=rw)
+    sm_pip = cache.get_or_create(PipelineKey("softmax", (("SEQ_LEN", ctx_len),)))
+    bg = dev.create_bind_group(layout=sm_pip.get_bind_group_layout(0),
+         entries=[{"binding": 0, "resource": {"buffer": scores_buf.buf}},
+                  {"binding": 1, "resource": {"buffer": sm_buf.buf}}])
+    enc = dev.create_command_encoder()
+    cp = enc.begin_compute_pass()
+    cp.set_pipeline(sm_pip)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(num_q_heads, 1, 1)
+    cp.end()
+    dev.queue.submit([enc.finish()])
+
+    # attn_output
+    attn_out = WebGPUBuffer.empty(dev, num_q_heads * head_dim * 2, usage=rw)
+    ao_pip = cache.get_or_create(PipelineKey("attn_output",
+                 (("BLOCK_SIZE", block_size), ("HEAD_DIM", head_dim), ("CTX_LEN", ctx_len),
+                  ("NUM_Q_HEADS", num_q_heads), ("NUM_KV_HEADS", num_kv_heads))))
+    bg = dev.create_bind_group(layout=ao_pip.get_bind_group_layout(0),
+         entries=[{"binding": 0, "resource": {"buffer": sm_buf.buf}},
+                  {"binding": 1, "resource": {"buffer": v_cache.buf}},
+                  {"binding": 2, "resource": {"buffer": block_table.buf}},
+                  {"binding": 3, "resource": {"buffer": attn_out.buf}}])
+    enc = dev.create_command_encoder()
+    cp = enc.begin_compute_pass()
+    cp.set_pipeline(ao_pip)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(num_q_heads, 1, 1)
+    cp.end()
+    dev.queue.submit([enc.finish()])
+
+    result = attn_out.to_numpy().view(np.float16).reshape(num_q_heads, head_dim)
+
+    # Invariant: identical K vectors → uniform attention weights → output = mean(V)
+    # Both Q-heads use the same KV cache (single KV head, GQA ratio=2)
+    v_mean = v_vectors.mean(axis=0).astype(np.float16)  # mean of 4 V vectors
+    for q_head in range(num_q_heads):
+        np.testing.assert_allclose(
+            result[q_head].astype(np.float32), v_mean.astype(np.float32),
+            rtol=0.1, atol=0.5,
+            err_msg=f"Attention mean(V) invariant violated for q_head={q_head}: "
+                    f"identical K must give uniform weights and output=mean(V)"
+        )
+
+
 def test_kv_cache_store_and_attn(wgpu_device):
     """Smoke test: store K/V then read back via attn_score kernel."""
     # This is an integration-level check — just verifies shapes and no crashes
