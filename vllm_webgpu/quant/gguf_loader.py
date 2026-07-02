@@ -92,8 +92,50 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
     return weights
 
 
+_GGUF_TO_HF_LLAMA = {
+    "token_embd.weight": "model.embed_tokens.weight",
+    "output.weight": "lm_head.weight",
+    "output_norm.weight": "model.norm.weight",
+}
+
+_GGUF_BLK_MAP = {
+    "attn_q.weight":             "self_attn.q_proj.weight",
+    "attn_k.weight":             "self_attn.k_proj.weight",
+    "attn_v.weight":             "self_attn.v_proj.weight",
+    "attn_output.weight":        "self_attn.o_proj.weight",
+    "attn_norm.weight":          "input_layernorm.weight",
+    "ffn_gate.weight":           "mlp.gate_proj.weight",
+    "ffn_up.weight":             "mlp.up_proj.weight",
+    "ffn_down.weight":           "mlp.down_proj.weight",
+    "ffn_norm.weight":           "post_attention_layernorm.weight",
+    "attn_q_norm.weight":        "self_attn.q_norm.weight",
+    "attn_k_norm.weight":        "self_attn.k_norm.weight",
+    # Gemma4-specific
+    "post_attention_norm.weight": "post_attention_layernorm.weight",
+    "post_ffw_norm.weight":      "post_feedforward_layernorm.weight",
+    "layer_output_scale.weight": "self_attn.layer_scale",
+}
+
+
+def _gguf_to_hf_name(gguf_name: str) -> str | None:
+    """Map a GGUF tensor name to its HuggingFace equivalent. Returns None to skip."""
+    if gguf_name in _GGUF_TO_HF_LLAMA:
+        return _GGUF_TO_HF_LLAMA[gguf_name]
+    # blk.{i}.{suffix} pattern
+    if gguf_name.startswith("blk."):
+        parts = gguf_name.split(".", 2)  # ["blk", "i", "suffix"]
+        if len(parts) == 3:
+            layer_idx = parts[1]
+            suffix = parts[2]
+            hf_suffix = _GGUF_BLK_MAP.get(suffix)
+            if hf_suffix:
+                return f"model.layers.{layer_idx}.{hf_suffix}"
+    # Unknown tensor (e.g. rope_freqs, vision layers): skip
+    return None
+
+
 def load_gguf_weights(path: str, wgpu_device) -> dict:
-    """Load GGUF Q4_K_M weights. Raw quantized blocks uploaded as u8."""
+    """Load GGUF weights with HF-style key remapping. Raw quantized blocks uploaded as u8."""
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     import wgpu as wgpu_lib
 
@@ -104,18 +146,83 @@ def load_gguf_weights(path: str, wgpu_device) -> dict:
 
     reader = gguf.GGUFReader(path)
     weights: dict = {}
+    usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.COPY_SRC
+    skipped = 0
 
     for tensor in reader.tensors:
-        name = tensor.name
-        data = tensor.data   # numpy array of raw bytes
-        # Upload raw quantized blocks as u8; matmul_quant.wgsl handles dequant
+        hf_name = _gguf_to_hf_name(tensor.name)
+        if hf_name is None:
+            skipped += 1
+            continue
+        data = tensor.data
         arr = np.frombuffer(data, dtype=np.uint8)
-        # Include COPY_SRC so to_numpy() works on weight buffers (e.g. for debugging).
-        weights[name] = WebGPUBuffer.from_numpy(
-            wgpu_device,
-            arr,
-            usage=wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.COPY_SRC,
-        )
+        weights[hf_name] = WebGPUBuffer.from_numpy(wgpu_device, arr, usage=usage)
 
-    logger.info("Loaded %d GGUF tensors from %s", len(weights), path)
+    logger.info("Loaded %d GGUF tensors (%d skipped) from %s", len(weights), skipped, path)
     return weights
+
+
+def gguf_read_config(path: str) -> dict:
+    """Read model configuration from GGUF metadata. Returns a dict compatible with run_inference."""
+    try:
+        import gguf
+    except ImportError as e:
+        raise ImportError("Install the 'gguf' package.") from e
+
+    reader = gguf.GGUFReader(path)
+
+    def _get(key):
+        if key not in reader.fields:
+            return None
+        v = reader.fields[key].parts[-1].tolist()
+        if isinstance(v, list) and len(v) == 1:
+            return v[0]
+        return v
+
+    def _get_str(key):
+        v = _get(key)
+        if isinstance(v, list):
+            return bytes(v).decode("utf-8", errors="replace")
+        return v
+
+    # Detect architecture prefix
+    arch_bytes = _get("general.architecture")
+    arch_prefix = bytes(arch_bytes).decode() if isinstance(arch_bytes, list) else str(arch_bytes)
+    p = arch_prefix  # e.g. "llama", "gemma4", "qwen3"
+
+    cfg = {
+        "architectures":     [_get_str("general.name") or "LlamaForCausalLM"],
+        "hidden_size":       _get(f"{p}.embedding_length") or 4096,
+        "num_hidden_layers": _get(f"{p}.block_count") or 32,
+        "num_attention_heads": _get(f"{p}.attention.head_count") or 32,
+        "num_key_value_heads": _get(f"{p}.attention.head_count_kv") or 8,
+        "intermediate_size": _get(f"{p}.feed_forward_length") or 14336,
+        "vocab_size":        151936,
+        "rope_theta":        _get(f"{p}.rope.freq_base") or 10000.0,
+        "head_dim":          _get(f"{p}.attention.key_length"),
+        "max_position_embeddings": _get(f"{p}.context_length") or 8192,
+        "tie_word_embeddings": False,
+        # softcap for Gemma
+        "final_logit_softcapping": _get(f"{p}.final_logit_softcapping"),
+        "_gguf_arch_prefix": arch_prefix,
+    }
+
+    # If head_dim not explicit, derive from hidden / heads
+    if cfg["head_dim"] is None:
+        cfg["head_dim"] = cfg["hidden_size"] // cfg["num_attention_heads"]
+
+    # Map GGUF arch name to HF architecture class
+    _arch_map = {
+        "llama": "LlamaForCausalLM",
+        "qwen3": "Qwen3ForCausalLM",
+        "qwen2": "Qwen2ForCausalLM",
+        "gemma3": "Gemma3ForCausalLM",
+        "gemma4": "Gemma3ForCausalLM",  # map to our Gemma4 model
+    }
+    cfg["architectures"] = [_arch_map.get(arch_prefix, "LlamaForCausalLM")]
+
+    logger.info("GGUF config: arch=%s hid=%d layers=%d heads=%d/%d head_dim=%d inter=%d",
+                arch_prefix, cfg["hidden_size"], cfg["num_hidden_layers"],
+                cfg["num_attention_heads"], cfg["num_key_value_heads"],
+                cfg["head_dim"], cfg["intermediate_size"])
+    return cfg

@@ -17,6 +17,89 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 
 
+def load_tokenizer_from_gguf(gguf_path: str):
+    """Extract tokenizer from GGUF metadata and create a tokenizers.Tokenizer."""
+    import gguf as gguf_lib
+    from tokenizers import Tokenizer
+    from tokenizers.models import BPE
+    from tokenizers.pre_tokenizers import ByteLevel
+    import json, tempfile, os
+
+    reader = gguf_lib.GGUFReader(gguf_path)
+
+    def get_str_list(key):
+        if key not in reader.fields:
+            return []
+        parts = reader.fields[key].parts
+        # Each part is a bytes array; decode to string
+        result = []
+        for p in parts:
+            try:
+                result.append(bytes(p.tolist()).decode("utf-8"))
+            except Exception:
+                pass
+        return result
+
+    def get_int(key, default=None):
+        if key not in reader.fields:
+            return default
+        v = reader.fields[key].parts[-1].tolist()
+        return v[0] if isinstance(v, list) else v
+
+    tok_model = get_str_list("tokenizer.ggml.model")
+    vocab_list = get_str_list("tokenizer.ggml.tokens")
+    merges_list = get_str_list("tokenizer.ggml.merges")
+    bos_id = get_int("tokenizer.ggml.bos_token_id", 1)
+    eos_id = get_int("tokenizer.ggml.eos_token_id", 2)
+    chat_tmpl = None
+    if "tokenizer.chat_template" in reader.fields:
+        try:
+            parts = reader.fields["tokenizer.chat_template"].parts
+            chat_tmpl = "".join(bytes(p.tolist()).decode("utf-8") for p in parts)
+        except Exception:
+            pass
+
+    if not vocab_list:
+        return None, eos_id, bos_id, chat_tmpl
+
+    # Build vocab dict from list
+    vocab = {tok: idx for idx, tok in enumerate(vocab_list)}
+    merges_pairs = [tuple(m.split(" ", 1)) for m in merges_list if " " in m]
+
+    # Write to temp dir and load
+    with tempfile.TemporaryDirectory() as tmp:
+        tok_data = {
+            "version": "1.0",
+            "truncation": None,
+            "padding": None,
+            "added_tokens": [],
+            "normalizer": None,
+            "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": False, "trim_offsets": True, "use_regex": True},
+            "post_processor": None,
+            "decoder": {"type": "ByteLevel", "add_prefix_space": True, "trim_offsets": True, "use_regex": True},
+            "model": {
+                "type": "BPE",
+                "dropout": None,
+                "unk_token": None,
+                "continuing_subword_prefix": None,
+                "end_of_word_suffix": None,
+                "fuse_unk": False,
+                "byte_fallback": False,
+                "vocab": vocab,
+                "merges": merges_pairs,
+            },
+        }
+        tok_path = os.path.join(tmp, "tokenizer.json")
+        with open(tok_path, "w") as f:
+            json.dump(tok_data, f)
+        try:
+            tok = Tokenizer.from_file(tok_path)
+            return tok, eos_id, bos_id, chat_tmpl
+        except Exception as e:
+            print(f"  GGUF tokenizer build failed: {e}")
+            return None, eos_id, bos_id, chat_tmpl
+
+
 def load_tokenizer(model_dir: str):
     """Load HuggingFace tokenizer from a model directory."""
     from tokenizers import Tokenizer
@@ -114,19 +197,52 @@ class FakeAttnMetadata:
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0):
     print(f"\nLoading model from: {model_dir}")
 
-    # Read config
-    with open(Path(model_dir) / "config.json") as f:
-        config = json.load(f)
+    # Read config — either from JSON or GGUF metadata
+    gguf_path = None
+    model_path_obj = Path(model_dir)
+    if model_path_obj.suffix == ".gguf":
+        gguf_path = str(model_path_obj)
+        model_dir_for_tok = str(model_path_obj.parent)
+    else:
+        # Check if model_dir itself is a gguf file
+        model_dir_for_tok = model_dir
+
+    if gguf_path:
+        from vllm_webgpu.quant.gguf_loader import gguf_read_config
+        config = gguf_read_config(gguf_path)
+    else:
+        cfg_path = Path(model_dir) / "config.json"
+        if not cfg_path.exists():
+            # Maybe the dir itself has a single GGUF
+            gguf_files = list(Path(model_dir).glob("*.gguf"))
+            if gguf_files:
+                gguf_path = str(gguf_files[0])
+                from vllm_webgpu.quant.gguf_loader import gguf_read_config
+                config = gguf_read_config(gguf_path)
+            else:
+                raise FileNotFoundError(f"No config.json or .gguf in {model_dir}")
+        else:
+            with open(cfg_path) as f:
+                config = json.load(f)
 
     arch = config.get("architectures", ["LlamaForCausalLM"])[0]
     print(f"Architecture: {arch}")
     print(f"  hidden_size={config['hidden_size']}, layers={config['num_hidden_layers']}, "
           f"heads={config['num_attention_heads']}, kv_heads={config['num_key_value_heads']}")
+    if gguf_path:
+        print(f"  GGUF: {Path(gguf_path).name}")
 
-    # Tokenizer
+    # Tokenizer — for GGUF, try embedded tokenizer first, then companion dir
     print("\nLoading tokenizer...")
-    tok, eos_id, bos_id, chat_template = load_tokenizer(model_dir)
-    full_prompt = build_prompt(prompt, chat_template, model_dir)
+    tok, eos_id, bos_id, chat_template = None, None, None, None
+    if gguf_path:
+        tok, eos_id, bos_id, chat_template = load_tokenizer_from_gguf(gguf_path)
+        if tok is None:
+            print("  GGUF tokenizer failed, trying companion dir...")
+    if tok is None:
+        tok_dir = model_dir_for_tok if gguf_path else model_dir
+        tok, eos_id, bos_id, chat_template = load_tokenizer(tok_dir)
+    full_prompt = build_prompt(prompt, chat_template, model_dir_for_tok if gguf_path else model_dir)
     print(f"Prompt (after template): {repr(full_prompt[:120])}")
 
     enc = tok.encode(full_prompt)
@@ -182,7 +298,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Load weights
     print("\nLoading weights (this may take a while)...")
     t0 = time.perf_counter()
-    model.load_weights(model_dir)
+    model.load_weights(gguf_path if gguf_path else model_dir)
     elapsed = time.perf_counter() - t0
     print(f"  Loaded {len(model.weights)} tensors in {elapsed:.1f}s")
 
