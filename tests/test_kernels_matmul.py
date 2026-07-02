@@ -157,6 +157,97 @@ def test_matmul_linearity_invariant(wgpu_device):
                                err_msg="matmul linearity invariant violated: mat@(α*x) != α*(mat@x)")
 
 
+def test_add_commutativity_invariant(wgpu_device):
+    """Property proof: element-wise addition is commutative: add(a,b) == add(b,a).
+
+    Commutativity of addition is an axiom of arithmetic. Any implementation
+    that violates add(a,b) == add(b,a) is not computing addition.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    n = 128
+    a = np.random.randn(n).astype(np.float16)
+    b = np.random.randn(n).astype(np.float16)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    pipeline = cache.get_or_create(PipelineKey("add", (("N", n),)))
+
+    results = []
+    for x, y in [(a, b), (b, a)]:  # compute both add(a,b) and add(b,a)
+        xb = WebGPUBuffer.from_numpy(dev, x)
+        yb = WebGPUBuffer.from_numpy(dev, y)
+        ob = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
+        bg = dev.create_bind_group(
+            layout=pipeline.get_bind_group_layout(0),
+            entries=[{"binding": 0, "resource": {"buffer": xb.buf}},
+                     {"binding": 1, "resource": {"buffer": yb.buf}},
+                     {"binding": 2, "resource": {"buffer": ob.buf}}],
+        )
+        enc = dev.create_command_encoder()
+        cp = enc.begin_compute_pass()
+        cp.set_pipeline(pipeline)
+        cp.set_bind_group(0, bg)
+        cp.dispatch_workgroups((n + 255) // 256, 1, 1)
+        cp.end()
+        dev.queue.submit([enc.finish()])
+        results.append(ob.to_numpy().view(np.float16).astype(np.float32))
+
+    # Invariant: add(a,b) == add(b,a)
+    np.testing.assert_array_equal(results[0], results[1],
+                                  err_msg="add commutativity violated: add(a,b) != add(b,a)")
+
+
+def test_embedding_exactness_invariant(wgpu_device):
+    """Property proof: embedding lookup returns EXACT copies (no approximation).
+
+    Invariant: output[i] == table[token_ids[i]] exactly, not approximately.
+    Embedding is a pure table lookup — any rounding or approximation would
+    violate this invariant. Tested with all-distinct table values.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    vocab, hidden = 32, 16
+    num_tokens = 8
+    # Use distinct values for each row so any mixing is detectable
+    table = (np.arange(vocab * hidden, dtype=np.float32) / (vocab * hidden)).reshape(vocab, hidden).astype(np.float16)
+    token_ids = np.array([0, 7, 3, 15, 31, 1, 16, 8], dtype=np.uint32)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    table_buf = WebGPUBuffer.from_numpy(dev, table)
+    ids_buf = WebGPUBuffer.from_numpy(dev, token_ids)
+    out_buf = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    pipeline = cache.get_or_create(PipelineKey("embedding_lookup", (("HIDDEN_DIM", hidden),)))
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[{"binding": 0, "resource": {"buffer": table_buf.buf}},
+                 {"binding": 1, "resource": {"buffer": ids_buf.buf}},
+                 {"binding": 2, "resource": {"buffer": out_buf.buf}}],
+    )
+    enc = dev.create_command_encoder()
+    cp = enc.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(num_tokens, 1, 1)
+    cp.end()
+    dev.queue.submit([enc.finish()])
+
+    result = out_buf.to_numpy().view(np.float16).reshape(num_tokens, hidden)
+    expected = table[token_ids]  # exact numpy reference (pure indexing)
+
+    # Invariant: EXACT equality, not approximate — embedding is a pure copy
+    np.testing.assert_array_equal(result, expected,
+                                  err_msg="embedding_lookup exactness violated: output != table[token_ids]")
+
+
 def test_embedding_lookup(wgpu_device):
     import wgpu
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
