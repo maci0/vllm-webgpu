@@ -273,7 +273,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             tt = _qt.get(key, 0)
             if tt == 12:  # Q4_K — GPU block decoder
                 return 2
-            if self.weights.get(f"{key[:-7]}.scales") is not None:  # trim ".weight"
+            # key ends with ".weight" (7 chars); trim to get the base, then append ".scales"
+            base = key[:-7]  # e.g. "model.layers.0.self_attn.q_proj"
+            if self.weights.get(base + ".scales") is not None:
                 return 1  # simple custom Q4 with scales
             return 0      # f16 (including eagerly dequantized Q6_K)
 

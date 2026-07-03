@@ -159,6 +159,10 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "z_buf":      mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # in_proj_z output [4096 f16]
             "gdn_out":    mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # GDN attn output [4096 f16]
             "gated":      mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # after norm+gate [4096 f16]
+            # Dummy binding-2 scales buffer for USE_QUANT=0 dispatches.
+            # Prevents sc["normed"] from being silently aliased as a scales buffer,
+            # which would corrupt output if a dispatch is promoted to USE_QUANT=1/2.
+            "dummy_scales": mk(8),
         }
         self._hstate: int = 0
 
@@ -302,7 +306,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             # 2. QKV projection: [hidden] → [8192]
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[f"{p}.in_proj_qkv.weight"],
-                            sc["normed"], sc["qkv_buf"]],
+                            sc["dummy_scales"], sc["qkv_buf"]],
                            {"K": hidden, "N": _LIN_CONV_DIM, "USE_QUANT": 0},
                            ((_LIN_CONV_DIM + 255) // 256, 1, 1))
 
@@ -314,17 +318,17 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                             "WG_SIZE": 256},
                            ((_LIN_CONV_DIM + 255) // 256, 1, 1))
 
-            # 4. a projection: [hidden] → [32]
+            # 4. a projection: normed → [32] (dt for decay; must use normed, not raw x)
             self._dispatch("matmul_quant",
-                           [x_buf, self.weights[f"{p}.in_proj_a.weight"],
-                            sc["normed"], sc["a_buf"]],
+                           [sc["normed"], self.weights[f"{p}.in_proj_a.weight"],
+                            sc["dummy_scales"], sc["a_buf"]],
                            {"K": hidden, "N": _LIN_V_HEADS, "USE_QUANT": 0},
                            (1, 1, 1))
 
-            # 5. z gate projection: [hidden] → [4096]
+            # 5. z gate projection: normed → [4096] (output gate; must use normed, not raw x)
             self._dispatch("matmul_quant",
-                           [x_buf, self.weights[f"{p}.in_proj_z.weight"],
-                            sc["normed"], sc["z_buf"]],
+                           [sc["normed"], self.weights[f"{p}.in_proj_z.weight"],
+                            sc["dummy_scales"], sc["z_buf"]],
                            {"K": hidden, "N": _LIN_V_HEADS * _LIN_V_DIM, "USE_QUANT": 0},
                            ((_LIN_V_HEADS * _LIN_V_DIM + 255) // 256, 1, 1))
 
@@ -349,7 +353,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             # 8. Output projection: [4096] → [hidden]
             self._dispatch("matmul_quant",
                            [sc["gated"], self.weights[f"{p}.out_proj.weight"],
-                            sc["normed"], sc["o_proj_out"]],
+                            sc["dummy_scales"], sc["o_proj_out"]],
                            {"K": _LIN_V_HEADS * _LIN_V_DIM, "N": hidden, "USE_QUANT": 0},
                            ((hidden + 255) // 256, 1, 1))
 
@@ -403,15 +407,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         self._hstate = 0
         rw_usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
-        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
-        x_buf = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw_usage)
-        self._dispatch(
-            "embedding_lookup",
-            [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
-            {"HIDDEN_DIM": hidden},
-            (num_tokens, 1, 1),
-        )
-
         if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
             raise RuntimeError("multi-sequence batching not supported in this build")
 
@@ -423,6 +418,12 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535.")
 
+        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
+        x_buf = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw_usage)
+        vocab = self.vocab_size
+        norm_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw_usage)
+        logits_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw_usage)
+
         pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
         slot_map = WebGPUBuffer.from_numpy(
             dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
@@ -431,34 +432,34 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             dtype=np.uint32)
         bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
 
-        for i in range(self.num_layers):
-            if self._is_full_attn(i):
-                x_buf = self._full_attn_layer(
-                    i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
-            else:
-                x_buf = self._linear_attn_layer(i, x_buf, num_tokens)
+        # Single outer encoder for the entire forward pass — one queue.submit().
+        # Inner _batched_dispatch() calls in layer methods are re-entrant no-ops
+        # when profiling=False (default), recording all dispatches here.
+        with self._batched_dispatch():
+            self._dispatch("embedding_lookup",
+                           [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
+                           {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
 
-        # Final norm
-        norm_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw_usage)
-        self._dispatch(
-            "rms_norm",
-            [x_buf, self.weights["model.norm.weight"], norm_out],
-            {"HIDDEN_DIM": hidden},
-            (num_tokens, 1, 1),
-        )
+            for i in range(self.num_layers):
+                if self._is_full_attn(i):
+                    x_buf = self._full_attn_layer(
+                        i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+                else:
+                    x_buf = self._linear_attn_layer(i, x_buf, num_tokens)
 
-        # LM head: 'lm_head.weight' (MLX) or tied embeddings
-        vocab = self.vocab_size
-        logits_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw_usage)
-        lm_head_w = (self.weights.get("lm_head.weight")
-                     or self.weights.get("model.lm_head.weight")
-                     or self.weights["model.embed_tokens.weight"])
-        self._dispatch(
-            "matmul_quant",
-            [norm_out, lm_head_w, norm_out, logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": 0},
-            ((vocab + 255) // 256, 1, 1),
-        )
+            _vpt = min(hidden // 256, 16) if hidden <= 4096 else 0
+            self._dispatch("rms_norm",
+                           [x_buf, self.weights["model.norm.weight"], norm_out],
+                           {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt},
+                           (num_tokens, 1, 1))
+
+            lm_head_w = (self.weights.get("lm_head.weight")
+                         or self.weights.get("model.lm_head.weight")
+                         or self.weights["model.embed_tokens.weight"])
+            self._dispatch("matmul_quant",
+                           [norm_out, lm_head_w, norm_out, logits_buf],
+                           {"K": hidden, "N": vocab, "USE_QUANT": 0},
+                           ((vocab + 255) // 256, 1, 1))
 
         return logits_buf.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
 
@@ -482,7 +483,18 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         kv_dim = self.num_kv_heads * self.head_dim
         inter = self.intermediate_size
         ln_rope = math.log(self.rope_theta)
-        use_quant = 0
+
+        # Per-weight quantization detection: Q4_K (type 12) → GPU block decoder.
+        quant_types = self.weights.get("__quant_types__", {})
+        _qt = quant_types if isinstance(quant_types, dict) else {}
+
+        def _uq(key: str) -> int:
+            tt = _qt.get(key, 0)
+            if tt == 12:
+                return 2
+            if self.weights.get(key[:-7] + ".scales") is not None:
+                return 1
+            return 0
 
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
@@ -505,7 +517,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[w_key],
                                 self.weights.get(s_key, sc["normed"]), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": use_quant},
+                               {"K": hidden, "N": dim, "USE_QUANT": _uq(w_key)},
                                ((dim + 255) // 256, 1, 1))
 
             for src, dst, n_heads, w_key in [
@@ -553,7 +565,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[w_key],
                             self.weights.get(s_key, sc["attn_out"]), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": use_quant},
+                           {"K": q_dim, "N": hidden, "USE_QUANT": _uq(w_key)},
                            ((hidden + 255) // 256, 1, 1))
 
             self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
@@ -570,7 +582,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 self._dispatch("matmul_quant",
                                [sc["ffn_normed"], self.weights[w_k],
                                 self.weights.get(s_k, sc["ffn_normed"]), out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": use_quant},
+                               {"K": hidden, "N": inter, "USE_QUANT": _uq(w_k)},
                                ((inter + 255) // 256, 1, 1))
 
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
@@ -581,7 +593,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[w_k],
                             self.weights.get(s_k, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter, "N": hidden, "USE_QUANT": use_quant},
+                           {"K": inter, "N": hidden, "USE_QUANT": _uq(w_k)},
                            ((hidden + 255) // 256, 1, 1))
 
             self._dispatch("add", [residual, sc["ffn_out"], out],
@@ -599,83 +611,3 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         """GDN linear-attention layer — delegates to _gdn_layer_gpu (pure WebGPU)."""
         return self._gdn_layer_gpu(layer_idx, x_buf, num_tokens)
 
-    def _linear_attn_layer_cpu_fallback(
-        self,
-        layer_idx: int,
-        x_buf: "WebGPUBuffer",
-        num_tokens: int,
-    ) -> "WebGPUBuffer":
-        """Kept for reference only — NOT USED. Original CPU-based GDN fallback."""
-        import torch
-        import wgpu as wgpu_lib
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
-        dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
-
-        sc = self._sc
-        hidden = self.hidden_size
-        inter = self.intermediate_size
-        p = f"model.layers.{layer_idx}"
-
-        h_names = ["h0", "h1", "h2"]
-        residual = sc[h_names[(self._hstate + 1) % 3]]
-        out = sc[h_names[(self._hstate + 2) % 3]]
-        add_n = num_tokens * hidden
-        gelu_n = num_tokens * inter
-        use_quant = 0
-
-        # 1. Pre-norm on GPU
-        with self._batched_dispatch():
-            self._dispatch("rms_norm",
-                           [x_buf, self.weights[f"{p}.input_layernorm.weight"], sc["normed"]],
-                           {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
-
-        # 2. Readback normed hidden state to CPU as bfloat16
-        normed_np = sc["normed"].to_numpy().view(np.float16).reshape(num_tokens, hidden)
-        normed_bf16 = torch.from_numpy(normed_np.astype(np.float32)).to(torch.bfloat16)
-
-        # 3. GDN decode on CPU using vLLM ops (one token at a time)
-        gdn_outs = [self._gdn_decode(layer_idx, normed_bf16[t]) for t in range(num_tokens)]
-        gdn_bf16 = torch.stack(gdn_outs, dim=0)  # [num_tokens, hidden]
-
-        # 4. Upload GDN output to GPU via o_proj_out scratch buffer
-        gdn_f16 = np.clip(gdn_bf16.float().numpy().astype(np.float16), -65504.0, 65504.0)
-        dev.queue.write_buffer(sc["o_proj_out"].buf, 0,
-                               np.ascontiguousarray(gdn_f16).tobytes())
-
-        # 5. Residual add + FFN on GPU
-        with self._batched_dispatch():
-            self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
-                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
-
-            self._dispatch("rms_norm",
-                           [residual, self.weights[f"{p}.post_attention_layernorm.weight"],
-                            sc["ffn_normed"]],
-                           {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
-
-            for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
-                w_k = f"{p}.mlp.{proj}.weight"
-                s_k = f"{p}.mlp.{proj}.scales"
-                self._dispatch("matmul_quant",
-                               [sc["ffn_normed"], self.weights[w_k],
-                                self.weights.get(s_k, sc["ffn_normed"]), out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": use_quant},
-                               ((inter + 255) // 256, 1, 1))
-
-            self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
-
-            w_k = f"{p}.mlp.down_proj.weight"
-            s_k = f"{p}.mlp.down_proj.scales"
-            self._dispatch("matmul_quant",
-                           [sc["ffn_act"], self.weights[w_k],
-                            self.weights.get(s_k, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter, "N": hidden, "USE_QUANT": use_quant},
-                           ((hidden + 255) // 256, 1, 1))
-
-            self._dispatch("add", [residual, sc["ffn_out"], out],
-                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
-
-        self._hstate = (self._hstate + 2) % 3
-        return out

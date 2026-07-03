@@ -3,8 +3,10 @@ enable f16;
 // causal_conv_step.wgsl — single-token causal depthwise conv1d update for GDN decode.
 //
 // Depthwise conv: each channel has its own kernel (no cross-channel mixing).
+// Implements cross-correlation (not convolution): weight[c, i] aligns with
+// history[c, i] — no reversal. Matches PyTorch F.conv1d behaviour.
 // For decode step t:
-//   output[c] = sum_{i=0}^{KERNEL-1} weight[c, i] * history[c, KERNEL-1-i]
+//   output[c] = sum_{i=0}^{KERNEL-1} weight[c, i] * history[c, i]
 // where history = [conv_state[0..KERNEL-2][c], x[c]]  (oldest first)
 // After computation, conv_state is updated: shift left, append x.
 //

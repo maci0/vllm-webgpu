@@ -56,13 +56,6 @@ fn main(
     let vh_v_base = V_BASE + vh * V_DIM;
     let vh_state  = vh * K_DIM * V_DIM;
 
-    // ── Phase 0: compute and broadcast decay ─────────────────────────────────
-    if (tid == 0u) {
-        let dt_raw = f32(a_in[vh]) + f32(dt_bias[vh]);
-        let dt = max(dt_raw, 0.0) + log(1.0 + exp(-abs(dt_raw)));  // softplus
-        sh_sq[0] = exp(-exp(f32(A_log[vh])) * dt);  // decay scalar
-    }
-
     // ── Phase 1: L2-normalize q ───────────────────────────────────────────────
     let q_raw = f32(qkv_buf[kh_q_base + tid]);
     sh_sq[tid] = q_raw * q_raw;
