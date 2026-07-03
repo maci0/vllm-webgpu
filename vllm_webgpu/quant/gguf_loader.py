@@ -10,10 +10,24 @@ logger = logging.getLogger(__name__)
 _GGUF_MAGIC = b"GGUF"
 
 
+def _is_mlx_quantized_dir(p: Path) -> bool:
+    """Return True if directory contains MLX affine int4 weights (has .biases keys)."""
+    import json
+    index_path = p / "model.safetensors.index.json"
+    try:
+        with open(index_path) as f:
+            index = json.load(f)
+        return any(k.endswith(".biases") for k in index.get("weight_map", {}))
+    except Exception:
+        return False
+
+
 def detect_weight_format(path: str) -> str:
     p = Path(path)
     if p.is_dir():
         if (p / "model.safetensors.index.json").exists():
+            if _is_mlx_quantized_dir(p):
+                return "mlx_int4"
             return "safetensors_sharded"
         if (p / "model.safetensors").exists():
             return "safetensors"
@@ -107,18 +121,30 @@ _GGUF_BLK_MAP = {
     "ffn_gate.weight":           "mlp.gate_proj.weight",
     "ffn_up.weight":             "mlp.up_proj.weight",
     "ffn_down.weight":           "mlp.down_proj.weight",
+    # Llama/Qwen: ffn_norm is the single pre-FFN norm (same key as post-attention in their schema)
     "ffn_norm.weight":           "post_attention_layernorm.weight",
     "attn_q_norm.weight":        "self_attn.q_norm.weight",
     "attn_k_norm.weight":        "self_attn.k_norm.weight",
-    # Gemma4-specific
-    "post_attention_norm.weight": "post_attention_layernorm.weight",
-    "post_ffw_norm.weight":      "post_feedforward_layernorm.weight",
-    "layer_output_scale.weight": "self_attn.layer_scale",
+    # Gemma4 has 4 distinct norms per layer (HF: Gemma3DecoderLayer):
+    #   input_layernorm          = attn_norm       (pre-attention)
+    #   post_attention_layernorm = post_attention_norm (post-attn residual)
+    #   pre_feedforward_layernorm = ffn_norm       (pre-FFN) — overrides Llama mapping below
+    #   post_feedforward_layernorm = post_ffw_norm (post-FFN residual)
+    "post_attention_norm.weight":  "post_attention_layernorm.weight",
+    "post_ffw_norm.weight":        "post_feedforward_layernorm.weight",
+    "layer_output_scale.weight":   "self_attn.layer_scale",
 }
 
+# Gemma4 overrides: ffn_norm maps to pre_feedforward_layernorm, not post_attention_layernorm.
+# Detect by architecture and remap at load time (see _gguf_to_hf_name).
+_GGUF_BLK_MAP_GEMMA4 = dict(_GGUF_BLK_MAP)
+_GGUF_BLK_MAP_GEMMA4["ffn_norm.weight"] = "pre_feedforward_layernorm.weight"
 
-def _gguf_to_hf_name(gguf_name: str) -> str | None:
+
+def _gguf_to_hf_name(gguf_name: str, blk_map: dict | None = None) -> str | None:
     """Map a GGUF tensor name to its HuggingFace equivalent. Returns None to skip."""
+    if blk_map is None:
+        blk_map = _GGUF_BLK_MAP
     if gguf_name in _GGUF_TO_HF_LLAMA:
         return _GGUF_TO_HF_LLAMA[gguf_name]
     # blk.{i}.{suffix} pattern
@@ -127,14 +153,14 @@ def _gguf_to_hf_name(gguf_name: str) -> str | None:
         if len(parts) == 3:
             layer_idx = parts[1]
             suffix = parts[2]
-            hf_suffix = _GGUF_BLK_MAP.get(suffix)
+            hf_suffix = blk_map.get(suffix)
             if hf_suffix:
                 return f"model.layers.{layer_idx}.{hf_suffix}"
     # Unknown tensor (e.g. rope_freqs, vision layers): skip
     return None
 
 
-def load_gguf_weights(path: str, wgpu_device) -> dict:
+def load_gguf_weights(path: str, wgpu_device, arch_prefix: str = "") -> dict:
     """Load GGUF weights with HF-style key remapping. Raw quantized blocks uploaded as u8."""
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     import wgpu as wgpu_lib
@@ -145,21 +171,92 @@ def load_gguf_weights(path: str, wgpu_device) -> dict:
         raise ImportError("Install the 'gguf' package to load GGUF files.") from e
 
     reader = gguf.GGUFReader(path)
+
+    # Detect arch from GGUF metadata if not provided
+    if not arch_prefix:
+        arch_bytes = reader.fields.get("general.architecture")
+        if arch_bytes:
+            raw = arch_bytes.parts[-1].tolist()
+            arch_prefix = bytes(raw).decode() if isinstance(raw, list) else str(raw)
+
+    blk_map = _GGUF_BLK_MAP_GEMMA4 if arch_prefix in ("gemma3", "gemma4") else _GGUF_BLK_MAP
+
+    from gguf import GGMLQuantizationType
+
+    from gguf import dequantize as gguf_dequantize
+
+    # Tensors decoded to f16 immediately (small or required by non-matmul shaders).
+    # The embedding table and LM-head weight must be f16 because embedding_lookup.wgsl
+    # reads them as vec4<f16> and matmul_quant's f16 path is used for the LM-head GEMV.
+    # All other quantized weights stay as raw bytes and are decoded on the GPU.
+    _EAGER_F16_NAMES = {"token_embd.weight", "output.weight"}  # GGUF raw names
+
     weights: dict = {}
+    # Track tensor types for use_quant detection.
+    weight_quant_type: dict[str, int] = {}
     usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.COPY_SRC
     skipped = 0
 
     for tensor in reader.tensors:
-        hf_name = _gguf_to_hf_name(tensor.name)
+        hf_name = _gguf_to_hf_name(tensor.name, blk_map)
         if hf_name is None:
             skipped += 1
             continue
-        data = tensor.data
-        arr = np.frombuffer(data, dtype=np.uint8)
+
+        tt = int(tensor.tensor_type)
+        # Determine whether to decode now (f16) or keep raw bytes for GPU decoding.
+        force_eager = tensor.name in _EAGER_F16_NAMES
+
+        if tt == int(GGMLQuantizationType.F32):
+            arr = np.ascontiguousarray(
+                tensor.data.view(np.float32).astype(np.float16))
+        elif tt == int(GGMLQuantizationType.F16):
+            arr = np.ascontiguousarray(tensor.data.view(np.float16))
+        elif tt == int(GGMLQuantizationType.BF16):
+            u16 = tensor.data.view(np.uint16)
+            f32 = (u16.astype(np.uint32) << 16).view(np.float32)
+            arr = np.ascontiguousarray(
+                np.clip(f32, -65504.0, 65504.0).astype(np.float16))
+        elif force_eager or tt == int(GGMLQuantizationType.Q6_K):
+            # Eagerly dequantize: embedding/lm-head (f16 required by shaders)
+            # and Q6_K (different block format; Q4_K-only GPU decoder can't handle it).
+            f32 = gguf_dequantize(tensor.data, tensor.tensor_type)
+            arr = np.ascontiguousarray(
+                np.clip(f32, -65504.0, 65504.0).astype(np.float16))
+            tt = int(GGMLQuantizationType.F16)  # treat as f16 for quant_types
+        else:
+            # Quantized weight (Q4_K, Q6_K, Q8_0, etc.): upload raw bytes.
+            # The WGSL matmul shader decodes on the fly using the GGUF block format.
+            arr = np.ascontiguousarray(tensor.data)
+
         weights[hf_name] = WebGPUBuffer.from_numpy(wgpu_device, arr, usage=usage)
+        weight_quant_type[hf_name] = tt
+
+    # Attach quant metadata so models can detect quantization format per tensor.
+    weights["__quant_types__"] = weight_quant_type  # type: ignore[assignment]
 
     logger.info("Loaded %d GGUF tensors (%d skipped) from %s", len(weights), skipped, path)
     return weights
+
+
+def _vocab_from_tokens(reader) -> int | None:
+    """Extract vocab size from GGUF token list metadata, or None if unavailable."""
+    try:
+        field = reader.fields.get("tokenizer.ggml.tokens")
+        if field is not None:
+            # The field contains a list of token strings; count them.
+            return len(field.data)
+    except Exception:
+        pass
+    # Fall back to the embedding table outermost dimension.
+    try:
+        for t in reader.tensors:
+            if t.name == "token_embd.weight":
+                # GGUF shape: [hidden, vocab] → outermost dim = vocab
+                return int(t.shape[-1]) if len(t.shape) >= 2 else None
+    except Exception:
+        pass
+    return None
 
 
 def gguf_read_config(path: str) -> dict:
@@ -197,7 +294,7 @@ def gguf_read_config(path: str) -> dict:
         "num_attention_heads": _get(f"{p}.attention.head_count") or 32,
         "num_key_value_heads": _get(f"{p}.attention.head_count_kv") or 8,
         "intermediate_size": _get(f"{p}.feed_forward_length") or 14336,
-        "vocab_size":        151936,
+        "vocab_size":        _get(f"{p}.vocab_size") or _vocab_from_tokens(reader) or 151936,
         "rope_theta":        _get(f"{p}.rope.freq_base") or 10000.0,
         "head_dim":          _get(f"{p}.attention.key_length"),
         "max_position_embeddings": _get(f"{p}.context_length") or 8192,
@@ -221,8 +318,189 @@ def gguf_read_config(path: str) -> dict:
     }
     cfg["architectures"] = [_arch_map.get(arch_prefix, "LlamaForCausalLM")]
 
+    # For Gemma4: detect per-layer attention params from tensor shapes.
+    # Local layers use head_dim=256, 8 KV heads; global layers (idx%6==5)
+    # use head_dim=512, 1 KV head, and have no separate v_proj (V=K).
+    if arch_prefix in ("gemma3", "gemma4"):
+        tensor_shapes = {t.name: t.shape for t in reader.tensors}
+        n_layers = cfg["num_hidden_layers"]
+        layer_params = []
+        for i in range(n_layers):
+            k_norm_key = f"blk.{i}.attn_k_norm.weight"
+            q_proj_key = f"blk.{i}.attn_q.weight"
+            has_v = f"blk.{i}.attn_v.weight" in tensor_shapes
+            # GGUF stores weights as [in_dim, out_dim] (innermost first / column-major).
+            # For a weight [hidden, q_dim]: shape[0]=hidden (input), shape[-1]=q_dim (output).
+            # Use shape[-1] for output dimensions and shape[0] for the k_norm (scalar head_dim).
+            if k_norm_key in tensor_shapes:
+                hd = int(tensor_shapes[k_norm_key][-1])  # k_norm shape is [head_dim]
+            elif q_proj_key in tensor_shapes:
+                # q_proj shape: [hidden, q_dim] → q_dim = num_q_heads * head_dim
+                q_dim_gguf = int(tensor_shapes[q_proj_key][-1])  # outermost = output dim
+                hd = q_dim_gguf // cfg["num_attention_heads"]
+            else:
+                hd = cfg["head_dim"]
+            # k_proj shape: [hidden, kv_dim] → kv_dim = num_kv_heads * head_dim (outermost)
+            k_proj_key = f"blk.{i}.attn_k.weight"
+            if k_proj_key in tensor_shapes:
+                kv_dim = int(tensor_shapes[k_proj_key][-1])
+                num_kv_heads = kv_dim // hd
+            else:
+                num_kv_heads = cfg["num_key_value_heads"]
+            q_dim = cfg["num_attention_heads"] * hd
+            layer_params.append({
+                "head_dim": hd,
+                "num_q_heads": cfg["num_attention_heads"],
+                "num_kv_heads": num_kv_heads,
+                "q_dim": q_dim,
+                "kv_dim": num_kv_heads * hd,
+                "has_v_proj": has_v,
+            })
+        cfg["_layer_attention_params"] = layer_params
+        logger.info("Gemma4: detected %d layers, %d local (hd=256,kv=8) + %d global (hd=512,kv=1)",
+                    n_layers,
+                    sum(1 for lp in layer_params if lp["head_dim"] == 256),
+                    sum(1 for lp in layer_params if lp["head_dim"] == 512))
+
     logger.info("GGUF config: arch=%s hid=%d layers=%d heads=%d/%d head_dim=%d inter=%d",
                 arch_prefix, cfg["hidden_size"], cfg["num_hidden_layers"],
                 cfg["num_attention_heads"], cfg["num_key_value_heads"],
                 cfg["head_dim"], cfg["intermediate_size"])
     return cfg
+
+
+def _bf16_raw_to_f32(raw: bytes, shape: tuple) -> np.ndarray:
+    """Convert raw BF16 bytes to float32 numpy array."""
+    u16 = np.frombuffer(raw, dtype=np.uint16)
+    f32 = (u16.astype(np.uint32) << 16).view(np.float32)
+    return f32.reshape(shape)
+
+
+def _dequant_mlx_int4(
+    weight_u32: np.ndarray,
+    scales_f32: np.ndarray,
+    biases_f32: np.ndarray,
+    group_size: int = 64,
+) -> np.ndarray:
+    """Dequantize MLX affine int4 weights to float32.
+
+    weight_u32: [out_rows, in_cols/8]  -- 8 packed uint4 nibbles per uint32
+    scales_f32: [out_rows, in_cols/group_size]
+    biases_f32: [out_rows, in_cols/group_size]
+    Returns float32 [out_rows, in_cols].
+    """
+    out_rows, packed_cols = weight_u32.shape
+    in_cols = packed_cols * 8
+
+    w = weight_u32.astype(np.uint32)
+    nibbles = np.stack([
+        (w >> (4 * i)) & 0xF for i in range(8)
+    ], axis=-1).reshape(out_rows, in_cols).astype(np.float32)
+
+    n_groups = in_cols // group_size
+    scales_bc = np.repeat(scales_f32.reshape(out_rows, n_groups), group_size, axis=1)
+    biases_bc = np.repeat(biases_f32.reshape(out_rows, n_groups), group_size, axis=1)
+
+    return scales_bc * nibbles + biases_bc
+
+
+def _mlx_strip_prefix(key: str) -> str:
+    """Strip 'language_model.' wrapper from MLX weight key."""
+    prefix = "language_model."
+    if key.startswith(prefix):
+        return key[len(prefix):]
+    return key
+
+
+def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
+    """Load MLX affine int4 safetensors weights, dequantize to f16, upload to GPU."""
+    import json
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+    p = Path(model_dir)
+    index_path = p / "model.safetensors.index.json"
+    with open(index_path) as f:
+        index = json.load(f)
+
+    group_size = 64
+    config_path = p / "config.json"
+    if config_path.exists():
+        with open(config_path) as f:
+            cfg = json.load(f)
+        qs = (cfg.get("quantization", {}).get("group_size")
+              or cfg.get("quantization_config", {}).get("group_size"))
+        if qs:
+            group_size = int(qs)
+
+    shard_to_keys: dict = {}
+    for key, shard_file in index["weight_map"].items():
+        shard_to_keys.setdefault(shard_file, []).append(key)
+
+    raw_tensors: dict = {}
+    for shard_file in sorted(shard_to_keys.keys()):
+        shard_path = str(p / shard_file)
+        logger.info("Loading MLX shard %s", shard_file)
+        with open(shard_path, "rb") as f:
+            header_len = struct.unpack("<Q", f.read(8))[0]
+            header_raw = f.read(header_len)
+            data_start = 8 + header_len
+            header = json.loads(header_raw)
+            f.seek(data_start)
+            raw_data = f.read()
+        for name, meta in header.items():
+            if name == "__metadata__":
+                continue
+            start, end = meta["data_offsets"]
+            raw_tensors[name] = (meta["dtype"], tuple(meta["shape"]), raw_data[start:end])
+
+    weights: dict = {}
+    all_keys = set(raw_tensors.keys())
+    processed: set = set()
+
+    for key in sorted(all_keys):
+        if key in processed:
+            continue
+        dtype_str, shape, raw = raw_tensors[key]
+
+        if key.endswith(".weight") and dtype_str == "U32":
+            base = key[:-len(".weight")]
+            scales_key = base + ".scales"
+            biases_key = base + ".biases"
+            if scales_key in all_keys and biases_key in all_keys:
+                _, s_shape, s_raw = raw_tensors[scales_key]
+                _, b_shape, b_raw = raw_tensors[biases_key]
+                processed.update({key, scales_key, biases_key})
+                w_u32 = np.frombuffer(raw, dtype=np.uint32).reshape(shape)
+                scales_f32 = _bf16_raw_to_f32(s_raw, s_shape)
+                biases_f32 = _bf16_raw_to_f32(b_raw, b_shape)
+                dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
+                arr = np.clip(dequant, -65504.0, 65504.0).astype(np.float16)
+                local_key = _mlx_strip_prefix(base) + ".weight"
+                weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
+                continue
+
+        if key in processed:
+            continue
+        processed.add(key)
+
+        if key.endswith(".scales") or key.endswith(".biases"):
+            base_w = key.rsplit(".", 1)[0] + ".weight"
+            if base_w in all_keys and raw_tensors[base_w][0] == "U32":
+                continue
+
+        if dtype_str == "BF16":
+            f32 = _bf16_raw_to_f32(raw, shape)
+            arr = np.clip(f32, -65504.0, 65504.0).astype(np.float16)
+        elif dtype_str == "F32":
+            arr = np.frombuffer(raw, dtype=np.float32).reshape(shape).astype(np.float16)
+        elif dtype_str == "F16":
+            arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
+        else:
+            logger.warning("Unsupported dtype %s for tensor %s, skipping", dtype_str, key)
+            continue
+
+        local_key = _mlx_strip_prefix(key)
+        weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
+
+    logger.info("Loaded %d tensors from MLX int4 dir %s", len(weights), model_dir)
+    return weights

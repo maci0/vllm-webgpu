@@ -78,3 +78,44 @@ class WebGPUCachePlanner:
             "KV cache: %d blocks × %d layers × %d KV heads × %d head_dim = %dMB",
             num_blocks, num_layers, num_kv_heads, head_dim, total_mb,
         )
+
+    def allocate_kv_pool_hybrid(
+        self,
+        num_blocks: int,
+        num_layers: int,
+        layer_types: list,
+        block_size: int,
+        num_kv_heads: int,
+        head_dim: int,
+    ) -> None:
+        """Allocate KV pool for a hybrid model (e.g. Qwen3.5).
+
+        Full-attention layers get real KV cache buffers.
+        Linear-attention layers get 16-byte placeholder buffers (never accessed by GDN).
+        """
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+        dev = self._worker.wgpu_device.wgpu_device
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2
+
+        model = self._worker.model_runner.model
+        model.kv_pool.clear()
+
+        full_attn_count = 0
+        for i in range(num_layers):
+            if layer_types[i] == "full_attention":
+                k_buf = WebGPUBuffer.empty(dev, bytes_per_layer, usage=rw)
+                v_buf = WebGPUBuffer.empty(dev, bytes_per_layer, usage=rw)
+                full_attn_count += 1
+            else:
+                k_buf = WebGPUBuffer.empty(dev, 16, usage=rw)
+                v_buf = WebGPUBuffer.empty(dev, 16, usage=rw)
+            model.kv_pool.append((k_buf, v_buf))
+
+        total_mb = (bytes_per_layer * full_attn_count * 2) // 2**20
+        logger.info(
+            "KV cache (hybrid): %d full-attn × %d blocks × %d KV heads × %d head_dim = %dMB",
+            full_attn_count, num_blocks, num_kv_heads, head_dim, total_mb,
+        )

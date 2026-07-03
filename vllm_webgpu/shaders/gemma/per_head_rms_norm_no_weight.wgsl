@@ -5,7 +5,8 @@ override NUM_HEADS: u32 = 8u;
 override WG_SIZE: u32   = 128u;
 
 var<workgroup> shared_sq:    array<f32, 128>;
-var<workgroup> shared_input: array<f32, 256>;  // HEAD_DIM elements as f32; 1KB
+// Size driven by HEAD_DIM override so it works for both head_dim=256 (1KB) and 512 (2KB).
+var<workgroup> shared_input: array<f32, HEAD_DIM>;
 
 @group(0) @binding(0) var<storage, read>       input  : array<f16>;
 @group(0) @binding(1) var<storage, read_write> output : array<f16>;

@@ -1,6 +1,8 @@
 from __future__ import annotations
 import logging
+import time
 from abc import abstractmethod
+from collections import defaultdict
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -24,30 +26,91 @@ class BaseWebGPUModel:
         self.weights: dict[str, "WebGPUBuffer"] = {}
         self.kv_pool: list[tuple["WebGPUBuffer", "WebGPUBuffer"]] = []
         self._active_encoder = None  # set when inside a _batched_dispatch() context
+        # Profiling
+        self.profiling: bool = False
+        self._prof_stats: dict[str, list[float]] = defaultdict(list)  # shader -> [ms, ...]
+        self._prof_current_label: str = ""  # set per _batched_dispatch block
 
     @contextmanager
-    def _batched_dispatch(self):
-        """Record all _dispatch() calls inside this block into a single CommandEncoder.
+    def _batched_dispatch(self, label: str = ""):
+        """Record dispatch calls into a single CommandEncoder and submit once at exit.
 
-        Reduces queue.submit() calls from N (one per dispatch) to 1 per block exit.
-        Semantically identical to separate submits since the queue serializes in order.
+        Re-entrant when not profiling: if an outer _batched_dispatch is already active,
+        inner calls simply record into the existing encoder (no extra submit).
+        When profiling=True, each named block gets its own encoder + GPU sync for timing.
         """
         dev = self.wgpu_device.wgpu_device
+
+        if not self.profiling and self._active_encoder is not None:
+            # Re-entrant: record into the outer encoder, no additional submit.
+            yield
+            return
+
+        # Create a new encoder; save/restore the outer encoder for profiling re-entrancy.
         encoder = dev.create_command_encoder()
+        saved_encoder = self._active_encoder
         self._active_encoder = encoder
+        self._prof_current_label = label
         try:
             yield
-            # Submit only on clean exit: an exception mid-layer would submit partial
-            # GPU work and corrupt the KV cache even though Python raised an error.
+            t0 = time.perf_counter() if (self.profiling and label) else 0.0
             dev.queue.submit([encoder.finish()])
+            if self.profiling and label:
+                dev.queue.on_submitted_work_done_sync()
+                self._prof_stats[label].append((time.perf_counter() - t0) * 1000.0)
         finally:
-            self._active_encoder = None
+            self._active_encoder = saved_encoder
+            self._prof_current_label = ""
+
+    def profile_report(self) -> str:
+        """Return a formatted profiling report. Call after forward() with profiling=True."""
+        if not self._prof_stats:
+            return "No profiling data. Set model.profiling=True before forward()."
+        lines = ["Kernel timing (ms per call, averaged):"]
+        total = 0.0
+        rows = []
+        for label, times in sorted(self._prof_stats.items(), key=lambda x: -sum(x[1])):
+            avg = sum(times) / len(times)
+            total += avg
+            rows.append((label, avg, len(times)))
+        for label, avg, n in rows:
+            pct = 100.0 * avg / total if total else 0
+            lines.append(f"  {label:<40s} {avg:7.3f} ms  {pct:5.1f}%  (n={n})")
+        lines.append(f"  {'TOTAL':<40s} {total:7.3f} ms")
+        return "\n".join(lines)
+
+    def profile_reset(self) -> None:
+        self._prof_stats.clear()
+
+    @staticmethod
+    def _resolve_model_path(path: str) -> str:
+        """Resolve a HuggingFace model ID or local path to an actual directory."""
+        from pathlib import Path
+        p = Path(path)
+        if p.exists():
+            return str(p)
+        # Try HuggingFace cache
+        hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
+        safe_id = path.replace("/", "--")
+        model_cache = hf_cache / f"models--{safe_id}"
+        if model_cache.exists():
+            snapshots = sorted((model_cache / "snapshots").iterdir())
+            if snapshots:
+                return str(snapshots[-1])
+        # Fall back: maybe huggingface_hub can download/locate it
+        try:
+            from huggingface_hub import snapshot_download
+            return snapshot_download(path, local_files_only=True)
+        except Exception:
+            pass
+        return path  # let the caller fail with a meaningful error
 
     def load_weights(self, path: str) -> None:
         from vllm_webgpu.quant.gguf_loader import (
             detect_weight_format, load_safetensors_weights,
-            load_safetensors_weights_sharded, load_gguf_weights,
+            load_safetensors_weights_sharded, load_gguf_weights, load_mlx_weights,
         )
+        path = self._resolve_model_path(path)
         fmt = detect_weight_format(path)
         if fmt == "safetensors":
             self.weights = load_safetensors_weights(path, self.wgpu_device.wgpu_device)
@@ -55,6 +118,8 @@ class BaseWebGPUModel:
             self.weights = load_safetensors_weights_sharded(path, self.wgpu_device.wgpu_device)
         elif fmt == "gguf":
             self.weights = load_gguf_weights(path, self.wgpu_device.wgpu_device)
+        elif fmt == "mlx_int4":
+            self.weights = load_mlx_weights(path, self.wgpu_device.wgpu_device)
         else:
             raise ValueError(f"Unknown weight format for {path}")
         logger.info("Loaded %d weight tensors (%s format)", len(self.weights), fmt)

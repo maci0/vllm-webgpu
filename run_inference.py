@@ -266,6 +266,15 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Some models (Gemma4, Qwen3 variants) specify head_dim explicitly
     cfg.head_dim                = config.get("head_dim", cfg.hidden_size // cfg.num_attention_heads)
     cfg.architectures           = config["architectures"]
+    # Pass per-layer attention params for heterogeneous models (Gemma4).
+    # Without this, Gemma4WebGPUModel uses wrong fallback KV head counts.
+    if "_layer_attention_params" in config:
+        cfg._layer_attention_params = config["_layer_attention_params"]
+    # Pass other optional model-specific fields
+    for key in ("final_logit_softcapping", "ple_layer_indices", "query_pre_attn_scalar",
+                "tie_word_embeddings"):
+        if key in config:
+            setattr(cfg, key, config[key])
 
     # GPU device
     print("\nInitializing WebGPU device...")
@@ -302,7 +311,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     elapsed = time.perf_counter() - t0
     print(f"  Loaded {len(model.weights)} tensors in {elapsed:.1f}s")
 
-    # Allocate KV cache (small for decode test)
+    # Allocate KV cache — per-layer for heterogeneous models (e.g. Gemma4)
     import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.config import get_config
@@ -310,15 +319,26 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_size = get_config().block_size
     max_ctx = min(cfg.max_position_embeddings, 2048)
     num_blocks = math.ceil(max_ctx / block_size) + 4
-    kv_heads = cfg.num_key_value_heads
-    head_dim = cfg.head_dim
+    default_kv_heads = cfg.num_key_value_heads
+    default_head_dim = cfg.head_dim
     rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
-    print(f"\nAllocating KV cache: {num_blocks} blocks × {block_size} × {kv_heads} heads × {head_dim} dim")
-    for layer in range(cfg.num_hidden_layers):
-        k = WebGPUBuffer.empty(device.wgpu_device, num_blocks * block_size * kv_heads * head_dim * 2, usage=rw)
-        v = WebGPUBuffer.empty(device.wgpu_device, num_blocks * block_size * kv_heads * head_dim * 2, usage=rw)
-        model.kv_pool.append((k, v))
+    # Use per-layer params if model exposes them (Gemma4 heterogeneous attention)
+    layer_params = getattr(model, "_lp", None)
+    if layer_params:
+        print(f"\nAllocating per-layer KV cache ({cfg.num_hidden_layers} layers, mixed dims)")
+        for lp in layer_params:
+            kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2
+            k = WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw)
+            v = WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw)
+            model.kv_pool.append((k, v))
+    else:
+        print(f"\nAllocating KV cache: {num_blocks} blocks × {block_size} × {default_kv_heads} heads × {default_head_dim} dim")
+        for layer in range(cfg.num_hidden_layers):
+            kv_bytes = num_blocks * block_size * default_kv_heads * default_head_dim * 2
+            k = WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw)
+            v = WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw)
+            model.kv_pool.append((k, v))
 
     # --- Prefill: run the prompt tokens one by one (decode-only MVP) ---
     # We simulate prefill by running each token as a decode step.

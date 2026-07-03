@@ -2,13 +2,17 @@ enable f16;
 
 override HIDDEN_DIM: u32 = 4096u;
 override WG_SIZE: u32    = 256u;
+// Maximum values stored in registers per thread. Host must set this to HIDDEN_DIM / WG_SIZE.
+// For HIDDEN_DIM=2560, WG_SIZE=256: VALS_PER_THREAD=10. Max supported: 16 (4096 / 256).
+// For HIDDEN_DIM > 4096 (e.g. 8192), set VALS_PER_THREAD=0 to disable register-tiling
+// and fall back to the two-pass global re-read.
+override VALS_PER_THREAD: u32 = 16u;
 
 var<workgroup> shared_sum: array<f32, 256>;
 
-// Note: a shared_cache for input values was removed. It required array<f32, HIDDEN_DIM>
-// in workgroup memory, which overflows the 16384-byte WebGPU minimum limit for
-// HIDDEN_DIM > 4096 (Llama-3-70B: 8192, Gemma-4-27B: 5376). Re-reading from global
-// memory in the output pass is correct; the GPU L2 cache covers most of the cost.
+// Register-tiled storage: thread stores up to VALS_PER_THREAD f32 values locally,
+// avoiding a second global read in pass 2.
+// WGSL allows override constants as function-scope array sizes.
 
 @group(0) @binding(0) var<storage, read>       input  : array<f16>;
 @group(0) @binding(1) var<storage, read>       weight : array<f16>;
@@ -24,37 +28,71 @@ fn main(
     let base = row * HIDDEN_DIM;
     let eps  = 1e-6f;
 
-    // Pass 1: accumulate sum-of-squares
-    var sq_sum: f32 = 0.0;
-    var col = tid;
-    loop {
-        if (col >= HIDDEN_DIM) { break; }
-        let v = f32(input[base + col]);
-        sq_sum += v * v;
-        col += WG_SIZE;
-    }
-    shared_sum[tid] = sq_sum;
-    workgroupBarrier();
-
-    // Parallel reduction
-    var stride = WG_SIZE / 2u;
-    loop {
-        if (stride == 0u) { break; }
-        if (tid < stride) {
-            shared_sum[tid] += shared_sum[tid + stride];
+    if (VALS_PER_THREAD > 0u) {
+        // Register-tile path: store input values in registers, skip pass-2 global read.
+        // Sufficient for HIDDEN_DIM ≤ WG_SIZE * VALS_PER_THREAD (e.g. ≤4096 for WG=256, V=16).
+        // Array size fixed at 16 (max needed); VALS_PER_THREAD is the loop bound at runtime.
+        var local_v: array<f32, 16>;
+        var sq_sum: f32 = 0.0;
+        var col = tid;
+        for (var i = 0u; i < VALS_PER_THREAD; i++) {
+            if (col < HIDDEN_DIM) {
+                let v = f32(input[base + col]);
+                local_v[i] = v;
+                sq_sum += v * v;
+                col += WG_SIZE;
+            }
         }
+        shared_sum[tid] = sq_sum;
         workgroupBarrier();
-        stride /= 2u;
-    }
 
-    let rms_inv = inverseSqrt(shared_sum[0] / f32(HIDDEN_DIM) + eps);
+        var stride = WG_SIZE / 2u;
+        loop {
+            if (stride == 0u) { break; }
+            if (tid < stride) { shared_sum[tid] += shared_sum[tid + stride]; }
+            workgroupBarrier();
+            stride /= 2u;
+        }
 
-    // Pass 2: normalize and write — re-read from global input
-    col = tid;
-    loop {
-        if (col >= HIDDEN_DIM) { break; }
-        let normed = f32(input[base + col]) * rms_inv;
-        output[base + col] = f16(normed * f32(weight[col]));
-        col += WG_SIZE;
+        let rms_inv = inverseSqrt(shared_sum[0] / f32(HIDDEN_DIM) + eps);
+
+        // Pass 2: read from registers — zero global memory traffic for input.
+        col = tid;
+        for (var i = 0u; i < VALS_PER_THREAD; i++) {
+            if (col < HIDDEN_DIM) {
+                output[base + col] = f16(local_v[i] * rms_inv * f32(weight[col]));
+                col += WG_SIZE;
+            }
+        }
+    } else {
+        // Two-pass global re-read fallback (for HIDDEN_DIM > WG_SIZE * max register slots).
+        var sq_sum: f32 = 0.0;
+        var col = tid;
+        loop {
+            if (col >= HIDDEN_DIM) { break; }
+            let v = f32(input[base + col]);
+            sq_sum += v * v;
+            col += WG_SIZE;
+        }
+        shared_sum[tid] = sq_sum;
+        workgroupBarrier();
+
+        var stride = WG_SIZE / 2u;
+        loop {
+            if (stride == 0u) { break; }
+            if (tid < stride) { shared_sum[tid] += shared_sum[tid + stride]; }
+            workgroupBarrier();
+            stride /= 2u;
+        }
+
+        let rms_inv = inverseSqrt(shared_sum[0] / f32(HIDDEN_DIM) + eps);
+
+        col = tid;
+        loop {
+            if (col >= HIDDEN_DIM) { break; }
+            let normed = f32(input[base + col]) * rms_inv;
+            output[base + col] = f16(normed * f32(weight[col]));
+            col += WG_SIZE;
+        }
     }
 }
