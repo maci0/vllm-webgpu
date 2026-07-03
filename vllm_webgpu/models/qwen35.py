@@ -64,22 +64,20 @@ def _is_full_attn(layer_idx: int, layer_types: list | None = None) -> bool:
 
 class Qwen35WebGPUModel(BaseWebGPUModel):
     """
-    Qwen3.5-9B hybrid inference model.
+    Qwen3.5-9B hybrid inference model — all compute on WebGPU.
 
-    Full-attention layers (every 4th, indices 3/7/11/.../31): standard GQA on
-    GPU using existing WebGPU kernels, same path as LlamaWebGPUModel.
+    Full-attention layers (every 4th, indices 3/7/11/.../31): standard GQA
+    using existing WebGPU kernels (same as LlamaWebGPUModel).
 
-    Linear-attention layers (all others): GDN (Gated Delta Networks) on CPU
-    using vLLM's compiled ops, with FFN on GPU.
+    Linear-attention layers (all others): GDN (Gated Delta Networks) entirely
+    on WebGPU using custom WGSL kernels:
+      - causal_conv_step.wgsl: single-step causal depthwise convolution
+      - gdn_state_update.wgsl: delta-rule SSM state update
+      - linear_attn_norm_gate.wgsl: per-head RMSNorm + sigmoid gate
 
-    GDN CPU path per layer:
-      1. GPU readback of normed x
-      2. in_proj_qkv on CPU (torch linear, bf16)
-      3. causal depthwise conv1d update (vLLM causal_conv1d_update_torch)
-      4. in_proj_a / in_proj_b on CPU
-      5. fused_sigmoid_gating_delta_rule_update_cpu (vLLM op, mutates SSM state)
-      6. RMS norm + sigmoid gate + out_proj on CPU
-      7. Upload result to GPU, continue FFN on WebGPU
+    Persistent recurrent state (SSM matrix + conv history) lives in GPU buffers
+    that are updated in-place each decode step. No CPU↔GPU transfers in the
+    hot path.
     """
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
@@ -97,7 +95,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         from vllm_webgpu.config import get_config
         self.block_size: int = get_config().block_size
 
-        # Validate dimensions for GPU shaders
         for name, val in [("hidden_size", self.hidden_size),
                           ("intermediate_size", self.intermediate_size),
                           ("head_dim", self.head_dim)]:
@@ -111,14 +108,11 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         self._init_scratch_buffers(max_ctx)
 
-        # CPU torch tensors for linear-attention layers (populated in load_weights)
-        self._lin_cpu: list[dict | None] = [None] * self.num_layers
-
-        # Per-layer recurrent states (SSM + conv)
-        # SSM:  torch.Tensor [1, num_v_heads, k_dim, v_dim] float32
-        # Conv: torch.Tensor [1, conv_dim, kernel-1] bfloat16 (mutated in-place)
-        self._ssm_states: list = [None] * self.num_layers
-        self._conv_states: list = [None] * self.num_layers
+        # Persistent GPU buffers for recurrent state (allocated after load_weights).
+        # SSM state:  [NUM_V_HEADS, K_DIM, V_DIM] f32 = 2MB per linear-attn layer
+        # Conv state: [CONV_KERNEL-1, CONV_DIM] f16 = 49KB per linear-attn layer
+        self._ssm_gpu: list = []   # one WebGPUBuffer per layer (or None for full-attn)
+        self._conv_gpu: list = []  # one WebGPUBuffer per layer
 
     def _is_full_attn(self, i: int) -> bool:
         return _is_full_attn(i, self._layer_types)
@@ -158,6 +152,13 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "h0":         mk(T * H * 2),
             "h1":         mk(T * H * 2),
             "h2":         mk(T * H * 2),
+            # GDN linear-attention scratch buffers
+            "qkv_buf":    mk(_LIN_CONV_DIM * 2),        # in_proj_qkv output [8192 f16]
+            "qkv_conv":   mk(_LIN_CONV_DIM * 2),        # post-conv output [8192 f16]
+            "a_buf":      mk(_LIN_V_HEADS * 2),         # in_proj_a output [32 f16]
+            "z_buf":      mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # in_proj_z output [4096 f16]
+            "gdn_out":    mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # GDN attn output [4096 f16]
+            "gated":      mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # after norm+gate [4096 f16]
         }
         self._hstate: int = 0
 
@@ -192,170 +193,200 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                         f"expected {expected} or ({self.head_dim},)"
                     )
 
-    def _extract_lin_weights(self) -> None:
-        """Pull linear-attn weights from GPU buffers into CPU torch BF16 tensors.
+    def _alloc_lin_states(self) -> None:
+        """Allocate GPU buffers for persistent GDN recurrent state.
 
-        Also pre-warms the vLLM op cache so the real ops are resolved now,
-        before any test mock can shadow sys.modules["vllm"].
+        Called after load_weights. Each linear-attention layer gets:
+          - SSM state:  [NUM_V_HEADS * K_DIM * V_DIM] f32 (zero-initialized)
+          - Conv state: [(CONV_KERNEL-1) * CONV_DIM] f16 (zero-initialized)
 
-        vLLM's GDN ops require bfloat16 torch tensors on CPU. The MLX loader
-        dequantizes everything to f16 and uploads to GPU; here we download and
-        reinterpret as bfloat16 via float32.
-
-        conv1d weight from MLX is [8192, 4, 1]; we squeeze the trailing 1 to
-        get [8192, 4], which matches causal_conv1d_update_torch's expected
-        [dim, kernel] shape.
-
-        A_log was originally float32 in MLX but is stored as f16 in the GPU
-        buffer; we promote it back to float32 before handing to the GDN op.
+        conv1d weight from MLX has shape [8192, 4, 1]; reshape the last dim
+        so the shader reads [CONV_DIM, KERNEL] = [8192, 4] correctly.
         """
-        import torch
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
-        # Pre-warm the op cache while the real vllm is still accessible.
-        try:
-            _get_vllm_gdn_ops()
-        except RuntimeError:
-            logger.warning("vLLM GDN ops unavailable; linear-attention layers will error at inference.")
+        dev = self.wgpu_device.wgpu_device
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
-        def _to_bf16(key: str) -> "torch.Tensor | None":
-            buf = self.weights.get(key)
-            if buf is None:
-                return None
-            arr = buf.to_numpy().view(np.float16).reshape(buf.shape)
-            return torch.from_numpy(arr.astype(np.float32)).to(torch.bfloat16)
+        ssm_bytes  = _LIN_V_HEADS * _LIN_K_DIM * _LIN_V_DIM * 4   # f32
+        conv_bytes = (_LIN_CONV_KERNEL - 1) * _LIN_CONV_DIM * 2    # f16
 
-        def _to_f32(key: str) -> "torch.Tensor | None":
-            buf = self.weights.get(key)
-            if buf is None:
-                return None
-            arr = buf.to_numpy().view(np.float16).reshape(buf.shape)
-            return torch.from_numpy(arr.astype(np.float32))
+        self._ssm_gpu  = [None] * self.num_layers
+        self._conv_gpu = [None] * self.num_layers
 
         for i in range(self.num_layers):
             if self._is_full_attn(i):
                 continue
+            self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes,  usage=rw)
+            self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes, usage=rw)
 
+            # Reshape conv1d weight [CONV_DIM, KERNEL, 1] -> [CONV_DIM, KERNEL] if needed.
             p = f"model.layers.{i}.linear_attn"
-
-            conv_w = _to_bf16(f"{p}.conv1d.weight")
-            if conv_w is not None and conv_w.ndim == 3:
-                conv_w = conv_w.squeeze(-1)  # [8192, 4, 1] -> [8192, 4]
-
-            self._lin_cpu[i] = {
-                "in_proj_qkv": _to_bf16(f"{p}.in_proj_qkv.weight"),
-                "in_proj_z":   _to_bf16(f"{p}.in_proj_z.weight"),
-                "in_proj_a":   _to_bf16(f"{p}.in_proj_a.weight"),
-                "in_proj_b":   _to_bf16(f"{p}.in_proj_b.weight"),
-                "conv1d":      conv_w,
-                "A_log":       _to_f32(f"{p}.A_log"),
-                "dt_bias":     _to_bf16(f"{p}.dt_bias"),
-                "norm_weight": _to_bf16(f"{p}.norm.weight"),
-                "out_proj":    _to_bf16(f"{p}.out_proj.weight"),
-            }
-
-            self._ssm_states[i] = torch.zeros(
-                1, _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM, dtype=torch.float32
-            )
-            self._conv_states[i] = torch.zeros(
-                1, _LIN_CONV_DIM, _LIN_CONV_KERNEL - 1, dtype=torch.bfloat16
-            )
+            conv_w_key = f"{p}.conv1d.weight"
+            w = self.weights.get(conv_w_key)
+            if w is not None and len(w.shape) == 3 and w.shape[2] == 1:
+                arr = w.to_numpy().view(np.float16).reshape(w.shape[0], w.shape[1])
+                self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr, usage=rw)
 
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
         self._postprocess_weights()
-        self._extract_lin_weights()
+        self._alloc_lin_states()
 
-    def _reset_recurrent_states(self) -> None:
-        """Zero out GDN recurrent states (SSM + conv) for all linear-attention layers."""
-        import torch
+    def reset_recurrent_states(self) -> None:
+        """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+        dev = self.wgpu_device.wgpu_device
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        ssm_bytes  = _LIN_V_HEADS * _LIN_K_DIM * _LIN_V_DIM * 4
+        conv_bytes = (_LIN_CONV_KERNEL - 1) * _LIN_CONV_DIM * 2
         for i in range(self.num_layers):
             if self._is_full_attn(i):
                 continue
-            self._ssm_states[i] = torch.zeros(
-                1, _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM, dtype=torch.float32
-            )
-            self._conv_states[i] = torch.zeros(
-                1, _LIN_CONV_DIM, _LIN_CONV_KERNEL - 1, dtype=torch.bfloat16
-            )
+            self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes,  usage=rw)
+            self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes, usage=rw)
 
-    def _gdn_decode(self, layer_idx: int, x_bf16: "torch.Tensor") -> "torch.Tensor":
-        """Single-token GDN decode step using vLLM's compiled CPU ops.
+    def _gdn_layer_gpu(
+        self,
+        layer_idx: int,
+        x_buf: "WebGPUBuffer",
+        num_tokens: int,
+    ) -> "WebGPUBuffer":
+        """Single-token GDN decode step using pure WebGPU kernels.
 
-        x_bf16: [hidden_size] bfloat16 torch tensor on CPU
-        Returns: [hidden_size] bfloat16 torch tensor on CPU
+        All operations dispatch WGSL compute shaders — no CPU fallback.
+        Persistent state (SSM matrix + conv history) lives in GPU buffers
+        that are mutated in-place each call.
+
+        Pipeline:
+          1. rms_norm(x)                   → normed        [hidden f16]
+          2. matmul_quant(normed, qkv_w)   → qkv_buf       [8192 f16]
+          3. causal_conv_step(qkv_buf)     → qkv_conv      [8192 f16], updates conv_state
+          4. matmul_quant(x, a_proj_w)     → a_buf         [32 f16]
+          5. matmul_quant(x, z_proj_w)     → z_buf         [4096 f16]
+          6. gdn_state_update(qkv_conv, a) → gdn_out       [4096 f16], updates ssm_state
+          7. linear_attn_norm_gate(gdn,z)  → gated         [4096 f16]
+          8. matmul_quant(gated, out_proj) → out_buf       [hidden f16]
+          9. add(x, out_buf)               → residual
+          10. FFN (rms_norm → gate/up → gelu → down → add)
         """
-        import torch
-        import torch.nn.functional as F
+        import math
+        sc = self._sc
+        hidden = self.hidden_size
+        inter = self.intermediate_size
+        p = f"model.layers.{layer_idx}.linear_attn"
+        pp = f"model.layers.{layer_idx}"
+        add_n = num_tokens * hidden
+        gelu_n = num_tokens * inter
 
-        vllm_ops = _get_vllm_gdn_ops()
-        causal_conv1d_update_torch = vllm_ops["causal_conv1d_update_torch"]
-        fused_gdn_update = vllm_ops["fused_sigmoid_gating_delta_rule_update_cpu"]
+        h_names = ["h0", "h1", "h2"]
+        residual = sc[h_names[(self._hstate + 1) % 3]]
+        out = sc[h_names[(self._hstate + 2) % 3]]
 
-        lw = self._lin_cpu[layer_idx]
-        if lw is None:
-            raise RuntimeError(f"Linear-attn weights not loaded for layer {layer_idx}")
+        # GDN linear attention has no KV cache — state is in ssm_gpu/conv_gpu buffers.
+        # Offsets into flat QKV buffer (f16 elements)
+        q_base = 0                          # Q: [NUM_K_HEADS × K_DIM]
+        k_base = _LIN_K_HEADS * _LIN_K_DIM # K: = 2048
+        v_base = _LIN_KEY_DIM * 2           # V: = 4096
 
-        # 1. QKV projection: [hidden] -> [8192]
-        qkv = F.linear(x_bf16.unsqueeze(0), lw["in_proj_qkv"])  # [1, 8192]
+        with self._batched_dispatch(label=f"L{layer_idx:02d}"):
+            # 1. Pre-norm
+            _rms_h = {"HIDDEN_DIM": hidden,
+                      "VALS_PER_THREAD": min(hidden // 256, 16) if hidden <= 4096 else 0}
+            self._dispatch("rms_norm",
+                           [x_buf, self.weights[f"{pp}.input_layernorm.weight"], sc["normed"]],
+                           _rms_h, (num_tokens, 1, 1))
 
-        # 2. Causal depthwise conv1d (mutates conv_state in-place)
-        # expects x: [B, dim, 1], conv_state: [B, dim, kernel-1], weight: [dim, kernel]
-        qkv_conv = causal_conv1d_update_torch(
-            x=qkv.unsqueeze(-1),
-            conv_state=self._conv_states[layer_idx],
-            weight=lw["conv1d"],
-            bias=None,
-            activation="silu",
-        )  # [1, 8192, 1]
-        qkv_conv = qkv_conv.squeeze(-1).squeeze(0)  # [8192]
+            # 2. QKV projection: [hidden] → [8192]
+            self._dispatch("matmul_quant",
+                           [sc["normed"], self.weights[f"{p}.in_proj_qkv.weight"],
+                            sc["normed"], sc["qkv_buf"]],
+                           {"K": hidden, "N": _LIN_CONV_DIM, "USE_QUANT": 0},
+                           ((_LIN_CONV_DIM + 255) // 256, 1, 1))
 
-        # 3. Split Q=[2048], K=[2048], V=[4096]
-        q_flat = qkv_conv[:_LIN_KEY_DIM]
-        k_flat = qkv_conv[_LIN_KEY_DIM:_LIN_KEY_DIM * 2]
-        v_flat = qkv_conv[_LIN_KEY_DIM * 2:]
+            # 3. Causal conv step: updates conv_state in-place, writes qkv_conv
+            conv_w = self.weights.get(f"{p}.conv1d.weight", sc["normed"])
+            self._dispatch("causal_conv_step",
+                           [sc["qkv_buf"], conv_w, self._conv_gpu[layer_idx], sc["qkv_conv"]],
+                           {"CONV_DIM": _LIN_CONV_DIM, "KERNEL": _LIN_CONV_KERNEL,
+                            "WG_SIZE": 256},
+                           ((_LIN_CONV_DIM + 255) // 256, 1, 1))
 
-        # 4. Reshape to 4D as required by the fused GDN op: [B, T, heads, dim]
-        q = q_flat.view(1, 1, _LIN_K_HEADS, _LIN_K_DIM)
-        k = k_flat.view(1, 1, _LIN_K_HEADS, _LIN_K_DIM)
-        v = v_flat.view(1, 1, _LIN_V_HEADS, _LIN_V_DIM)
+            # 4. a projection: [hidden] → [32]
+            self._dispatch("matmul_quant",
+                           [x_buf, self.weights[f"{p}.in_proj_a.weight"],
+                            sc["normed"], sc["a_buf"]],
+                           {"K": hidden, "N": _LIN_V_HEADS, "USE_QUANT": 0},
+                           (1, 1, 1))
 
-        # 5. a and b projections: [hidden] -> [num_v_heads=32]
-        a = F.linear(x_bf16.unsqueeze(0), lw["in_proj_a"])  # [1, 32]
-        b = F.linear(x_bf16.unsqueeze(0), lw["in_proj_b"])  # [1, 32]
+            # 5. z gate projection: [hidden] → [4096]
+            self._dispatch("matmul_quant",
+                           [x_buf, self.weights[f"{p}.in_proj_z.weight"],
+                            sc["normed"], sc["z_buf"]],
+                           {"K": hidden, "N": _LIN_V_HEADS * _LIN_V_DIM, "USE_QUANT": 0},
+                           ((_LIN_V_HEADS * _LIN_V_DIM + 255) // 256, 1, 1))
 
-        # 6. Fused GDN state update (mutates ssm_state in-place via state_indices)
-        state_indices = torch.zeros(1, dtype=torch.int32)
-        cu_seqlens = torch.tensor([0, 1], dtype=torch.int32)
+            # 6. GDN state update: updates ssm_state in-place, writes gdn_out
+            self._dispatch("gdn_state_update",
+                           [sc["qkv_conv"], sc["a_buf"],
+                            self.weights[f"{p}.A_log"],
+                            self.weights[f"{p}.dt_bias"],
+                            self._ssm_gpu[layer_idx], sc["gdn_out"]],
+                           {"K_DIM": _LIN_K_DIM, "V_DIM": _LIN_V_DIM,
+                            "NUM_K_HEADS": _LIN_K_HEADS, "NUM_V_HEADS": _LIN_V_HEADS,
+                            "Q_BASE": q_base, "K_BASE": k_base, "V_BASE": v_base},
+                           (_LIN_V_HEADS, 1, 1))
 
-        gdn_out = fused_gdn_update(
-            A_log=lw["A_log"],
-            dt_bias=lw["dt_bias"],
-            q=q,
-            k=k,
-            v=v,
-            a=a,
-            b=b,
-            initial_state_source=self._ssm_states[layer_idx],
-            initial_state_indices=state_indices,
-            cu_seqlens=cu_seqlens,
-            use_qk_l2norm_in_kernel=True,
-        )  # [1, 1, num_v_heads, v_head_dim]
+            # 7. Per-head RMSNorm + sigmoid gate → gated
+            self._dispatch("linear_attn_norm_gate",
+                           [sc["gdn_out"], self.weights[f"{p}.norm.weight"],
+                            sc["z_buf"], sc["gated"]],
+                           {"NUM_V_HEADS": _LIN_V_HEADS, "V_DIM": _LIN_V_DIM},
+                           (_LIN_V_HEADS, 1, 1))
 
-        # 7. Flatten: [1, 1, 32, 128] -> [4096]
-        gdn_flat = gdn_out.reshape(-1)  # [4096]
+            # 8. Output projection: [4096] → [hidden]
+            self._dispatch("matmul_quant",
+                           [sc["gated"], self.weights[f"{p}.out_proj.weight"],
+                            sc["normed"], sc["o_proj_out"]],
+                           {"K": _LIN_V_HEADS * _LIN_V_DIM, "N": hidden, "USE_QUANT": 0},
+                           ((hidden + 255) // 256, 1, 1))
 
-        # 8. RMS norm per v_head using the shared norm weight [128]
-        gdn_heads = gdn_flat.view(_LIN_V_HEADS, _LIN_V_DIM)
-        rms = gdn_heads.float().pow(2).mean(dim=-1, keepdim=True).add(1e-6).sqrt()
-        gdn_normed = (gdn_heads.float() / rms * lw["norm_weight"].float()).to(torch.bfloat16)
-        gdn_normed_flat = gdn_normed.reshape(-1)  # [4096]
+            # 9. Attention residual add
+            self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
+                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
 
-        # 9. Sigmoid gate: z = in_proj_z(x_original), gate = sigmoid(z)
-        z = F.linear(x_bf16.unsqueeze(0), lw["in_proj_z"]).squeeze(0)  # [4096]
-        gated = gdn_normed_flat * torch.sigmoid(z)  # [4096]
+            # 10. FFN
+            _rms_ff = _rms_h
+            self._dispatch("rms_norm",
+                           [residual, self.weights[f"{pp}.post_attention_layernorm.weight"],
+                            sc["ffn_normed"]],
+                           _rms_ff, (num_tokens, 1, 1))
 
-        # 10. Output projection: [4096] -> [hidden_size]
-        return F.linear(gated.unsqueeze(0), lw["out_proj"]).squeeze(0)
+            for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
+                w_k = f"{pp}.mlp.{proj}.weight"
+                self._dispatch("matmul_quant",
+                               [sc["ffn_normed"], self.weights[w_k],
+                                sc["ffn_normed"], out_b],
+                               {"K": hidden, "N": inter, "USE_QUANT": 0},
+                               ((inter + 255) // 256, 1, 1))
+
+            self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+
+            w_k = f"{pp}.mlp.down_proj.weight"
+            self._dispatch("matmul_quant",
+                           [sc["ffn_act"], self.weights[w_k],
+                            sc["ffn_act"], sc["ffn_out"]],
+                           {"K": inter, "N": hidden, "USE_QUANT": 0},
+                           ((hidden + 255) // 256, 1, 1))
+
+            self._dispatch("add", [residual, sc["ffn_out"], out],
+                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+
+        self._hstate = (self._hstate + 2) % 3
+        return out
 
     def forward(
         self,
@@ -565,7 +596,16 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         x_buf: "WebGPUBuffer",
         num_tokens: int,
     ) -> "WebGPUBuffer":
-        """GDN linear-attention layer: CPU GDN via vLLM ops, FFN on GPU."""
+        """GDN linear-attention layer — delegates to _gdn_layer_gpu (pure WebGPU)."""
+        return self._gdn_layer_gpu(layer_idx, x_buf, num_tokens)
+
+    def _linear_attn_layer_cpu_fallback(
+        self,
+        layer_idx: int,
+        x_buf: "WebGPUBuffer",
+        num_tokens: int,
+    ) -> "WebGPUBuffer":
+        """Kept for reference only — NOT USED. Original CPU-based GDN fallback."""
         import torch
         import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer

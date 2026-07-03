@@ -145,3 +145,8 @@ class WebGPUPlatform(_Platform):
     @classmethod
     def verify_quantization(cls, quant: str) -> None:
         pass
+
+    @classmethod
+    def manual_seed_all(cls, seed: int) -> None:
+        # WebGPU has no global RNG; Python/numpy RNG is seeded by vLLM's set_random_seed.
+        pass

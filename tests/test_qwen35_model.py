@@ -28,37 +28,42 @@ def make_qwen35_config(num_layers=4, vocab_size=32):
     return cfg
 
 
-def _make_gdn_weights_torch(hidden: int = 4096) -> dict:
-    """Random GDN weight dict as torch BF16 CPU tensors (matching _extract_lin_weights output)."""
-    g = torch.Generator()
-    g.manual_seed(42)
+def _make_gdn_gpu_weights(wgpu_device, hidden: int = 4096) -> dict:
+    """Upload random GDN weights as GPU f16 buffers."""
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    import wgpu as wgpu_lib
 
-    def r(*shape):
-        return torch.randn(*shape, generator=g, dtype=torch.bfloat16) * 0.01
+    dev = wgpu_device.wgpu_device
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    rng = np.random.default_rng(42)
+
+    def r_f16(*shape) -> "WebGPUBuffer":
+        arr = (rng.standard_normal(shape) * 0.01).astype(np.float16)
+        return WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(arr), usage=rw)
+
+    from vllm_webgpu.models.qwen35 import _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM, _LIN_CONV_DIM
 
     return {
-        "in_proj_qkv": r(8192, hidden),
-        "in_proj_z":   r(4096, hidden),
-        "in_proj_a":   r(32, hidden),
-        "in_proj_b":   r(32, hidden),
-        "conv1d":      r(8192, 4),        # already squeezed: [dim, kernel]
-        "A_log":       torch.full((32,), -1.0, dtype=torch.float32),
-        "dt_bias":     torch.zeros(32, dtype=torch.bfloat16),
-        "norm_weight": torch.ones(128, dtype=torch.bfloat16),
-        "out_proj":    r(hidden, 4096),
+        "model.layers.0.linear_attn.in_proj_qkv.weight": r_f16(8192, hidden),
+        "model.layers.0.linear_attn.in_proj_z.weight":   r_f16(4096, hidden),
+        "model.layers.0.linear_attn.in_proj_a.weight":   r_f16(_LIN_V_HEADS, hidden),
+        "model.layers.0.linear_attn.in_proj_b.weight":   r_f16(_LIN_V_HEADS, hidden),
+        "model.layers.0.linear_attn.conv1d.weight":
+            WebGPUBuffer.from_numpy(dev,
+                np.ascontiguousarray(
+                    (rng.standard_normal((_LIN_CONV_DIM, 4)) * 0.01).astype(np.float16)),
+                usage=rw),
+        "model.layers.0.linear_attn.A_log":
+            WebGPUBuffer.from_numpy(dev,
+                np.full(_LIN_V_HEADS, -1.0, dtype=np.float16), usage=rw),
+        "model.layers.0.linear_attn.dt_bias":
+            WebGPUBuffer.from_numpy(dev,
+                np.zeros(_LIN_V_HEADS, dtype=np.float16), usage=rw),
+        "model.layers.0.linear_attn.norm.weight":
+            WebGPUBuffer.from_numpy(dev,
+                np.ones(_LIN_V_DIM, dtype=np.float16), usage=rw),
+        "model.layers.0.linear_attn.out_proj.weight": r_f16(hidden, 4096),
     }
-
-
-def _make_gdn_ssm_state():
-    """Zero SSM state tensor."""
-    from vllm_webgpu.models.qwen35 import _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM
-    return torch.zeros(1, _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM, dtype=torch.float32)
-
-
-def _make_gdn_conv_state():
-    """Zero conv state tensor."""
-    from vllm_webgpu.models.qwen35 import _LIN_CONV_DIM, _LIN_CONV_KERNEL
-    return torch.zeros(1, _LIN_CONV_DIM, _LIN_CONV_KERNEL - 1, dtype=torch.bfloat16)
 
 
 def test_qwen35_model_instantiates(wgpu_device):
@@ -108,10 +113,14 @@ def test_qwen35_layer_type_fallback(wgpu_device):
         assert model._is_full_attn(i) == expected, f"Layer {i}: expected full={expected}"
 
 
-def test_gdn_decode_shape_and_stability(wgpu_device):
-    """GDN decode output has correct shape and no NaN/Inf."""
+def _setup_gdn_model(wgpu_device):
+    """Create a Qwen35WebGPUModel with minimal GPU weights for GDN testing."""
+    import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.models.qwen35 import (
+        Qwen35WebGPUModel, _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM, _LIN_CONV_DIM
+    )
     from vllm_webgpu.utils import SHADERS_DIR
 
     cfg = make_qwen35_config()
@@ -119,71 +128,103 @@ def test_gdn_decode_shape_and_stability(wgpu_device):
     model = Qwen35WebGPUModel(cfg, wgpu_device, cache)
 
     hidden = cfg.hidden_size
-    model._lin_cpu[0] = _make_gdn_weights_torch(hidden)
-    model._ssm_states[0] = _make_gdn_ssm_state()
-    model._conv_states[0] = _make_gdn_conv_state()
+    dev = wgpu_device.wgpu_device
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    rng = np.random.default_rng(42)
 
-    g = torch.Generator()
-    g.manual_seed(7)
-    x_bf16 = torch.randn(hidden, generator=g, dtype=torch.bfloat16) * 0.1
+    def f16(arr): return WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(arr.astype(np.float16)), usage=rw)
 
-    out = model._gdn_decode(0, x_bf16)
+    gdn_weights = _make_gdn_gpu_weights(wgpu_device, hidden)
+    model.weights.update(gdn_weights)
 
-    assert out.shape == (hidden,)
-    assert out.dtype == torch.bfloat16
-    assert not torch.any(torch.isnan(out)), "GDN output contains NaN"
-    assert not torch.any(torch.isinf(out)), "GDN output contains Inf"
+    # Stub out the norm/FFN weights that _gdn_layer_gpu needs
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    import wgpu as wgpu_lib
+    _dev = wgpu_device.wgpu_device
+    _rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    p = "model.layers.0"
+    inter = cfg.intermediate_size
+    for key, shape in [
+        (f"{p}.input_layernorm.weight", (hidden,)),
+        (f"{p}.post_attention_layernorm.weight", (hidden,)),
+        (f"{p}.mlp.gate_proj.weight", (inter, hidden)),
+        (f"{p}.mlp.up_proj.weight", (inter, hidden)),
+        (f"{p}.mlp.down_proj.weight", (hidden, inter)),
+    ]:
+        arr = np.ones(shape, dtype=np.float16) * 0.01
+        model.weights[key] = WebGPUBuffer.from_numpy(_dev, np.ascontiguousarray(arr), usage=_rw)
+
+    # Allocate SSM and conv state GPU buffers directly
+    model._ssm_gpu = [None] * model.num_layers
+    model._conv_gpu = [None] * model.num_layers
+    ssm_bytes  = _LIN_V_HEADS * _LIN_K_DIM * _LIN_V_DIM * 4
+    conv_bytes = 3 * _LIN_CONV_DIM * 2  # (KERNEL-1) * DIM * f16
+    model._ssm_gpu[0]  = WebGPUBuffer.empty(dev, ssm_bytes,  usage=rw)
+    model._conv_gpu[0] = WebGPUBuffer.empty(dev, conv_bytes, usage=rw)
+
+    return model, hidden
+
+
+def test_gdn_decode_shape_and_stability(wgpu_device):
+    """GDN GPU kernel output has correct shape and no NaN/Inf."""
+    model, hidden = _setup_gdn_model(wgpu_device)
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    import wgpu as wgpu_lib
+
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    dev = wgpu_device.wgpu_device
+
+    rng = np.random.default_rng(7)
+    x_np = (rng.standard_normal(hidden) * 0.1).astype(np.float16)
+    x_buf = WebGPUBuffer.from_numpy(dev, x_np, usage=rw)
+
+    out_buf = model._gdn_layer_gpu(0, x_buf, 1)
+    out = out_buf.to_numpy().view(np.float16).reshape(hidden)
+
+    assert out.shape == (hidden,), f"Expected ({hidden},), got {out.shape}"
+    assert not np.any(np.isnan(out)), "GDN output contains NaN"
+    assert not np.any(np.isinf(out)), "GDN output contains Inf"
 
 
 def test_gdn_decode_conv_state_update(wgpu_device):
-    """GDN decode mutates the conv state and SSM state in-place."""
-    from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
-    from vllm_webgpu.utils import SHADERS_DIR
+    """GDN GPU kernel updates conv and SSM state buffers."""
+    model, hidden = _setup_gdn_model(wgpu_device)
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    import wgpu as wgpu_lib
 
-    cfg = make_qwen35_config()
-    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
-    model = Qwen35WebGPUModel(cfg, wgpu_device, cache)
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    dev = wgpu_device.wgpu_device
 
-    hidden = cfg.hidden_size
-    model._lin_cpu[0] = _make_gdn_weights_torch(hidden)
-    model._ssm_states[0] = _make_gdn_ssm_state()
-    model._conv_states[0] = _make_gdn_conv_state()
+    x_np = np.ones(hidden, dtype=np.float16) * 0.1
+    x_buf = WebGPUBuffer.from_numpy(dev, x_np, usage=rw)
+    model._gdn_layer_gpu(0, x_buf, 1)
 
-    x_bf16 = torch.ones(hidden, dtype=torch.bfloat16) * 0.1
-    model._gdn_decode(0, x_bf16)
+    # Conv state should be non-zero after update (causal_conv_step writes to it)
+    conv_data = model._conv_gpu[0].to_numpy().view(np.float16)
+    assert np.any(conv_data != 0), "Conv state not updated by GPU kernel"
 
-    # conv_state is mutated in-place by causal_conv1d_update_torch
-    assert model._conv_states[0].abs().sum().item() > 0, "Conv state not updated"
-    # SSM state is mutated in-place by fused_sigmoid_gating_delta_rule_update_cpu
-    assert model._ssm_states[0].abs().sum().item() > 0, "SSM state not updated"
+    # SSM state should be non-zero after update (gdn_state_update writes to it)
+    ssm_data = model._ssm_gpu[0].to_numpy().view(np.float32)
+    assert np.any(ssm_data != 0), "SSM state not updated by GPU kernel"
 
 
 def test_gdn_decode_sequential_tokens(wgpu_device):
-    """Running GDN decode twice with different inputs yields different outputs."""
-    from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
-    from vllm_webgpu.utils import SHADERS_DIR
+    """Two GDN GPU decode steps with different inputs produce different outputs."""
+    model, hidden = _setup_gdn_model(wgpu_device)
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    import wgpu as wgpu_lib
 
-    cfg = make_qwen35_config()
-    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
-    model = Qwen35WebGPUModel(cfg, wgpu_device, cache)
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    dev = wgpu_device.wgpu_device
 
-    hidden = cfg.hidden_size
-    model._lin_cpu[0] = _make_gdn_weights_torch(hidden)
-    model._ssm_states[0] = _make_gdn_ssm_state()
-    model._conv_states[0] = _make_gdn_conv_state()
+    rng = np.random.default_rng(99)
+    x1 = WebGPUBuffer.from_numpy(dev, (rng.standard_normal(hidden) * 0.1).astype(np.float16), usage=rw)
+    x2 = WebGPUBuffer.from_numpy(dev, (rng.standard_normal(hidden) * 0.1).astype(np.float16), usage=rw)
 
-    g = torch.Generator()
-    g.manual_seed(99)
-    x1 = torch.randn(hidden, generator=g, dtype=torch.bfloat16) * 0.1
-    x2 = torch.randn(hidden, generator=g, dtype=torch.bfloat16) * 0.1
+    out1 = model._gdn_layer_gpu(0, x1, 1).to_numpy().view(np.float16).copy()
+    out2 = model._gdn_layer_gpu(0, x2, 1).to_numpy().view(np.float16).copy()
 
-    out1 = model._gdn_decode(0, x1)
-    out2 = model._gdn_decode(0, x2)
-
-    # After state update, outputs should differ
-    assert not torch.allclose(out1, out2), "GDN outputs should differ across sequential calls"
+    assert not np.allclose(out1, out2), "GDN GPU outputs should differ across sequential calls"
 
 
 def test_mlx_detect_format():
