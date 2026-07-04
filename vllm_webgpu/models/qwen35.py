@@ -159,6 +159,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "z_buf":      mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # in_proj_z output [4096 f16]
             "gdn_out":    mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # GDN attn output [4096 f16]
             "gated":      mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # after norm+gate [4096 f16]
+            "b_buf":      mk(_LIN_V_HEADS * 2),              # in_proj_b output [32 f16]
             # Dummy binding-2 scales buffer for USE_QUANT=0 dispatches.
             # Prevents sc["normed"] from being silently aliased as a scales buffer,
             # which would corrupt output if a dispatch is promoted to USE_QUANT=1/2.
@@ -325,7 +326,14 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            {"K": hidden, "N": _LIN_V_HEADS, "USE_QUANT": 0},
                            (1, 1, 1))
 
-            # 5. z gate projection: normed → [4096] (output gate; must use normed, not raw x)
+            # 5a. b projection: normed → [32] (outer-product gate; sigmoid applied in shader)
+            self._dispatch("matmul_quant",
+                           [sc["normed"], self.weights[f"{p}.in_proj_b.weight"],
+                            sc["dummy_scales"], sc["b_buf"]],
+                           {"K": hidden, "N": _LIN_V_HEADS, "USE_QUANT": 0},
+                           (1, 1, 1))
+
+            # 5b. z gate projection: normed → [4096] (output gate; must use normed, not raw x)
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[f"{p}.in_proj_z.weight"],
                             sc["dummy_scales"], sc["z_buf"]],
@@ -333,8 +341,9 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            ((_LIN_V_HEADS * _LIN_V_DIM + 255) // 256, 1, 1))
 
             # 6. GDN state update: updates ssm_state in-place, writes gdn_out
+            # Binding order: qkv_conv, a_buf, b_buf, A_log, dt_bias, state, output
             self._dispatch("gdn_state_update",
-                           [sc["qkv_conv"], sc["a_buf"],
+                           [sc["qkv_conv"], sc["a_buf"], sc["b_buf"],
                             self.weights[f"{p}.A_log"],
                             self.weights[f"{p}.dt_bias"],
                             self._ssm_gpu[layer_idx], sc["gdn_out"]],
