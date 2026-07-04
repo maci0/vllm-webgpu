@@ -97,8 +97,106 @@ def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
     return weights
 
 
+def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
+    """Dequantize AWQ int4 weights to float16.
+
+    AWQ packs 8 int4 weights per int32 along the output (N) dimension,
+    using nibble order [0,4,1,5,2,6,3,7] within each int32. Output is
+    the original weight matrix (N, K) = (out_features, in_features) in F16.
+
+    Args:
+        qweight: (K, N//8) int32  — packed input dim × output dim
+        scales:  (G, N)   float16 — per-group per-output-channel scales
+        qzeros:  (G, N//8) int32  — packed zero-points (same nibble order)
+    """
+    K, N8 = qweight.shape
+    N = N8 * 8
+    G = scales.shape[0]
+    group_size = K // G
+
+    # AWQ nibble reorder: position i in int32 holds nibble at bit offset
+    # [0, 16, 4, 20, 8, 24, 12, 28] = [0,4,1,5,2,6,3,7] * 4
+    nibble_shifts = np.array([0, 16, 4, 20, 8, 24, 12, 28], dtype=np.int32)
+
+    qw = qweight.astype(np.int32)            # (K, N//8)
+    qz = qzeros.astype(np.int32)             # (G, N//8)
+    sc = scales.astype(np.float32)           # (G, N)
+
+    # Unpack 8 nibbles per int32 → (K, N) uint8
+    w_int4 = np.empty((K, N), dtype=np.uint8)
+    z_int4 = np.empty((G, N), dtype=np.uint8)
+    for j in range(8):
+        shift = nibble_shifts[j]
+        w_int4[:, j::8] = (qw >> shift) & 0xF
+        z_int4[:, j::8] = (qz >> shift) & 0xF
+
+    # Expand scales/zeros to (K, N) shape
+    sc_exp = sc[np.arange(K) // group_size]   # (K, N)
+    z_exp  = z_int4[np.arange(K) // group_size].astype(np.float32)  # (K, N)
+
+    # Dequantize: weight(K, N) then transpose to (N, K) for our shader
+    w_f32 = sc_exp * (w_int4.astype(np.float32) - z_exp)  # (K, N)
+    return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
+
+
+def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
+                  g_idx: "np.ndarray | None" = None) -> np.ndarray:
+    """Dequantize GPTQ int4 weights to float16.
+
+    GPTQ packs 8 int4 weights per int32 along the input (K) dimension,
+    using standard nibble order [0,1,2,3,4,5,6,7]. Output is (N, K) F16.
+
+    Args:
+        qweight: (K//8, N) int32
+        scales:  (G, N)    float16
+        qzeros:  (G, N//8) int32
+        g_idx:   (K,) int32 optional group index per input dim (desc_act)
+    """
+    K8, N = qweight.shape
+    K = K8 * 8
+    G = scales.shape[0]
+    group_size = K // G
+
+    qw = qweight.astype(np.int32)  # (K//8, N)
+    qz = qzeros.astype(np.int32)   # (G, N//8)
+    sc = scales.astype(np.float32)  # (G, N)
+
+    # Unpack 8 nibbles per int32 along K → (K, N)
+    w_int4 = np.empty((K, N), dtype=np.uint8)
+    for bit in range(8):
+        w_int4[bit::8] = (qw >> (bit * 4)) & 0xF
+
+    # Unpack zeros: (G, N//8) → (G, N)
+    z_int4 = np.empty((G, N), dtype=np.uint8)
+    for bit in range(8):
+        z_int4[:, bit::8] = (qz >> (bit * 4)) & 0xF
+
+    # Group index: which group each input dim belongs to
+    if g_idx is not None:
+        groups = g_idx.astype(np.int32)
+    else:
+        groups = np.arange(K, dtype=np.int32) // group_size
+
+    sc_exp = sc[groups]             # (K, N)
+    z_exp  = z_int4[groups].astype(np.float32)  # (K, N)
+
+    w_f32 = sc_exp * (w_int4.astype(np.float32) - z_exp)  # (K, N)
+    return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
+
+
+def _is_awq_format(header: dict) -> bool:
+    return any(k.endswith(".qweight") and "qzeros" in "\n".join(header) for k in header)
+
+
+def _is_gptq_format(header: dict) -> bool:
+    return any(k.endswith(".qweight") for k in header)
+
+
 def load_safetensors_weights(path: str, wgpu_device) -> dict:
     """Load safetensors weights, cast bf16->f16, upload to GPU.
+
+    Handles plain BF16/F16/F32, AWQ int4, and GPTQ int4 safetensors.
+    Quantized weights are dequantized on CPU and uploaded as F16 to the GPU.
 
     Uses queue.write_buffer (not mapped_at_creation) to upload data.
     mapped_at_creation corrupts large buffers (>1GB) when many GPU buffers
@@ -117,35 +215,112 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         f.seek(data_start)
         raw_data = f.read()
 
+    # Check for quantized format
+    quant_bases = sorted(set(
+        k[:-len(".qweight")]
+        for k in header
+        if k.endswith(".qweight") and k != "__metadata__"
+    ))
+    is_quantized = len(quant_bases) > 0
+    if is_quantized:
+        fmt = "awq" if any(k.endswith(".qzeros") for k in header) else "gptq"
+        logger.info("Detected %s quantization (%d layers)", fmt.upper(), len(quant_bases))
+
     usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
-    weights: dict = {}
-    for name, meta in header.items():
-        if name == "__metadata__":
-            continue
+
+    def _load_raw(name: str) -> np.ndarray:
+        """Load one tensor as a numpy array (CPU only, no GPU upload)."""
+        meta = header[name]
         dtype_str = meta["dtype"]
-        shape = tuple(meta["shape"])
         start, end = meta["data_offsets"]
         raw = raw_data[start:end]
-
+        shape = tuple(meta["shape"])
+        if dtype_str == "I32":
+            return np.frombuffer(raw, dtype=np.int32).reshape(shape)
         if dtype_str == "F16":
-            arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
-        elif dtype_str == "BF16":
+            return np.frombuffer(raw, dtype=np.float16).reshape(shape)
+        if dtype_str == "BF16":
             u16 = np.frombuffer(raw, dtype=np.uint16)
             f32 = (u16.astype(np.uint32) << 16).view(np.float32)
-            f32 = np.clip(f32, -65504.0, 65504.0)
-            arr = f32.reshape(shape).astype(np.float16)
-        elif dtype_str == "F32":
-            arr = np.frombuffer(raw, dtype=np.float32).reshape(shape).astype(np.float16)
-        else:
-            logger.warning("Unsupported dtype %s for tensor %s, skipping", dtype_str, name)
-            continue
+            return f32.reshape(shape)
+        if dtype_str == "F32":
+            return np.frombuffer(raw, dtype=np.float32).reshape(shape)
+        raise ValueError(f"Unsupported dtype {dtype_str} for {name}")
 
-        arr = np.ascontiguousarray(arr)
-        # Use queue.write_buffer for reliable uploads at any buffer size.
+    def _upload(arr: np.ndarray, name: str, weights: dict) -> None:
+        """Upload F16 array to GPU and record in weights dict."""
+        arr = np.ascontiguousarray(arr.astype(np.float16))
         buf = wgpu_device.create_buffer(size=arr.nbytes, usage=usage)
         wgpu_device.queue.write_buffer(buf, 0, arr.tobytes())
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="f16")
+
+    weights: dict = {}
+
+    if is_quantized:
+        # Build set of keys that are part of quantized layers
+        quant_set = set()
+        for base in quant_bases:
+            for suffix in (".qweight", ".scales", ".qzeros", ".g_idx", ".bias"):
+                if f"{base}{suffix}" in header:
+                    quant_set.add(f"{base}{suffix}")
+
+        # Process all tensors
+        for name, meta in header.items():
+            if name == "__metadata__" or name in quant_set:
+                continue
+            dtype_str = meta["dtype"]
+            if dtype_str not in ("F16", "BF16", "F32"):
+                logger.warning("Unsupported dtype %s for %s, skipping", dtype_str, name)
+                continue
+            _upload(_load_raw(name), name, weights)
+
+        # Dequantize quantized layers and upload as .weight
+        for base in quant_bases:
+            try:
+                qw    = _load_raw(f"{base}.qweight")
+                sc    = _load_raw(f"{base}.scales")
+                qz_key = f"{base}.qzeros"
+                qz    = _load_raw(qz_key) if qz_key in header else None
+                g_idx_key = f"{base}.g_idx"
+                g_idx = _load_raw(g_idx_key) if g_idx_key in header else None
+
+                if fmt == "awq" and qz is not None:
+                    w_f16 = _dequant_awq(qw, sc, qz)
+                else:
+                    w_f16 = _dequant_gptq(qw, sc, qz if qz is not None else np.zeros_like(sc),
+                                          g_idx)
+
+                _upload(w_f16, f"{base}.weight", weights)
+            except Exception as exc:
+                logger.warning("Failed to dequantize %s: %s", base, exc)
+    else:
+        for name, meta in header.items():
+            if name == "__metadata__":
+                continue
+            dtype_str = meta["dtype"]
+            shape = tuple(meta["shape"])
+            start, end = meta["data_offsets"]
+            raw = raw_data[start:end]
+
+            if dtype_str == "F16":
+                arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
+            elif dtype_str == "BF16":
+                u16 = np.frombuffer(raw, dtype=np.uint16)
+                f32 = (u16.astype(np.uint32) << 16).view(np.float32)
+                f32 = np.clip(f32, -65504.0, 65504.0)
+                arr = f32.reshape(shape).astype(np.float16)
+            elif dtype_str == "F32":
+                arr = np.frombuffer(raw, dtype=np.float32).reshape(shape).astype(np.float16)
+            else:
+                logger.warning("Unsupported dtype %s for tensor %s, skipping", dtype_str, name)
+                continue
+
+            arr = np.ascontiguousarray(arr)
+            buf = wgpu_device.create_buffer(size=arr.nbytes, usage=usage)
+            wgpu_device.queue.write_buffer(buf, 0, arr.tobytes())
+            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                         shape=tuple(arr.shape), dtype="f16")
 
     # Commit all pending write_buffer calls before returning.
     wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
