@@ -269,6 +269,16 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         quant_types = self.weights.get("__quant_types__", {})
         _qt = quant_types if isinstance(quant_types, dict) else {}
 
+        # Per-layer output scale from GGUF (layer_output_scale.weight ≈ 0.053).
+        # Applied to sublayer contributions before residual add.
+        # Without scaling, large Gemma4 norm weights (up to 193) cause the residual
+        # stream to grow beyond f16 range across 48 layers (model was trained in bfloat16).
+        _ls_buf = self.weights.get(f"{p}.self_attn.layer_scale")
+        _ls = 1.0
+        if _ls_buf is not None:
+            import numpy as _np
+            _ls = float(_ls_buf.to_numpy().view(_np.float16)[0])
+
         def _uq(key: str) -> int:
             tt = _qt.get(key, 0)
             if tt == 12:  # Q4_K — GPU block decoder
@@ -382,7 +392,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             "CTX_LEN": ctx_len},
                            (self.num_q_heads, 1, 1))
 
-            # Output projection
+            # Output projection → sc["o_proj_out"]
             ow = f"{p}.self_attn.o_proj.weight"
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[ow],
@@ -390,29 +400,34 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"K": q_dim, "N": hidden, "USE_QUANT": _uq(ow)},
                            ((hidden + 255) // 256, 1, 1))
 
-            # Post-attention residual add
-            self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
-                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
-
-            # Post-attention norm (Gemma4: separate residual norm after attention)
-            # key: post_attention_layernorm (= post_attention_norm in GGUF)
+            # Correct Gemma4 attention sublayer (matches HF Gemma3DecoderLayer.forward):
+            #   residual = x
+            #   hidden = input_layernorm(x)     → attn → o_proj
+            #   hidden = post_attention_layernorm(hidden)   ← norm on ATTN OUTPUT (before residual)
+            #   residual = residual + hidden                ← residual add AFTER norm
             post_attn_norm_w = self.weights.get(f"{p}.post_attention_layernorm.weight")
             if post_attn_norm_w is not None:
-                self._dispatch("rms_norm", [residual, post_attn_norm_w, sc["ffn_normed"]],
+                self._dispatch("rms_norm", [sc["o_proj_out"], post_attn_norm_w, sc["ffn_normed"]],
                                _rms_consts, (num_tokens, 1, 1))
-                ffn_in = sc["ffn_normed"]
+                self._dispatch("add", [x_buf, sc["ffn_normed"], residual],
+                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
             else:
-                ffn_in = residual
+                self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
+                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
 
-            # Pre-FFN norm (Gemma4: pre_feedforward_layernorm = ffn_norm in GGUF)
+            # Correct Gemma4 FFN sublayer (matches HF):
+            #   residual2 = residual (post-attn)
+            #   hidden = pre_feedforward_layernorm(residual2)  ← norm on residual
+            #   hidden = mlp(hidden)
+            #   hidden = post_feedforward_layernorm(hidden)    ← norm on FFN OUTPUT (before residual)
+            #   out = residual2 + hidden                       ← residual add AFTER norm
             pre_ffn_norm_w = self.weights.get(f"{p}.pre_feedforward_layernorm.weight")
             if pre_ffn_norm_w is not None:
-                self._dispatch("rms_norm", [ffn_in, pre_ffn_norm_w, sc["normed"]],
+                self._dispatch("rms_norm", [residual, pre_ffn_norm_w, sc["normed"]],
                                _rms_consts, (num_tokens, 1, 1))
                 ffn_normed = sc["normed"]
             else:
-                # Llama-style: single pre-FFN norm already in sc["ffn_normed"]
-                ffn_normed = ffn_in
+                ffn_normed = residual
 
             # Gate + up projection
             for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
@@ -428,7 +443,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                            {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
 
-            # Down projection
+            # Down projection → sc["ffn_out"]
             w_k = f"{p}.mlp.down_proj.weight"
             s_k = f"{p}.mlp.down_proj.scales"
             self._dispatch("matmul_quant",
@@ -437,18 +452,16 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"K": inter, "N": hidden, "USE_QUANT": _uq(w_k)},
                            ((hidden + 255) // 256, 1, 1))
 
-            # Post-FFN residual add
-            self._dispatch("add", [residual, sc["ffn_out"], out],
-                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
-
-            # Post-FFN norm (Gemma4: post_feedforward_layernorm = post_ffw_norm in GGUF)
+            # Post-FFN norm on FFN output (before residual add), then residual add
             post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
             if post_ffw_w is not None:
-                # Apply in-place (reuse out buffer via a temporary scratch)
-                self._dispatch("rms_norm", [out, post_ffw_w, residual],
+                self._dispatch("rms_norm", [sc["ffn_out"], post_ffw_w, sc["o_proj_out"]],
                                _rms_consts, (num_tokens, 1, 1))
-                # Swap: the normed result is now the layer output
-                out, residual = residual, out
+                self._dispatch("add", [residual, sc["o_proj_out"], out],
+                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
+            else:
+                self._dispatch("add", [residual, sc["ffn_out"], out],
+                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
         return out

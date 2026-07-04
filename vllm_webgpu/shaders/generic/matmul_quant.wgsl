@@ -147,5 +147,6 @@ fn main(
         }
     }
 
-    output[row] = f16(acc);
+    // Clip to f16 range before casting to prevent +inf/-inf which propagates as NaN.
+    output[row] = f16(clamp(acc, -65504.0, 65504.0));
 }

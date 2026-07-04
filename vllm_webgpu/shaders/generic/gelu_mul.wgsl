@@ -17,5 +17,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let g4 = vec4<f32>(gate[i]);
     let u4 = vec4<f32>(up[i]);
     let silu4 = g4 / (vec4<f32>(1.0) + exp(-g4));
-    output[i] = vec4<f16>(silu4 * u4);
+    // Clip before casting: gate × up can overflow f16 (e.g. 18000 × 18000 = 324M >> 65504).
+    let product = clamp(silu4 * u4, vec4<f32>(-65504.0), vec4<f32>(65504.0));
+    output[i] = vec4<f16>(product);
 }

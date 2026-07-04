@@ -60,7 +60,7 @@ fn main(
         col = tid;
         for (var i = 0u; i < VALS_PER_THREAD; i++) {
             if (col < HIDDEN_DIM) {
-                output[base + col] = f16(local_v[i] * rms_inv * f32(weight[col]));
+                output[base + col] = f16(clamp(local_v[i] * rms_inv * f32(weight[col]), -65504.0, 65504.0));
                 col += WG_SIZE;
             }
         }
@@ -91,7 +91,7 @@ fn main(
         loop {
             if (col >= HIDDEN_DIM) { break; }
             let normed = f32(input[base + col]) * rms_inv;
-            output[base + col] = f16(normed * f32(weight[col]));
+            output[base + col] = f16(clamp(normed * f32(weight[col]), -65504.0, 65504.0));
             col += WG_SIZE;
         }
     }
