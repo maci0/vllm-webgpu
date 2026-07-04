@@ -91,6 +91,25 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         self.head_dim: int = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
         self._layer_types: list | None = getattr(model_config, "layer_types", None)
+        # Partial RoPE: some models only rotate a fraction of head dimensions.
+        # partial_rotary_factor=0.25 → rotary_dim = head_dim * 0.25.
+        _prf = getattr(model_config, "partial_rotary_factor", 1.0) or 1.0
+        self._rotary_dim: int = max(2, int(self.head_dim * _prf))
+        # Round down to nearest even (RoPE requires pairs)
+        if self._rotary_dim % 2 != 0:
+            self._rotary_dim -= 1
+
+        # GDN (linear-attention) architecture dimensions from config.
+        # Fall back to Qwen3.5-9B defaults if not present.
+        self._lin_k_heads: int = getattr(model_config, "linear_num_key_heads", _LIN_K_HEADS)
+        self._lin_k_dim: int   = getattr(model_config, "linear_key_head_dim",  _LIN_K_DIM)
+        self._lin_v_heads: int = getattr(model_config, "linear_num_value_heads", _LIN_V_HEADS)
+        self._lin_v_dim: int   = getattr(model_config, "linear_value_head_dim", _LIN_V_DIM)
+        self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
+        # Total QKV packed dimension: K + K + V heads (Q_heads = K_heads for GDN)
+        self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
+        self._lin_key_dim: int  = self._lin_k_heads * self._lin_k_dim   # total key dim (= Q dim)
+        self._lin_conv_dim: int = self._lin_key_dim + self._lin_key_dim + self._lin_val_dim  # QKV
 
         from vllm_webgpu.config import get_config
         self.block_size: int = get_config().block_size
@@ -152,14 +171,14 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "h0":         mk(T * H * 2),
             "h1":         mk(T * H * 2),
             "h2":         mk(T * H * 2),
-            # GDN linear-attention scratch buffers
-            "qkv_buf":    mk(_LIN_CONV_DIM * 2),        # in_proj_qkv output [8192 f16]
-            "qkv_conv":   mk(_LIN_CONV_DIM * 2),        # post-conv output [8192 f16]
-            "a_buf":      mk(_LIN_V_HEADS * 2),         # in_proj_a output [32 f16]
-            "z_buf":      mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # in_proj_z output [4096 f16]
-            "gdn_out":    mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # GDN attn output [4096 f16]
-            "gated":      mk(_LIN_V_HEADS * _LIN_V_DIM * 2),  # after norm+gate [4096 f16]
-            "b_buf":      mk(_LIN_V_HEADS * 2),              # in_proj_b output [32 f16]
+            # GDN linear-attention scratch buffers (sized from config, not hardcoded)
+            "qkv_buf":    mk(self._lin_conv_dim * 2),         # in_proj_qkv output
+            "qkv_conv":   mk(self._lin_conv_dim * 2),         # post-conv output
+            "a_buf":      mk(self._lin_k_heads * 2),          # in_proj_a output [K_HEADS f16]
+            "z_buf":      mk(self._lin_val_dim * 2),          # in_proj_z output
+            "gdn_out":    mk(self._lin_val_dim * 2),          # GDN attn output
+            "gated":      mk(self._lin_val_dim * 2),          # after norm+gate
+            "b_buf":      mk(self._lin_k_heads * 2),          # in_proj_b output [K_HEADS f16]
             # Dummy binding-2 scales buffer for USE_QUANT=0 dispatches.
             # Prevents sc["normed"] from being silently aliased as a scales buffer,
             # which would corrupt output if a dispatch is promoted to USE_QUANT=1/2.
@@ -214,8 +233,8 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
-        ssm_bytes  = _LIN_V_HEADS * _LIN_K_DIM * _LIN_V_DIM * 4   # f32
-        conv_bytes = (_LIN_CONV_KERNEL - 1) * _LIN_CONV_DIM * 2    # f16
+        ssm_bytes  = self._lin_v_heads * self._lin_k_dim * self._lin_v_dim * 4   # f32
+        conv_bytes = (self._lin_conv_kernel - 1) * self._lin_conv_dim * 2        # f16
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers
@@ -245,8 +264,8 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
         rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
-        ssm_bytes  = _LIN_V_HEADS * _LIN_K_DIM * _LIN_V_DIM * 4
-        conv_bytes = (_LIN_CONV_KERNEL - 1) * _LIN_CONV_DIM * 2
+        ssm_bytes  = self._lin_v_heads * self._lin_k_dim * self._lin_v_dim * 4
+        conv_bytes = (self._lin_conv_kernel - 1) * self._lin_conv_dim * 2
         for i in range(self.num_layers):
             if self._is_full_attn(i):
                 continue
@@ -292,9 +311,9 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
         # GDN linear attention has no KV cache — state is in ssm_gpu/conv_gpu buffers.
         # Offsets into flat QKV buffer (f16 elements)
-        q_base = 0                          # Q: [NUM_K_HEADS × K_DIM]
-        k_base = _LIN_K_HEADS * _LIN_K_DIM # K: = 2048
-        v_base = _LIN_KEY_DIM * 2           # V: = 4096
+        q_base = 0                                  # Q: [NUM_K_HEADS × K_DIM]
+        k_base = self._lin_k_heads * self._lin_k_dim  # K starts after Q
+        v_base = self._lin_key_dim * 2                # V starts after Q+K
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # 1. Pre-norm
@@ -304,66 +323,71 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            [x_buf, self.weights[f"{pp}.input_layernorm.weight"], sc["normed"]],
                            _rms_h, (num_tokens, 1, 1))
 
-            # 2. QKV projection: [hidden] → [8192]
+            cd = self._lin_conv_dim
+            vd = self._lin_val_dim
+            kh = self._lin_k_heads
+            kd = self._lin_k_dim
+            vh = self._lin_v_heads
+            vdh = self._lin_v_dim
+
+            # 2. QKV projection: [hidden] → [conv_dim]
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[f"{p}.in_proj_qkv.weight"],
                             sc["dummy_scales"], sc["qkv_buf"]],
-                           {"K": hidden, "N": _LIN_CONV_DIM, "USE_QUANT": 0},
-                           ((_LIN_CONV_DIM + 255) // 256, 1, 1))
+                           {"K": hidden, "N": cd, "USE_QUANT": 0},
+                           ((cd + 255) // 256, 1, 1))
 
             # 3. Causal conv step: updates conv_state in-place, writes qkv_conv
             conv_w = self.weights.get(f"{p}.conv1d.weight", sc["normed"])
             self._dispatch("causal_conv_step",
                            [sc["qkv_buf"], conv_w, self._conv_gpu[layer_idx], sc["qkv_conv"]],
-                           {"CONV_DIM": _LIN_CONV_DIM, "KERNEL": _LIN_CONV_KERNEL,
-                            "WG_SIZE": 256},
-                           ((_LIN_CONV_DIM + 255) // 256, 1, 1))
+                           {"CONV_DIM": cd, "KERNEL": self._lin_conv_kernel, "WG_SIZE": 256},
+                           ((cd + 255) // 256, 1, 1))
 
-            # 4. a projection: normed → [32] (dt for decay; must use normed, not raw x)
+            # 4. a projection: normed → [K_HEADS] (dt for decay)
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[f"{p}.in_proj_a.weight"],
                             sc["dummy_scales"], sc["a_buf"]],
-                           {"K": hidden, "N": _LIN_V_HEADS, "USE_QUANT": 0},
+                           {"K": hidden, "N": kh, "USE_QUANT": 0},
                            (1, 1, 1))
 
-            # 5a. b projection: normed → [32] (outer-product gate; sigmoid applied in shader)
+            # 5a. b projection: normed → [K_HEADS] (outer-product gate)
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[f"{p}.in_proj_b.weight"],
                             sc["dummy_scales"], sc["b_buf"]],
-                           {"K": hidden, "N": _LIN_V_HEADS, "USE_QUANT": 0},
+                           {"K": hidden, "N": kh, "USE_QUANT": 0},
                            (1, 1, 1))
 
-            # 5b. z gate projection: normed → [4096] (output gate; must use normed, not raw x)
+            # 5b. z gate projection: normed → [val_dim]
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[f"{p}.in_proj_z.weight"],
                             sc["dummy_scales"], sc["z_buf"]],
-                           {"K": hidden, "N": _LIN_V_HEADS * _LIN_V_DIM, "USE_QUANT": 0},
-                           ((_LIN_V_HEADS * _LIN_V_DIM + 255) // 256, 1, 1))
+                           {"K": hidden, "N": vd, "USE_QUANT": 0},
+                           ((vd + 255) // 256, 1, 1))
 
             # 6. GDN state update: updates ssm_state in-place, writes gdn_out
-            # Binding order: qkv_conv, a_buf, b_buf, A_log, dt_bias, state, output
             self._dispatch("gdn_state_update",
                            [sc["qkv_conv"], sc["a_buf"], sc["b_buf"],
                             self.weights[f"{p}.A_log"],
                             self.weights[f"{p}.dt_bias"],
                             self._ssm_gpu[layer_idx], sc["gdn_out"]],
-                           {"K_DIM": _LIN_K_DIM, "V_DIM": _LIN_V_DIM,
-                            "NUM_K_HEADS": _LIN_K_HEADS, "NUM_V_HEADS": _LIN_V_HEADS,
+                           {"K_DIM": kd, "V_DIM": vdh,
+                            "NUM_K_HEADS": kh, "NUM_V_HEADS": vh,
                             "Q_BASE": q_base, "K_BASE": k_base, "V_BASE": v_base},
-                           (_LIN_V_HEADS, 1, 1))
+                           (vh, 1, 1))
 
             # 7. Per-head RMSNorm + sigmoid gate → gated
             self._dispatch("linear_attn_norm_gate",
                            [sc["gdn_out"], self.weights[f"{p}.norm.weight"],
                             sc["z_buf"], sc["gated"]],
-                           {"NUM_V_HEADS": _LIN_V_HEADS, "V_DIM": _LIN_V_DIM},
-                           (_LIN_V_HEADS, 1, 1))
+                           {"NUM_V_HEADS": vh, "V_DIM": vdh},
+                           (vh, 1, 1))
 
-            # 8. Output projection: [4096] → [hidden]
+            # 8. Output projection: [val_dim] → [hidden]
             self._dispatch("matmul_quant",
                            [sc["gated"], self.weights[f"{p}.out_proj.weight"],
                             sc["dummy_scales"], sc["o_proj_out"]],
-                           {"K": _LIN_V_HEADS * _LIN_V_DIM, "N": hidden, "USE_QUANT": 0},
+                           {"K": vd, "N": hidden, "USE_QUANT": 0},
                            ((hidden + 255) // 256, 1, 1))
 
             # 9. Attention residual add
@@ -539,7 +563,8 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                    [src, norm_w, pos_buf, dst],
                                    {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
                                     "ROPE_BASE": float(self.rope_theta),
-                                    "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1},
+                                    "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
+                                    "ROTARY_DIM": self._rotary_dim},
                                    (n_heads, num_tokens, 1))
                 else:
                     self._dispatch("rope", [src, pos_buf, dst],

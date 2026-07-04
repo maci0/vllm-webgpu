@@ -8,6 +8,9 @@ override HAS_WEIGHT: u32    = 1u;   // 0 for weightless variant (Gemma V heads)
 override WG_SIZE: u32       = 64u;
 // GEMMA_NORM=1: Gemma-style (1+w) scale; GEMMA_NORM=0: standard w scale.
 override GEMMA_NORM: u32    = 0u;
+// ROTARY_DIM: number of dimensions to apply RoPE to (rest pass through unchanged).
+// Set to HEAD_DIM for full RoPE (default), or HEAD_DIM * partial_rotary_factor for partial.
+override ROTARY_DIM: u32    = HEAD_DIM;
 
 var<workgroup> shared_sq:    array<f32, 64>;
 // shared_input caches HEAD_DIM f32 values for reuse in phase 2.
@@ -58,14 +61,11 @@ fn main(
 
     // --- Phase 2: apply norm weight then RoPE, reading from shared cache ---
     // Loop so each thread covers HEAD_DIM/2 / WG_SIZE pairs (handles HEAD_DIM > 2*WG_SIZE).
-    let pos = f32(positions[seq_idx]);
+    let pos       = f32(positions[seq_idx]);
+    let rot_half  = ROTARY_DIM / 2u;  // pair boundary for rotary dims
     var i = tid;
     loop {
         if (i >= half) { break; }
-        let theta_i = exp(-f32(i * 2u) / f32(HEAD_DIM) * LN_ROPE_BASE);
-        let angle   = pos * theta_i;
-        let cos_v   = cos(angle);
-        let sin_v   = sin(angle);
 
         var n1 = shared_input[i]        * rms_inv;
         var n2 = shared_input[half + i] * rms_inv;
@@ -76,8 +76,19 @@ fn main(
             n2 *= w2;
         }
 
-        output[base + i]        = f16(n1 * cos_v - n2 * sin_v);
-        output[base + half + i] = f16(n2 * cos_v + n1 * sin_v);
+        if (i < rot_half) {
+            // RoPE applied: theta uses ROTARY_DIM (not HEAD_DIM) for correct frequency
+            let theta_i = exp(-f32(i * 2u) / f32(ROTARY_DIM) * LN_ROPE_BASE);
+            let angle   = pos * theta_i;
+            let cos_v   = cos(angle);
+            let sin_v   = sin(angle);
+            output[base + i]        = f16(n1 * cos_v - n2 * sin_v);
+            output[base + half + i] = f16(n2 * cos_v + n1 * sin_v);
+        } else {
+            // No RoPE — pass normalized values through unchanged
+            output[base + i]        = f16(n1);
+            output[base + half + i] = f16(n2);
+        }
         i += WG_SIZE;
     }
 }

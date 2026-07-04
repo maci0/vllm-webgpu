@@ -274,17 +274,25 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     cfg.intermediate_size       = config["intermediate_size"]
     cfg.vocab_size              = config["vocab_size"]
     cfg.max_position_embeddings = config.get("max_position_embeddings", 4096)
-    cfg.rope_theta              = config.get("rope_theta", 10000.0)
+    # rope_theta: may be top-level or nested in rope_parameters (Qwen3.5 style)
+    rope_params = config.get("rope_parameters", {})
+    cfg.rope_theta = config.get("rope_theta") or rope_params.get("rope_theta", 10000.0)
     # Some models (Gemma4, Qwen3 variants) specify head_dim explicitly
     cfg.head_dim                = config.get("head_dim", cfg.hidden_size // cfg.num_attention_heads)
     cfg.architectures           = config["architectures"]
     # Pass per-layer attention params for heterogeneous models (Gemma4).
-    # Without this, Gemma4WebGPUModel uses wrong fallback KV head counts.
     if "_layer_attention_params" in config:
         cfg._layer_attention_params = config["_layer_attention_params"]
-    # Pass other optional model-specific fields
+    # partial_rotary_factor: from top-level or rope_parameters (Qwen3.5 style)
+    prf = config.get("partial_rotary_factor") or rope_params.get("partial_rotary_factor", None)
+    if prf is not None:
+        cfg.partial_rotary_factor = float(prf)
+    # Pass other optional model-specific fields (including Qwen3.5 GDN dims)
     for key in ("final_logit_softcapping", "ple_layer_indices", "query_pre_attn_scalar",
-                "tie_word_embeddings"):
+                "tie_word_embeddings", "layer_types",
+                "linear_num_key_heads", "linear_key_head_dim",
+                "linear_num_value_heads", "linear_value_head_dim",
+                "linear_conv_kernel_dim", "full_attention_interval"):
         if key in config:
             setattr(cfg, key, config[key])
 
@@ -302,11 +310,13 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nBuilding model...")
     from vllm_webgpu.models.llama import LlamaWebGPUModel
     from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
+    from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
     ARCH_MAP = {
         "LlamaForCausalLM": LlamaWebGPUModel,
         "MistralForCausalLM": LlamaWebGPUModel,
         "Qwen2ForCausalLM": LlamaWebGPUModel,
         "Qwen3ForCausalLM": LlamaWebGPUModel,
+        "Qwen3_5ForConditionalGeneration": Qwen35WebGPUModel,
         "Gemma3ForCausalLM": Gemma4WebGPUModel,
         "Gemma3ForConditionalGeneration": Gemma4WebGPUModel,
         "Gemma4ForCausalLM": Gemma4WebGPUModel,
