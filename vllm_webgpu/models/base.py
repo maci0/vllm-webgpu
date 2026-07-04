@@ -119,7 +119,10 @@ class BaseWebGPUModel:
         path = self._resolve_model_path(path)
         fmt = detect_weight_format(path)
         if fmt == "safetensors":
-            self.weights = load_safetensors_weights(path, self.wgpu_device.wgpu_device)
+            # If path is a directory, the actual file is model.safetensors inside it.
+            from pathlib import Path as _Path
+            actual = str(_Path(path) / "model.safetensors") if _Path(path).is_dir() else path
+            self.weights = load_safetensors_weights(actual, self.wgpu_device.wgpu_device)
         elif fmt == "safetensors_sharded":
             self.weights = load_safetensors_weights_sharded(path, self.wgpu_device.wgpu_device)
         elif fmt == "mlx_int4":

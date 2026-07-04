@@ -225,7 +225,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
             # Final norm
-            _vpt = min(hidden // 256, 16) if hidden <= 4096 else 0
+            _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
             self._dispatch(
                 "rms_norm",
                 [x_buf, self.weights["model.norm.weight"], norm_out],
@@ -280,7 +280,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Register-tile depth for rms_norm: HIDDEN_DIM / WG_SIZE (max 16 for HIDDEN_DIM≤4096).
         # Set to 0 for large models (HIDDEN_DIM > 4096) to use global re-read fallback.
         _wg_size = 256
-        _vals_per_thread = min(hidden // _wg_size, 16) if hidden <= _wg_size * 16 else 0
+        _vals_per_thread = min((hidden + _wg_size - 1) // _wg_size, 16) if hidden <= _wg_size * 16 else 0
 
         # Hidden-state rotation: h0/h1/h2 cycle so x_buf, residual, out are always distinct.
         h_names = ["h0", "h1", "h2"]

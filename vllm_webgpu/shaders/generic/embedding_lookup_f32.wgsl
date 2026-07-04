@@ -1,8 +1,9 @@
 enable f16;
 
 // embedding_lookup_f32.wgsl — token embedding lookup writing f32 output.
-// Used by Gemma4 where the residual stream is stored in f32.
-// The embedding table is f16 (standard); output is promoted to f32 for precision.
+// Used by Gemma models where the residual stream is stored in f32.
+// Applies sqrt(HIDDEN_DIM) scale (Gemma-family requirement) so the embedding
+// contributes correctly to the f32 residual stream across 48+ layers.
 
 override HIDDEN_DIM: u32 = 4096u;
 
@@ -22,11 +23,16 @@ fn main(
     let src_base  = vocab_row * vec_dim;
     let dst_base  = token_idx * HIDDEN_DIM;
 
+    // Gemma-family embedding scale: multiply by sqrt(hidden_size).
+    // Without this, embed values (std ≈ 0.003) are ~340x smaller than
+    // sublayer residuals (~1.0), so the token identity is lost after layer 1.
+    let scale = sqrt(f32(HIDDEN_DIM));
+
     // Each thread handles up to HIDDEN_DIM/256 elements (stride for large HIDDEN_DIM).
     var col = tid;
     loop {
         if (col >= vec_dim) { break; }
-        let v4 = vec4<f32>(table[src_base + col]);
+        let v4 = vec4<f32>(table[src_base + col]) * scale;
         output[dst_base + col * 4u    ] = v4.x;
         output[dst_base + col * 4u + 1u] = v4.y;
         output[dst_base + col * 4u + 2u] = v4.z;

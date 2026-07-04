@@ -1,7 +1,9 @@
 enable f16;
 
-override HIDDEN_DIM: u32 = 4096u;
-override WG_SIZE: u32    = 256u;
+override HIDDEN_DIM: u32    = 4096u;
+override WG_SIZE: u32      = 256u;
+// GEMMA_NORM=1: Gemma-style (1+w) scale; GEMMA_NORM=0: standard w scale (Llama/Qwen3).
+override GEMMA_NORM: u32   = 0u;
 // Maximum values stored in registers per thread. Host must set this to HIDDEN_DIM / WG_SIZE.
 // For HIDDEN_DIM=2560, WG_SIZE=256: VALS_PER_THREAD=10. Max supported: 16 (4096 / 256).
 // For HIDDEN_DIM > 4096 (e.g. 8192), set VALS_PER_THREAD=0 to disable register-tiling
@@ -60,7 +62,8 @@ fn main(
         col = tid;
         for (var i = 0u; i < VALS_PER_THREAD; i++) {
             if (col < HIDDEN_DIM) {
-                output[base + col] = f16(clamp(local_v[i] * rms_inv * f32(weight[col]), -65504.0, 65504.0));
+                let w_eff = select(f32(weight[col]), 1.0 + f32(weight[col]), GEMMA_NORM != 0u);
+                output[base + col] = f16(clamp(local_v[i] * rms_inv * w_eff, -65504.0, 65504.0));
                 col += WG_SIZE;
             }
         }
@@ -91,7 +94,8 @@ fn main(
         loop {
             if (col >= HIDDEN_DIM) { break; }
             let normed = f32(input[base + col]) * rms_inv;
-            output[base + col] = f16(clamp(normed * f32(weight[col]), -65504.0, 65504.0));
+            let w_eff2 = select(f32(weight[col]), 1.0 + f32(weight[col]), GEMMA_NORM != 0u);
+            output[base + col] = f16(clamp(normed * w_eff2, -65504.0, 65504.0));
             col += WG_SIZE;
         }
     }

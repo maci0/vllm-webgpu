@@ -40,6 +40,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         from vllm_webgpu.config import get_config
         self.block_size: int = get_config().block_size
 
+        # Gemma3 vs Gemma4 capability flags:
+        # - GEMMA_NORM=1: all Gemma models use (1+w) RMSNorm (weights trained as deviations from 0)
+        # - _apply_v_norm: only Gemma4 applies per-head RMS norm to V before caching
+        archs = getattr(model_config, "architectures", [])
+        self._is_gemma4 = any("Gemma4" in a for a in archs)
+        self._apply_v_norm = self._is_gemma4  # Gemma3 does NOT normalize V
+        self._gemma_norm_const = 1             # (1+w) RMSNorm for all Gemma models
+
         # Per-layer attention parameters (head_dim, num_kv_heads, q_dim, kv_dim, has_v_proj).
         # Set from _layer_attention_params if available (parsed from GGUF), otherwise derive
         # using the heuristic that every 6th layer (idx%6==5) is global attention.
@@ -209,7 +217,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                           dtype=np.uint32)
         bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
 
-        _vpt = min(hidden // 256, 16) if hidden <= 4096 else 0
+        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
 
         with self._batched_dispatch():
             # Embedding lookup → f32 output for f32 residual pipeline
@@ -224,7 +232,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Final norm: reads f32 residual, writes f16 norm_out
             self._dispatch("rms_norm_f32in",
                            [x_buf, self.weights["model.norm.weight"], norm_out],
-                           {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt},
+                           {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const},
                            (num_tokens, 1, 1))
 
             lm_head_w = self.weights.get("lm_head.weight",
@@ -298,8 +306,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         out = sc[h_names[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
         gelu_n = num_tokens * inter
-        _vpt = min(hidden // 256, 16) if hidden <= 4096 else 0
-        _rms_consts = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
+        _rms_consts = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
@@ -348,7 +356,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                    [src, norm_w, pos_buf, dst],
                                    {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
                                     "ROPE_BASE": float(self.rope_theta),
-                                    "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1},
+                                    "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
+                                    "GEMMA_NORM": self._gemma_norm_const},
                                    (n_heads, num_tokens, 1))
                 else:
                     self._dispatch("rope", [src, pos_buf, dst],
@@ -356,18 +365,15 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                     "LN_ROPE_BASE": ln_rope},
                                    (num_tokens, n_heads, 1))
 
-            # Per-head RMSNorm (no weight) on V before caching (local layers only)
-            if has_v:
+            # Per-head RMSNorm (no weight) on V before caching — Gemma4 only.
+            # Gemma3 does NOT apply V normalization (no v_norm weight in the model).
+            if self._apply_v_norm:
                 self._dispatch("per_head_rms_norm_no_weight", [v_src, sc["v_normed"]],
                                {"HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads, "WG_SIZE": min(head_dim, 128)},
                                (num_kv_heads, num_tokens, 1), shader_subdir="gemma")
                 v_to_cache = sc["v_normed"]
             else:
-                # Global: apply per-head norm to k_buf (used as V)
-                self._dispatch("per_head_rms_norm_no_weight", [v_src, sc["v_normed"]],
-                               {"HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads, "WG_SIZE": min(head_dim, 128)},
-                               (num_kv_heads, num_tokens, 1), shader_subdir="gemma")
-                v_to_cache = sc["v_normed"]
+                v_to_cache = v_src  # Gemma3: use V directly without normalization
 
             # KV cache store
             self._dispatch("kv_cache_store",
@@ -446,9 +452,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                {"K": hidden, "N": inter, "USE_QUANT": _uq(w_k)},
                                ((inter + 255) // 256, 1, 1))
 
-            # SwiGLU
+            # Gemma uses tanh-approximate GELU (gelu_pytorch_tanh), not SiLU.
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1),
+                           shader_subdir="gemma")
 
             # Down projection → sc["ffn_out"]
             w_k = f"{p}.mlp.down_proj.weight"

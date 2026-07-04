@@ -6,6 +6,8 @@ override ROPE_BASE: f32     = 10000.0;
 override LN_ROPE_BASE: f32  = 9.210340372;  // = log(ROPE_BASE); host sets this
 override HAS_WEIGHT: u32    = 1u;   // 0 for weightless variant (Gemma V heads)
 override WG_SIZE: u32       = 64u;
+// GEMMA_NORM=1: Gemma-style (1+w) scale; GEMMA_NORM=0: standard w scale.
+override GEMMA_NORM: u32    = 0u;
 
 var<workgroup> shared_sq:    array<f32, 64>;
 // shared_input caches HEAD_DIM f32 values for reuse in phase 2.
@@ -68,8 +70,10 @@ fn main(
         var n1 = shared_input[i]        * rms_inv;
         var n2 = shared_input[half + i] * rms_inv;
         if (HAS_WEIGHT != 0u) {
-            n1 *= f32(weight[w_base + i]);
-            n2 *= f32(weight[w_base + half + i]);
+            let w1 = select(f32(weight[w_base + i]), 1.0 + f32(weight[w_base + i]), GEMMA_NORM != 0u);
+            let w2 = select(f32(weight[w_base + half + i]), 1.0 + f32(weight[w_base + half + i]), GEMMA_NORM != 0u);
+            n1 *= w1;
+            n2 *= w2;
         }
 
         output[base + i]        = f16(n1 * cos_v - n2 * sin_v);

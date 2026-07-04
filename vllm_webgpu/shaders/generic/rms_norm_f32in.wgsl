@@ -8,6 +8,8 @@ enable f16;
 override HIDDEN_DIM:      u32 = 4096u;
 override WG_SIZE:         u32 = 256u;
 override VALS_PER_THREAD: u32 = 16u;   // HIDDEN_DIM / WG_SIZE; 0 = fallback path
+// GEMMA_NORM=1: Gemma-style (1+w) scale; GEMMA_NORM=0: standard w scale.
+override GEMMA_NORM:      u32 = 0u;
 
 var<workgroup> shared_sum: array<f32, 256>;
 
@@ -50,7 +52,8 @@ fn main(
         col = tid;
         for (var i = 0u; i < VALS_PER_THREAD; i++) {
             if (col < HIDDEN_DIM) {
-                output[base + col] = f16(clamp(local_v[i] * rms_inv * f32(weight[col]), -65504.0, 65504.0));
+                let w_eff = select(f32(weight[col]), 1.0 + f32(weight[col]), GEMMA_NORM != 0u);
+                output[base + col] = f16(clamp(local_v[i] * rms_inv * w_eff, -65504.0, 65504.0));
                 col += WG_SIZE;
             }
         }
@@ -76,7 +79,8 @@ fn main(
         col = tid;
         loop {
             if (col >= HIDDEN_DIM) { break; }
-            output[base + col] = f16(clamp(input[base + col] * rms_inv * f32(weight[col]), -65504.0, 65504.0));
+            let w_eff2 = select(f32(weight[col]), 1.0 + f32(weight[col]), GEMMA_NORM != 0u);
+            output[base + col] = f16(clamp(input[base + col] * rms_inv * w_eff2, -65504.0, 65504.0));
             col += WG_SIZE;
         }
     }
