@@ -34,7 +34,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self.hidden_size: int = model_config.hidden_size
         self.intermediate_size: int = model_config.intermediate_size
         self.vocab_size: int = model_config.vocab_size
-        self.softcap: float = getattr(model_config, "final_logit_softcapping", 30.0)
+        # Softcap is optional — Gemma4 uses 30.0, Gemma3 uses None (no cap)
+        self.softcap: float | None = getattr(model_config, "final_logit_softcapping", None)
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
         from vllm_webgpu.config import get_config
         self.block_size: int = get_config().block_size
@@ -50,20 +51,21 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         if raw_lp and len(raw_lp) == self.num_layers:
             self._lp: list[dict] = raw_lp
         else:
-            # Fallback: assume every 6th layer is global (head_dim=512, kv=1, no v_proj)
-            self._lp = []
-            for i in range(self.num_layers):
-                is_global = (i % 6 == 5)
-                hd = 512 if is_global else 256
-                nkv = 1 if is_global else default_kv
-                self._lp.append({
-                    "head_dim": hd,
-                    "num_q_heads": self.num_q_heads,
-                    "num_kv_heads": nkv,
-                    "q_dim": self.num_q_heads * hd,
-                    "kv_dim": nkv * hd,
-                    "has_v_proj": not is_global,
-                })
+            # Uniform fallback: all layers use the config defaults.
+            # For Gemma3 safetensors (uniform attention) this is correct.
+            # For GGUF Gemma4-12B, `_layer_attention_params` from gguf_read_config
+            # provides the correct heterogeneous params.
+            hd = default_hd
+            nkv = default_kv
+            uniform_lp = {
+                "head_dim": hd,
+                "num_q_heads": self.num_q_heads,
+                "num_kv_heads": nkv,
+                "q_dim": self.num_q_heads * hd,
+                "kv_dim": nkv * hd,
+                "has_v_proj": True,
+            }
+            self._lp = [dict(uniform_lp) for _ in range(self.num_layers)]
 
         # Validate even dimensions required by WGSL shaders
         for name, val in [("hidden_size", self.hidden_size),
@@ -161,14 +163,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                    norm_key, len(raw), expected_len, hd)
 
     def load_weights(self, path: str) -> None:
-        from vllm_webgpu.quant.gguf_loader import detect_weight_format
-        fmt = detect_weight_format(path)
-        # Pass arch_prefix so the loader uses the Gemma4 norm mapping
-        if fmt == "gguf":
-            from vllm_webgpu.quant.gguf_loader import load_gguf_weights
-            self.weights = load_gguf_weights(path, self.wgpu_device.wgpu_device, arch_prefix="gemma4")
-        else:
-            super().load_weights(path)
+        super().load_weights(path)
         self._postprocess_weights()
         logger.info("Loaded %d weight tensors", len(self.weights))
 
@@ -240,12 +235,16 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"K": hidden, "N": vocab, "USE_QUANT": 0},
                            ((vocab + 255) // 256, 1, 1))
 
-            self._dispatch("logit_softcap", [logits_buf, capped_buf],
-                           {"N": num_tokens * vocab, "CAP": float(self.softcap)},
-                           ((num_tokens * vocab + 255) // 256, 1, 1),
-                           shader_subdir="gemma")
+            if self.softcap is not None and self.softcap > 0:
+                self._dispatch("logit_softcap", [logits_buf, capped_buf],
+                               {"N": num_tokens * vocab, "CAP": float(self.softcap)},
+                               ((num_tokens * vocab + 255) // 256, 1, 1),
+                               shader_subdir="gemma")
+                result_buf = capped_buf
+            else:
+                result_buf = logits_buf  # no softcap for Gemma3
 
-        return capped_buf.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
+        return result_buf.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
 
     def _transformer_layer(
         self,

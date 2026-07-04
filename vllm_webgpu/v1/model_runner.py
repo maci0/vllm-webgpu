@@ -36,6 +36,8 @@ ARCH_MAP = {
     "Qwen2ForCausalLM": "llama",
     "Qwen3ForCausalLM": "llama",
     "Gemma3ForCausalLM": "gemma4",
+    # Multimodal Gemma3: text portion uses the same Gemma4 model class
+    "Gemma3ForConditionalGeneration": "gemma4",
     "Qwen3_5ForConditionalGeneration": "qwen35",
 }
 

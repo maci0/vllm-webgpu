@@ -225,6 +225,18 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             with open(cfg_path) as f:
                 config = json.load(f)
 
+    # Gemma3 multimodal models nest language config under "text_config".
+    # Merge: text_config provides language-specific keys; parent config provides architecture/meta.
+    # Only override text_config values with non-None parent values.
+    if "text_config" in config and "hidden_size" not in config:
+        tc = config["text_config"]
+        merged = dict(tc)  # start from text_config
+        merged["architectures"] = config.get("architectures", [])
+        for k, v in config.items():
+            if k != "text_config" and v is not None:
+                merged[k] = v  # override only with non-None parent values
+        config = merged
+
     arch = config.get("architectures", ["LlamaForCausalLM"])[0]
     print(f"Architecture: {arch}")
     print(f"  hidden_size={config['hidden_size']}, layers={config['num_hidden_layers']}, "
@@ -296,6 +308,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         "Qwen2ForCausalLM": LlamaWebGPUModel,
         "Qwen3ForCausalLM": LlamaWebGPUModel,
         "Gemma3ForCausalLM": Gemma4WebGPUModel,
+        "Gemma3ForConditionalGeneration": Gemma4WebGPUModel,
         "Gemma4ForCausalLM": Gemma4WebGPUModel,
     }
     ModelClass = ARCH_MAP.get(arch)

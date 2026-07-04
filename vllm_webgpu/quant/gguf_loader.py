@@ -53,18 +53,60 @@ def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
         index = json.load(f)
     shard_files = sorted(set(index["weight_map"].values()))
     weights: dict = {}
+    # IMPORTANT: keep shard_weights as a local variable (not inline with update()).
+    # Inlining as weights.update(load_safetensors_weights(...)) causes Python's GC
+    # to drop the temporary dict before wgpu finishes using the mapped GPU buffers,
+    # resulting in zeroed buffer contents. The local variable keeps the dict alive.
+    # Detect if this is a multimodal model with language_model.* prefix by checking the index.
+    is_multimodal = any(
+        k.startswith("language_model.")
+        for k in index.get("weight_map", {})
+    )
+    if is_multimodal:
+        logger.info("Multimodal model detected; remapping language_model.* prefix")
+
     for shard in shard_files:
         shard_path = str(Path(model_dir) / shard)
         logger.info("Loading shard %s", shard)
         shard_weights = load_safetensors_weights(shard_path, wgpu_device)
+
+        # Commit all pending write_buffer operations by submitting a dummy command encoder.
+        # queue.write_buffer() is only committed before the NEXT queue.submit(), not by
+        # on_submitted_work_done_sync() alone. Without this, 24GB of accumulated writes
+        # may be committed simultaneously at the first real submit, causing Metal to
+        # silently drop some writes (embedding buffer shows zeros after readback).
+        wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+        wgpu_device.queue.on_submitted_work_done_sync()
+
         weights.update(shard_weights)
+
+    if is_multimodal:
+        # Add remapped language_model.* keys WITHOUT removing the originals.
+        # Removing non-LM buffers (e.g. vision encoder) causes Metal GPU memory
+        # corruption: freeing GPU buffers that neighbored the embed buffer zeros it out.
+        # Keeping all buffers alive avoids this Metal driver quirk at the cost of
+        # ~1-2GB extra VRAM for the vision encoder weights (harmless, they're unused).
+        remapped = {}
+        for k, v in weights.items():
+            if k.startswith("language_model."):
+                remapped[k[len("language_model."):]] = v
+        weights.update(remapped)
+        logger.info("Added %d remapped language_model.* keys", len(remapped))
+
     logger.info("Loaded %d tensors from %d shards in %s", len(weights), len(shard_files), model_dir)
     return weights
 
 
 def load_safetensors_weights(path: str, wgpu_device) -> dict:
-    """Load safetensors weights, cast bf16->f16, upload to GPU."""
+    """Load safetensors weights, cast bf16->f16, upload to GPU.
+
+    Uses queue.write_buffer (not mapped_at_creation) to upload data.
+    mapped_at_creation corrupts large buffers (>1GB) when many GPU buffers
+    coexist in the same process — the Metal driver appears to lose the
+    written data. queue.write_buffer is reliable at any size.
+    """
     import json
+    import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
     with open(path, "rb") as f:
@@ -75,6 +117,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         f.seek(data_start)
         raw_data = f.read()
 
+    usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
     weights: dict = {}
     for name, meta in header.items():
         if name == "__metadata__":
@@ -87,9 +130,6 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         if dtype_str == "F16":
             arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
         elif dtype_str == "BF16":
-            # Cast bf16 -> f32 -> f16 via view trick.
-            # BF16 max magnitude is ~3.4e38; F16 max is 65504.
-            # Clip to [-65504, 65504] before casting to avoid silent ±inf in weights.
             u16 = np.frombuffer(raw, dtype=np.uint16)
             f32 = (u16.astype(np.uint32) << 16).view(np.float32)
             f32 = np.clip(f32, -65504.0, 65504.0)
@@ -100,8 +140,16 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             logger.warning("Unsupported dtype %s for tensor %s, skipping", dtype_str, name)
             continue
 
-        weights[name] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
+        arr = np.ascontiguousarray(arr)
+        # Use queue.write_buffer for reliable uploads at any buffer size.
+        buf = wgpu_device.create_buffer(size=arr.nbytes, usage=usage)
+        wgpu_device.queue.write_buffer(buf, 0, arr.tobytes())
+        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                     shape=tuple(arr.shape), dtype="f16")
 
+    # Commit all pending write_buffer calls before returning.
+    wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+    wgpu_device.queue.on_submitted_work_done_sync()
     logger.info("Loaded %d tensors from %s", len(weights), path)
     return weights
 

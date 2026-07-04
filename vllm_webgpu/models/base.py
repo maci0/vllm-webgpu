@@ -106,9 +106,15 @@ class BaseWebGPUModel:
         return path  # let the caller fail with a meaningful error
 
     def load_weights(self, path: str) -> None:
+        """Load model weights from a HuggingFace safetensors directory.
+
+        Supports single-file (model.safetensors) and sharded (model.safetensors.index.json)
+        safetensors formats. GGUF is not supported here — use the vllm-gguf plugin instead.
+        MLX affine-int4 (Qwen3.5-9B MLX community format) is supported as a special case.
+        """
         from vllm_webgpu.quant.gguf_loader import (
             detect_weight_format, load_safetensors_weights,
-            load_safetensors_weights_sharded, load_gguf_weights, load_mlx_weights,
+            load_safetensors_weights_sharded, load_mlx_weights,
         )
         path = self._resolve_model_path(path)
         fmt = detect_weight_format(path)
@@ -116,10 +122,13 @@ class BaseWebGPUModel:
             self.weights = load_safetensors_weights(path, self.wgpu_device.wgpu_device)
         elif fmt == "safetensors_sharded":
             self.weights = load_safetensors_weights_sharded(path, self.wgpu_device.wgpu_device)
-        elif fmt == "gguf":
-            self.weights = load_gguf_weights(path, self.wgpu_device.wgpu_device)
         elif fmt == "mlx_int4":
+            # MLX community format (Qwen3.5-9B): affine int4 with bf16 scales/biases
             self.weights = load_mlx_weights(path, self.wgpu_device.wgpu_device)
+        elif fmt == "gguf":
+            raise ValueError(
+                f"GGUF format not supported directly. Use the vllm-gguf plugin instead: {path}"
+            )
         else:
             raise ValueError(f"Unknown weight format for {path}")
         logger.info("Loaded %d weight tensors (%s format)", len(self.weights), fmt)
