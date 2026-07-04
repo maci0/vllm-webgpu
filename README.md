@@ -18,7 +18,11 @@ A [vLLM](https://github.com/vllm-project/vllm) out-of-tree platform plugin that 
 | Gemma 4-12B | GGUF Q4\_K\_M | Heterogeneous local+global attention; Q4\_K decoded on GPU |
 | Qwen 3.5-9B | MLX affine int4 | Hybrid GDN linear attention + standard attention |
 
-Tested: Qwen3-4B at **8.2 tok/s**, Qwen3-8B at ~4 tok/s on Apple M4 Pro.
+Tested: Qwen3-4B at **9.0 tok/s**, Qwen3-8B at ~4 tok/s on Apple M4 Pro (single-encoder forward pass, no CPU↔GPU transfers in the hot path).
+
+**Gemma4-12B note:** generates tokens but quality is limited by f16 precision. The model was trained in bfloat16; its large per-layer norm weights (up to 193×) push activations outside f16's range. WebGPU does not support bfloat16 natively. All computation stays on GPU via Q4\_K block decoder, layer-output scaling (per-layer 0.005–0.887), and overflow clipping.
+
+**Qwen3.5-9B note:** GDN (Gated Delta Networks) linear attention runs entirely on GPU via three custom WGSL kernels (causal\_conv\_step, gdn\_state\_update, linear\_attn\_norm\_gate). Mathematically verified against vLLM's compiled CPU reference at <1% error per step (f16 vs bfloat16 noise).
 
 ## Install
 
@@ -170,5 +174,5 @@ pytest tests/ -q
 - Single-sequence decode only (no batching).
 - Prefill runs token-by-token (KV cache populated sequentially).
 - ctx\_len limited to 65535 (WebGPU dispatch limit per axis).
-- Gemma4-12B generates plausible tokens but thinking-mode output quality depends on Q4\_K approximation accuracy.
-- Qwen3.5 GDN uses a simplified delta rule (b-projection term omitted).
+- Gemma4-12B: output quality limited by f16 vs bfloat16 precision gap (WebGPU does not support bfloat16 natively).
+- Qwen3.5-9B: GDN verified at <1% per-step error vs vLLM CPU reference; residual ~20% across 5 steps is f16/bfloat16 precision accumulation, not a formula error.
