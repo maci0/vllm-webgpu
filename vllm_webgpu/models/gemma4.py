@@ -101,25 +101,28 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             return WebGPUBuffer.empty(dev, n, usage=rw)
 
         self._sc: dict[str, "WebGPUBuffer"] = {
-            "normed":     mk(T * H * 2),
-            "q_buf":      mk(T * max_q_dim * 2),
-            "k_buf":      mk(T * max_kv_dim * 2),
-            "v_buf":      mk(T * max_kv_dim * 2),
-            "v_normed":   mk(T * max_kv_dim * 2),  # per-head RMSNorm on V (local layers)
-            "q_rope":     mk(T * max_q_dim * 2),
-            "k_rope":     mk(T * max_kv_dim * 2),
-            "scores_buf": mk(NQ * max_ctx * 2),
-            "sm_buf":     mk(NQ * max_ctx * 2),
-            "attn_out":   mk(T * max_q_dim * 2),
-            "o_proj_out": mk(T * H * 2),
-            "ffn_normed": mk(T * H * 2),
-            "gate_buf":   mk(T * I * 2),
-            "up_buf":     mk(T * I * 2),
-            "ffn_act":    mk(T * I * 2),
-            "ffn_out":    mk(T * H * 2),
-            "h0":         mk(T * H * 2),
-            "h1":         mk(T * H * 2),
-            "h2":         mk(T * H * 2),
+            "normed":     mk(T * H * 2),          # f16
+            "q_buf":      mk(T * max_q_dim * 2),  # f16
+            "k_buf":      mk(T * max_kv_dim * 2), # f16
+            "v_buf":      mk(T * max_kv_dim * 2), # f16
+            "v_normed":   mk(T * max_kv_dim * 2), # f16
+            "q_rope":     mk(T * max_q_dim * 2),  # f16
+            "k_rope":     mk(T * max_kv_dim * 2), # f16
+            "scores_buf": mk(NQ * max_ctx * 2),   # f16
+            "sm_buf":     mk(NQ * max_ctx * 2),   # f16
+            "attn_out":   mk(T * max_q_dim * 2),  # f16
+            "o_proj_out": mk(T * H * 2),           # f16
+            "ffn_normed": mk(T * H * 2),           # f16
+            "gate_buf":   mk(T * I * 2),           # f16
+            "up_buf":     mk(T * I * 2),           # f16
+            "ffn_act":    mk(T * I * 2),           # f16
+            "ffn_out":    mk(T * H * 2),           # f16
+            # Residual buffers stored in f32 for precision.
+            # Gemma4 has output_norm weights up to 600 which cause f16 saturation
+            # when accumulated across 48 layers — f32 residuals prevent this.
+            "h0":         mk(T * H * 4),           # f32 (4 bytes)
+            "h1":         mk(T * H * 4),           # f32
+            "h2":         mk(T * H * 4),           # f32
         }
         self._hstate: int = 0
 
@@ -198,8 +201,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             raise RuntimeError(f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535")
 
         ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
-        x_buf = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
-        norm_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
+        # Residual stream stored in f32 — prevents saturation from large output_norm weights.
+        x_buf = WebGPUBuffer.empty(dev, num_tokens * hidden * 4, usage=rw)  # f32
+        norm_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)  # f16
         logits_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw)
         capped_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw)
 
@@ -210,9 +214,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                           dtype=np.uint32)
         bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
 
+        _vpt = min(hidden // 256, 16) if hidden <= 4096 else 0
+
         with self._batched_dispatch():
-            # Embedding lookup
-            self._dispatch("embedding_lookup",
+            # Embedding lookup → f32 output for f32 residual pipeline
+            self._dispatch("embedding_lookup_f32",
                            [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
                            {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
 
@@ -220,9 +226,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 x_buf = self._transformer_layer(
                     i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
-            # Final norm + LM head + softcap
-            _vpt = min(hidden // 256, 16) if hidden <= 4096 else 0
-            self._dispatch("rms_norm",
+            # Final norm: reads f32 residual, writes f16 norm_out
+            self._dispatch("rms_norm_f32in",
                            [x_buf, self.weights["model.norm.weight"], norm_out],
                            {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt},
                            (num_tokens, 1, 1))
@@ -294,13 +299,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         out = sc[h_names[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
         gelu_n = num_tokens * inter
-        _rms_consts = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": min(hidden // 256, 16) if hidden <= 4096 else 0}
+        _vpt = min(hidden // 256, 16) if hidden <= 4096 else 0
+        _rms_consts = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
-            # Pre-norm (uses input_layernorm = attn_norm in GGUF)
-            self._dispatch("rms_norm",
+            # Pre-norm: x_buf is f32 (residual stream), normed is f16
+            self._dispatch("rms_norm_f32in",
                            [x_buf, self.weights[f"{p}.input_layernorm.weight"], sc["normed"]],
                            _rms_consts, (num_tokens, 1, 1))
 
@@ -409,10 +415,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             if post_attn_norm_w is not None:
                 self._dispatch("rms_norm", [sc["o_proj_out"], post_attn_norm_w, sc["ffn_normed"]],
                                _rms_consts, (num_tokens, 1, 1))
-                self._dispatch("add", [x_buf, sc["ffn_normed"], residual],
+                # f32 residual add: x_buf(f32) + SCALE*ffn_normed(f16) → residual(f32)
+                self._dispatch("add_f32", [x_buf, sc["ffn_normed"], residual],
                                {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
             else:
-                self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
+                self._dispatch("add_f32", [x_buf, sc["o_proj_out"], residual],
                                {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
 
             # Correct Gemma4 FFN sublayer (matches HF):
@@ -423,7 +430,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             #   out = residual2 + hidden                       ← residual add AFTER norm
             pre_ffn_norm_w = self.weights.get(f"{p}.pre_feedforward_layernorm.weight")
             if pre_ffn_norm_w is not None:
-                self._dispatch("rms_norm", [residual, pre_ffn_norm_w, sc["normed"]],
+                # residual is f32 → rms_norm_f32in → sc["normed"] is f16
+                self._dispatch("rms_norm_f32in", [residual, pre_ffn_norm_w, sc["normed"]],
                                _rms_consts, (num_tokens, 1, 1))
                 ffn_normed = sc["normed"]
             else:
@@ -452,15 +460,16 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"K": inter, "N": hidden, "USE_QUANT": _uq(w_k)},
                            ((hidden + 255) // 256, 1, 1))
 
-            # Post-FFN norm on FFN output (before residual add), then residual add
+            # Post-FFN norm on FFN output (before residual add), then f32 residual add
             post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
             if post_ffw_w is not None:
                 self._dispatch("rms_norm", [sc["ffn_out"], post_ffw_w, sc["o_proj_out"]],
                                _rms_consts, (num_tokens, 1, 1))
-                self._dispatch("add", [residual, sc["o_proj_out"], out],
+                # residual(f32) + SCALE*o_proj_out(f16) → out(f32)
+                self._dispatch("add_f32", [residual, sc["o_proj_out"], out],
                                {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
             else:
-                self._dispatch("add", [residual, sc["ffn_out"], out],
+                self._dispatch("add_f32", [residual, sc["ffn_out"], out],
                                {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
