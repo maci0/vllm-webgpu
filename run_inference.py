@@ -283,10 +283,13 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Pass per-layer attention params for heterogeneous models (Gemma4).
     if "_layer_attention_params" in config:
         cfg._layer_attention_params = config["_layer_attention_params"]
-    # partial_rotary_factor: from top-level or rope_parameters (Qwen3.5 style)
+    # partial_rotary_factor and mrope_interleaved: from top-level or rope_parameters
     prf = config.get("partial_rotary_factor") or rope_params.get("partial_rotary_factor", None)
     if prf is not None:
         cfg.partial_rotary_factor = float(prf)
+    mri = config.get("mrope_interleaved") or rope_params.get("mrope_interleaved", None)
+    if mri is not None:
+        cfg.mrope_interleaved = bool(mri)
     # Pass other optional model-specific fields (including Qwen3.5 GDN dims)
     for key in ("final_logit_softcapping", "ple_layer_indices", "query_pre_attn_scalar",
                 "tie_word_embeddings", "layer_types",

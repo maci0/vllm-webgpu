@@ -6,37 +6,6 @@ import numpy as np
 
 from vllm_webgpu.models.base import BaseWebGPUModel
 
-# Lazy singleton cache for vLLM GDN ops.
-# Imported on first call to _get_vllm_gdn_ops() to avoid module-load-time
-# failures, but cached so that repeated calls are free.
-_vllm_gdn_ops_cache: dict | None = None
-
-
-def _get_vllm_gdn_ops() -> dict:
-    """Return the two vLLM CPU GDN ops, registering and caching them on first call."""
-    global _vllm_gdn_ops_cache
-    if _vllm_gdn_ops_cache is not None:
-        return _vllm_gdn_ops_cache
-    try:
-        from vllm.model_executor.layers.mamba.ops.cpu.gdn_attention import (
-            register_cpu_gdn_attention_ops,
-        )
-        register_cpu_gdn_attention_ops()
-        from vllm.model_executor.layers.mamba.ops.cpu.causal_conv1d import (
-            causal_conv1d_update_torch,
-        )
-        import vllm._custom_ops as vllm_ops
-        _vllm_gdn_ops_cache = {
-            "causal_conv1d_update_torch": causal_conv1d_update_torch,
-            "fused_sigmoid_gating_delta_rule_update_cpu":
-                vllm_ops.fused_sigmoid_gating_delta_rule_update_cpu,
-        }
-        return _vllm_gdn_ops_cache
-    except Exception as exc:
-        raise RuntimeError(
-            "vLLM CPU GDN ops unavailable. Install vllm with CPU support."
-        ) from exc
-
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -95,9 +64,11 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # partial_rotary_factor=0.25 → rotary_dim = head_dim * 0.25.
         _prf = getattr(model_config, "partial_rotary_factor", 1.0) or 1.0
         self._rotary_dim: int = max(2, int(self.head_dim * _prf))
-        # Round down to nearest even (RoPE requires pairs)
         if self._rotary_dim % 2 != 0:
             self._rotary_dim -= 1
+        # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
+        # Qwen3.5 uses mrope_interleaved=True.
+        self._rope_interleaved: int = 1 if getattr(model_config, "mrope_interleaved", False) else 0
 
         # GDN (linear-attention) architecture dimensions from config.
         # Fall back to Qwen3.5-9B defaults if not present.
@@ -564,7 +535,8 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                    {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
                                     "ROPE_BASE": float(self.rope_theta),
                                     "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
-                                    "ROTARY_DIM": self._rotary_dim},
+                                    "ROTARY_DIM": self._rotary_dim,
+                                    "INTERLEAVED": self._rope_interleaved},
                                    (n_heads, num_tokens, 1))
                 else:
                     self._dispatch("rope", [src, pos_buf, dst],

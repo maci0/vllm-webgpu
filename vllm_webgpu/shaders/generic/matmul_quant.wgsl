@@ -138,12 +138,19 @@ fn main(
             acc += block_acc * scale;
         }
     } else {
-        // f16 path: each u32 holds two packed f16 values.
-        for (var k = 0u; k < K; k += 2u) {
-            let w_u32 = weights[(row * K + k) / 2u];
-            let w_vec = unpack2x16float(w_u32);
-            acc += w_vec.x * f32(x[k]);
-            if (k + 1u < K) { acc += w_vec.y * f32(x[k + 1u]); }
+        // f16 path: 8-element unroll, 4 consecutive u32 loads per iteration.
+        // K must be divisible by 8 (all practical models satisfy this).
+        // Each iteration issues 4 128-bit-aligned word loads — optimal for Metal.
+        for (var k = 0u; k < K; k += 8u) {
+            let base = (row * K + k) / 2u;
+            let w0 = unpack2x16float(weights[base]);
+            let w1 = unpack2x16float(weights[base + 1u]);
+            let w2 = unpack2x16float(weights[base + 2u]);
+            let w3 = unpack2x16float(weights[base + 3u]);
+            acc += w0.x * f32(x[k])       + w0.y * f32(x[k + 1u]);
+            acc += w1.x * f32(x[k + 2u]) + w1.y * f32(x[k + 3u]);
+            acc += w2.x * f32(x[k + 4u]) + w2.y * f32(x[k + 5u]);
+            acc += w3.x * f32(x[k + 6u]) + w3.y * f32(x[k + 7u]);
         }
     }
 

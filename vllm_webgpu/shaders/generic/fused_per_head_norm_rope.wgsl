@@ -11,6 +11,9 @@ override GEMMA_NORM: u32    = 0u;
 // ROTARY_DIM: number of dimensions to apply RoPE to (rest pass through unchanged).
 // Set to HEAD_DIM for full RoPE (default), or HEAD_DIM * partial_rotary_factor for partial.
 override ROTARY_DIM: u32    = HEAD_DIM;
+// INTERLEAVED=1: pairs are (2i, 2i+1) — used by some models (Qwen3.5 mrope_interleaved).
+// INTERLEAVED=0: pairs are (i, i+half) — standard convention (Llama, Gemma3, Qwen3).
+override INTERLEAVED: u32   = 0u;
 
 var<workgroup> shared_sq:    array<f32, 64>;
 // shared_input caches HEAD_DIM f32 values for reuse in phase 2.
@@ -60,34 +63,55 @@ fn main(
     let w_base  = head_idx * HEAD_DIM;
 
     // --- Phase 2: apply norm weight then RoPE, reading from shared cache ---
-    // Loop so each thread covers HEAD_DIM/2 / WG_SIZE pairs (handles HEAD_DIM > 2*WG_SIZE).
+    // Supports two pairing conventions:
+    //   INTERLEAVED=0 (default): pairs (i, half+i)  — Llama/Gemma/Qwen3 convention
+    //   INTERLEAVED=1:           pairs (2i, 2i+1)   — Qwen3.5 mrope_interleaved
     let pos       = f32(positions[seq_idx]);
     let rot_half  = ROTARY_DIM / 2u;  // pair boundary for rotary dims
     var i = tid;
     loop {
         if (i >= half) { break; }
 
-        var n1 = shared_input[i]        * rms_inv;
-        var n2 = shared_input[half + i] * rms_inv;
-        if (HAS_WEIGHT != 0u) {
-            let w1 = select(f32(weight[w_base + i]), 1.0 + f32(weight[w_base + i]), GEMMA_NORM != 0u);
-            let w2 = select(f32(weight[w_base + half + i]), 1.0 + f32(weight[w_base + half + i]), GEMMA_NORM != 0u);
-            n1 *= w1;
-            n2 *= w2;
+        var n1: f32;
+        var n2: f32;
+        var out_idx1: u32;
+        var out_idx2: u32;
+
+        if (INTERLEAVED == 0u) {
+            // Standard: pairs are (i, half+i)
+            n1 = shared_input[i]        * rms_inv;
+            n2 = shared_input[half + i] * rms_inv;
+            if (HAS_WEIGHT != 0u) {
+                let w1 = select(f32(weight[w_base + i]),        1.0 + f32(weight[w_base + i]),        GEMMA_NORM != 0u);
+                let w2 = select(f32(weight[w_base + half + i]), 1.0 + f32(weight[w_base + half + i]), GEMMA_NORM != 0u);
+                n1 *= w1; n2 *= w2;
+            }
+            out_idx1 = base + i;
+            out_idx2 = base + half + i;
+        } else {
+            // Interleaved: pairs are (2i, 2i+1)
+            n1 = shared_input[i * 2u]       * rms_inv;
+            n2 = shared_input[i * 2u + 1u]  * rms_inv;
+            if (HAS_WEIGHT != 0u) {
+                let w1 = select(f32(weight[w_base + i * 2u]),       1.0 + f32(weight[w_base + i * 2u]),       GEMMA_NORM != 0u);
+                let w2 = select(f32(weight[w_base + i * 2u + 1u]),  1.0 + f32(weight[w_base + i * 2u + 1u]), GEMMA_NORM != 0u);
+                n1 *= w1; n2 *= w2;
+            }
+            out_idx1 = base + i * 2u;
+            out_idx2 = base + i * 2u + 1u;
         }
 
         if (i < rot_half) {
-            // RoPE applied: theta uses ROTARY_DIM (not HEAD_DIM) for correct frequency
+            // RoPE applied: theta uses ROTARY_DIM for correct frequency
             let theta_i = exp(-f32(i * 2u) / f32(ROTARY_DIM) * LN_ROPE_BASE);
             let angle   = pos * theta_i;
             let cos_v   = cos(angle);
             let sin_v   = sin(angle);
-            output[base + i]        = f16(n1 * cos_v - n2 * sin_v);
-            output[base + half + i] = f16(n2 * cos_v + n1 * sin_v);
+            output[out_idx1] = f16(n1 * cos_v - n2 * sin_v);
+            output[out_idx2] = f16(n2 * cos_v + n1 * sin_v);
         } else {
-            // No RoPE — pass normalized values through unchanged
-            output[base + i]        = f16(n1);
-            output[base + half + i] = f16(n2);
+            output[out_idx1] = f16(n1);
+            output[out_idx2] = f16(n2);
         }
         i += WG_SIZE;
     }
