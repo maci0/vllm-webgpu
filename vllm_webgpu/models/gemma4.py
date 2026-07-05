@@ -121,6 +121,19 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, n, usage=rw)
 
+        # Pre-allocated per-step buffers (reused every decode via write_buffer).
+        V = self.vocab_size
+        self._pre: dict[str, "WebGPUBuffer"] = {
+            "ids":      mk(T * 4),         # [1] uint32 token id
+            "pos":      mk(T * 4),         # [1] uint32 position
+            "slot_map": mk(T * 4),         # [1] uint32 physical slot
+            "bt":       mk(512 * 4),       # [512] uint32 block table
+            "x":        mk(T * H * 4),     # [1, H] f32 residual
+            "norm_out": mk(T * H * 2),     # [1, H] f16 final norm
+            "logits":   mk(T * V * 2),     # [1, V] f16 logits
+            "capped":   mk(T * V * 2),     # [1, V] f16 softcapped logits (Gemma4)
+        }
+
         self._sc: dict[str, "WebGPUBuffer"] = {
             "normed":     mk(T * H * 2),          # f16
             "q_buf":      mk(T * max_q_dim * 2),  # f16
@@ -214,19 +227,26 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535")
 
-        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
-        # Residual stream stored in f32 — prevents saturation from large output_norm weights.
-        x_buf = WebGPUBuffer.empty(dev, num_tokens * hidden * 4, usage=rw)  # f32
-        norm_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)  # f16
-        logits_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw)
-        capped_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw)
+        # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
+        pre = self._pre
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(
+            pre["slot_map"].buf, 0,
+            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
+        bt_arr = np.array(
+            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
+            dtype=np.uint32)
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
-        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
-        slot_map = WebGPUBuffer.from_numpy(
-            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
-        bt_arr = np.array(attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-                          dtype=np.uint32)
-        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
+        ids_buf    = pre["ids"]
+        pos_buf    = pre["pos"]
+        slot_map   = pre["slot_map"]
+        bt_buf     = pre["bt"]
+        x_buf      = pre["x"]
+        norm_out   = pre["norm_out"]
+        logits_buf = pre["logits"]
+        capped_buf = pre["capped"]
 
         _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
 

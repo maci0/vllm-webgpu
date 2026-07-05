@@ -87,6 +87,19 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, n, usage=rw)
 
+        # Pre-allocated per-step buffers: reused every decode call via write_buffer.
+        # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
+        max_bt_blocks = 512  # max block table entries; enough for 512 * block_size ctx
+        self._pre: dict[str, "WebGPUBuffer"] = {
+            "ids":      mk(T * 4),              # [1] uint32 token id
+            "pos":      mk(T * 4),              # [1] uint32 position
+            "slot_map": mk(T * 4),              # [1] uint32 physical slot
+            "bt":       mk(max_bt_blocks * 4),  # [max_blocks] uint32 block table
+            "x":        mk(T * H * 2),          # [1, H] f16 residual / embedding
+            "norm_out": mk(T * H * 2),          # [1, H] f16 final norm output
+            "logits":   mk(T * self.vocab_size * 2),  # [1, vocab] f16 logits
+        }
+
         self._sc: dict[str, "WebGPUBuffer"] = {
             "normed":     mk(T * H * 2),
             "q_buf":      mk(T * Q * 2),
@@ -166,63 +179,50 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Returns:
             logits: [num_tokens, vocab_size]  float32
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-        import wgpu as wgpu_lib
-
         dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
         hidden = self.hidden_size
-        # Reset hidden-state rotation at the start of each forward pass
         self._hstate = 0
-        rw_usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
-        # Embedding lookup
-        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
-        x_buf = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw_usage)
-        self._dispatch(
-            "embedding_lookup",
-            [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
-            {"HIDDEN_DIM": hidden},
-            (num_tokens, 1, 1),
-        )
-
-        # MVP guard: single-sequence decode only — check once before any GPU work.
-        # Use RuntimeError not assert: assert is silently removed by python -O.
         if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
             raise RuntimeError("multi-sequence batching not supported in this build")
 
-        # ctx_len must be at least 1 (0 would allocate a zero-byte scores_buf and
-        # dispatch zero workgroups, producing empty attention output with no error).
         ctx_len = int(attn_metadata.max_decode_seq_len
                       if attn_metadata.max_decode_seq_len is not None
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
-        # WebGPU spec guarantees maxComputeWorkgroupsPerDimension >= 65535.
-        # attn_score dispatches (num_q_heads, ctx_len, 1) — cap ctx_len to 65535.
         if ctx_len > 65535:
             raise RuntimeError(
                 f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535. "
                 "Long-context support requires splitting the attention computation."
             )
 
-        # Hoist per-forward buffers that are identical across all layers.
-        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
-        slot_map = WebGPUBuffer.from_numpy(
-            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
-        bt_arr = np.array(attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-                          dtype=np.uint32)
-        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
-        vocab = self.vocab_size
-        norm_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw_usage)
-        logits_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw_usage)
+        # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
+        pre = self._pre
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(
+            pre["slot_map"].buf, 0,
+            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
+        bt_arr = np.array(
+            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
+            dtype=np.uint32)
+        # bt_buf is pre-allocated for up to 512 blocks; write only what's needed.
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
-        # Single outer encoder wraps the entire forward pass (all layers + norm + lm_head).
-        # When profiling=False, all inner _batched_dispatch() calls in _transformer_layer
-        # are re-entrant no-ops and record into this single encoder — one queue.submit().
-        # When profiling=True, inner layers break out into separate encoders for timing.
+        ids_buf   = pre["ids"]
+        pos_buf   = pre["pos"]
+        slot_map  = pre["slot_map"]
+        bt_buf    = pre["bt"]
+        x_buf     = pre["x"]
+        norm_out  = pre["norm_out"]
+        logits_buf = pre["logits"]
+
+        vocab = self.vocab_size
+
         with self._batched_dispatch():
-            # Embed
+            # Embed (single dispatch; removed the duplicate standalone dispatch)
             self._dispatch(
                 "embedding_lookup",
                 [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
@@ -230,7 +230,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 (num_tokens, 1, 1),
             )
 
-            # Transformer layers
             for i in range(self.num_layers):
                 x_buf = self._transformer_layer(
                     i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
