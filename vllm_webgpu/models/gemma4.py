@@ -15,6 +15,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _gemv_wg(N: int, uq: int) -> tuple:
+    """Workgroup count for matmul_quant dispatch.
+
+    SPLIT_K=1 (shader default): one workgroup per output row when USE_QUANT=0.
+    Quantized paths (USE_QUANT=1/2) use row-per-thread: ceil(N/256) workgroups.
+    """
+    if uq == 0:
+        return (N, 1, 1)
+    return ((N + 255) // 256, 1, 1)
+
+
 class Gemma4WebGPUModel(BaseWebGPUModel):
     """
     Gemma 4 transformer with heterogeneous per-layer attention.
@@ -237,10 +248,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             lm_head_w = self.weights.get("lm_head.weight",
                                          self.weights["model.embed_tokens.weight"])
+            # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
+            # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
                            [norm_out, lm_head_w,
                             self.weights.get("lm_head.scales", norm_out), logits_buf],
-                           {"K": hidden, "N": vocab, "USE_QUANT": 0},
+                           {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
@@ -319,28 +332,31 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # Q projection
             qw = f"{p}.self_attn.q_proj.weight"
+            uq = _uq(qw)
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[qw],
                             self.weights.get(f"{p}.self_attn.q_proj.scales", sc["normed"]), sc["q_buf"]],
-                           {"K": hidden, "N": q_dim, "USE_QUANT": _uq(qw)},
-                           ((q_dim + 255) // 256, 1, 1))
+                           {"K": hidden, "N": q_dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                           _gemv_wg(q_dim, uq))
 
             # K projection
             kw = f"{p}.self_attn.k_proj.weight"
+            uq = _uq(kw)
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[kw],
                             self.weights.get(f"{p}.self_attn.k_proj.scales", sc["normed"]), sc["k_buf"]],
-                           {"K": hidden, "N": kv_dim, "USE_QUANT": _uq(kw)},
-                           ((kv_dim + 255) // 256, 1, 1))
+                           {"K": hidden, "N": kv_dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                           _gemv_wg(kv_dim, uq))
 
             # V projection: for global layers V=K (no separate weight), reuse k_buf → v_buf
             if has_v:
                 vw = f"{p}.self_attn.v_proj.weight"
+                uq = _uq(vw)
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[vw],
                                 self.weights.get(f"{p}.self_attn.v_proj.scales", sc["normed"]), sc["v_buf"]],
-                               {"K": hidden, "N": kv_dim, "USE_QUANT": _uq(vw)},
-                               ((kv_dim + 255) // 256, 1, 1))
+                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                               _gemv_wg(kv_dim, uq))
                 v_src = sc["v_buf"]
             else:
                 v_src = sc["k_buf"]
@@ -405,11 +421,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # Output projection → sc["o_proj_out"]
             ow = f"{p}.self_attn.o_proj.weight"
+            uq = _uq(ow)
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[ow],
                             self.weights.get(f"{p}.self_attn.o_proj.scales", sc["attn_out"]), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": _uq(ow)},
-                           ((hidden + 255) // 256, 1, 1))
+                           {"K": q_dim, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                           _gemv_wg(hidden, uq))
 
             # Correct Gemma4 attention sublayer (matches HF Gemma3DecoderLayer.forward):
             #   residual = x
@@ -446,11 +463,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
                 w_k = f"{p}.mlp.{proj}.weight"
                 s_k = f"{p}.mlp.{proj}.scales"
+                uq = _uq(w_k)
                 self._dispatch("matmul_quant",
                                [ffn_normed, self.weights[w_k],
                                 self.weights.get(s_k, ffn_normed), out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": _uq(w_k)},
-                               ((inter + 255) // 256, 1, 1))
+                               {"K": hidden, "N": inter, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                               _gemv_wg(inter, uq))
 
             # Gemma uses tanh-approximate GELU (gelu_pytorch_tanh), not SiLU.
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
@@ -460,11 +478,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Down projection → sc["ffn_out"]
             w_k = f"{p}.mlp.down_proj.weight"
             s_k = f"{p}.mlp.down_proj.scales"
+            uq = _uq(w_k)
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[w_k],
                             self.weights.get(s_k, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter, "N": hidden, "USE_QUANT": _uq(w_k)},
-                           ((hidden + 255) // 256, 1, 1))
+                           {"K": inter, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                           _gemv_wg(hidden, uq))
 
             # Post-FFN norm on FFN output (before residual add), then f32 residual add
             post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")

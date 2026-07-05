@@ -13,6 +13,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _gemv_wg(N: int, uq: int) -> tuple:
+    """Workgroup count for matmul_quant dispatch.
+
+    SPLIT_K=1 (shader default): one workgroup per output row when USE_QUANT=0.
+    Quantized paths (USE_QUANT=1/2) use row-per-thread: ceil(N/256) workgroups.
+    """
+    if uq == 0:
+        return (N, 1, 1)
+    return ((N + 255) // 256, 1, 1)
+
+
 # Qwen3.5-9B fixed architecture constants
 _FULL_ATTN_INTERVAL = 4
 _LIN_K_HEADS = 16
@@ -306,7 +318,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            [sc["normed"], self.weights[f"{p}.in_proj_qkv.weight"],
                             sc["dummy_scales"], sc["qkv_buf"]],
                            {"K": hidden, "N": cd, "USE_QUANT": 0},
-                           ((cd + 255) // 256, 1, 1))
+                           (cd, 1, 1))
 
             # 3. Causal conv step: updates conv_state in-place, writes qkv_conv
             conv_w = self.weights.get(f"{p}.conv1d.weight", sc["normed"])
@@ -316,25 +328,26 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            ((cd + 255) // 256, 1, 1))
 
             # 4. a projection: normed → [K_HEADS] (dt for decay)
+            # kh rows: must dispatch (kh, 1, 1) with SPLIT_K=1 (one WG per output row).
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[f"{p}.in_proj_a.weight"],
                             sc["dummy_scales"], sc["a_buf"]],
                            {"K": hidden, "N": kh, "USE_QUANT": 0},
-                           (1, 1, 1))
+                           (kh, 1, 1))
 
             # 5a. b projection: normed → [K_HEADS] (outer-product gate)
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[f"{p}.in_proj_b.weight"],
                             sc["dummy_scales"], sc["b_buf"]],
                            {"K": hidden, "N": kh, "USE_QUANT": 0},
-                           (1, 1, 1))
+                           (kh, 1, 1))
 
             # 5b. z gate projection: normed → [val_dim]
             self._dispatch("matmul_quant",
                            [sc["normed"], self.weights[f"{p}.in_proj_z.weight"],
                             sc["dummy_scales"], sc["z_buf"]],
                            {"K": hidden, "N": vd, "USE_QUANT": 0},
-                           ((vd + 255) // 256, 1, 1))
+                           (vd, 1, 1))
 
             # 6. GDN state update: updates ssm_state in-place, writes gdn_out
             self._dispatch("gdn_state_update",
@@ -359,7 +372,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            [sc["gated"], self.weights[f"{p}.out_proj.weight"],
                             sc["dummy_scales"], sc["o_proj_out"]],
                            {"K": vd, "N": hidden, "USE_QUANT": 0},
-                           ((hidden + 255) // 256, 1, 1))
+                           (hidden, 1, 1))
 
             # 9. Attention residual add
             self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
@@ -378,7 +391,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                [sc["ffn_normed"], self.weights[w_k],
                                 sc["ffn_normed"], out_b],
                                {"K": hidden, "N": inter, "USE_QUANT": 0},
-                               ((inter + 255) // 256, 1, 1))
+                               (inter, 1, 1))
 
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                            {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
@@ -388,7 +401,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            [sc["ffn_act"], self.weights[w_k],
                             sc["ffn_act"], sc["ffn_out"]],
                            {"K": inter, "N": hidden, "USE_QUANT": 0},
-                           ((hidden + 255) // 256, 1, 1))
+                           (hidden, 1, 1))
 
             self._dispatch("add", [residual, sc["ffn_out"], out],
                            {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
@@ -460,9 +473,11 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             lm_head_w = (self.weights.get("lm_head.weight")
                          or self.weights.get("model.lm_head.weight")
                          or self.weights["model.embed_tokens.weight"])
+            # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
+            # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
                            [norm_out, lm_head_w, norm_out, logits_buf],
-                           {"K": hidden, "N": vocab, "USE_QUANT": 0},
+                           {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
 
         return logits_buf.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
@@ -518,11 +533,12 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                        (sc["v_buf"], "v_proj", kv_dim)]:
                 w_key = f"{p}.self_attn.{proj}.weight"
                 s_key = f"{p}.self_attn.{proj}.scales"
+                uq = _uq(w_key)
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[w_key],
                                 self.weights.get(s_key, sc["normed"]), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": _uq(w_key)},
-                               ((dim + 255) // 256, 1, 1))
+                               {"K": hidden, "N": dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                               _gemv_wg(dim, uq))
 
             for src, dst, n_heads, w_key in [
                 (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
@@ -568,11 +584,12 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
             w_key = f"{p}.self_attn.o_proj.weight"
             s_key = f"{p}.self_attn.o_proj.scales"
+            uq = _uq(w_key)
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[w_key],
                             self.weights.get(s_key, sc["attn_out"]), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": _uq(w_key)},
-                           ((hidden + 255) // 256, 1, 1))
+                           {"K": q_dim, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                           _gemv_wg(hidden, uq))
 
             self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
                            {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
@@ -585,22 +602,24 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
                 w_k = f"{p}.mlp.{proj}.weight"
                 s_k = f"{p}.mlp.{proj}.scales"
+                uq = _uq(w_k)
                 self._dispatch("matmul_quant",
                                [sc["ffn_normed"], self.weights[w_k],
                                 self.weights.get(s_k, sc["ffn_normed"]), out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": _uq(w_k)},
-                               ((inter + 255) // 256, 1, 1))
+                               {"K": hidden, "N": inter, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                               _gemv_wg(inter, uq))
 
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                            {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
 
             w_k = f"{p}.mlp.down_proj.weight"
             s_k = f"{p}.mlp.down_proj.scales"
+            uq = _uq(w_k)
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[w_k],
                             self.weights.get(s_k, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter, "N": hidden, "USE_QUANT": _uq(w_k)},
-                           ((hidden + 255) // 256, 1, 1))
+                           {"K": inter, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                           _gemv_wg(hidden, uq))
 
             self._dispatch("add", [residual, sc["ffn_out"], out],
                            {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))

@@ -12,6 +12,13 @@ override K: u32         = 4096u;
 override N: u32         = 4096u;
 override BLOCK_K: u32   = 32u;     // block size for USE_QUANT=1 (simple Q4)
 override USE_QUANT: u32 = 1u;      // 0=f16, 1=simple Q4, 2=GGUF Q4_K
+// SPLIT_K=1 (default): split-K GEMV — all 256 threads work on ONE output row.
+// Dispatch (N, 1, 1) workgroups. Within each workgroup, consecutive threads
+// read consecutive weight elements → coalesced on all GPU architectures.
+// Mathematically optimal for bandwidth-limited GEMV on NVIDIA/AMD/mobile/Metal.
+// 8-barrier workgroup reduction finalises the partial sums.
+// SPLIT_K=0: legacy row-per-thread. Dispatch ((N+255)/256, 1, 1) workgroups.
+override SPLIT_K: u32   = 1u;
 
 @group(0) @binding(0) var<storage, read>       x       : array<f16>;  // [K]
 @group(0) @binding(1) var<storage, read>       weights : array<u32>;  // raw bytes as u32
@@ -48,10 +55,61 @@ fn q4k_min(j: u32, sc_base: u32) -> u32 {
     return (rd_byte(sc_base + j + 4u) >> 4u) | ((rd_byte(sc_base + j) >> 6u) << 4u);
 }
 
+// Shared memory for the split-K reduction (256 partial sums).
+var<workgroup> sh_acc: array<f32, 256>;
+
 @compute @workgroup_size(256, 1, 1)
 fn main(
     @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_id)  lid: vec3<u32>,
+    @builtin(workgroup_id)         wgid: vec3<u32>,
 ) {
+    let tid = lid.x;
+
+    if (SPLIT_K == 1u) {
+        // Split-K GEMV: one workgroup per output row.
+        // Thread t reads elements k = t*2, t*2+512, t*2+1024, ...
+        // (stride = 256*2 = 512 elements = 256 u32).
+        // At each outer step, all 256 threads read 256 CONSECUTIVE u32
+        // from weights[row, ...] — perfectly coalesced on all GPU architectures.
+        //
+        // K must be even (guaranteed for all practical models).
+        let row = wgid.x;
+        if (row >= N) { return; }
+
+        var acc: f32 = 0.0;
+        let row_base = row * K;
+
+        // Stride = 256 u32 per step (= 512 F16 elements).
+        // Thread t starts at k = t*2; each step moves 512 elements forward.
+        // Coverage: threads 0..255 collectively cover K elements per step.
+        var k = tid * 2u;
+        loop {
+            if (k >= K) { break; }
+            // k is always even, so (row_base + k) is always even.
+            let wp = unpack2x16float(weights[(row_base + k) / 2u]);
+            acc += wp.x * f32(x[k]);
+            if (k + 1u < K) { acc += wp.y * f32(x[k + 1u]); }
+            k += 512u;  // stride = 256 threads * 2 elements each
+        }
+
+        // Tree reduction: sum across the 256 partial accumulators.
+        sh_acc[tid] = acc;
+        workgroupBarrier();
+        var stride = 128u;
+        loop {
+            if (stride == 0u) { break; }
+            if (tid < stride) { sh_acc[tid] += sh_acc[tid + stride]; }
+            workgroupBarrier();
+            stride /= 2u;
+        }
+        if (tid == 0u) {
+            output[row] = f16(clamp(sh_acc[0], -65504.0, 65504.0));
+        }
+        return;
+    }
+
+    // Row-per-thread GEMV (SPLIT_K=0): dispatch ((N+255)/256, 1, 1) workgroups.
     let row = gid.x;
     if (row >= N) { return; }
 

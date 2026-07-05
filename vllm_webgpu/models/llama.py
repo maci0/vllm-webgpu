@@ -14,6 +14,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _gemv_wg(N: int, uq: int) -> tuple:
+    """Workgroup count for matmul_quant dispatch.
+
+    SPLIT_K=1 (shader default): one workgroup per output row when USE_QUANT=0.
+    Quantized paths (USE_QUANT=1/2) use row-per-thread: ceil(N/256) workgroups.
+    """
+    if uq == 0:
+        return (N, 1, 1)
+    return ((N + 255) // 256, 1, 1)
+
+
 class LlamaWebGPUModel(BaseWebGPUModel):
     """
     Handles Llama 3.x and Qwen 2.5/3.x (architecturally identical).
@@ -233,14 +244,16 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 (num_tokens, 1, 1),
             )
 
-            # LM head: use GEMV (matmul_quant) — vocab > 65535 would exceed Y-dispatch limit
-            # in the tiled (M, N, 1) layout; GEMV dispatches (ceil(vocab/256), 1, 1).
+            # LM head: vocab_size (e.g. 151936) exceeds the WebGPU
+            # maxComputeWorkgroupsPerDimension limit of 65535, so the split-K path
+            # (one workgroup per output row) is unusable. Force SPLIT_K=0 to use the
+            # row-per-thread path, which dispatches ceil(vocab/256) workgroups instead.
             self._dispatch(
                 "matmul_quant",
                 [norm_out, self.weights.get("lm_head.weight", self.weights["model.embed_tokens.weight"]),
                  self.weights.get("lm_head.scales", norm_out),  # unused for f16
                  logits_buf],
-                {"K": hidden, "N": vocab, "USE_QUANT": 0},
+                {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1),
             )
         # GPU readback after the single submit has completed.
@@ -304,9 +317,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                        (sc["v_buf"], "v_proj", kv_dim)]:
                 w_key = f"{p}.self_attn.{proj}.weight"
                 s_key = f"{p}.self_attn.{proj}.scales"
+                uq = _uq(w_key)
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[w_key], self.weights.get(s_key, sc["normed"]), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": _uq(w_key)}, ((dim + 255) // 256, 1, 1))
+                               {"K": hidden, "N": dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                               _gemv_wg(dim, uq))
 
             # Fused per-head norm + RoPE for Q and K
             for src, dst, n_heads, w_key in [
@@ -353,9 +368,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # Output projection
             w_key = f"{p}.self_attn.o_proj.weight"
             s_key = f"{p}.self_attn.o_proj.scales"
+            uq = _uq(w_key)
             self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
                                             self.weights.get(s_key, sc["attn_out"]), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": _uq(w_key)}, ((hidden + 255) // 256, 1, 1))
+                           {"K": q_dim, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                           _gemv_wg(hidden, uq))
 
             # Residual add (vec4 path: dispatch N/4 threads)
             self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
@@ -369,9 +386,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
                 w_k = f"{p}.mlp.{proj}.weight"
                 s_k = f"{p}.mlp.{proj}.scales"
+                uq = _uq(w_k)
                 self._dispatch("matmul_quant", [sc["ffn_normed"], self.weights[w_k],
                                                 self.weights.get(s_k, sc["ffn_normed"]), out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": _uq(w_k)}, ((inter + 255) // 256, 1, 1))
+                               {"K": hidden, "N": inter, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                               _gemv_wg(inter, uq))
 
             # SwiGLU (vec4 path: dispatch N/4 threads)
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
@@ -380,9 +399,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # Down projection
             w_k = f"{p}.mlp.down_proj.weight"
             s_k = f"{p}.mlp.down_proj.scales"
+            uq = _uq(w_k)
             self._dispatch("matmul_quant", [sc["ffn_act"], self.weights[w_k],
                                             self.weights.get(s_k, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter, "N": hidden, "USE_QUANT": _uq(w_k)}, ((hidden + 255) // 256, 1, 1))
+                           {"K": inter, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                           _gemv_wg(hidden, uq))
 
             # Final residual (vec4 path)
             self._dispatch("add", [residual, sc["ffn_out"], out],
