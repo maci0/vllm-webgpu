@@ -136,6 +136,40 @@ class BaseWebGPUModel:
             raise ValueError(f"Unknown weight format for {path}")
         logger.info("Loaded %d weight tensors (%s format)", len(self.weights), fmt)
 
+    def _is_quantized(self, weight_key: str) -> bool:
+        """Return True if the weight is stored quantized (INT32) for GPU dequant."""
+        buf = self.weights.get(weight_key)
+        return buf is not None and getattr(buf, "dtype", "f16") == "i32"
+
+    def _quant_info(self, base_key: str) -> dict:
+        """Return quantization metadata for a weight base key, or empty dict."""
+        meta = self.weights.get("__quant_meta__", {})
+        return meta.get(base_key, {})
+
+    def _gemv_consts_and_wg(self, weight_key: str, K: int, N: int,
+                            base_key: str = "") -> tuple:
+        """Return (constants_dict, workgroup_tuple) for a matmul_quant dispatch.
+
+        Chooses GPU dequant (USE_QUANT=3) for quantized weights, otherwise f16
+        (USE_QUANT=0) with split-K coalesced reads.  LM-head (vocab > 65535)
+        falls back to row-per-thread (SPLIT_K=0).
+        """
+        if self._is_quantized(weight_key):
+            qi = self._quant_info(base_key or weight_key[:-len(".weight")])
+            gk = qi.get("group_size", 128)
+            return ({"K": K, "N": N, "USE_QUANT": 3, "SPLIT_K": 1, "GROUP_K": gk},
+                    (N, 1, 1))
+        if N > 65535:
+            return ({"K": K, "N": N, "USE_QUANT": 0, "SPLIT_K": 0},
+                    ((N + 255) // 256, 1, 1))
+        return ({"K": K, "N": N, "USE_QUANT": 0, "SPLIT_K": 1},
+                (N, 1, 1))
+
+    def _scales_buf(self, weight_key: str) -> "WebGPUBuffer":
+        """Return the scales buffer companion for a quantized weight."""
+        return self.weights.get(weight_key + ".scales",
+                                self.weights.get(weight_key, None))
+
     def _dispatch(
         self,
         shader_name: str,

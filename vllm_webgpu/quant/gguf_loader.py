@@ -350,6 +350,22 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="f16")
 
+    def _upload_int32(arr: np.ndarray, name: str, weights: dict) -> None:
+        """Upload an INT32 array (quantized weights) directly to GPU without conversion."""
+        arr = np.ascontiguousarray(arr.astype(np.int32))
+        buf = wgpu_device.create_buffer(size=arr.nbytes, usage=usage)
+        wgpu_device.queue.write_buffer(buf, 0, arr.tobytes())
+        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                     shape=tuple(arr.shape), dtype="i32")
+
+    def _upload_f16(arr: np.ndarray, name: str, weights: dict) -> None:
+        """Upload an F16 array (scales/norms) directly to GPU."""
+        arr = np.ascontiguousarray(arr.astype(np.float16))
+        buf = wgpu_device.create_buffer(size=arr.nbytes, usage=usage)
+        wgpu_device.queue.write_buffer(buf, 0, arr.tobytes())
+        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                     shape=tuple(arr.shape), dtype="f16")
+
     weights: dict = {}
 
     # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
@@ -404,14 +420,33 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                 qz_key = f"{base}.qzeros"
                 qz = _load_raw(qz_key) if qz_key in header else None
                 g_idx = _load_raw(f"{base}.g_idx") if f"{base}.g_idx" in header else None
-                if fmt == "awq" and qz is not None:
-                    w_f16 = _dequant_awq(qw, sc, qz)
+
+                # GPU dequant path: upload raw quantized data directly.
+                # GPTQ qweight [K//8, N] is transposed to [N, K//8] so all 256
+                # threads in split-K read consecutive INT32s (coalesced access).
+                group_size = int(sc.shape[0]) and (qw.shape[1] if fmt == "gptq" else qw.shape[0]) // sc.shape[0] if sc.ndim == 2 else 128
+                if fmt == "gptq" and qz is None and g_idx is None:
+                    # Symmetric GPTQ (no asymmetric zero-points, no desc_act):
+                    # transpose qweight [K//8, N] → [N, K//8] for coalesced GPU access.
+                    K8, N_ = qw.shape
+                    group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else 128
+                    qw_t = np.ascontiguousarray(qw.T)  # [N, K//8]
+                    sc_gn = sc.astype(np.float16)      # [G, N] f16
+                    _upload_int32(qw_t, f"{base}.weight", weights)
+                    _upload_f16(sc_gn, f"{base}.weight.scales", weights)
+                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                    weights["__quant_meta__"][base] = {"fmt": "gptq_sym", "group_size": group_size}
+                    logger.debug("GPU GPTQ quantized: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
                 else:
-                    w_f16 = _dequant_gptq(
-                        qw, sc, qz if qz is not None else np.zeros_like(sc), g_idx)
-                _upload(w_f16, f"{base}.weight", weights)
+                    # Fall back to CPU dequantization (asymmetric, desc_act, or AWQ).
+                    if fmt == "awq" and qz is not None:
+                        w_f16 = _dequant_awq(qw, sc, qz)
+                    else:
+                        w_f16 = _dequant_gptq(
+                            qw, sc, qz if qz is not None else np.zeros_like(sc), g_idx)
+                    _upload(w_f16, f"{base}.weight", weights)
             except Exception as exc:
-                logger.warning("Failed to dequantize %s: %s", base, exc)
+                logger.warning("Failed to process %s: %s", base, exc)
 
     elif fmt == "nvfp4":
         # NVFP4: weight_packed (U8) + weight_scale (F8_E4M3) + weight_global_scale (F32)
