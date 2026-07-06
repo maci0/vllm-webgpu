@@ -419,8 +419,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             uq = _uq(qw)
             self._dispatch("matmul_quant",
                            [normed_x, self.weights[qw],
-                            self.weights.get(f"{p}.self_attn.q_proj.scales", normed_x), sc["q_buf"]],
-                           {"K": hidden, "N": q_dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                            self._scales_buf(qw, uq, normed_x), sc["q_buf"]],
+                           {"K": hidden, "N": q_dim, "USE_QUANT": uq,
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                            **self._quant_extra(f"{p}.self_attn.q_proj", uq)},
                            _gemv_wg(q_dim, uq))
 
             # K projection
@@ -428,8 +430,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             uq = _uq(kw)
             self._dispatch("matmul_quant",
                            [normed_x, self.weights[kw],
-                            self.weights.get(f"{p}.self_attn.k_proj.scales", normed_x), sc["k_buf"]],
-                           {"K": hidden, "N": kv_dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                            self._scales_buf(kw, uq, normed_x), sc["k_buf"]],
+                           {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                            **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
                            _gemv_wg(kv_dim, uq))
 
             # V projection: for global layers V=K (no separate weight), reuse k_buf → v_buf
@@ -438,8 +442,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 uq = _uq(vw)
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[vw],
-                                self.weights.get(f"{p}.self_attn.v_proj.scales", normed_x), sc["v_buf"]],
-                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                                self._scales_buf(vw, uq, normed_x), sc["v_buf"]],
+                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
+                                **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                                **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
                                _gemv_wg(kv_dim, uq))
                 v_src = sc["v_buf"]
             else:
@@ -502,8 +508,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             uq = _uq(ow)
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[ow],
-                            self.weights.get(f"{p}.self_attn.o_proj.scales", sc["attn_out"]), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                            self._scales_buf(ow, uq, sc["attn_out"]), sc["o_proj_out"]],
+                           {"K": q_dim, "N": hidden, "USE_QUANT": uq,
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                            **self._quant_extra(f"{p}.self_attn.o_proj", uq)},
                            _gemv_wg(hidden, uq))
 
             # Correct Gemma4 attention sublayer (matches HF Gemma3DecoderLayer.forward):
@@ -543,27 +551,29 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 sc["ffn_act"]],
                                {"K": hidden, "N": inter, "GELU": 1}, (inter, 1, 1))
             else:
-                for out_b, proj, w_k, uq in [
+                for out_b, proj, w_k, uq2 in [
                         (sc["gate_buf"], "gate_proj", gw_k, uq_g),
                         (sc["up_buf"],   "up_proj",   uw_k, uq_u)]:
                     self._dispatch("matmul_quant",
                                    [ffn_normed, self.weights[w_k],
-                                    self.weights.get(w_k[:-7]+".scales", ffn_normed), out_b],
-                                   {"K": hidden, "N": inter, "USE_QUANT": uq,
-                                    **({"SPLIT_K": 0} if uq else {})},
-                                   _gemv_wg(inter, uq))
+                                    self._scales_buf(w_k, uq2, ffn_normed), out_b],
+                                   {"K": hidden, "N": inter, "USE_QUANT": uq2,
+                                    **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6) else {}),
+                                    **self._quant_extra(f"{p}.mlp.{proj}", uq2)},
+                                   _gemv_wg(inter, uq2))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1),
                                shader_subdir="gemma")
 
             # Down projection → sc["ffn_out"]
             w_k = f"{p}.mlp.down_proj.weight"
-            s_k = f"{p}.mlp.down_proj.scales"
             uq = _uq(w_k)
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[w_k],
-                            self.weights.get(s_k, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
+                            self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
+                           {"K": inter, "N": hidden, "USE_QUANT": uq,
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                            **self._quant_extra(f"{p}.mlp.down_proj", uq)},
                            _gemv_wg(hidden, uq))
 
             # Post-FFN norm on FFN output (before residual add), then fused residual + next pre-norm.

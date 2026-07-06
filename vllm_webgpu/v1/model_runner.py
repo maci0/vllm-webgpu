@@ -166,7 +166,10 @@ class WebGPUModelRunner:
             return FullAttentionSpec(**kw)
 
         # Use per-layer params if available (Gemma4 heterogeneous layers).
-        lp_list = getattr(mc, "_layer_attention_params", None)
+        # Prefer the model object's _lp list (populated from layer_types config)
+        # over the raw HF config attribute, which may not be set for safetensors.
+        lp_list = (getattr(self.model, "_lp", None) or
+                   getattr(mc, "_layer_attention_params", None))
         if lp_list and len(lp_list) == mc.num_hidden_layers:
             for i, lp in enumerate(lp_list):
                 spec[f"model.layers.{i}.self_attn"] = _make_spec(
@@ -252,6 +255,10 @@ class WebGPUModelRunner:
             tok_ids = list(req.prompt_token_ids or [])
             if not tok_ids:
                 continue
+
+            # Reset recurrent state for models with persistent state (Qwen3.5 GDN SSM).
+            if hasattr(self.model, "reset_recurrent_states"):
+                self.model.reset_recurrent_states()
 
             raw_bids = req.block_ids
             blk_ids = self._flat_block_ids(raw_bids) if raw_bids else list(range((len(tok_ids) + block_size - 1) // block_size))

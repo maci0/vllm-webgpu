@@ -227,6 +227,18 @@ class BaseWebGPUModel:
         # Only 4 bytes GPU→CPU.
         return int(self._gpu_sample_tok.to_numpy().view(np.uint32)[0])
 
+    def _scales_buf(self, w_key: str, uq: int, fallback: "object") -> "object":
+        """Return the GPU scales buffer for any quant format.
+
+        For GPU quants (USE_QUANT 3-8): scales live at w_key + '.scales'
+            e.g. 'model.layers.0.self_attn.q_proj.weight.scales'
+        For simple Q4 (USE_QUANT 1): scales live at w_key[:-7] + '.scales'
+            e.g. 'model.layers.0.self_attn.q_proj.scales'
+        """
+        if uq in (3, 4, 5, 6, 7, 8):
+            return self.weights.get(w_key + ".scales", fallback)
+        return self.weights.get(w_key[:-7] + ".scales", fallback)
+
     def _quant_extra(self, base_key: str, uq: int) -> dict:
         """Return additional shader override constants for quantized dispatch."""
         if uq in (3, 4):
