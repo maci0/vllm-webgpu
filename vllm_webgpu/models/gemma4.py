@@ -288,6 +288,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         capped_buf = pre["capped"]
 
         _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
+        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
+        sc = self._sc
 
         with self._batched_dispatch():
             # Embedding lookup → f32 output for f32 residual pipeline
@@ -295,15 +297,21 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
                            {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
 
+            # Initial pre-norm for layer 0 (subsequent pre-norms are fused into each
+            # layer's final add_f32_rms_norm dispatch).
+            self._dispatch("rms_norm_f32in",
+                           [x_buf, self.weights["model.layers.0.input_layernorm.weight"], sc["normed"]],
+                           _rms_base, (num_tokens, 1, 1))
+
+            normed_x = sc["normed"]
             for i in range(self.num_layers):
-                x_buf = self._transformer_layer(
-                    i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+                normed_x, x_buf = self._transformer_layer(
+                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
             # Final norm: reads f32 residual, writes f16 norm_out
             self._dispatch("rms_norm_f32in",
                            [x_buf, self.weights["model.norm.weight"], norm_out],
-                           {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const},
-                           (num_tokens, 1, 1))
+                           _rms_base, (num_tokens, 1, 1))
 
             lm_head_w = self.weights.get("lm_head.weight",
                                          self.weights["model.embed_tokens.weight"])
@@ -343,13 +351,15 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     def _transformer_layer(
         self,
         layer_idx: int,
+        normed_x: "WebGPUBuffer",
         x_buf: "WebGPUBuffer",
         pos_buf: "WebGPUBuffer",
         slot_map: "WebGPUBuffer",
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
-    ) -> "WebGPUBuffer":
+    ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
+        """Returns (normed_out, raw_out) — normed_out is sc['normed'] for next layer."""
         sc = self._sc
         lp = self._lp[layer_idx]
         hidden = self.hidden_size
@@ -393,17 +403,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
-            # Pre-norm: x_buf is f32 (residual stream), normed is f16
-            self._dispatch("rms_norm_f32in",
-                           [x_buf, self.weights[f"{p}.input_layernorm.weight"], sc["normed"]],
-                           _rms_consts, (num_tokens, 1, 1))
+            # normed_x already pre-normalized by caller (or previous layer's fused add_f32_rms_norm).
 
             # Q projection
             qw = f"{p}.self_attn.q_proj.weight"
             uq = _uq(qw)
             self._dispatch("matmul_quant",
-                           [sc["normed"], self.weights[qw],
-                            self.weights.get(f"{p}.self_attn.q_proj.scales", sc["normed"]), sc["q_buf"]],
+                           [normed_x, self.weights[qw],
+                            self.weights.get(f"{p}.self_attn.q_proj.scales", normed_x), sc["q_buf"]],
                            {"K": hidden, "N": q_dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
                            _gemv_wg(q_dim, uq))
 
@@ -411,8 +418,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             kw = f"{p}.self_attn.k_proj.weight"
             uq = _uq(kw)
             self._dispatch("matmul_quant",
-                           [sc["normed"], self.weights[kw],
-                            self.weights.get(f"{p}.self_attn.k_proj.scales", sc["normed"]), sc["k_buf"]],
+                           [normed_x, self.weights[kw],
+                            self.weights.get(f"{p}.self_attn.k_proj.scales", normed_x), sc["k_buf"]],
                            {"K": hidden, "N": kv_dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
                            _gemv_wg(kv_dim, uq))
 
@@ -421,8 +428,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 vw = f"{p}.self_attn.v_proj.weight"
                 uq = _uq(vw)
                 self._dispatch("matmul_quant",
-                               [sc["normed"], self.weights[vw],
-                                self.weights.get(f"{p}.self_attn.v_proj.scales", sc["normed"]), sc["v_buf"]],
+                               [normed_x, self.weights[vw],
+                                self.weights.get(f"{p}.self_attn.v_proj.scales", normed_x), sc["v_buf"]],
                                {"K": hidden, "N": kv_dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
                                _gemv_wg(kv_dim, uq))
                 v_src = sc["v_buf"]
@@ -502,26 +509,21 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             if post_attn_norm_w is not None:
                 self._dispatch("rms_norm", [sc["o_proj_out"], post_attn_norm_w, sc["ffn_normed"]],
                                _rms_consts, (num_tokens, 1, 1))
-                # f32 residual add: x_buf(f32) + SCALE*ffn_normed(f16) → residual(f32)
-                self._dispatch("add_f32", [x_buf, sc["ffn_normed"], residual],
-                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
+                attn_delta = sc["ffn_normed"]
             else:
-                self._dispatch("add_f32", [x_buf, sc["o_proj_out"], residual],
-                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
+                attn_delta = sc["o_proj_out"]
 
-            # Correct Gemma4 FFN sublayer (matches HF):
-            #   residual2 = residual (post-attn)
-            #   hidden = pre_feedforward_layernorm(residual2)  ← norm on residual
-            #   hidden = mlp(hidden)
-            #   hidden = post_feedforward_layernorm(hidden)    ← norm on FFN OUTPUT (before residual)
-            #   out = residual2 + hidden                       ← residual add AFTER norm
+            # Fused: add_f32(x_buf, attn_delta, residual) + rms_norm_f32in(residual, pre_ffn_norm, normed)
+            # saves 1 dispatch vs the separate add_f32 → rms_norm_f32in sequence.
             pre_ffn_norm_w = self.weights.get(f"{p}.pre_feedforward_layernorm.weight")
             if pre_ffn_norm_w is not None:
-                # residual is f32 → rms_norm_f32in → sc["normed"] is f16
-                self._dispatch("rms_norm_f32in", [residual, pre_ffn_norm_w, sc["normed"]],
-                               _rms_consts, (num_tokens, 1, 1))
+                self._dispatch("add_f32_rms_norm",
+                               [x_buf, attn_delta, pre_ffn_norm_w, residual, sc["normed"]],
+                               {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
                 ffn_normed = sc["normed"]
             else:
+                self._dispatch("add_f32", [x_buf, attn_delta, residual],
+                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
                 ffn_normed = residual
 
             # Gate + up projection
@@ -561,17 +563,25 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"K": inter, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
                            _gemv_wg(hidden, uq))
 
-            # Post-FFN norm on FFN output (before residual add), then f32 residual add
+            # Post-FFN norm on FFN output (before residual add), then fused residual + next pre-norm.
             post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
             if post_ffw_w is not None:
                 self._dispatch("rms_norm", [sc["ffn_out"], post_ffw_w, sc["o_proj_out"]],
                                _rms_consts, (num_tokens, 1, 1))
-                # residual(f32) + SCALE*o_proj_out(f16) → out(f32)
-                self._dispatch("add_f32", [residual, sc["o_proj_out"], out],
-                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
+                ffn_delta = sc["o_proj_out"]
             else:
-                self._dispatch("add_f32", [residual, sc["ffn_out"], out],
+                ffn_delta = sc["ffn_out"]
+
+            # Fused final add_f32 + next layer's input_layernorm for non-last layers.
+            # Last layer: plain add_f32 (final norm is separate).
+            if layer_idx < self.num_layers - 1:
+                next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
+                self._dispatch("add_f32_rms_norm",
+                               [residual, ffn_delta, next_w, out, sc["normed"]],
+                               {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
+            else:
+                self._dispatch("add_f32", [residual, ffn_delta, out],
                                {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
-        return out
+        return sc["normed"], out
