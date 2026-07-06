@@ -14,6 +14,9 @@ override ROTARY_DIM: u32    = HEAD_DIM;
 // INTERLEAVED=1: pairs are (2i, 2i+1) — used by some models (Qwen3.5 mrope_interleaved).
 // INTERLEAVED=0: pairs are (i, i+half) — standard convention (Llama, Gemma3, Qwen3).
 override INTERLEAVED: u32   = 0u;
+// INPUT_OFFSET: element offset into the input buffer. Set to Q_DIM when reading K
+// from a fused QKV buffer, 0 for standalone Q or K buffers.
+override INPUT_OFFSET: u32  = 0u;
 
 var<workgroup> shared_sq:    array<f32, 64>;
 // shared_input caches HEAD_DIM f32 values for reuse in phase 2.
@@ -35,7 +38,8 @@ fn main(
     let head_idx = wgid.x;
     let tid      = lid.x;
     let half     = HEAD_DIM / 2u;
-    let base     = (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
+    let in_base  = INPUT_OFFSET + (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
+    let out_base = (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
     let eps      = 1e-6f;
 
     // --- Phase 1: per-head RMSNorm, caching f32 values for reuse in phase 2 ---
@@ -43,7 +47,7 @@ fn main(
     var col = tid;
     loop {
         if (col >= HEAD_DIM) { break; }
-        let v = f32(input[base + col]);
+        let v = f32(input[in_base + col]);
         shared_input[col] = v;
         sq_sum += v * v;
         col += WG_SIZE;
@@ -86,8 +90,8 @@ fn main(
                 let w2 = select(f32(weight[w_base + half + i]), 1.0 + f32(weight[w_base + half + i]), GEMMA_NORM != 0u);
                 n1 *= w1; n2 *= w2;
             }
-            out_idx1 = base + i;
-            out_idx2 = base + half + i;
+            out_idx1 = out_base + i;
+            out_idx2 = out_base + half + i;
         } else {
             // Interleaved: pairs are (2i, 2i+1)
             n1 = shared_input[i * 2u]       * rms_inv;
@@ -97,8 +101,8 @@ fn main(
                 let w2 = select(f32(weight[w_base + i * 2u + 1u]),  1.0 + f32(weight[w_base + i * 2u + 1u]), GEMMA_NORM != 0u);
                 n1 *= w1; n2 *= w2;
             }
-            out_idx1 = base + i * 2u;
-            out_idx2 = base + i * 2u + 1u;
+            out_idx1 = out_base + i * 2u;
+            out_idx2 = out_base + i * 2u + 1u;
         }
 
         if (i < rot_half) {

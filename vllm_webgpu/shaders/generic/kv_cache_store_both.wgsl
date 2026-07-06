@@ -10,6 +10,9 @@ enable f16;
 override BLOCK_SIZE:   u32 = 16u;
 override NUM_KV_HEADS: u32 = 8u;
 override HEAD_DIM:     u32 = 128u;
+// V_IN_OFFSET: element offset into v_in for fused-QKV mode (v lives after [Q|K] in qkv_buf).
+// Set to 0 when v_in is a standalone buffer.
+override V_IN_OFFSET:  u32 = 0u;
 
 @group(0) @binding(0) var<storage, read>       k_in         : array<vec2<f16>>;
 @group(0) @binding(1) var<storage, read_write> k_cache      : array<vec2<f16>>;
@@ -38,7 +41,7 @@ fn main(
     loop {
         if (col >= half_dim) { break; }
         k_cache[dst_base + col] = k_in[src_base + col];
-        v_cache[dst_base + col] = v_in[src_base + col];
+        v_cache[dst_base + col] = v_in[V_IN_OFFSET / 2u + src_base + col];
         col += 64u;
     }
 }

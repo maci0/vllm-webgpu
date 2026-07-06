@@ -101,13 +101,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         }
 
         self._sc: dict[str, "WebGPUBuffer"] = {
-            "normed":     mk(T * H * 2),
-            "ffn_gate_up": mk(T * I * 4),  # [2*inter] f16 — fused gate+up output
-            "q_buf":      mk(T * Q * 2),
-            "k_buf":      mk(T * KV * 2),
-            "v_buf":      mk(T * KV * 2),
-            "q_rope":     mk(T * Q * 2),
-            "k_rope":     mk(T * KV * 2),
+            "normed":      mk(T * H * 2),
+            "ffn_gate_up": mk(T * I * 4),          # [2*inter] f16 — fused gate+up output
+            "qkv_buf":     mk(T * (Q + 2 * KV) * 2),  # [Q|K|V] f16 — fused QKV output
+            "q_buf":       mk(T * Q * 2),
+            "k_buf":       mk(T * KV * 2),
+            "v_buf":       mk(T * KV * 2),
+            "q_rope":      mk(T * Q * 2),
+            "k_rope":      mk(T * KV * 2),
             "scores_buf": mk(NQ * max_ctx * 2),
             "sm_buf":     mk(NQ * max_ctx * 2),
             "attn_out":   mk(T * Q * 2),
@@ -222,6 +223,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         vocab = self.vocab_size
 
+        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
+        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        sc = self._sc
+
         with self._batched_dispatch():
             # Embed (single dispatch; removed the duplicate standalone dispatch)
             self._dispatch(
@@ -231,16 +236,24 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 (num_tokens, 1, 1),
             )
 
+            # Pre-norm for layer 0 — subsequent layers' pre-norms are fused into
+            # the previous layer's final add_rms_norm dispatch.
+            self._dispatch(
+                "rms_norm",
+                [x_buf, self.weights["model.layers.0.input_layernorm.weight"], sc["normed"]],
+                _rms_base, (num_tokens, 1, 1),
+            )
+
+            normed_x = sc["normed"]
             for i in range(self.num_layers):
-                x_buf = self._transformer_layer(
-                    i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+                normed_x, x_buf = self._transformer_layer(
+                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
             # Final norm
-            _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
             self._dispatch(
                 "rms_norm",
                 [x_buf, self.weights["model.norm.weight"], norm_out],
-                {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt},
+                _rms_base,
                 (num_tokens, 1, 1),
             )
 
@@ -282,13 +295,23 @@ class LlamaWebGPUModel(BaseWebGPUModel):
     def _transformer_layer(
         self,
         layer_idx: int,
+        normed_x: "WebGPUBuffer",
         x_buf: "WebGPUBuffer",
         pos_buf: "WebGPUBuffer",
         slot_map: "WebGPUBuffer",
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
-    ) -> "WebGPUBuffer":
+    ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
+        """Returns (normed_out, raw_out).
+
+        normed_out: sc['normed'] — pre-normalized for next layer's QKV input.
+        raw_out: the updated hidden state (raw residual) for the next layer.
+
+        The initial rms_norm is handled by the CALLER before the loop. This
+        allows fusing the final residual-add with the next layer's pre-norm into
+        a single add_rms_norm dispatch, saving 2 dispatches per non-last layer.
+        """
         import math
 
         sc = self._sc
@@ -298,8 +321,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         kv_dim = self.num_kv_heads * self.head_dim
         inter = self.intermediate_size
         ln_rope = math.log(self.rope_theta)
-        # Per-weight quant detection: Q4_K (type 12) → GPU block decoder (USE_QUANT=2).
-        # Eagerly-dequantized Q6_K and all f16 weights → USE_QUANT=0.
         quant_types = self.weights.get("__quant_types__", {})
         _qt = quant_types if isinstance(quant_types, dict) else {}
 
@@ -307,31 +328,25 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             w = self.weights.get(key)
             if w is not None:
                 dtype = getattr(w, "dtype", "f16")
-                base = key[:-7]  # strip ".weight"
+                base = key[:-7]
                 qmeta = self.weights.get("__quant_meta__", {})
                 meta = qmeta.get(base, {}) if isinstance(qmeta, dict) else {}
                 fmt = meta.get("fmt", "")
                 if dtype == "i32":
-                    if fmt == "awq_sym":
-                        return 4  # GPU AWQ
-                    return 3  # GPU GPTQ
+                    return 4 if fmt == "awq_sym" else 3
                 if dtype == "u8":
-                    if fmt == "nvfp4_gpu":
-                        return 6  # GPU NVFP4
-                    if fmt == "fp8_gpu":
-                        return 5  # GPU FP8
+                    return 6 if fmt == "nvfp4_gpu" else 5
             tt = _qt.get(key, 0)
-            if tt == 12:  # Q4_K — use GPU block decoder
+            if tt == 12:
                 return 2
             if self.weights.get(key[:-7] + ".scales") is not None:
-                return 1  # simple custom Q4 with separate scales
-            return 0      # f16 (including CPU-dequantized tensors)
-        # Register-tile depth for rms_norm: HIDDEN_DIM / WG_SIZE (max 16 for HIDDEN_DIM≤4096).
-        # Set to 0 for large models (HIDDEN_DIM > 4096) to use global re-read fallback.
-        _wg_size = 256
-        _vals_per_thread = min((hidden + _wg_size - 1) // _wg_size, 16) if hidden <= _wg_size * 16 else 0
+                return 1
+            return 0
 
-        # Hidden-state rotation: h0/h1/h2 cycle so x_buf, residual, out are always distinct.
+        _wg_size = 256
+        _vpt = min((hidden + _wg_size - 1) // _wg_size, 16) if hidden <= _wg_size * 16 else 0
+        _rms_c = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
         out = sc[h_names[(self._hstate + 2) % 3]]
@@ -340,36 +355,56 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
-        _rms_consts = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vals_per_thread}
-
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
-            # Pre-norm
-            self._dispatch("rms_norm", [x_buf, self.weights[f"{p}.input_layernorm.weight"], sc["normed"]],
-                           _rms_consts, (num_tokens, 1, 1))
+            # normed_x is already the pre-normed input (no rms_norm dispatch here).
 
             def _scales(w_key: str, uq: int, fallback) -> "WebGPUBuffer":
-                """Return the scales buffer for this weight (any quant format)."""
                 if uq in (3, 4, 5, 6):
-                    # GPU INT4/FP8/NVFP4: companion scales stored as w_key + ".scales"
                     return self.weights.get(w_key + ".scales", fallback)
                 return self.weights.get(w_key[:-7] + ".scales", fallback)
 
-            # QKV projection (separate dispatches; fused version needs sub-buffer views)
-            for out_buf, proj, dim in [(sc["q_buf"], "q_proj", q_dim),
-                                       (sc["k_buf"], "k_proj", kv_dim),
-                                       (sc["v_buf"], "v_proj", kv_dim)]:
-                w_key = f"{p}.self_attn.{proj}.weight"
-                uq = _uq(w_key)
-                qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
-                self._dispatch("matmul_quant",
-                               [sc["normed"], self.weights[w_key], _scales(w_key, uq, sc["normed"]), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi},
-                               _gemv_wg(dim, uq))
+            # QKV projections: fused for f16 with per-head norm weights; separate otherwise.
+            q_wk = f"{p}.self_attn.q_proj.weight"
+            k_wk = f"{p}.self_attn.k_proj.weight"
+            v_wk = f"{p}.self_attn.v_proj.weight"
+            uq_q, uq_k, uq_v = _uq(q_wk), _uq(k_wk), _uq(v_wk)
+            _has_qnorm = self.weights.get(f"{p}.self_attn.q_norm.weight") is not None
 
-            # Fused per-head norm + RoPE for Q and K
-            for src, dst, n_heads, w_key in [
-                (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
-                (sc["k_buf"], sc["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
+            _use_fused_qkv = uq_q == 0 and uq_k == 0 and uq_v == 0 and _has_qnorm
+
+            if _use_fused_qkv:
+                # All f16 + per-head norms: single fused_qkv → qkv_buf[Q|K|V].
+                self._dispatch("fused_qkv",
+                               [normed_x, self.weights[q_wk], self.weights[k_wk], self.weights[v_wk],
+                                sc["qkv_buf"]],
+                               {"K": hidden, "Q_DIM": q_dim, "KV_DIM": kv_dim},
+                               (q_dim + 2 * kv_dim, 1, 1))
+                _q_src = sc["qkv_buf"]
+                _k_src = sc["qkv_buf"]
+                _v_src = sc["qkv_buf"]
+                _v_offset = q_dim + kv_dim  # f16 elements before V section
+            else:
+                for out_buf, proj, dim, uq in [(sc["q_buf"], "q_proj", q_dim, uq_q),
+                                               (sc["k_buf"], "k_proj", kv_dim, uq_k),
+                                               (sc["v_buf"], "v_proj", kv_dim, uq_v)]:
+                    w_key = f"{p}.self_attn.{proj}.weight"
+                    qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
+                    self._dispatch("matmul_quant",
+                                   [normed_x, self.weights[w_key], _scales(w_key, uq, normed_x), out_buf],
+                                   {"K": hidden, "N": dim, "USE_QUANT": uq,
+                                    **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi},
+                                   _gemv_wg(dim, uq))
+                _q_src = sc["q_buf"]
+                _k_src = sc["k_buf"]
+                _v_src = sc["v_buf"]
+                _v_offset = 0
+
+            # Per-head norm + RoPE for Q and K.
+            # INPUT_OFFSET lets fused_per_head_norm_rope read K from qkv_buf[q_dim:].
+            _k_in_off = q_dim if _use_fused_qkv else 0
+            for src, dst, n_heads, w_key, in_off in [
+                (_q_src, sc["q_rope"], self.num_q_heads,  f"{p}.self_attn.q_norm.weight", 0),
+                (_k_src, sc["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight", _k_in_off),
             ]:
                 norm_w = self.weights.get(w_key)
                 if norm_w is not None:
@@ -378,19 +413,22 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                    {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
                                     "ROPE_BASE": float(self.rope_theta),
                                     "LN_ROPE_BASE": ln_rope,
-                                    "HAS_WEIGHT": 1},
+                                    "HAS_WEIGHT": 1,
+                                    "INPUT_OFFSET": in_off},
                                    (n_heads, num_tokens, 1))
                 else:
+                    # No per-head norm (e.g., Llama). _use_fused_qkv is False here.
                     self._dispatch("rope", [src, pos_buf, dst],
                                    {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
                                     "LN_ROPE_BASE": ln_rope},
                                    (num_tokens, n_heads, 1))
 
-            # Fused K+V cache store — single dispatch saves 1 overhead per layer.
+            # Fused K+V cache store.
+            # When using fused QKV, V lives in qkv_buf starting at element (q_dim+kv_dim).
             self._dispatch("kv_cache_store_both",
-                           [sc["k_rope"], k_cache, sc["v_buf"], v_cache, slot_map],
+                           [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
                            {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                            "HEAD_DIM": self.head_dim},
+                            "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
                            (num_tokens, self.num_kv_heads, 1))
 
             # Attention scores + output
@@ -413,42 +451,39 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
             self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
                                             _scales(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi},
+                           {"K": q_dim, "N": hidden, "USE_QUANT": uq,
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi},
                            _gemv_wg(hidden, uq))
 
-            # Residual add (vec4 path: dispatch N/4 threads)
-            self._dispatch("add", [x_buf, sc["o_proj_out"], residual],
-                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+            # Fused post-attn residual-add + FFN pre-norm: saves 1 dispatch/layer.
+            # residual = x_buf + o_proj_out; ffn_normed = rms_norm(residual, weight)
+            self._dispatch("add_rms_norm",
+                           [x_buf, sc["o_proj_out"],
+                            self.weights[f"{p}.post_attention_layernorm.weight"],
+                            residual, sc["ffn_normed"]],
+                           _rms_c, (num_tokens, 1, 1))
 
-            # FFN pre-norm
-            self._dispatch("rms_norm", [residual, self.weights[f"{p}.post_attention_layernorm.weight"], sc["ffn_normed"]],
-                           _rms_consts, (num_tokens, 1, 1))
-
-            # Fused gate+up: single dispatch computes both projections → saves 1 overhead/layer.
-            # Only available for plain f16 (USE_QUANT=0); falls back to separate for quantized.
+            # FFN: fused gate+up (f16) or separate (quantized).
             gw_k = f"{p}.mlp.gate_proj.weight"
             uw_k = f"{p}.mlp.up_proj.weight"
             uq_g = _uq(gw_k); uq_u = _uq(uw_k)
             if uq_g == 0 and uq_u == 0:
-                # Both f16: use fused gate+up dispatch
                 self._dispatch("fused_gate_up",
                                [sc["ffn_normed"], self.weights[gw_k], self.weights[uw_k],
                                 sc["ffn_gate_up"]],
-                               {"K": hidden, "N": inter},
-                               (inter, 1, 1))
+                               {"K": hidden, "N": inter}, (inter, 1, 1))
                 self._dispatch("gelu_mul_fused", [sc["ffn_gate_up"], sc["ffn_act"]],
                                {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
             else:
-                # Quantized weights: fall back to separate dispatches
-                for out_b, w_k, uq, mlp_proj in [
+                for out_b, w_k, uq2, mlp_proj in [
                         (sc["gate_buf"], gw_k, uq_g, "gate_proj"),
                         (sc["up_buf"],  uw_k, uq_u, "up_proj")]:
-                    qi2 = self._quant_extra(f"{p}.mlp.{mlp_proj}", uq)
+                    qi2 = self._quant_extra(f"{p}.mlp.{mlp_proj}", uq2)
                     self._dispatch("matmul_quant", [sc["ffn_normed"], self.weights[w_k],
-                                                    _scales(w_k, uq, sc["ffn_normed"]), out_b],
-                                   {"K": hidden, "N": inter, "USE_QUANT": uq,
-                                    **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi2},
-                                   _gemv_wg(inter, uq))
+                                                    _scales(w_k, uq2, sc["ffn_normed"]), out_b],
+                                   {"K": hidden, "N": inter, "USE_QUANT": uq2,
+                                    **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6) else {}), **qi2},
+                                   _gemv_wg(inter, uq2))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
 
@@ -458,13 +493,22 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             qi3 = self._quant_extra(f"{p}.mlp.down_proj", uq)
             self._dispatch("matmul_quant", [sc["ffn_act"], self.weights[w_k],
                                             _scales(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi3},
+                           {"K": inter, "N": hidden, "USE_QUANT": uq,
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi3},
                            _gemv_wg(hidden, uq))
 
-            # Final residual (vec4 path)
-            self._dispatch("add", [residual, sc["ffn_out"], out],
-                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+            # Final residual add: fuse with next layer's pre-norm when possible.
+            # Last layer: plain add; intermediate layers: add_rms_norm saves 1 dispatch.
+            if layer_idx < self.num_layers - 1:
+                next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
+                self._dispatch("add_rms_norm",
+                               [residual, sc["ffn_out"], next_w, out, sc["normed"]],
+                               _rms_c, (num_tokens, 1, 1))
+                normed_out = sc["normed"]
+            else:
+                self._dispatch("add", [residual, sc["ffn_out"], out],
+                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+                normed_out = sc["normed"]  # stale; unused after last layer
 
-        # Advance rotation: next layer's x_buf = out = h[(hstate+2)%3]
         self._hstate = (self._hstate + 2) % 3
-        return out
+        return normed_out, out
