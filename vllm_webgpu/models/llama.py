@@ -17,11 +17,10 @@ logger = logging.getLogger(__name__)
 def _gemv_wg(N: int, uq: int) -> tuple:
     """Workgroup count for matmul_quant dispatch.
 
-    SPLIT_K=1: one workgroup per output row for f16, GPU GPTQ (3), GPU AWQ (4).
-    Other quantized paths (USE_QUANT=1/2) use row-per-thread: ceil(N/256) workgroups.
-    LM head (vocab > 65535) forces SPLIT_K=0 via the caller.
+    SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6).
+    Row-per-thread: USE_QUANT in (1,2).
     """
-    if uq in (0, 3, 4):
+    if uq in (0, 3, 4, 5, 6):
         return (N, 1, 1)
     return ((N + 255) // 256, 1, 1)
 
@@ -284,17 +283,22 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _qt = quant_types if isinstance(quant_types, dict) else {}
 
         def _uq(key: str) -> int:
-            # GPU INT4: weight stored as INT32 (not CPU-dequantized at load)
             w = self.weights.get(key)
-            if w is not None and getattr(w, "dtype", "f16") == "i32":
-                # Check meta to distinguish GPTQ vs AWQ format
+            if w is not None:
+                dtype = getattr(w, "dtype", "f16")
                 base = key[:-7]  # strip ".weight"
                 qmeta = self.weights.get("__quant_meta__", {})
-                if isinstance(qmeta, dict):
-                    fmt = qmeta.get(base, {}).get("fmt", "gptq_sym")
+                meta = qmeta.get(base, {}) if isinstance(qmeta, dict) else {}
+                fmt = meta.get("fmt", "")
+                if dtype == "i32":
                     if fmt == "awq_sym":
-                        return 4  # GPU AWQ dequant (split-K, USE_QUANT=4)
-                return 3  # GPU GPTQ dequant (split-K, USE_QUANT=3)
+                        return 4  # GPU AWQ
+                    return 3  # GPU GPTQ
+                if dtype == "u8":
+                    if fmt == "nvfp4_gpu":
+                        return 6  # GPU NVFP4
+                    if fmt == "fp8_gpu":
+                        return 5  # GPU FP8
             tt = _qt.get(key, 0)
             if tt == 12:  # Q4_K — use GPU block decoder
                 return 2
@@ -323,8 +327,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            _rms_consts, (num_tokens, 1, 1))
 
             def _scales(w_key: str, uq: int, fallback) -> "WebGPUBuffer":
-                """Return the scales buffer for this weight (GPU or CPU quant)."""
-                if uq == 3:
+                """Return the scales buffer for this weight (any quant format)."""
+                if uq in (3, 4, 5, 6):
+                    # GPU INT4/FP8/NVFP4: companion scales stored as w_key + ".scales"
                     return self.weights.get(w_key + ".scales", fallback)
                 return self.weights.get(w_key[:-7] + ".scales", fallback)
 
@@ -334,10 +339,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                        (sc["v_buf"], "v_proj", kv_dim)]:
                 w_key = f"{p}.self_attn.{proj}.weight"
                 uq = _uq(w_key)
-                qi = {"GROUP_K": self._quant_info(f"{p}.self_attn.{proj}").get("group_size", 128)} if uq in (3, 4) else {}
+                qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[w_key], _scales(w_key, uq, sc["normed"]), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3) else {}), **qi},
+                               {"K": hidden, "N": dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi},
                                _gemv_wg(dim, uq))
 
             # Fused per-head norm + RoPE for Q and K
@@ -385,10 +390,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # Output projection
             w_key = f"{p}.self_attn.o_proj.weight"
             uq = _uq(w_key)
-            qi = {"GROUP_K": self._quant_info(f"{p}.self_attn.o_proj").get("group_size", 128)} if uq in (3, 4) else {}
+            qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
             self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
                                             _scales(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3) else {}), **qi},
+                           {"K": q_dim, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi},
                            _gemv_wg(hidden, uq))
 
             # Residual add (vec4 path: dispatch N/4 threads)
@@ -403,10 +408,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             for out_b, mlp_proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
                 w_k = f"{p}.mlp.{mlp_proj}.weight"
                 uq = _uq(w_k)
-                qi2 = {"GROUP_K": self._quant_info(f"{p}.mlp.{mlp_proj}").get("group_size", 128)} if uq in (3, 4) else {}
+                qi2 = self._quant_extra(f"{p}.mlp.{mlp_proj}", uq)
                 self._dispatch("matmul_quant", [sc["ffn_normed"], self.weights[w_k],
                                                 _scales(w_k, uq, sc["ffn_normed"]), out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3) else {}), **qi2},
+                               {"K": hidden, "N": inter, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi2},
                                _gemv_wg(inter, uq))
 
             # SwiGLU (vec4 path: dispatch N/4 threads)
@@ -416,10 +421,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # Down projection
             w_k = f"{p}.mlp.down_proj.weight"
             uq = _uq(w_k)
-            qi3 = {"GROUP_K": self._quant_info(f"{p}.mlp.down_proj").get("group_size", 128)} if uq in (3, 4) else {}
+            qi3 = self._quant_extra(f"{p}.mlp.down_proj", uq)
             self._dispatch("matmul_quant", [sc["ffn_act"], self.weights[w_k],
                                             _scales(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3) else {}), **qi3},
+                           {"K": inter, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi3},
                            _gemv_wg(hidden, uq))
 
             # Final residual (vec4 path)

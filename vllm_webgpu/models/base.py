@@ -146,6 +146,18 @@ class BaseWebGPUModel:
         meta = self.weights.get("__quant_meta__", {})
         return meta.get(base_key, {})
 
+    def _quant_extra(self, base_key: str, uq: int) -> dict:
+        """Return additional shader override constants for quantized dispatch."""
+        if uq in (3, 4):
+            return {"GROUP_K": self._quant_info(base_key).get("group_size", 128)}
+        if uq in (5, 6):
+            meta = self._quant_info(base_key)
+            d: dict = {"GLOBAL_SCALE": float(meta.get("global_scale", 1.0))}
+            if uq == 6:
+                d["GROUP_K"] = meta.get("group_size", 16)
+            return d
+        return {}
+
     def _gemv_consts_and_wg(self, weight_key: str, K: int, N: int,
                             base_key: str = "") -> tuple:
         """Return (constants_dict, workgroup_tuple) for a matmul_quant dispatch.

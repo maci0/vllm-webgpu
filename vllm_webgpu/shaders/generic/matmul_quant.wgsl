@@ -8,11 +8,12 @@ enable f16;
 //              Block layout: d(f16,2B) dmin(f16,2B) scales_mins(12B) nibbles(128B)
 //              Nibbles are unsigned 0-15; dequant = d*scale*nibble - dmin*min (asymmetric)
 
-override K: u32         = 4096u;
-override N: u32         = 4096u;
-override BLOCK_K: u32   = 32u;     // block size for USE_QUANT=1 (simple Q4)
-override USE_QUANT: u32 = 1u;      // 0=f16, 1=simple Q4, 2=GGUF Q4_K, 3=GPU GPTQ INT4, 4=GPU AWQ INT4
-override GROUP_K: u32   = 128u;    // quantization group size for USE_QUANT=3/4
+override K: u32          = 4096u;
+override N: u32          = 4096u;
+override BLOCK_K: u32    = 32u;     // block size for USE_QUANT=1 (simple Q4)
+override USE_QUANT: u32  = 1u;      // 0=f16, 1=Q4, 2=Q4_K, 3=GPTQ, 4=AWQ, 5=FP8, 6=NVFP4
+override GROUP_K: u32    = 128u;    // quantization group size for USE_QUANT=3/4/6
+override GLOBAL_SCALE: f32 = 1.0;  // per-tensor scale for USE_QUANT=5 (FP8) and 6 (NVFP4)
 // SPLIT_K=1 (default): split-K GEMV — all 256 threads work on ONE output row.
 // Dispatch (N, 1, 1) workgroups. Within each workgroup, consecutive threads
 // read consecutive weight elements → coalesced on all GPU architectures.
@@ -58,6 +59,39 @@ fn q4k_min(j: u32, sc_base: u32) -> u32 {
 
 // Shared memory for the split-K reduction (256 partial sums).
 var<workgroup> sh_acc: array<f32, 256>;
+
+// ── GPU dequant helpers ──────────────────────────────────────────────────────
+
+// FP8 E4M3 (OCP/NVidia format, exponent bias=7) → f32
+// Normal:  (-1)^s * 2^(exp-7) * (1 + mant/8)
+// Denorm:  (-1)^s * 2^-6 * mant/8
+// NaN:     exp==15 (treated as 0)
+fn fp8_to_f32(b: u32) -> f32 {
+    let sign = select(1.0f, -1.0f, (b & 0x80u) != 0u);
+    let exp  = (b >> 3u) & 0xFu;
+    let mant = b & 0x7u;
+    if (exp == 0u)  { return sign * f32(mant) * (1.0f / 512.0f); }  // 2^-6 * mant/8
+    if (exp == 15u) { return 0.0f; }
+    return sign * exp2(f32(i32(exp) - 7)) * (1.0f + f32(mant) * 0.125f);
+}
+
+// FP4 E2M1 decode: values = [0,0.5,1,1.5,2,3,4,6] × sign bit
+fn fp4_to_f32(code: u32) -> f32 {
+    let neg = (code & 0x8u) != 0u;
+    var v: f32;
+    switch code & 0x7u {
+        case 0u: { v = 0.0f; }  case 1u: { v = 0.5f; }
+        case 2u: { v = 1.0f; }  case 3u: { v = 1.5f; }
+        case 4u: { v = 2.0f; }  case 5u: { v = 3.0f; }
+        case 6u: { v = 4.0f; }  default: { v = 6.0f; }
+    }
+    return select(v, -v, neg);
+}
+
+// Extract byte at flat byte-offset `bi` from the u32 weights array.
+fn rd_byte_at(bi: u32) -> u32 {
+    return (weights[bi / 4u] >> ((bi % 4u) * 8u)) & 0xFFu;
+}
 
 @compute @workgroup_size(256, 1, 1)
 fn main(
@@ -157,6 +191,50 @@ fn main(
                     acc += n1 * sc1 * f32(x[k_awq + 1u]);
                 }
                 k_awq += 512u;
+            }
+        } else if (USE_QUANT == 5u) {
+            // GPU FP8 E4M3 (split-K, coalesced).
+            // weights: [N, K] raw F8 bytes packed 4-per-u32 in binding 1.
+            // GLOBAL_SCALE: per-tensor F32 scale (override constant).
+            // Coalesced: thread t reads bytes at row*K+t*2 and row*K+t*2+1.
+            // Every 2 threads share one u32 → 128 u32 reads per step (coalesced).
+            let row_base = row * K;
+            var k_fp8 = tid * 2u;
+            loop {
+                if (k_fp8 >= K) { break; }
+                let b0 = rd_byte_at(row_base + k_fp8);
+                acc += fp8_to_f32(b0) * GLOBAL_SCALE * f32(x[k_fp8]);
+                if (k_fp8 + 1u < K) {
+                    let b1 = rd_byte_at(row_base + k_fp8 + 1u);
+                    acc += fp8_to_f32(b1) * GLOBAL_SCALE * f32(x[k_fp8 + 1u]);
+                }
+                k_fp8 += 512u;
+            }
+        } else if (USE_QUANT == 6u) {
+            // GPU NVFP4 (split-K, coalesced).
+            // weights:  [N, K//2] packed FP4 bytes, 2 FP4 per byte (lo=k, hi=k+1).
+            //           Uploaded as packed u32 in binding 1.
+            // scales:   [N, K//16] block scales stored as F16 in binding 2.
+            //           Each F16 is one scale for a block of 16 K elements.
+            // GLOBAL_SCALE: global F32 scale (override constant).
+            // Coalesced: thread t reads weight_byte at row*(K//2)+t → 256 consecutive
+            //            bytes per step → 64 u32s → all coalesced.
+            let K2  = K / 2u;    // weight bytes per row (2 FP4/byte)
+            let K16 = K / 16u;   // block scales per row (16 elements/block)
+            var k_fp4 = tid * 2u;
+            loop {
+                if (k_fp4 >= K) { break; }
+                // Block scale for this pair of k-elements
+                let blk = k_fp4 / 16u;
+                let sc  = f32(scales[row * K16 + blk]) * GLOBAL_SCALE;
+                // Packed byte: lo nibble = fp4[k_fp4], hi nibble = fp4[k_fp4+1]
+                let byte_idx = row * K2 + k_fp4 / 2u;
+                let packed   = rd_byte_at(byte_idx);
+                acc += fp4_to_f32(packed & 0xFu) * sc * f32(x[k_fp4]);
+                if (k_fp4 + 1u < K) {
+                    acc += fp4_to_f32((packed >> 4u) & 0xFu) * sc * f32(x[k_fp4 + 1u]);
+                }
+                k_fp4 += 512u;
             }
         } else {
             // USE_QUANT=0: f16 split-K — 512 F16 elements (256 u32) per step.

@@ -380,6 +380,25 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="f16")
 
+    def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
+        """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
+
+        Used for FP8 E4M3 and NVFP4 packed weights. The shader reads via
+        rd_byte_at() which unpacks individual bytes from the u32 array.
+        """
+        arr_flat = np.ascontiguousarray(arr.ravel().view(np.uint8))
+        # Pad to multiple of 4 bytes so u32 reinterpretation is clean.
+        r = len(arr_flat) % 4
+        if r:
+            arr_flat = np.concatenate([arr_flat, np.zeros(4 - r, dtype=np.uint8)])
+        data = _pad4(arr_flat.tobytes())
+        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+        wgpu_device.queue.write_buffer(buf, 0, data)
+        _pending_bytes[0] += len(data)
+        _maybe_flush()
+        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                     shape=tuple(arr.shape), dtype="u8")
+
     def _upload_int32(arr: np.ndarray, name: str, weights: dict) -> None:
         """Upload an INT32 array (quantized weights) directly to GPU without conversion."""
         arr = np.ascontiguousarray(arr.astype(np.int32))
@@ -531,10 +550,21 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                 ws = _load_raw(f"{base}.weight_scale")     # (N, K//16) F8_E4M3 as uint8
                 wgs_key = f"{base}.weight_global_scale"
                 wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
-                w_f16 = _dequant_nvfp4(wp, ws, wgs)
-                _upload(w_f16, f"{base}.weight", weights)
+                N_, K2_ = wp.shape
+                K_ = K2_ * 2
+                # GPU NVFP4: upload raw weight_packed + F16-converted block scales.
+                # The shader uses GLOBAL_SCALE as an override constant and
+                # reads F8_E4M3 scales via the standard f16 scales binding.
+                ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
+                _upload_u8(wp, f"{base}.weight", weights)
+                _upload_f16(ws_f16, f"{base}.weight.scales", weights)
+                weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                weights["__quant_meta__"][base] = {
+                    "fmt": "nvfp4_gpu", "global_scale": wgs,
+                    "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
+                logger.debug("GPU NVFP4: %s (N=%d, K=%d, wgs=%.4f)", base, N_, K_, wgs)
             except Exception as exc:
-                logger.warning("Failed to dequantize NVFP4 %s: %s", base, exc)
+                logger.warning("Failed to process NVFP4 %s: %s", base, exc)
 
     elif fmt == "diffusion_nvfp4":
         # DiffusionGemma ModelOpt NVFP4: *.weight (U8) + *.weight_scale (F8_E4M3) + *.weight_scale_2 (F32)
@@ -564,10 +594,17 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                 ws = _load_raw(f"{base}.weight_scale")  # (N, K//group_size) F8_E4M3 as uint8
                 wgs_key = f"{base}.weight_scale_2"
                 wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
-                w_f16 = _dequant_nvfp4(wp, ws, wgs)
-                _upload(w_f16, f"{base}.weight", weights)
+                N_, K2_ = wp.shape
+                K_ = K2_ * 2
+                ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
+                _upload_u8(wp, f"{base}.weight", weights)
+                _upload_f16(ws_f16, f"{base}.weight.scales", weights)
+                weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                weights["__quant_meta__"][base] = {
+                    "fmt": "nvfp4_gpu", "global_scale": wgs,
+                    "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
             except Exception as exc:
-                logger.warning("Failed to dequantize DiffusionGemma NVFP4 %s: %s", base, exc)
+                logger.warning("Failed to process diffusion NVFP4 %s: %s", base, exc)
 
     elif fmt == "fp8":
         # Plain FP8 E4M3: weight stored as F8_E4M3, scale as F32 in *.weight_scale
@@ -594,16 +631,18 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         for wname in fp8_names:
             base = wname[:-len(".weight")]
             try:
-                w_fp8 = _load_raw(wname)   # uint8 array (F8_E4M3 bytes)
+                w_fp8 = _load_raw(wname)   # uint8 array (F8_E4M3 bytes), shape (N, K)
                 scale_key = f"{base}.weight_scale"
-                if scale_key in header:
-                    scale = _load_raw(scale_key).astype(np.float32)
-                else:
-                    scale = np.float32(1.0)
-                w_f16 = _dequant_fp8(w_fp8, scale)
-                _upload(w_f16, wname, weights)
+                scale_val = float(_load_raw(scale_key).ravel()[0]) \
+                    if scale_key in header else 1.0
+                # GPU FP8: upload raw F8 bytes; shader decodes inline with GLOBAL_SCALE.
+                _upload_u8(w_fp8, wname, weights)
+                weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                weights["__quant_meta__"][base] = {
+                    "fmt": "fp8_gpu", "global_scale": scale_val}
+                logger.debug("GPU FP8: %s scale=%.4f", base, scale_val)
             except Exception as exc:
-                logger.warning("Failed to dequantize FP8 %s: %s", base, exc)
+                logger.warning("Failed to process FP8 %s: %s", base, exc)
 
     else:
         # Plain BF16/F16/F32
