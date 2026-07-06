@@ -53,11 +53,106 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             logger.info("DiffusionGemma MoE: %d experts, top-%d, moe_inter=%d",
                         self.num_experts, self.top_k_experts, self.moe_intermediate_size)
 
-    # ── Weight key helper ────────────────────────────────────────────────────
+    # ── Weight key helpers ───────────────────────────────────────────────────
 
     def _pk(self, layer_idx: int) -> str:
-        """Return the weight key prefix for layer N."""
         return f"model.decoder.layers.{layer_idx}"
+
+    def _embed_key(self) -> str:
+        """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
+        # Try decoder prefix first, fall back to standard
+        for k in ("model.decoder.embed_tokens.weight", "model.embed_tokens.weight"):
+            if k in self.weights:
+                return k
+        return "model.embed_tokens.weight"
+
+    def _norm_key(self) -> str:
+        for k in ("model.decoder.norm.weight", "model.norm.weight"):
+            if k in self.weights:
+                return k
+        return "model.norm.weight"
+
+    def _lm_head_key(self) -> str:
+        for k in ("lm_head.weight", "model.decoder.lm_head.weight",
+                  "model.lm_head.weight"):
+            if k in self.weights:
+                return k
+        return self._embed_key()  # tied weights fallback
+
+    # ── Override forward() for decoder-prefixed keys ─────────────────────────
+
+    def forward(self, input_ids, positions, attn_metadata) -> "np.ndarray":
+        """Forward pass using model.decoder.* weight keys."""
+        import numpy as np
+        import wgpu as wgpu_lib
+
+        dev = self.wgpu_device.wgpu_device
+        num_tokens = len(input_ids)
+        hidden = self.hidden_size
+        vocab = self.vocab_size
+        self._hstate = 0
+
+        if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
+            raise RuntimeError("multi-sequence batching not supported in this build")
+
+        ctx_len = int(attn_metadata.max_decode_seq_len
+                      if attn_metadata.max_decode_seq_len is not None else num_tokens)
+        if ctx_len <= 0:
+            ctx_len = num_tokens
+        if ctx_len > 65535:
+            raise RuntimeError(f"ctx_len={ctx_len} exceeds 65535")
+
+        pre = self._pre
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(
+            pre["slot_map"].buf, 0,
+            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
+        bt_arr = np.array(
+            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
+            dtype=np.uint32)
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+
+        ids_buf = pre["ids"]; pos_buf = pre["pos"]
+        slot_map = pre["slot_map"]; bt_buf = pre["bt"]
+        x_buf = pre["x"]; norm_out = pre["norm_out"]; logits_buf = pre["logits"]
+
+        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
+
+        with self._batched_dispatch():
+            self._dispatch("embedding_lookup_f32",
+                           [self.weights[self._embed_key()], ids_buf, x_buf],
+                           {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
+
+            for i in range(self.num_layers):
+                x_buf = self._transformer_layer(
+                    i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+
+            self._dispatch("rms_norm_f32in",
+                           [x_buf, self.weights[self._norm_key()], norm_out],
+                           {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt,
+                            "GEMMA_NORM": self._gemma_norm_const},
+                           (num_tokens, 1, 1))
+
+            lm_head_w = self.weights.get(self._lm_head_key(),
+                                         self.weights[self._embed_key()])
+            self._dispatch("matmul_quant",
+                           [norm_out, lm_head_w, self.weights.get("lm_head.scales", norm_out),
+                            logits_buf],
+                           {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                           ((vocab + 255) // 256, 1, 1))
+
+            if self.softcap is not None and self.softcap > 0:
+                capped = self._pre.get("capped", logits_buf)
+                self._dispatch("logit_softcap", [logits_buf, capped],
+                               {"N": num_tokens * vocab, "CAP": float(self.softcap)},
+                               ((num_tokens * vocab + 255) // 256, 1, 1),
+                               shader_subdir="gemma")
+                result = capped
+            else:
+                result = logits_buf
+
+        return result.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
 
     # ── Override: use decoder prefix for all lookups ─────────────────────────
 
