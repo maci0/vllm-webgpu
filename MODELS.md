@@ -32,15 +32,15 @@ Quantization is handled inside `matmul_quant.wgsl` via the `USE_QUANT` override.
 | 7 | Int8 per-channel | `bitsandbytes` int8, `compressed-tensors` int8 | `dtype == "u8"`, `fmt == "int8_gpu"` | per-row |
 | 8 | NF4 (Normal Float 4) | `bitsandbytes` nf4 | `dtype == "u8"`, `fmt == "nf4_gpu"` | 64 |
 
-**Not yet supported** (WebGPU-feasible but loader/detection work needed):
+**Loader-only (no shader changes needed, CPU conversion at load time):**
 
-| Format | vLLM name | Blocker |
-|--------|-----------|---------|
-| MXFP8 | `mxfp8`, `modelopt_mxfp8` | u8 exponent scales need load-time → f16 conversion |
-| MXFP4 | `mxfp4` | same as MXFP8; block_size=32 vs NVFP4's 16 |
-| NF4 double-quant | `bitsandbytes` (advanced) | nested absmax: scales of scales |
-| compressed-tensors int8/fp8 | `compressed-tensors` | sub-format detection from `config_groups` JSON |
-| torchao int4/int8 | `torchao` | checkpoint-specific format |
+| Format | vLLM name | Status |
+|--------|-----------|--------|
+| MXFP8 | `mxfp8`, `modelopt_mxfp8` | ✓ Implemented — u8 exponent scales dequanted to f16 at load time, plain f16 weights uploaded |
+| MXFP4 | `mxfp4` | ✓ Implemented — u8 exponent scales → f16 via 2^(e-127), routes to USE_QUANT=6 (GROUP_K=32) |
+| compressed-tensors | `compressed-tensors` | ✓ Implemented — config_groups JSON parsed, routes to USE_QUANT 3/5/7 by sub-format |
+| NF4 double-quant | `bitsandbytes` (advanced) | Planned — nested absmax not yet decoded |
+| torchao int4/int8 | `torchao` | Planned — checkpoint-specific format |
 
 **Not feasible for WebGPU** (CUDA-specific memory layouts or missing hardware support):
 
