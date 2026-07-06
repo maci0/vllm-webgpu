@@ -357,11 +357,26 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         r = len(data) % 4
         return data if r == 0 else data + b"\x00" * (4 - r)
 
+    # Track pending write_buffer bytes to flush periodically.
+    # Metal silently drops write_buffer operations when the pending write queue
+    # exceeds the GPU staging buffer capacity (~1-2GB). For large single-file
+    # models (e.g. Gemma4-12B at 22GB), we must flush periodically.
+    _pending_bytes: list = [0]
+    _FLUSH_THRESHOLD = 512 * 1024 * 1024  # flush every 512MB of pending writes
+
+    def _maybe_flush() -> None:
+        if _pending_bytes[0] >= _FLUSH_THRESHOLD:
+            wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+            wgpu_device.queue.on_submitted_work_done_sync()
+            _pending_bytes[0] = 0
+
     def _upload(arr: np.ndarray, name: str, weights: dict) -> None:
         arr = np.ascontiguousarray(arr.astype(np.float16))
         data = _pad4(arr.tobytes())
         buf = wgpu_device.create_buffer(size=len(data), usage=usage)
         wgpu_device.queue.write_buffer(buf, 0, data)
+        _pending_bytes[0] += len(data)
+        _maybe_flush()
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="f16")
 
@@ -371,6 +386,8 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         data = _pad4(arr.tobytes())
         buf = wgpu_device.create_buffer(size=len(data), usage=usage)
         wgpu_device.queue.write_buffer(buf, 0, data)
+        _pending_bytes[0] += len(data)
+        _maybe_flush()
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="i32")
 
@@ -380,6 +397,8 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         data = _pad4(arr.tobytes())
         buf = wgpu_device.create_buffer(size=len(data), usage=usage)
         wgpu_device.queue.write_buffer(buf, 0, data)
+        _pending_bytes[0] += len(data)
+        _maybe_flush()
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="f16")
 
@@ -408,6 +427,8 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         data = _pad4(arr.tobytes())
         buf = wgpu_device.create_buffer(size=len(data), usage=usage)
         wgpu_device.queue.write_buffer(buf, 0, data)
+        _pending_bytes[0] += len(data)
+        _maybe_flush()
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="f16")
         return True
