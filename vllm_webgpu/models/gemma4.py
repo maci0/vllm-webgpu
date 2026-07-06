@@ -223,6 +223,18 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
         self._postprocess_weights()
+        # Cache layer_scalar values on CPU at load time — avoids 48 GPU→CPU
+        # readbacks per token (each to_numpy() is a blocking ~100µs sync).
+        self._layer_scales: list[float] = []
+        for i in range(self.num_layers):
+            p = f"model.layers.{i}"
+            ls_buf = (self.weights.get(f"{p}.self_attn.layer_scale") or
+                      self.weights.get(f"{p}.layer_scalar"))
+            if ls_buf is not None:
+                import numpy as _np
+                self._layer_scales.append(float(ls_buf.to_numpy().view(_np.float16)[0]))
+            else:
+                self._layer_scales.append(1.0)
         logger.info("Loaded %d weight tensors", len(self.weights))
 
     def forward(
@@ -342,15 +354,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         # Per-layer output scale from GGUF (layer_output_scale.weight ≈ 0.053).
         # Applied to sublayer contributions before residual add.
-        # Without scaling, large Gemma4 norm weights (up to 193) cause the residual
-        # stream to grow beyond f16 range across 48 layers (model was trained in bfloat16).
-        # Gemma4 uses "layer_scalar" at the layer level (not self_attn.layer_scale)
-        _ls_buf = (self.weights.get(f"{p}.self_attn.layer_scale") or
-                   self.weights.get(f"{p}.layer_scalar"))
-        _ls = 1.0
-        if _ls_buf is not None:
-            import numpy as _np
-            _ls = float(_ls_buf.to_numpy().view(_np.float16)[0])
+        # Layer scale cached at load_weights() — no GPU→CPU readback per token.
+        _ls = self._layer_scales[layer_idx]
 
         def _uq(key: str) -> int:
             tt = _qt.get(key, 0)

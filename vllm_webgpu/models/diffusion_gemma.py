@@ -60,11 +60,28 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             _dev = wgpu_device.wgpu_device
             _rw = _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
             self._shared_res_buf = _WB.empty(_dev, 1 * self.hidden_size * 4, usage=_rw)
+            # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
+            self._topk_idx_buf     = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)  # [K] u32
+            self._topk_weight_buf  = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)  # [K] f32
+            self._router_logit_buf = _WB.empty(_dev, self.num_experts * 2, usage=_rw)     # [E] f16
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 
     def _pk(self, layer_idx: int) -> str:
         return f"model.decoder.layers.{layer_idx}"
+
+    def load_weights(self, path: str) -> None:
+        super().load_weights(path)
+        # Cache layer_scalar values at load time — avoid per-layer GPU→CPU readbacks.
+        self._layer_scales: list[float] = []
+        for i in range(self.num_layers):
+            p = self._pk(i)
+            ls_buf = self.weights.get(f"{p}.layer_scalar")
+            if ls_buf is not None:
+                import numpy as _np
+                self._layer_scales.append(float(ls_buf.to_numpy().view(_np.float16).ravel()[0]))
+            else:
+                self._layer_scales.append(1.0)
 
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
@@ -344,21 +361,18 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            {"N": add_n, "SCALE": 1.0}, ((add_n // 4 + 255) // 256, 1, 1))
             shared_residual = self._shared_res_buf
 
-        # ── MoE expert FFN (CPU router + GPU expert FFNs) ─────────────────────
+        # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe and f"{p}.router.proj.weight" in self.weights:
-            import wgpu as wgpu_lib
-            router_logits_buf = WebGPUBuffer.empty(dev, self.num_experts * 2, usage=rw)
+            router_logits_buf = self._router_logit_buf
             pfn2_w = self.weights.get(f"{p}.pre_feedforward_layernorm_2.weight")
-            moe_in_f32 = shared_residual  # f32 residual
 
             with self._batched_dispatch(label=f"L{layer_idx:02d}R"):
-                # Optional pre-norm for MoE path
                 if pfn2_w is not None:
                     self._dispatch("rms_norm_f32in", [shared_residual, pfn2_w, sc["normed"]],
                                    _rms, (num_tokens, 1, 1))
                     moe_in = sc["normed"]
                 else:
-                    moe_in = sc["normed"]  # fallback
+                    moe_in = sc["normed"]
 
                 rw_ = f"{p}.router.proj.weight"
                 self._dispatch("matmul_quant",
@@ -368,21 +382,23 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                {"K": hidden, "N": self.num_experts,
                                 "USE_QUANT": _uq(rw_), "SPLIT_K": 0},
                                ((self.num_experts + 255) // 256, 1, 1))
+                # GPU top-K: sorts N_EXPERTS logits, picks top-K indices + softmax weights.
+                # Eliminates the GPU→CPU readback that previously cost ~1ms per MoE layer.
+                self._dispatch("topk_sort",
+                               [router_logits_buf, self._topk_idx_buf, self._topk_weight_buf],
+                               {"N_EXPERTS": self.num_experts, "K": self.top_k_experts},
+                               (1, 1, 1))
 
-            # CPU: select top-K experts
-            router_logits = router_logits_buf.to_numpy().view(np.float16).astype(np.float32)
-            top_k_idx = np.argsort(router_logits)[-self.top_k_experts:]
-            rw_vals = router_logits[top_k_idx]
-            rw_vals = np.exp(rw_vals - rw_vals.max())
-            rw_vals = rw_vals / rw_vals.sum()
+            # Read back compact K-element arrays (negligible: K=8 = 32 bytes)
+            top_k_idx = self._topk_idx_buf.to_numpy().view(np.uint32)[:self.top_k_experts]
+            rw_vals   = self._topk_weight_buf.to_numpy().view(np.float32)[:self.top_k_experts]
 
             # GPU: run top-K expert FFNs
             gelu_n_moe = num_tokens * inter_moe
-            # Two ping-pong buffers avoid read-write conflict in the accumulation dispatch.
             moe_ping = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
             moe_pong = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
-            moe_acc = moe_ping  # current accumulator (read)
-            moe_tmp = moe_pong  # write target
+            moe_acc = moe_ping
+            moe_tmp = moe_pong
 
             for idx, (eid, ew) in enumerate(zip(top_k_idx, rw_vals)):
                 ep = f"{p}.experts.{eid}"
@@ -438,11 +454,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     moe_out = sc["o_proj_out"]
                 else:
                     moe_out = moe_acc
-                # Scalar from layer
-                layer_scalar_w = self.weights.get(f"{p}.layer_scalar")
-                layer_scalar = 1.0
-                if layer_scalar_w is not None:
-                    layer_scalar = float(layer_scalar_w.to_numpy().view(np.float16).ravel()[0])
+                layer_scalar = self._layer_scales[layer_idx]
                 self._dispatch("add_f32", [shared_residual, moe_out, out],
                                {"N": add_n, "SCALE": layer_scalar},
                                ((add_n // 4 + 255) // 256, 1, 1))
