@@ -382,14 +382,24 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _ls = self._layer_scales[layer_idx]
 
         def _uq(key: str) -> int:
+            w = self.weights.get(key)
+            if w is not None:
+                dtype = getattr(w, "dtype", "f16")
+                qmeta = self.weights.get("__quant_meta__", {})
+                meta = qmeta.get(key[:-7], {}) if isinstance(qmeta, dict) else {}
+                fmt = meta.get("fmt", "")
+                if dtype == "i32":
+                    return 4 if fmt == "awq_sym" else 3
+                if dtype == "u8":
+                    if fmt == "nvfp4_gpu": return 6
+                    if fmt == "int8_gpu":  return 7
+                    return 5
             tt = _qt.get(key, 0)
-            if tt == 12:  # Q4_K — GPU block decoder
+            if tt == 12:
                 return 2
-            # key ends with ".weight" (7 chars); trim to get the base, then append ".scales"
-            base = key[:-7]  # e.g. "model.layers.0.self_attn.q_proj"
-            if self.weights.get(base + ".scales") is not None:
-                return 1  # simple custom Q4 with scales
-            return 0      # f16 (including eagerly dequantized Q6_K)
+            if self.weights.get(key[:-7] + ".scales") is not None:
+                return 1
+            return 0
 
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
@@ -472,17 +482,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": head_dim},
                            (num_tokens, num_kv_heads, 1))
 
-            # Attention scores, softmax, weighted V sum
             self._dispatch("attn_score",
                            [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
                             "MAX_SEQ_LEN": ctx_len},
                            (self.num_q_heads, ctx_len, 1))
-
             self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
                            {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-
             self._dispatch("attn_output",
                            [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,

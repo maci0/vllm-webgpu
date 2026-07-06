@@ -214,8 +214,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         def _uq(key: str) -> int:
             w = self.weights.get(key)
-            if w is not None and getattr(w, "dtype", "f16") == "i32":
-                return 3
+            if w is not None:
+                dtype = getattr(w, "dtype", "f16")
+                qmeta = self.weights.get("__quant_meta__", {})
+                meta = qmeta.get(key[:-7], {}) if isinstance(qmeta, dict) else {}
+                fmt = meta.get("fmt", "")
+                if dtype == "i32":
+                    return 4 if fmt == "awq_sym" else 3
+                if dtype == "u8":
+                    if fmt == "nvfp4_gpu": return 6
+                    if fmt == "int8_gpu":  return 7
+                    return 5
             tt = _qt.get(key, 0)
             if tt == 12:
                 return 2
