@@ -237,6 +237,12 @@ class BaseWebGPUModel:
             if uq == 6:
                 d["GROUP_K"] = meta.get("group_size", 16)
             return d
+        if uq == 7:
+            # Int8 per-channel: no group size, no global scale — just USE_QUANT=7.
+            return {}
+        if uq == 8:
+            # NF4: GROUP_K = absmax block size (BnB default 64).
+            return {"GROUP_K": self._quant_info(base_key).get("group_size", 64)}
         return {}
 
     def _gemv_consts_and_wg(self, weight_key: str, K: int, N: int,

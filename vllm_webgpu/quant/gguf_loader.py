@@ -440,6 +440,25 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             arr = np.clip(f32, -65504.0, 65504.0).reshape(shape).astype(np.float16)
         elif dtype_str == "F32":
             arr = np.frombuffer(raw, dtype=np.float32).reshape(shape).astype(np.float16)
+        elif dtype_str == "I8":
+            # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
+            # Upload raw bytes; shader does sign extension via int8_to_f32().
+            # dtype="u8" so _uq_weight() detects it via fmt="int8_gpu".
+            arr_u8 = np.frombuffer(raw, dtype=np.uint8).reshape(shape)
+            r = len(arr_u8.ravel()) % 4
+            arr_pad = np.concatenate([arr_u8.ravel(), np.zeros(4 - r if r else 0, dtype=np.uint8)])
+            data_u8 = _pad4(arr_pad.tobytes())
+            buf = wgpu_device.create_buffer(size=len(data_u8), usage=usage)
+            wgpu_device.queue.write_buffer(buf, 0, data_u8)
+            _pending_bytes[0] += len(data_u8)
+            _maybe_flush()
+            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                         shape=shape, dtype="u8")
+            # Record int8 format in quant_meta for _uq() detection.
+            qmeta = weights.setdefault("__quant_meta__", {})
+            base_key = name[:-7] if name.endswith(".weight") else name
+            qmeta.setdefault(base_key, {})["fmt"] = "int8_gpu"
+            return True
         else:
             return False  # not a plain dtype
         arr = np.ascontiguousarray(arr)

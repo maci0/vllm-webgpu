@@ -334,7 +334,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 if dtype == "i32":
                     return 4 if fmt == "awq_sym" else 3
                 if dtype == "u8":
-                    return 6 if fmt == "nvfp4_gpu" else 5
+                    if fmt == "nvfp4_gpu":
+                        return 6
+                    if fmt == "int8_gpu":
+                        return 7
+                    return 5  # fp8_gpu
             tt = _qt.get(key, 0)
             if tt == 12:
                 return 2

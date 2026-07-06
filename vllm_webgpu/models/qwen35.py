@@ -192,7 +192,9 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             if dtype == "i32":
                 return 4 if fmt == "awq_sym" else 3
             if dtype == "u8":
-                return 6 if fmt == "nvfp4_gpu" else 5
+                if fmt == "nvfp4_gpu": return 6
+                if fmt == "int8_gpu":  return 7
+                return 5
         quant_types = self.weights.get("__quant_types__", {})
         _qt = quant_types if isinstance(quant_types, dict) else {}
         if _qt.get(key, 0) == 12:

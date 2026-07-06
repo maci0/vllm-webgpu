@@ -11,7 +11,9 @@ enable f16;
 override K: u32          = 4096u;
 override N: u32          = 4096u;
 override BLOCK_K: u32    = 32u;     // block size for USE_QUANT=1 (simple Q4)
-override USE_QUANT: u32  = 1u;      // 0=f16, 1=Q4, 2=Q4_K, 3=GPTQ, 4=AWQ, 5=FP8, 6=NVFP4
+// 7=Int8 per-channel (BnB int8 / compressed-tensors int8)
+// 8=NF4 (BitsAndBytes 4-bit Normal Float, block_size=64)
+override USE_QUANT: u32  = 1u;      // 0=f16, 1=Q4, 2=Q4_K, 3=GPTQ, 4=AWQ, 5=FP8, 6=NVFP4, 7=Int8, 8=NF4
 override GROUP_K: u32    = 128u;    // quantization group size for USE_QUANT=3/4/6
 override GLOBAL_SCALE: f32 = 1.0;  // per-tensor scale for USE_QUANT=5 (FP8) and 6 (NVFP4)
 // SPLIT_K=1 (default): split-K GEMV — all 256 threads work on ONE output row.
@@ -61,6 +63,34 @@ fn q4k_min(j: u32, sc_base: u32) -> u32 {
 var<workgroup> sh_acc: array<f32, 256>;
 
 // ── GPU dequant helpers ──────────────────────────────────────────────────────
+
+// Int8 signed byte → f32 (sign-extend from 8-bit packed in u32).
+fn int8_to_f32(raw: u32) -> f32 {
+    return f32(select(i32(raw), i32(raw) - 256, (raw & 0x80u) != 0u));
+}
+
+// NF4 lookup: 16 quantile values of the normal distribution.
+// Codes 0-15 map to equally-spaced quantiles in [-1, 1].
+fn nf4_to_f32(code: u32) -> f32 {
+    switch code & 0xFu {
+        case  0u: { return -1.0f; }
+        case  1u: { return -0.6961928010f; }
+        case  2u: { return -0.5250730515f; }
+        case  3u: { return -0.3949424624f; }
+        case  4u: { return -0.2844374180f; }
+        case  5u: { return -0.1847791076f; }
+        case  6u: { return -0.0911458358f; }
+        case  7u: { return  0.0f; }
+        case  8u: { return  0.0795822144f; }
+        case  9u: { return  0.1609302461f; }
+        case 10u: { return  0.2461898923f; }
+        case 11u: { return  0.3379294276f; }
+        case 12u: { return  0.4407098889f; }
+        case 13u: { return  0.5626170039f; }
+        case 14u: { return  0.7246159911f; }
+        default:  { return  1.0f; }          // code 15
+    }
+}
 
 // FP8 E4M3 (OCP/NVidia format, exponent bias=7) → f32
 // Normal:  (-1)^s * 2^(exp-7) * (1 + mant/8)
@@ -235,6 +265,40 @@ fn main(
                     acc += fp4_to_f32((packed >> 4u) & 0xFu) * sc * f32(x[k_fp4 + 1u]);
                 }
                 k_fp4 += 512u;
+            }
+        } else if (USE_QUANT == 7u) {
+            // Int8 per-channel (split-K, coalesced).
+            // weights: [N, K] signed int8 bytes packed 4-per-u32, row-major.
+            // scales:  [N] f16 — one scale per output row (per-channel).
+            let scale    = f32(scales[row]);
+            let row_base = row * K;
+            var k_i8 = tid * 2u;
+            loop {
+                if (k_i8 >= K) { break; }
+                acc += int8_to_f32(rd_byte_at(row_base + k_i8)) * scale * f32(x[k_i8]);
+                if (k_i8 + 1u < K) {
+                    acc += int8_to_f32(rd_byte_at(row_base + k_i8 + 1u)) * scale * f32(x[k_i8 + 1u]);
+                }
+                k_i8 += 512u;
+            }
+        } else if (USE_QUANT == 8u) {
+            // NF4 (BitsAndBytes 4-bit Normal Float, split-K, coalesced).
+            // weights: [N, K/2] packed NF4 codes (lo nibble = k, hi nibble = k+1), row-major.
+            // scales:  [N, K/GROUP_K] f16 — one absmax per group (GROUP_K = 64 for BnB default).
+            // val = nf4_table[code] * absmax
+            let K2  = K / 2u;
+            let GK  = GROUP_K;  // group size for absmax (typically 64)
+            var k_nf4 = tid * 2u;
+            loop {
+                if (k_nf4 >= K) { break; }
+                let blk     = k_nf4 / GK;
+                let sc      = f32(scales[row * (K / GK) + blk]);
+                let byte_b  = rd_byte_at(row * K2 + k_nf4 / 2u);
+                acc += nf4_to_f32(byte_b & 0xFu) * sc * f32(x[k_nf4]);
+                if (k_nf4 + 1u < K) {
+                    acc += nf4_to_f32((byte_b >> 4u) & 0xFu) * sc * f32(x[k_nf4 + 1u]);
+                }
+                k_nf4 += 512u;
             }
         } else {
             // USE_QUANT=0: f16 split-K — 512 F16 elements (256 u32) per step.
