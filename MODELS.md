@@ -20,15 +20,36 @@
 
 Quantization is handled inside `matmul_quant.wgsl` via the `USE_QUANT` override. The model's `_uq()` function inspects weight dtype and metadata to select the right value.
 
-| USE_QUANT | Format | Detection | Group size |
-|-----------|--------|-----------|------------|
-| 0 | f16 (plain) | default | — |
-| 1 | Simple Q4 + external scales | `.scales` key present in weights | per-tensor |
-| 2 | GGUF Q4_K | `__quant_types__[key] == 12` | 256 |
-| 3 | GPTQ int4 | `dtype == "i32"`, `fmt != "awq_sym"` | 128 (configurable) |
-| 4 | AWQ int4 | `dtype == "i32"`, `fmt == "awq_sym"` | 128 (configurable) |
-| 5 | FP8 E4M3 | `dtype == "u8"`, `fmt != "nvfp4_gpu"` | global scale |
-| 6 | NVFP4 | `dtype == "u8"`, `fmt == "nvfp4_gpu"` | 16 |
+| USE_QUANT | Format | vLLM name | Detection | Group size |
+|-----------|--------|-----------|-----------|------------|
+| 0 | f16 (plain) | — | default | — |
+| 1 | Simple Q4 + external scales | — | `.scales` key present | per-tensor |
+| 2 | GGUF Q4_K | (outside registry) | `__quant_types__[key] == 12` | 256 |
+| 3 | GPTQ int4 | `gptq`, `gptq_marlin` | `dtype == "i32"`, `fmt != "awq_sym"` | 128 (configurable) |
+| 4 | AWQ int4 | `awq`, `awq_marlin` | `dtype == "i32"`, `fmt == "awq_sym"` | 128 (configurable) |
+| 5 | FP8 E4M3 | `fp8`, `modelopt` | `dtype == "u8"`, `fmt == "fp8_gpu"` | global scale |
+| 6 | NVFP4 | `modelopt_fp4` | `dtype == "u8"`, `fmt == "nvfp4_gpu"` | 16 |
+| 7 | Int8 per-channel | `bitsandbytes` int8, `compressed-tensors` int8 | `dtype == "u8"`, `fmt == "int8_gpu"` | per-row |
+| 8 | NF4 (Normal Float 4) | `bitsandbytes` nf4 | `dtype == "u8"`, `fmt == "nf4_gpu"` | 64 |
+
+**Not yet supported** (WebGPU-feasible but loader/detection work needed):
+
+| Format | vLLM name | Blocker |
+|--------|-----------|---------|
+| MXFP8 | `mxfp8`, `modelopt_mxfp8` | u8 exponent scales need load-time → f16 conversion |
+| MXFP4 | `mxfp4` | same as MXFP8; block_size=32 vs NVFP4's 16 |
+| NF4 double-quant | `bitsandbytes` (advanced) | nested absmax: scales of scales |
+| compressed-tensors int8/fp8 | `compressed-tensors` | sub-format detection from `config_groups` JSON |
+| torchao int4/int8 | `torchao` | checkpoint-specific format |
+
+**Not feasible for WebGPU** (CUDA-specific memory layouts or missing hardware support):
+
+| Format | Reason |
+|--------|--------|
+| Marlin (GPTQ/AWQ Marlin) | Tensor-core tile layout requires CUDA |
+| ExllamaV2 | CUDA-specific |
+| bfloat16 weights | WebGPU has no bf16 compute |
+| DeepSeek V4 FP8 | Architecture-specific mixed-precision MoE |
 
 ### LlamaWebGPUModel
 
