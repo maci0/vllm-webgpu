@@ -354,7 +354,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     return self.weights.get(w_key + ".scales", fallback)
                 return self.weights.get(w_key[:-7] + ".scales", fallback)
 
-            # QKV projection
+            # QKV projection (separate dispatches; fused version needs sub-buffer views)
             for out_buf, proj, dim in [(sc["q_buf"], "q_proj", q_dim),
                                        (sc["k_buf"], "k_proj", kv_dim),
                                        (sc["v_buf"], "v_proj", kv_dim)]:
