@@ -38,6 +38,7 @@ ARCH_MAP = {
     "Gemma3ForCausalLM": "gemma4",
     "Gemma3ForConditionalGeneration": "gemma4",
     "Gemma4ForCausalLM": "gemma4",
+    "Gemma4UnifiedForConditionalGeneration": "gemma4",
     "Qwen3_5ForConditionalGeneration": "qwen35",
     "DiffusionGemmaForBlockDiffusion": "diffusion_gemma",
 }

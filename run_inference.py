@@ -296,6 +296,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
                 "linear_num_key_heads", "linear_key_head_dim",
                 "linear_num_value_heads", "linear_value_head_dim",
                 "linear_conv_kernel_dim", "full_attention_interval",
+                # Gemma4 heterogeneous attention fields
+                "global_head_dim", "global_kv_heads", "num_global_key_value_heads",
                 # DiffusionGemma / MoE fields
                 "num_experts", "top_k_experts", "moe_intermediate_size", "canvas_length",
                 "use_bidirectional_attention", "sliding_window"):
@@ -327,6 +329,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         "Gemma3ForCausalLM": Gemma4WebGPUModel,
         "Gemma3ForConditionalGeneration": Gemma4WebGPUModel,
         "Gemma4ForCausalLM": Gemma4WebGPUModel,
+        "Gemma4UnifiedForConditionalGeneration": Gemma4WebGPUModel,
         "DiffusionGemmaForBlockDiffusion": DiffusionGemmaWebGPUModel,
     }
     ModelClass = ARCH_MAP.get(arch)

@@ -67,13 +67,39 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                              self.hidden_size // self.num_q_heads)
         default_kv = getattr(model_config, "num_key_value_heads", 1)
 
+        # Gemma4 safetensors: derive per-layer params from layer_types + global_head_dim.
+        layer_types = getattr(model_config, "layer_types", None)
+        global_hd   = getattr(model_config, "global_head_dim", default_hd)
+        global_kv   = getattr(model_config, "global_kv_heads",
+                              getattr(model_config, "num_global_key_value_heads", 1))
+
         if raw_lp and len(raw_lp) == self.num_layers:
             self._lp: list[dict] = raw_lp
+        elif layer_types and len(layer_types) == self.num_layers:
+            # Build per-layer params from layer_types list (Gemma4 safetensors config).
+            # sliding_attention: local GQA, head_dim=default_hd, has_v_proj=True
+            # full_attention:    global MQA, head_dim=global_hd, num_kv=1, has_v_proj=False
+            self._lp = []
+            for lt in layer_types:
+                if lt == "full_attention":
+                    hd_l = global_hd
+                    nkv_l = global_kv
+                    hv = False  # global: V = K, no separate v_proj
+                else:
+                    hd_l = default_hd
+                    nkv_l = default_kv
+                    hv = True
+                self._lp.append({
+                    "head_dim":    hd_l,
+                    "num_q_heads": self.num_q_heads,
+                    "num_kv_heads": nkv_l,
+                    "q_dim":       self.num_q_heads * hd_l,
+                    "kv_dim":      nkv_l * hd_l,
+                    "has_v_proj":  hv,
+                })
         else:
             # Uniform fallback: all layers use the config defaults.
             # For Gemma3 safetensors (uniform attention) this is correct.
-            # For GGUF Gemma4-12B, `_layer_attention_params` from gguf_read_config
-            # provides the correct heterogeneous params.
             hd = default_hd
             nkv = default_kv
             uniform_lp = {
@@ -318,7 +344,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Applied to sublayer contributions before residual add.
         # Without scaling, large Gemma4 norm weights (up to 193) cause the residual
         # stream to grow beyond f16 range across 48 layers (model was trained in bfloat16).
-        _ls_buf = self.weights.get(f"{p}.self_attn.layer_scale")
+        # Gemma4 uses "layer_scalar" at the layer level (not self_attn.layer_scale)
+        _ls_buf = (self.weights.get(f"{p}.self_attn.layer_scale") or
+                   self.weights.get(f"{p}.layer_scalar"))
         _ls = 1.0
         if _ls_buf is not None:
             import numpy as _np

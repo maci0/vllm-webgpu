@@ -444,8 +444,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                 # threads in split-K read consecutive INT32s (coalesced access).
                 group_size = int(sc.shape[0]) and (qw.shape[1] if fmt == "gptq" else qw.shape[0]) // sc.shape[0] if sc.ndim == 2 else 128
                 if fmt == "gptq" and qz is None and g_idx is None:
-                    # Symmetric GPTQ (no asymmetric zero-points, no desc_act):
-                    # transpose qweight [K//8, N] → [N, K//8] for coalesced GPU access.
+                    # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
                     K8, N_ = qw.shape
                     group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else 128
                     qw_t = np.ascontiguousarray(qw.T)  # [N, K//8]
@@ -454,9 +453,28 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                     _upload_f16(sc_gn, f"{base}.weight.scales", weights)
                     weights["__quant_meta__"] = weights.get("__quant_meta__", {})
                     weights["__quant_meta__"][base] = {"fmt": "gptq_sym", "group_size": group_size}
-                    logger.debug("GPU GPTQ quantized: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
+                    logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
+                elif fmt == "awq" and qz is not None and g_idx is None:
+                    # GPU AWQ: check if qzeros decode to symmetric (all zero_point=8).
+                    # AWQ qzeros use same [0,4,1,5,2,6,3,7] nibble ordering.
+                    # All-zero qzeros → all zero_points = 0 → NOT symmetric.
+                    # qzeros with all nibbles = 8 → zero_point = 8 (symmetric).
+                    # We check for all-zero qzeros which means zero_point=0 (also
+                    # supported: just use -0 for zero instead of -8).
+                    K_, N8_ = qw.shape  # qw is [K, N//8]
+                    N_ = N8_ * 8
+                    G_ = sc.shape[0] if sc.ndim == 2 else K_ // 128
+                    group_size = K_ // G_ if G_ > 0 else 128
+                    # GPU AWQ: store [K, N//8] INT32 directly (no transpose needed
+                    # since AWQ access pattern is already per-k, per-output-group)
+                    sc_gn = sc.astype(np.float16) if sc.ndim == 2 else sc  # [G, N]
+                    _upload_int32(qw, f"{base}.weight", weights)    # [K, N//8]
+                    _upload_f16(sc_gn, f"{base}.weight.scales", weights)  # [G, N]
+                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                    weights["__quant_meta__"][base] = {"fmt": "awq_sym", "group_size": group_size}
+                    logger.debug("GPU AWQ: %s (K=%d, N=%d, G=%d)", base, K_, N_, G_)
                 else:
-                    # Fall back to CPU dequantization (asymmetric, desc_act, or AWQ).
+                    # Fall back to CPU dequantization.
                     if fmt == "awq" and qz is not None:
                         w_f16 = _dequant_awq(qw, sc, qz)
                     else:
@@ -574,6 +592,25 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             if not _upload_plain(name, weights):
                 logger.warning("Unsupported dtype %s for %s, skipping",
                                 meta.get("dtype", "?"), name)
+
+    # Multimodal remapping for single-file models (same patterns as sharded loader).
+    # Gemma4 unified: model.language_model.X → model.X
+    # Gemma3 multimodal (rare single-file): language_model.X → X
+    keys = list(weights.keys())
+    if any(k.startswith("model.language_model.") for k in keys):
+        remapped = {}
+        for k, v in weights.items():
+            if k.startswith("model.language_model."):
+                remapped["model." + k[len("model.language_model."):]] = v
+        weights.update(remapped)
+        logger.info("Remapped %d model.language_model.* keys", len(remapped))
+    elif any(k.startswith("language_model.") for k in keys):
+        remapped = {}
+        for k, v in weights.items():
+            if k.startswith("language_model."):
+                remapped[k[len("language_model."):]] = v
+        weights.update(remapped)
+        logger.info("Remapped %d language_model.* keys", len(remapped))
 
     # Commit all pending write_buffer calls before returning.
     wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])

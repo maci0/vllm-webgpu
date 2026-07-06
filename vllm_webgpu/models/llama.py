@@ -17,8 +17,9 @@ logger = logging.getLogger(__name__)
 def _gemv_wg(N: int, uq: int) -> tuple:
     """Workgroup count for matmul_quant dispatch.
 
-    SPLIT_K=1: one workgroup per output row for USE_QUANT=0 (f16) and USE_QUANT=3 (GPU GPTQ).
+    SPLIT_K=1: one workgroup per output row for f16, GPU GPTQ (3), GPU AWQ (4).
     Other quantized paths (USE_QUANT=1/2) use row-per-thread: ceil(N/256) workgroups.
+    LM head (vocab > 65535) forces SPLIT_K=0 via the caller.
     """
     if uq in (0, 3, 4):
         return (N, 1, 1)
@@ -283,9 +284,16 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _qt = quant_types if isinstance(quant_types, dict) else {}
 
         def _uq(key: str) -> int:
-            # GPU GPTQ INT4: weight stored as INT32 (not dequantized at load time)
+            # GPU INT4: weight stored as INT32 (not CPU-dequantized at load)
             w = self.weights.get(key)
             if w is not None and getattr(w, "dtype", "f16") == "i32":
+                # Check meta to distinguish GPTQ vs AWQ format
+                base = key[:-7]  # strip ".weight"
+                qmeta = self.weights.get("__quant_meta__", {})
+                if isinstance(qmeta, dict):
+                    fmt = qmeta.get(base, {}).get("fmt", "gptq_sym")
+                    if fmt == "awq_sym":
+                        return 4  # GPU AWQ dequant (split-K, USE_QUANT=4)
                 return 3  # GPU GPTQ dequant (split-K, USE_QUANT=3)
             tt = _qt.get(key, 0)
             if tt == 12:  # Q4_K — use GPU block decoder
@@ -326,7 +334,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                        (sc["v_buf"], "v_proj", kv_dim)]:
                 w_key = f"{p}.self_attn.{proj}.weight"
                 uq = _uq(w_key)
-                qi = {"GROUP_K": self._quant_info(f"{p}.self_attn.{proj}").get("group_size", 128)} if uq == 3 else {}
+                qi = {"GROUP_K": self._quant_info(f"{p}.self_attn.{proj}").get("group_size", 128)} if uq in (3, 4) else {}
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[w_key], _scales(w_key, uq, sc["normed"]), out_buf],
                                {"K": hidden, "N": dim, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3) else {}), **qi},
@@ -377,7 +385,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # Output projection
             w_key = f"{p}.self_attn.o_proj.weight"
             uq = _uq(w_key)
-            qi = {"GROUP_K": self._quant_info(f"{p}.self_attn.o_proj").get("group_size", 128)} if uq == 3 else {}
+            qi = {"GROUP_K": self._quant_info(f"{p}.self_attn.o_proj").get("group_size", 128)} if uq in (3, 4) else {}
             self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
                                             _scales(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
                            {"K": q_dim, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3) else {}), **qi},
@@ -395,7 +403,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             for out_b, mlp_proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
                 w_k = f"{p}.mlp.{mlp_proj}.weight"
                 uq = _uq(w_k)
-                qi2 = {"GROUP_K": self._quant_info(f"{p}.mlp.{mlp_proj}").get("group_size", 128)} if uq == 3 else {}
+                qi2 = {"GROUP_K": self._quant_info(f"{p}.mlp.{mlp_proj}").get("group_size", 128)} if uq in (3, 4) else {}
                 self._dispatch("matmul_quant", [sc["ffn_normed"], self.weights[w_k],
                                                 _scales(w_k, uq, sc["ffn_normed"]), out_b],
                                {"K": hidden, "N": inter, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3) else {}), **qi2},
@@ -408,7 +416,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # Down projection
             w_k = f"{p}.mlp.down_proj.weight"
             uq = _uq(w_k)
-            qi3 = {"GROUP_K": self._quant_info(f"{p}.mlp.down_proj").get("group_size", 128)} if uq == 3 else {}
+            qi3 = {"GROUP_K": self._quant_info(f"{p}.mlp.down_proj").get("group_size", 128)} if uq in (3, 4) else {}
             self._dispatch("matmul_quant", [sc["ffn_act"], self.weights[w_k],
                                             _scales(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
                            {"K": inter, "N": hidden, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq not in (0, 3) else {}), **qi3},

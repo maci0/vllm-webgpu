@@ -113,37 +113,50 @@ fn main(
                 q_step += 256u;
             }
         } else if (USE_QUANT == 4u) {
-            // GPU AWQ INT4 dequant (split-K).
-            // Weight layout: [K, N//8] INT32. Each INT32 packs 8 nibbles along N.
-            // scales: [K//GROUP_K, N] F16.  zero_point=8 (symmetric).
-            // Thread t handles rows 2t and 2t+1 (two outputs per thread, same k-pass).
-            // At each k, ALL threads read qweight[k, t] — perfectly coalesced!
-            // 4× bandwidth reduction vs f16: INT32 (4B) covers 8 N-elements.
-            let half_N = N / 2u;        // number of INT32 per K row
-            let row2a  = row;           // first output row handled by this workgroup
-            // NOTE: for AWQ we must re-dispatch with N/8 workgroups (outputs/8).
-            // For simplicity treat this as row-of-int32: each WG does ONE int32's worth.
-
-            // AWQ: thread t reads qweight[k, t] → 8 nibbles for output rows 8t..8t+7
-            // For split-K: thread tid processes k = tid*2, tid*2+512, ...
-            var k2 = tid * 2u;
+            // GPU AWQ INT4 dequant (split-K, coalesced).
+            // Weight layout: [K, N//8] INT32 stored as [K, N//8].
+            // AWQ nibble order within each INT32: positions [0,4,1,5,2,6,3,7]
+            // → bit shifts [0, 16, 4, 20, 8, 24, 12, 28].
+            // scales: [G, N] F16 where G = K // GROUP_K.
+            // zero_point = 8 (symmetric AWQ — asymmetric qzeros handled at load time).
+            //
+            // All 256 threads in workgroup process the SAME output row (split-K).
+            // Thread tid handles k-indices: tid*2, tid*2+512, tid*2+1024, ...
+            // At each step, reads qweight[k, row//8] — multiple threads may share
+            // the same INT32 (8 consecutive rows share one INT32).
+            // 4× bandwidth reduction vs F16 weights.
+            let N8 = N / 8u;  // INT32 elements per K row
+            // AWQ nibble shift for this output row within its INT32 pack
+            let awq_pos = row % 8u;
+            // Mapping: position → bit shift using [0,4,1,5,2,6,3,7] nibble order
+            var awq_shift: u32;
+            switch awq_pos {
+                case 0u: { awq_shift = 0u; }
+                case 1u: { awq_shift = 16u; }
+                case 2u: { awq_shift = 4u; }
+                case 3u: { awq_shift = 20u; }
+                case 4u: { awq_shift = 8u; }
+                case 5u: { awq_shift = 24u; }
+                case 6u: { awq_shift = 12u; }
+                default: { awq_shift = 28u; }  // case 7u
+            }
+            var k_awq = tid * 2u;
             loop {
-                if (k2 >= K) { break; }
-                let grp2 = k2 / GROUP_K;
-                // qweight[k2, row/8] — row selects which int32 in the N//8 array
-                let q2 = weights[k2 * half_N + row / 8u];
-                // Extract the nibble for row within the 8-pack
-                let nibble_shift = (row % 8u) * 4u;
-                let n2a = f32(i32((q2 >> nibble_shift) & 0xFu) - 8);
-                let sc2 = f32(scales[grp2 * N + row]);
-                acc += n2a * sc2 * f32(x[k2]);
-                if (k2 + 1u < K) {
-                    let q2b = weights[(k2 + 1u) * half_N + row / 8u];
-                    let n2b = f32(i32((q2b >> nibble_shift) & 0xFu) - 8);
-                    let sc2b = f32(scales[(k2 + 1u) / GROUP_K * N + row]);
-                    acc += n2b * sc2b * f32(x[k2 + 1u]);
+                if (k_awq >= K) { break; }
+                let grp = k_awq / GROUP_K;
+                let sc  = f32(scales[grp * N + row]);
+
+                let q0  = weights[k_awq * N8 + row / 8u];
+                let n0  = f32(i32((q0 >> awq_shift) & 0xFu) - 8);
+                acc += n0 * sc * f32(x[k_awq]);
+
+                if (k_awq + 1u < K) {
+                    let q1 = weights[(k_awq + 1u) * N8 + row / 8u];
+                    let sc1 = f32(scales[(k_awq + 1u) / GROUP_K * N + row]);
+                    let n1  = f32(i32((q1 >> awq_shift) & 0xFu) - 8);
+                    acc += n1 * sc1 * f32(x[k_awq + 1u]);
                 }
-                k2 += 512u;
+                k_awq += 512u;
             }
         } else {
             // USE_QUANT=0: f16 split-K — 512 F16 elements (256 u32) per step.
