@@ -302,7 +302,14 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
 
     # Detect quantization format from header
     has_qweight   = any(k.endswith(".qweight")      for k in header)
-    has_wp        = any(k.endswith(".weight_packed") for k in header)   # NVFP4
+    has_wp        = any(k.endswith(".weight_packed") for k in header)   # standard NVFP4
+    # DiffusionGemma NVFP4: *.weight is U8 AND *.weight_scale is F8_E4M3 (ModelOpt format)
+    has_diffusion_nvfp4 = any(
+        header[k].get("dtype") == "U8" and k.endswith(".weight")
+        and k[:-len(".weight")] + ".weight_scale" in header
+        and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "F8_E4M3"
+        for k in header if k != "__metadata__"
+    )
     has_fp8_weight = any(
         header[k].get("dtype") == "F8_E4M3" and k.endswith(".weight")
         for k in header if k != "__metadata__"
@@ -312,6 +319,8 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         fmt = "awq" if any(k.endswith(".qzeros") for k in header) else "gptq"
     elif has_wp:
         fmt = "nvfp4"
+    elif has_diffusion_nvfp4:
+        fmt = "diffusion_nvfp4"  # ModelOpt NVFP4: .weight U8 + .weight_scale F8 + .weight_scale_2 F32
     elif has_fp8_weight:
         fmt = "fp8"
     else:
@@ -478,6 +487,39 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                 _upload(w_f16, f"{base}.weight", weights)
             except Exception as exc:
                 logger.warning("Failed to dequantize NVFP4 %s: %s", base, exc)
+
+    elif fmt == "diffusion_nvfp4":
+        # DiffusionGemma ModelOpt NVFP4: *.weight (U8) + *.weight_scale (F8_E4M3) + *.weight_scale_2 (F32)
+        # Used for quantized expert weights. Non-expert weights (BF16) uploaded normally.
+        dnvfp4_bases = sorted(set(
+            k[:-len(".weight")] for k in header
+            if k.endswith(".weight") and header[k].get("dtype") == "U8"
+            and k[:-len(".weight")] + ".weight_scale" in header
+        ))
+        dnvfp4_set = set()
+        for base in dnvfp4_bases:
+            for suf in (".weight", ".weight_scale", ".weight_scale_2", ".input_scale"):
+                if f"{base}{suf}" in header:
+                    dnvfp4_set.add(f"{base}{suf}")
+
+        for name in header:
+            if name == "__metadata__" or name in dnvfp4_set:
+                continue
+            if not _upload_plain(name, weights):
+                dt = header[name].get("dtype", "?")
+                if dt not in ("F8_E4M3", "U8", "I32", "F32"):
+                    logger.warning("Skipping %s (dtype=%s)", name, dt)
+
+        for base in dnvfp4_bases:
+            try:
+                wp = _load_raw(f"{base}.weight")        # (N, K//2) U8
+                ws = _load_raw(f"{base}.weight_scale")  # (N, K//group_size) F8_E4M3 as uint8
+                wgs_key = f"{base}.weight_scale_2"
+                wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
+                w_f16 = _dequant_nvfp4(wp, ws, wgs)
+                _upload(w_f16, f"{base}.weight", weights)
+            except Exception as exc:
+                logger.warning("Failed to dequantize DiffusionGemma NVFP4 %s: %s", base, exc)
 
     elif fmt == "fp8":
         # Plain FP8 E4M3: weight stored as F8_E4M3, scale as F32 in *.weight_scale
