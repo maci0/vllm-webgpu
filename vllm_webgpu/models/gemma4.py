@@ -177,6 +177,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "up_buf":     mk(T * I * 2),           # f16
             "ffn_act":    mk(T * I * 2),           # f16
             "ffn_out":    mk(T * H * 2),           # f16
+            "ffn_gate_up": mk(T * I * 4),          # [2*inter] f16 — fused gate+up
             # Residual buffers stored in f32 for precision.
             # Gemma4 has output_norm weights up to 600 which cause f16 saturation
             # when accumulated across 48 layers — f32 residuals prevent this.
@@ -458,14 +459,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 v_to_cache = v_src  # Gemma3: use V directly without normalization
 
-            # KV cache store
-            self._dispatch("kv_cache_store",
-                           [sc["k_rope"], k_cache, slot_map],
-                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim},
-                           (num_tokens, num_kv_heads, 1))
-            self._dispatch("kv_cache_store",
-                           [v_to_cache, v_cache, slot_map],
-                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim},
+            # Fused K+V cache store — single dispatch saves 1 overhead per layer.
+            self._dispatch("kv_cache_store_both",
+                           [sc["k_rope"], k_cache, v_to_cache, v_cache, slot_map],
+                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
+                            "HEAD_DIM": head_dim},
                            (num_tokens, num_kv_heads, 1))
 
             # Attention scores, softmax, weighted V sum
@@ -527,20 +525,31 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 ffn_normed = residual
 
             # Gate + up projection
-            for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
-                w_k = f"{p}.mlp.{proj}.weight"
-                s_k = f"{p}.mlp.{proj}.scales"
-                uq = _uq(w_k)
-                self._dispatch("matmul_quant",
-                               [ffn_normed, self.weights[w_k],
-                                self.weights.get(s_k, ffn_normed), out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
-                               _gemv_wg(inter, uq))
-
-            # Gemma uses tanh-approximate GELU (gelu_pytorch_tanh), not SiLU.
-            self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1),
-                           shader_subdir="gemma")
+            # Fused gate+up (f16 only); Gemma uses tanh-GELU.
+            gw_k = f"{p}.mlp.gate_proj.weight"
+            uw_k = f"{p}.mlp.up_proj.weight"
+            uq_g = _uq(gw_k); uq_u = _uq(uw_k)
+            if uq_g == 0 and uq_u == 0:
+                self._dispatch("fused_gate_up",
+                               [ffn_normed, self.weights[gw_k], self.weights[uw_k],
+                                sc["ffn_gate_up"]],
+                               {"K": hidden, "N": inter}, (inter, 1, 1))
+                self._dispatch("gelu_mul_fused", [sc["ffn_gate_up"], sc["ffn_act"]],
+                               {"N": gelu_n, "GELU": 1},
+                               ((gelu_n // 4 + 255) // 256, 1, 1))
+            else:
+                for out_b, proj, w_k, uq in [
+                        (sc["gate_buf"], "gate_proj", gw_k, uq_g),
+                        (sc["up_buf"],   "up_proj",   uw_k, uq_u)]:
+                    self._dispatch("matmul_quant",
+                                   [ffn_normed, self.weights[w_k],
+                                    self.weights.get(w_k[:-7]+".scales", ffn_normed), out_b],
+                                   {"K": hidden, "N": inter, "USE_QUANT": uq,
+                                    **({"SPLIT_K": 0} if uq else {})},
+                                   _gemv_wg(inter, uq))
+                self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                               {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1),
+                               shader_subdir="gemma")
 
             # Down projection → sc["ffn_out"]
             w_k = f"{p}.mlp.down_proj.weight"
