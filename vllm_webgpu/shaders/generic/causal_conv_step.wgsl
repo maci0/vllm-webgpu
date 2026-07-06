@@ -41,9 +41,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     acc += f32(x[c]) * f32(weight[c * KERNEL + hist_len]);
 
-    // Raw conv output — no activation here. The gate (z) and norm apply later
-    // in linear_attn_norm_gate. Applying SiLU here was incorrect.
-    output[c] = f16(clamp(acc, -65504.0, 65504.0));
+    // SiLU activation after conv (matches HF: F.silu(conv1d(x))).
+    // The activation is conv1d's own activation, separate from the z-gate in linear_attn_norm_gate.
+    let silu = acc / (1.0 + exp(-acc));
+    output[c] = f16(clamp(silu, -65504.0, 65504.0));
 
     // Shift conv_state: drop oldest, append x[c] at position hist_len-1
     for (var i = 0u; i < hist_len - 1u; i++) {

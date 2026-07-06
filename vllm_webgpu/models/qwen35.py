@@ -409,7 +409,8 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         v_base = self._lin_key_dim * 2                # V starts after Q+K
 
         _rms_h = {"HIDDEN_DIM": hidden,
-                  "VALS_PER_THREAD": min((hidden + 255) // 256, 16) if hidden <= 4096 else 0}
+                  "VALS_PER_THREAD": min((hidden + 255) // 256, 16) if hidden <= 4096 else 0,
+                  "GEMMA_NORM": 1}
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # normed_x is already the pre-normalized input from the caller.
@@ -726,7 +727,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         vocab = self.vocab_size
 
         _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": 1}
 
         # Start the first command encoder manually.
         # Layer methods see _active_encoder is not None → their _batched_dispatch
@@ -830,7 +831,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # Inner _batched_dispatch() calls in layer methods are re-entrant no-ops
         # when profiling=False (default), recording all dispatches here.
         _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": 1}
         sc = self._sc
 
         with self._batched_dispatch():
@@ -962,6 +963,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                    {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
                                     "ROPE_BASE": float(self.rope_theta),
                                     "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
+                                    "GEMMA_NORM": 1,
                                     "ROTARY_DIM": self._rotary_dim,
                                     "INTERLEAVED": self._rope_interleaved},
                                    (n_heads, num_tokens, 1))
