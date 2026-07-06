@@ -52,6 +52,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         if self.is_moe:
             logger.info("DiffusionGemma MoE: %d experts, top-%d, moe_inter=%d",
                         self.num_experts, self.top_k_experts, self.moe_intermediate_size)
+            # Extra scratch buffer: shared-expert residual (F32 like h0/h1/h2).
+            # Needed because the 3-buffer h-rotation doesn't accommodate 4 distinct
+            # tensor states (x_buf, post-attn, post-shared-expert, post-moe).
+            import wgpu as _wgpu
+            from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WB
+            _dev = wgpu_device.wgpu_device
+            _rw = _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
+            self._shared_res_buf = _WB.empty(_dev, 1 * self.hidden_size * 4, usage=_rw)
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 
@@ -215,8 +223,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            _rms, (num_tokens, 1, 1))
 
             for out_buf, proj, dim in [(sc["q_buf"], "q_proj", q_dim),
-                                       (sc["k_buf"], "k_proj", kv_dim),
-                                       (sc["v_buf"], "v_proj", kv_dim)]:
+                                       (sc["k_buf"], "k_proj", kv_dim)]:
                 wk = f"{p}.self_attn.{proj}.weight"
                 uq = _uq(wk)
                 self._dispatch("matmul_quant",
@@ -224,6 +231,20 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 self.weights.get(wk[:-7] + ".scales", sc["normed"]), out_buf],
                                {"K": hidden, "N": dim, "USE_QUANT": uq, "SPLIT_K": 1},
                                (dim, 1, 1))
+            # v_proj: global attention layers (no separate V; V=K) have no v_proj weight
+            vw_key = f"{p}.self_attn.v_proj.weight"
+            has_v_proj = vw_key in self.weights
+            if has_v_proj:
+                uq = _uq(vw_key)
+                self._dispatch("matmul_quant",
+                               [sc["normed"], self.weights[vw_key],
+                                self.weights.get(vw_key[:-7] + ".scales", sc["normed"]),
+                                sc["v_buf"]],
+                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq, "SPLIT_K": 1},
+                               (kv_dim, 1, 1))
+                v_src = sc["v_buf"]
+            else:
+                v_src = sc["k_buf"]  # global attention: V = K
 
             for src, dst, n_heads, wk in [
                 (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
@@ -243,7 +264,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
                                     "LN_ROPE_BASE": ln_rope}, (num_tokens, n_heads, 1))
 
-            v_to_cache = sc["v_buf"]
+            v_to_cache = v_src
             self._dispatch("kv_cache_store", [sc["k_rope"], k_cache, slot_map],
                            {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
                             "HEAD_DIM": head_dim}, (num_tokens, num_kv_heads, 1))
@@ -318,10 +339,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             else:
                 shared_out = sc["ffn_out"]
 
-            # Accumulate shared expert: residual += shared_out
-            self._dispatch("add_f32", [residual, shared_out, sc[h_names[self._hstate]]],
+            # Accumulate shared expert into dedicated shared_res_buf (avoids h-rotation conflicts).
+            self._dispatch("add_f32", [residual, shared_out, self._shared_res_buf],
                            {"N": add_n, "SCALE": 1.0}, ((add_n // 4 + 255) // 256, 1, 1))
-            shared_residual = sc[h_names[self._hstate]]
+            shared_residual = self._shared_res_buf
 
         # ── MoE expert FFN (CPU router + GPU expert FFNs) ─────────────────────
         if self.is_moe and f"{p}.router.proj.weight" in self.weights:
@@ -357,7 +378,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             # GPU: run top-K expert FFNs
             gelu_n_moe = num_tokens * inter_moe
-            moe_acc = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
+            # Two ping-pong buffers avoid read-write conflict in the accumulation dispatch.
+            moe_ping = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
+            moe_pong = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
+            moe_acc = moe_ping  # current accumulator (read)
+            moe_tmp = moe_pong  # write target
 
             for idx, (eid, ew) in enumerate(zip(top_k_idx, rw_vals)):
                 ep = f"{p}.experts.{eid}"
@@ -389,18 +414,20 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    {"K": inter_moe, "N": hidden,
                                     "USE_QUANT": _uq(dk), "SPLIT_K": 1},
                                    (hidden, 1, 1))
-                    # Accumulate: moe_acc += ew * expert_out
+                    # Accumulate: moe_tmp = moe_acc + ew * ffn_out (ping-pong to avoid conflict)
                     scale = float(ew)
                     if idx == 0:
+                        # First expert: moe_tmp = ffn_out * scale (moe_acc is empty)
                         self._dispatch("add",
-                                       [sc["ffn_out"], sc["ffn_out"], moe_acc],
+                                       [sc["ffn_out"], sc["ffn_out"], moe_tmp],
                                        {"N": add_n, "SCALE": scale},
                                        ((add_n // 4 + 255) // 256, 1, 1))
                     else:
                         self._dispatch("add",
-                                       [moe_acc, sc["ffn_out"], moe_acc],
+                                       [moe_acc, sc["ffn_out"], moe_tmp],
                                        {"N": add_n, "SCALE": scale},
                                        ((add_n // 4 + 255) // 256, 1, 1))
+                    moe_acc, moe_tmp = moe_tmp, moe_acc  # swap ping-pong
 
             # Post-MoE norm + residual add
             with self._batched_dispatch(label=f"L{layer_idx:02d}P"):

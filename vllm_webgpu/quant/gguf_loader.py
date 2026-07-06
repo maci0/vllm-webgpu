@@ -352,26 +352,34 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             return np.frombuffer(raw, dtype=np.uint8).reshape(shape)
         raise ValueError(f"Unsupported dtype {dtype_str} for {name}")
 
+    def _pad4(data: bytes) -> bytes:
+        """Pad to 4-byte boundary — WebGPU write_buffer requires 4-byte-aligned size."""
+        r = len(data) % 4
+        return data if r == 0 else data + b"\x00" * (4 - r)
+
     def _upload(arr: np.ndarray, name: str, weights: dict) -> None:
         arr = np.ascontiguousarray(arr.astype(np.float16))
-        buf = wgpu_device.create_buffer(size=arr.nbytes, usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, arr.tobytes())
+        data = _pad4(arr.tobytes())
+        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+        wgpu_device.queue.write_buffer(buf, 0, data)
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="f16")
 
     def _upload_int32(arr: np.ndarray, name: str, weights: dict) -> None:
         """Upload an INT32 array (quantized weights) directly to GPU without conversion."""
         arr = np.ascontiguousarray(arr.astype(np.int32))
-        buf = wgpu_device.create_buffer(size=arr.nbytes, usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, arr.tobytes())
+        data = _pad4(arr.tobytes())
+        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+        wgpu_device.queue.write_buffer(buf, 0, data)
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="i32")
 
     def _upload_f16(arr: np.ndarray, name: str, weights: dict) -> None:
         """Upload an F16 array (scales/norms) directly to GPU."""
         arr = np.ascontiguousarray(arr.astype(np.float16))
-        buf = wgpu_device.create_buffer(size=arr.nbytes, usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, arr.tobytes())
+        data = _pad4(arr.tobytes())
+        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+        wgpu_device.queue.write_buffer(buf, 0, data)
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="f16")
 
@@ -397,8 +405,9 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         else:
             return False  # not a plain dtype
         arr = np.ascontiguousarray(arr)
-        buf = wgpu_device.create_buffer(size=arr.nbytes, usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, arr.tobytes())
+        data = _pad4(arr.tobytes())
+        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+        wgpu_device.queue.write_buffer(buf, 0, data)
         weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                      shape=tuple(arr.shape), dtype="f16")
         return True
