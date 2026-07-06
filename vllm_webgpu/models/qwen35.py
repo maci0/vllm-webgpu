@@ -159,9 +159,10 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "attn_out":   mk(T * Q * 2),
             "o_proj_out": mk(T * H * 2),
             "ffn_normed": mk(T * H * 2),
-            "gate_buf":   mk(T * I * 2),
-            "up_buf":     mk(T * I * 2),
-            "ffn_act":    mk(T * I * 2),
+            "gate_buf":    mk(T * I * 2),
+            "up_buf":      mk(T * I * 2),
+            "ffn_act":     mk(T * I * 2),
+            "ffn_gate_up": mk(T * I * 4),  # [2*inter] for fused gate+up
             "ffn_out":    mk(T * H * 2),
             "h0":         mk(T * H * 2),
             "h1":         mk(T * H * 2),
@@ -397,15 +398,14 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                             sc["ffn_normed"]],
                            _rms_ff, (num_tokens, 1, 1))
 
-            for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
-                w_k = f"{pp}.mlp.{proj}.weight"
-                self._dispatch("matmul_quant",
-                               [sc["ffn_normed"], self.weights[w_k],
-                                sc["ffn_normed"], out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": 0},
-                               (inter, 1, 1))
-
-            self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+            # Fused gate+up: 2 dispatches → 1
+            gw_k = f"{pp}.mlp.gate_proj.weight"
+            uw_k = f"{pp}.mlp.up_proj.weight"
+            self._dispatch("fused_gate_up",
+                           [sc["ffn_normed"], self.weights[gw_k], self.weights[uw_k],
+                            sc["ffn_gate_up"]],
+                           {"K": hidden, "N": inter}, (inter, 1, 1))
+            self._dispatch("gelu_mul_fused", [sc["ffn_gate_up"], sc["ffn_act"]],
                            {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
 
             w_k = f"{pp}.mlp.down_proj.weight"
@@ -592,11 +592,9 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                     "LN_ROPE_BASE": ln_rope},
                                    (num_tokens, n_heads, 1))
 
-            self._dispatch("kv_cache_store", [sc["k_rope"], k_cache, slot_map],
-                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                            "HEAD_DIM": self.head_dim},
-                           (num_tokens, self.num_kv_heads, 1))
-            self._dispatch("kv_cache_store", [sc["v_buf"], v_cache, slot_map],
+            # Fused K+V cache store
+            self._dispatch("kv_cache_store_both",
+                           [sc["k_rope"], k_cache, sc["v_buf"], v_cache, slot_map],
                            {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
                             "HEAD_DIM": self.head_dim},
                            (num_tokens, self.num_kv_heads, 1))
@@ -631,18 +629,30 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                             sc["ffn_normed"]],
                            {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
 
-            for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
-                w_k = f"{p}.mlp.{proj}.weight"
-                s_k = f"{p}.mlp.{proj}.scales"
-                uq = _uq(w_k)
-                self._dispatch("matmul_quant",
-                               [sc["ffn_normed"], self.weights[w_k],
-                                self.weights.get(s_k, sc["ffn_normed"]), out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": uq, **({"SPLIT_K": 0} if uq else {})},
-                               _gemv_wg(inter, uq))
-
-            self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+            # Fused gate+up (f16 only; fallback for quantized)
+            gw_k2 = f"{p}.mlp.gate_proj.weight"
+            uw_k2 = f"{p}.mlp.up_proj.weight"
+            uq_g2 = _uq(gw_k2); uq_u2 = _uq(uw_k2)
+            if uq_g2 == 0 and uq_u2 == 0:
+                self._dispatch("fused_gate_up",
+                               [sc["ffn_normed"], self.weights[gw_k2], self.weights[uw_k2],
+                                sc["ffn_gate_up"]],
+                               {"K": hidden, "N": inter}, (inter, 1, 1))
+                self._dispatch("gelu_mul_fused", [sc["ffn_gate_up"], sc["ffn_act"]],
+                               {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+            else:
+                for out_b, proj, w_k, uq in [
+                        (sc["gate_buf"], "gate_proj", gw_k2, uq_g2),
+                        (sc["up_buf"],   "up_proj",   uw_k2, uq_u2)]:
+                    s_k = f"{p}.mlp.{proj}.scales"
+                    self._dispatch("matmul_quant",
+                                   [sc["ffn_normed"], self.weights[w_k],
+                                    self.weights.get(s_k, sc["ffn_normed"]), out_b],
+                                   {"K": hidden, "N": inter, "USE_QUANT": uq,
+                                    **({"SPLIT_K": 0} if uq else {})},
+                                   _gemv_wg(inter, uq))
+                self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                               {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
 
             w_k = f"{p}.mlp.down_proj.weight"
             s_k = f"{p}.mlp.down_proj.scales"
