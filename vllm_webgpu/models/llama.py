@@ -446,15 +446,16 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
                            (num_tokens, self.num_kv_heads, 1))
 
-            # Attention scores + output
+            # Attention scores + softmax + weighted V sum.
+            # Three-pass approach: (num_q_heads × ctx_len) WGs for attn_score gives
+            # full GPU utilization. flash_attn_decode exists but uses only num_q_heads
+            # WGs (poor utilization for short ctx on integrated GPUs).
             self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
                             "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
-
             self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
                            {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-
             self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
