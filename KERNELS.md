@@ -338,6 +338,54 @@ Gate+up projections into a combined `[gate|up]` buffer. Used in the quantized fa
 
 ---
 
+### fused_qk_norm_rope.wgsl
+
+Per-head RMSNorm + RoPE for Q and K in one dispatch. Replaces two `fused_per_head_norm_rope` calls (one for Q, one for K). Requires both Q and K to be in the same input buffer (e.g., from `fused_qkv`).
+
+**Dispatch:** `(NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1)` — routes on `wgid.x`.
+
+| Override | Default | Description |
+|----------|---------|-------------|
+| `HEAD_DIM`, `NUM_Q_HEADS`, `NUM_KV_HEADS` | — | Attention dimensions |
+| `ROPE_BASE`, `LN_ROPE_BASE` | — | RoPE parameters |
+| `HAS_WEIGHT`, `GEMMA_NORM`, `ROTARY_DIM`, `INTERLEAVED` | — | Same as fused_per_head_norm_rope |
+| `INPUT_OFFSET_K` | 0 | Element offset for K section in input[] (= q_dim from fused_qkv) |
+
+**Bindings:** 0=input(f16), 1=q_norm_w(f16), 2=k_norm_w(f16), 3=positions(u32), 4=q_rope_out(f16), 5=k_rope_out(f16)
+
+---
+
+### fused_gate_act.wgsl
+
+Gate+up projection GEMV with inline activation — fuses `fused_gate_up` + `gelu_mul_fused` into one dispatch. Writes activated output directly to `ffn_act`, eliminating the intermediate gate_up buffer.
+
+**Dispatch:** `(N, 1, 1)` — one WG per output row, 256 threads split-K.
+
+| Override | Default | Description |
+|----------|---------|-------------|
+| `K` | 2560 | Hidden dim |
+| `N` | 9728 | Intermediate dim |
+| `GELU` | 0 | 0=SiLU `x·σ(x)` (Llama/Qwen), 1=tanh-GELU (Gemma) |
+
+**Bindings:** 0=x(f16), 1=gate_w(u32), 2=up_w(u32), 3=ffn_act(f16 out)
+
+---
+
+### flash_attn_decode.wgsl
+
+Fused QK dot-products + online Milakov-Divanov softmax + V-weighted sum for decode (M=1). Not currently wired in the model forward pass — the three-pass approach (attn_score+softmax+attn_output) provides better GPU utilization at short contexts (num_q_heads×ctx_len WGs vs num_q_heads WGs). Available for future tiled-block parallelism.
+
+**Dispatch:** `(NUM_Q_HEADS, 1, 1)` — one WG per query head.
+
+| Override | Default | Description |
+|----------|---------|-------------|
+| `BLOCK_SIZE`, `NUM_Q_HEADS`, `NUM_KV_HEADS`, `HEAD_DIM` | — | Attention dimensions |
+| `CTX_LEN` | 512 | Context length |
+
+**Bindings:** 0=Q(f16), 1=K_cache(f16), 2=V_cache(f16), 3=block_table(u32), 4=out(f16)
+
+---
+
 ### rope.wgsl
 
 RoPE without per-head norm. Used for Llama models that have no `q_norm`/`k_norm` weights.
