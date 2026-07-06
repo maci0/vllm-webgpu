@@ -11,18 +11,23 @@ A [vLLM](https://github.com/vllm-project/vllm) out-of-tree platform plugin that 
 
 ## Supported models
 
-| Model family | Format | Notes |
+See [MODELS.md](MODELS.md) for the full matrix including quantization formats and known limitations.
+
+| Architecture | Example models | Quant formats |
 |---|---|---|
-| Llama 3.x | safetensors (f16) | LlamaForCausalLM |
-| Qwen 2.5 / 3.x | safetensors (f16) | Qwen2ForCausalLM, Qwen3ForCausalLM |
-| Gemma 4-12B | GGUF Q4\_K\_M | Heterogeneous local+global attention; Q4\_K decoded on GPU |
-| Qwen 3.5-9B | MLX affine int4 | Hybrid GDN linear attention + standard attention |
+| LlamaForCausalLM / Qwen3ForCausalLM | Llama 3, Qwen3-0.6B–72B | f16, Q4_K, GPTQ, AWQ, FP8, NVFP4 |
+| Qwen2ForCausalLM / MistralForCausalLM | Qwen2.5, Mistral-7B | f16, Q4_K, GPTQ, AWQ, FP8, NVFP4 |
+| Qwen3_5ForConditionalGeneration | Qwen3.5-9B, Qwen3.6-27B | f16, Q4_K (attn/FFN); f16 only (GDN layers) |
+| Qwen3_5MoeForConditionalGeneration | Qwen3.6-35B-A3B | same as Qwen3.5; MoE routing on GPU |
+| Gemma3/4ForCausalLM | Gemma3-1B–27B, Gemma4-12B | f16, Q4_K |
+| DiffusionGemmaForBlockDiffusion | DiffusionGemma | f16, Q4_K |
 
-Tested: Qwen3-4B at **9.0 tok/s**, Qwen3-8B at ~4 tok/s on Apple M4 Pro (single-encoder forward pass, no CPU↔GPU transfers in the hot path).
+**Throughput** (Apple M3, single-sequence decode, no CPU↔GPU transfers):
 
-**Gemma4-12B note:** generates tokens but quality is limited by f16 precision. The model was trained in bfloat16; its large per-layer norm weights (up to 193×) push activations outside f16's range. WebGPU does not support bfloat16 natively. All computation stays on GPU via Q4\_K block decoder, layer-output scaling (per-layer 0.005–0.887), and overflow clipping.
-
-**Qwen3.5-9B note:** GDN (Gated Delta Networks) linear attention runs entirely on GPU via three custom WGSL kernels (causal\_conv\_step, gdn\_state\_update, linear\_attn\_norm\_gate). Mathematically verified against vLLM's compiled CPU reference at <1% error per step (f16 vs bfloat16 noise).
+| Model | tok/s |
+|---|---|
+| Qwen3-4B (f16) | ~18 tok/s |
+| Qwen3-0.6B (f16) | ~60 tok/s |
 
 ## Install
 
@@ -97,9 +102,10 @@ vLLM engine  (scheduler, block allocator, request lifecycle)
            │            └─ get_kv_cache_spec() — reports per-layer KV dims
            │
            └─ Model classes
-                 ├─ LlamaWebGPUModel   — Llama/Qwen2/Qwen3
-                 ├─ Gemma4WebGPUModel  — Gemma4 (heterogeneous attention)
-                 └─ Qwen35WebGPUModel  — Qwen3.5 (hybrid GDN + standard)
+                 ├─ LlamaWebGPUModel        — Llama/Qwen2/Qwen3
+                 ├─ Gemma4WebGPUModel       — Gemma3/4 (heterogeneous attention, f32 residual)
+                 ├─ Qwen35WebGPUModel       — Qwen3.5/3.6 (hybrid GDN + standard attention)
+                 └─ DiffusionGemmaWebGPUModel — DiffusionGemma (MoE, block diffusion)
 ```
 
 ### Forward pass (single encoder, one GPU submit per token)
@@ -112,36 +118,30 @@ Block size 16 tokens. Each layer has its own KV buffer pair. Gemma4-12B uses het
 
 ### Quantization
 
-| Format | WGSL path | Notes |
-|---|---|---|
-| f16 safetensors | USE\_QUANT=0: two f16 per u32 | Standard HF format |
-| GGUF Q4\_K | USE\_QUANT=2: GPU Q4\_K block decoder | 144 bytes/256 weights, deinterleaved nibbles |
-| GGUF Q6\_K | Eager dequant at load time | → f16 |
-| GGUF F32 | Eager cast at load time | → f16 |
-| MLX affine int4 | Dequant at load time | uint32 nibbles + bf16 scales/biases → f16 |
+`matmul_quant.wgsl` decodes all quantized formats entirely on GPU (no CPU dequant in the forward path):
 
-The Q4\_K GPU decoder reads the raw GGUF block format (d, dmin, 12 scale bytes, 128 nibble bytes) and dequantizes entirely in the shader. No CPU decode.
+| USE_QUANT | Format | Notes |
+|---|---|---|
+| 0 | f16 | Two f16 per u32, standard HF format |
+| 2 | GGUF Q4_K | 144 bytes/256 weights, GPU block decoder |
+| 3 | GPTQ int4 | Symmetric, group_size=128, transposed to [N, K/8] |
+| 4 | AWQ int4 | [K, N/8] nibble order, zero_point=8 |
+| 5 | FP8 E4M3 | Raw u8 bytes, GLOBAL_SCALE constant |
+| 6 | NVFP4 | [N, K/2] packed FP4 + [N, K/16] f16 scales |
+
+Q6_K, F32, and MLX affine-int4 are dequantized to f16 at load time.
 
 ## WGSL kernels
 
-| Shader | Purpose |
-|---|---|
-| `matmul_quant.wgsl` | GEMV (decode, M=1): f16 or Q4\_K |
-| `matmul_quant_mr4.wgsl` | Batched GEMM (prefill): 256-thread K-reduction |
-| `attn_score.wgsl` | QK dot-product (paged, GQA) |
-| `attn_output.wgsl` | Weighted V sum (paged, GQA) |
-| `softmax.wgsl` | Online 2-pass (Milakov-Divanov) |
-| `rms_norm.wgsl` | RMSNorm with register-tile |
-| `fused_per_head_norm_rope.wgsl` | Per-head RMSNorm + RoPE fused |
-| `kv_cache_store.wgsl` | Paged KV write (vec2<f16>) |
-| `embedding_lookup.wgsl` | Token embedding (vec4<f16>) |
-| `gelu_mul.wgsl` | SwiGLU (vec4<f16>) |
-| `add.wgsl` | Residual add (vec4<f16>) |
-| `causal_conv_step.wgsl` | Single-step causal depthwise conv (Qwen3.5) |
-| `gdn_state_update.wgsl` | GDN delta-rule SSM update (Qwen3.5) |
-| `linear_attn_norm_gate.wgsl` | Per-head RMSNorm + sigmoid gate (Qwen3.5) |
-| `logit_softcap.wgsl` | Gemma logit softcap: tanh(x/cap)×cap |
-| `per_head_rms_norm_no_weight.wgsl` | Per-head RMSNorm, no learnable weight (Gemma4 V) |
+See [KERNELS.md](KERNELS.md) for the full reference with dispatch shapes, overrides, and composability notes.
+
+**Core kernels (all models):**
+`matmul_quant`, `rms_norm`, `fused_per_head_norm_rope`, `kv_cache_store_both`, `attn_score`, `softmax`, `attn_output`, `embedding_lookup`, `add`, `add_rms_norm`, `argmax_f16`
+
+**Fused kernels (dispatch count reduction):**
+`fused_qkv` (Q+K+V projections), `fused_qk_norm_rope` (Q+K norm+rope), `fused_gate_act` (gate+up+SiLU/GELU), `kv_cache_store_both` (K+V cache write), `add_rms_norm` / `add_f32_rms_norm` (residual add + next layer norm)
+
+**Decode dispatch count per layer** (f16, fused QKV path): **11 dispatches** (vs 16 before fusions)
 
 ## Weight loading
 
@@ -171,8 +171,11 @@ pytest tests/ -q
 
 ## Limitations
 
-- Single-sequence decode only (no batching).
-- Prefill runs token-by-token (KV cache populated sequentially).
-- ctx\_len limited to 65535 (WebGPU dispatch limit per axis).
-- Gemma4-12B: output quality limited by f16 vs bfloat16 precision gap (WebGPU does not support bfloat16 natively).
-- Qwen3.5-9B: GDN verified at <1% per-step error vs vLLM CPU reference; residual ~20% across 5 steps is f16/bfloat16 precision accumulation, not a formula error.
+- Single-sequence decode only (no request batching).
+- Prefill is token-by-token (the model runner loops over prompt tokens).
+- ctx_len limited to 65535 (WebGPU dispatch dimension limit).
+- Gemma models: f16 residual precision gap vs bfloat16; WebGPU has no bfloat16 support.
+- Qwen3.5 GDN layers: quantization not supported (always f16).
+- Block table capped at 512 blocks per sequence at init time.
+
+See [MODELS.md](MODELS.md) for per-model details.
