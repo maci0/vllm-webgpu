@@ -68,6 +68,13 @@ def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
         style = "Gemma3" if is_gemma_mm else "Qwen3.5"
         logger.info("Multimodal model detected (%s style); remapping language_model prefix", style)
 
+    # Detect compressed-tensors quantization format before loading shards.
+    # The I8 and F8_E4M3 dtypes are already handled per-shard inside load_safetensors_weights,
+    # but we apply comprehensive quant_meta here for any layers not caught by dtype detection.
+    ct_meta = detect_compressed_tensors_fmt(Path(model_dir) / "config.json")
+    if ct_meta:
+        logger.info("compressed-tensors format detected: %s", ct_meta.get("__global__", {}))
+
     for shard in shard_files:
         shard_path = str(Path(model_dir) / shard)
         logger.info("Loading shard %s", shard)
@@ -96,6 +103,24 @@ def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
                 remapped["model." + k[len("model.language_model."):]] = v
         weights.update(remapped)
         logger.info("Added %d remapped language_model keys", len(remapped))
+
+    # Apply compressed-tensors quant_meta to any weight layers not already tagged
+    # (I8 dtype handling in _upload_plain already sets fmt="int8_gpu" for those layers).
+    if ct_meta and "__global__" in ct_meta:
+        global_ct = ct_meta["__global__"]
+        qmeta = weights.setdefault("__quant_meta__", {})
+        applied = 0
+        for wkey in list(weights.keys()):
+            if wkey.endswith(".weight") and not wkey.startswith("__"):
+                base = wkey[:-len(".weight")]
+                if base not in qmeta:
+                    entry: dict = {"fmt": global_ct["fmt"]}
+                    if global_ct.get("group_size") is not None:
+                        entry["group_size"] = global_ct["group_size"]
+                    qmeta[base] = entry
+                    applied += 1
+        if applied:
+            logger.info("compressed-tensors: applied quant_meta to %d weight layers", applied)
 
     logger.info("Loaded %d tensors from %d shards in %s", len(weights), len(shard_files), model_dir)
     return weights
@@ -274,6 +299,86 @@ def _is_gptq_format(header: dict) -> bool:
     return any(k.endswith(".qweight") for k in header)
 
 
+def _detect_mx_quant(model_dir: Path) -> str:
+    """Detect MXFP4 or MXFP8 from config files in the model directory.
+
+    Checks hf_quant_config.json (Nvidia/ModelOpt format) first, then
+    config.json quantization_config.quant_type. Returns 'mxfp4', 'mxfp8', or ''.
+    """
+    import json
+    hf_quant = model_dir / "hf_quant_config.json"
+    if hf_quant.exists():
+        try:
+            with open(hf_quant) as f:
+                cfg = json.load(f)
+            algo = cfg.get("quant_algo", "")
+            if "MXFP4" in algo:
+                return "mxfp4"
+            if "MXFP8" in algo:
+                return "mxfp8"
+        except Exception:
+            pass
+    config_json = model_dir / "config.json"
+    if config_json.exists():
+        try:
+            with open(config_json) as f:
+                cfg = json.load(f)
+            qt = cfg.get("quantization_config", {}).get("quant_type", "")
+            if qt.lower() == "mxfp4":
+                return "mxfp4"
+            if qt.lower() == "mxfp8":
+                return "mxfp8"
+        except Exception:
+            pass
+    return ""
+
+
+def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
+    """Read config.json and return compressed-tensors quantization metadata.
+
+    compressed-tensors models embed a quantization_config with config_groups that
+    describes the actual format. Returns a dict with key '__global__' mapped to
+    {use_quant, fmt, group_size} when detected, otherwise empty dict.
+
+    Routing:
+      8-bit int  + channel        -> USE_QUANT=7, fmt='int8_gpu'
+      8-bit float + tensor/channel -> USE_QUANT=5, fmt='fp8_gpu'
+      4-bit int  + group          -> USE_QUANT=3, fmt='gptq_gpu'
+      other                       -> empty dict with a logged warning
+    """
+    import json
+    p = Path(config_path)
+    if not p.exists():
+        return {}
+    try:
+        with open(p) as f:
+            config = json.load(f)
+    except Exception:
+        return {}
+    quant_cfg = config.get("quantization_config", {})
+    config_groups = quant_cfg.get("config_groups")
+    if not config_groups:
+        return {}
+    first_group = next(iter(config_groups.values()), {})
+    weights_desc = first_group.get("weights", {})
+    if not weights_desc:
+        return {}
+    num_bits = int(weights_desc.get("num_bits", 8))
+    wtype = str(weights_desc.get("type", "int")).lower()
+    strategy = str(weights_desc.get("strategy", "channel")).lower()
+    if num_bits == 8 and wtype == "int" and strategy == "channel":
+        return {"__global__": {"use_quant": 7, "fmt": "int8_gpu", "group_size": None}}
+    if num_bits == 8 and wtype in ("float", "fp8") and strategy in ("tensor", "channel"):
+        return {"__global__": {"use_quant": 5, "fmt": "fp8_gpu", "group_size": None}}
+    if num_bits == 4 and wtype == "int" and strategy == "group":
+        group_size = int(weights_desc.get("group_size", 128))
+        return {"__global__": {"use_quant": 3, "fmt": "gptq_gpu", "group_size": group_size}}
+    logger.warning(
+        "compressed-tensors: unsupported format (num_bits=%d, type=%s, strategy=%s), "
+        "no quant_meta applied", num_bits, wtype, strategy)
+    return {}
+
+
 def load_safetensors_weights(path: str, wgpu_device) -> dict:
     """Load safetensors weights and upload to GPU as F16.
 
@@ -314,6 +419,13 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         header[k].get("dtype") == "F8_E4M3" and k.endswith(".weight")
         for k in header if k != "__metadata__"
     )
+    # MXFP4/MXFP8: *.weight U8 + *.weight_scale U8 (exponent bytes, not F8_E4M3 like diffusion_nvfp4)
+    has_mx_u8_pair = any(
+        header[k].get("dtype") == "U8" and k.endswith(".weight")
+        and k[:-len(".weight")] + ".weight_scale" in header
+        and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
+        for k in header if k != "__metadata__"
+    )
 
     if has_qweight:
         fmt = "awq" if any(k.endswith(".qzeros") for k in header) else "gptq"
@@ -323,6 +435,10 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         fmt = "diffusion_nvfp4"  # ModelOpt NVFP4: .weight U8 + .weight_scale F8 + .weight_scale_2 F32
     elif has_fp8_weight:
         fmt = "fp8"
+    elif has_mx_u8_pair:
+        # MXFP4 or MXFP8: U8 weight + U8 exponent scale. Distinguish via config files.
+        _mx = _detect_mx_quant(Path(path).parent)
+        fmt = _mx if _mx in ("mxfp4", "mxfp8") else "plain"
     else:
         fmt = "plain"
 
@@ -662,6 +778,93 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                 logger.debug("GPU FP8: %s scale=%.4f", base, scale_val)
             except Exception as exc:
                 logger.warning("Failed to process FP8 %s: %s", base, exc)
+
+    elif fmt == "mxfp4":
+        # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
+        # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
+        # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
+        mxfp4_bases = sorted(set(
+            k[:-len(".weight")] for k in header
+            if k.endswith(".weight")
+            and header[k].get("dtype") == "U8"
+            and k[:-len(".weight")] + ".weight_scale" in header
+            and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
+        ))
+        mx4_set: set = set()
+        for base in mxfp4_bases:
+            mx4_set.add(f"{base}.weight")
+            mx4_set.add(f"{base}.weight_scale")
+
+        for name in header:
+            if name == "__metadata__" or name in mx4_set:
+                continue
+            if not _upload_plain(name, weights):
+                dt = header[name].get("dtype", "?")
+                if dt not in ("U8", "I32", "F32"):
+                    logger.warning("Skipping %s (dtype=%s)", name, dt)
+
+        for base in mxfp4_bases:
+            try:
+                wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
+                ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
+                # Convert U8 exponents to F16: scale = 2^(u8 - 127)
+                ws_f16 = np.ascontiguousarray(
+                    (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)).astype(np.float16))
+                N_, K2_ = wp.shape
+                K_ = K2_ * 2
+                _upload_u8(wp, f"{base}.weight", weights)
+                _upload_f16(ws_f16, f"{base}.weight.scales", weights)
+                weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                weights["__quant_meta__"][base] = {
+                    "fmt": "nvfp4_gpu", "global_scale": 1.0, "group_size": 32}
+                logger.debug("GPU MXFP4: %s (N=%d, K=%d)", base, N_, K_)
+            except Exception as exc:
+                logger.warning("Failed to process MXFP4 %s: %s", base, exc)
+
+    elif fmt == "mxfp8":
+        # MXFP8 (microscaling FP8): *.weight [N, K] U8 FP8-E4M3 + *.weight_scale [N, K//32] U8 exponents.
+        # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
+        # CPU dequant: avoids shader changes for per-block FP8.
+        # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
+        mxfp8_bases = sorted(set(
+            k[:-len(".weight")] for k in header
+            if k.endswith(".weight")
+            and header[k].get("dtype") == "U8"
+            and k[:-len(".weight")] + ".weight_scale" in header
+            and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
+        ))
+        mx8_set: set = set()
+        for base in mxfp8_bases:
+            mx8_set.add(f"{base}.weight")
+            mx8_set.add(f"{base}.weight_scale")
+
+        for name in header:
+            if name == "__metadata__" or name in mx8_set:
+                continue
+            if not _upload_plain(name, weights):
+                dt = header[name].get("dtype", "?")
+                if dt not in ("U8", "I32", "F32"):
+                    logger.warning("Skipping %s (dtype=%s)", name, dt)
+
+        for base in mxfp8_bases:
+            try:
+                w_u8  = _load_raw(f"{base}.weight")        # (N, K) U8 FP8 E4M3 bytes
+                ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
+                N_, K_ = w_u8.shape
+                # Convert U8 exponents to F32 block scales: scale = 2^(u8 - 127)
+                block_scale = (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0))
+                n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
+                block_size = K_ // n_blocks if n_blocks > 0 else K_
+                # Expand block scales to (N, K) for element-wise multiply
+                block_scale_exp = np.repeat(block_scale, block_size, axis=1)
+                # FP8 E4M3 → F32, scale, clip, cast to F16
+                w_f32 = _fp8_e4m3_to_f32(w_u8)
+                w_f16 = np.ascontiguousarray(
+                    np.clip(w_f32 * block_scale_exp, -65504.0, 65504.0).astype(np.float16))
+                _upload(w_f16, f"{base}.weight", weights)
+                logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
+            except Exception as exc:
+                logger.warning("Failed to process MXFP8 %s: %s", base, exc)
 
     else:
         # Plain BF16/F16/F32
