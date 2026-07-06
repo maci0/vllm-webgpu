@@ -40,6 +40,7 @@ ARCH_MAP = {
     "Gemma4ForCausalLM": "gemma4",
     "Gemma4UnifiedForConditionalGeneration": "gemma4",
     "Qwen3_5ForConditionalGeneration": "qwen35",
+    "Qwen3_5MoeForConditionalGeneration": "qwen35",  # MoE variant; FFN routing on GPU via topk_sort
     "DiffusionGemmaForBlockDiffusion": "diffusion_gemma",
 }
 
