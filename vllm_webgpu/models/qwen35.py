@@ -324,16 +324,15 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes,  usage=rw)
             self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes, usage=rw)
 
-            # conv1d weight may be 3D; the shader reads it as a flat [CONV_DIM, KERNEL]
-            # array via byte-offset indexing. Both [D, K, 1] (MLX) and [D, 1, K] (HF)
-            # have the same row-major memory layout as [D, K], so no reshape is needed
-            # unless the trailing 1 is in the kernel position ([D, K, 1] only).
+            # conv1d weight from HuggingFace has shape [CONV_DIM, 1, KERNEL] (standard
+            # PyTorch depthwise conv). The shader expects [CONV_DIM, KERNEL] (flat 2D).
+            # Reshape by dropping the middle size-1 dim (groups/in_channels dimension).
             p = f"model.layers.{i}.linear_attn"
             conv_w_key = f"{p}.conv1d.weight"
             w = self.weights.get(conv_w_key)
-            if w is not None and len(w.shape) == 3 and w.shape[2] == 1:
-                # [CONV_DIM, KERNEL, 1] → [CONV_DIM, KERNEL]: drop the trailing 1.
-                arr = w.to_numpy().view(np.float16).reshape(w.shape[0], w.shape[1])
+            if w is not None and len(w.shape) == 3 and w.shape[1] == 1:
+                # [CONV_DIM, 1, KERNEL] → [CONV_DIM, KERNEL]: drop the middle 1.
+                arr = w.to_numpy().view(np.float16).reshape(w.shape[0], w.shape[2])
                 self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr, usage=rw)
 
     def load_weights(self, path: str) -> None:
