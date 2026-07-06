@@ -290,12 +290,15 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     mri = config.get("mrope_interleaved") or rope_params.get("mrope_interleaved", None)
     if mri is not None:
         cfg.mrope_interleaved = bool(mri)
-    # Pass other optional model-specific fields (including Qwen3.5 GDN dims)
+    # Pass other optional model-specific fields (including Qwen3.5 GDN dims, DiffusionGemma MoE)
     for key in ("final_logit_softcapping", "ple_layer_indices", "query_pre_attn_scalar",
                 "tie_word_embeddings", "layer_types",
                 "linear_num_key_heads", "linear_key_head_dim",
                 "linear_num_value_heads", "linear_value_head_dim",
-                "linear_conv_kernel_dim", "full_attention_interval"):
+                "linear_conv_kernel_dim", "full_attention_interval",
+                # DiffusionGemma / MoE fields
+                "num_experts", "top_k_experts", "moe_intermediate_size", "canvas_length",
+                "use_bidirectional_attention", "sliding_window"):
         if key in config:
             setattr(cfg, key, config[key])
 
@@ -314,6 +317,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.models.llama import LlamaWebGPUModel
     from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
     from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
+    from vllm_webgpu.models.diffusion_gemma import DiffusionGemmaWebGPUModel
     ARCH_MAP = {
         "LlamaForCausalLM": LlamaWebGPUModel,
         "MistralForCausalLM": LlamaWebGPUModel,
@@ -323,6 +327,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         "Gemma3ForCausalLM": Gemma4WebGPUModel,
         "Gemma3ForConditionalGeneration": Gemma4WebGPUModel,
         "Gemma4ForCausalLM": Gemma4WebGPUModel,
+        "DiffusionGemmaForBlockDiffusion": DiffusionGemmaWebGPUModel,
     }
     ModelClass = ARCH_MAP.get(arch)
     if ModelClass is None:

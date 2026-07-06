@@ -36,9 +36,10 @@ ARCH_MAP = {
     "Qwen2ForCausalLM": "llama",
     "Qwen3ForCausalLM": "llama",
     "Gemma3ForCausalLM": "gemma4",
-    # Multimodal Gemma3: text portion uses the same Gemma4 model class
     "Gemma3ForConditionalGeneration": "gemma4",
+    "Gemma4ForCausalLM": "gemma4",
     "Qwen3_5ForConditionalGeneration": "qwen35",
+    "DiffusionGemmaForBlockDiffusion": "diffusion_gemma",
 }
 
 
@@ -53,6 +54,9 @@ def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache:
     if family == "qwen35":
         from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
         return Qwen35WebGPUModel(model_config, wgpu_device, pipeline_cache)
+    if family == "diffusion_gemma":
+        from vllm_webgpu.models.diffusion_gemma import DiffusionGemmaWebGPUModel
+        return DiffusionGemmaWebGPUModel(model_config, wgpu_device, pipeline_cache)
     raise NotImplementedError(
         f"Architecture {arch!r} is not supported. "
         f"Supported: {sorted(ARCH_MAP)}"
