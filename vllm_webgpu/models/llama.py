@@ -101,9 +101,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         }
 
         self._sc: dict[str, "WebGPUBuffer"] = {
-            "normed":      mk(T * H * 2),
-            "ffn_gate_up": mk(T * I * 4),          # [2*inter] f16 — fused gate+up output
-            "qkv_buf":     mk(T * (Q + 2 * KV) * 2),  # [Q|K|V] f16 — fused QKV output
+            "normed":  mk(T * H * 2),
+            "qkv_buf": mk(T * (Q + 2 * KV) * 2),  # [Q|K|V] f16 — fused QKV output
             "q_buf":       mk(T * Q * 2),
             "k_buf":       mk(T * KV * 2),
             "v_buf":       mk(T * KV * 2),
@@ -400,28 +399,40 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 _v_offset = 0
 
             # Per-head norm + RoPE for Q and K.
-            # INPUT_OFFSET lets fused_per_head_norm_rope read K from qkv_buf[q_dim:].
-            _k_in_off = q_dim if _use_fused_qkv else 0
-            for src, dst, n_heads, w_key, in_off in [
-                (_q_src, sc["q_rope"], self.num_q_heads,  f"{p}.self_attn.q_norm.weight", 0),
-                (_k_src, sc["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight", _k_in_off),
-            ]:
-                norm_w = self.weights.get(w_key)
-                if norm_w is not None:
-                    self._dispatch("fused_per_head_norm_rope",
-                                   [src, norm_w, pos_buf, dst],
-                                   {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
-                                    "ROPE_BASE": float(self.rope_theta),
-                                    "LN_ROPE_BASE": ln_rope,
-                                    "HAS_WEIGHT": 1,
-                                    "INPUT_OFFSET": in_off},
-                                   (n_heads, num_tokens, 1))
-                else:
-                    # No per-head norm (e.g., Llama). _use_fused_qkv is False here.
-                    self._dispatch("rope", [src, pos_buf, dst],
-                                   {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
-                                    "LN_ROPE_BASE": ln_rope},
-                                   (num_tokens, n_heads, 1))
+            # When using fused QKV (f16 + per-head norms): single fused_qk_norm_rope dispatch.
+            # Otherwise: two separate fused_per_head_norm_rope (or plain rope) calls.
+            q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
+            k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
+            _rope_consts = {"HEAD_DIM": self.head_dim,
+                            "ROPE_BASE": float(self.rope_theta),
+                            "LN_ROPE_BASE": ln_rope}
+
+            if _use_fused_qkv and q_norm_w is not None:
+                # fused_qk_norm_rope: Q+K norm+rope in one dispatch.
+                self._dispatch("fused_qk_norm_rope",
+                               [sc["qkv_buf"], q_norm_w, k_norm_w, pos_buf,
+                                sc["q_rope"], sc["k_rope"]],
+                               {**_rope_consts,
+                                "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": self.num_kv_heads,
+                                "HAS_WEIGHT": 1,
+                                "INPUT_OFFSET_K": q_dim},
+                               (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
+            else:
+                for src, dst, n_heads, norm_w, in_off in [
+                    (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
+                    (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, q_dim if _use_fused_qkv else 0),
+                ]:
+                    if norm_w is not None:
+                        self._dispatch("fused_per_head_norm_rope",
+                                       [src, norm_w, pos_buf, dst],
+                                       {**_rope_consts, "NUM_HEADS": n_heads,
+                                        "HAS_WEIGHT": 1, "INPUT_OFFSET": in_off},
+                                       (n_heads, num_tokens, 1))
+                    else:
+                        self._dispatch("rope", [src, pos_buf, dst],
+                                       {**_rope_consts, "NUM_HEADS": n_heads},
+                                       (num_tokens, n_heads, 1))
 
             # Fused K+V cache store.
             # When using fused QKV, V lives in qkv_buf starting at element (q_dim+kv_dim).
@@ -463,17 +474,16 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             residual, sc["ffn_normed"]],
                            _rms_c, (num_tokens, 1, 1))
 
-            # FFN: fused gate+up (f16) or separate (quantized).
+            # FFN: fused_gate_act (f16) or separate matmul_quant (quantized).
             gw_k = f"{p}.mlp.gate_proj.weight"
             uw_k = f"{p}.mlp.up_proj.weight"
             uq_g = _uq(gw_k); uq_u = _uq(uw_k)
             if uq_g == 0 and uq_u == 0:
-                self._dispatch("fused_gate_up",
+                # Single dispatch: GEMV for gate+up with inline SiLU → ffn_act.
+                self._dispatch("fused_gate_act",
                                [sc["ffn_normed"], self.weights[gw_k], self.weights[uw_k],
-                                sc["ffn_gate_up"]],
-                               {"K": hidden, "N": inter}, (inter, 1, 1))
-                self._dispatch("gelu_mul_fused", [sc["ffn_gate_up"], sc["ffn_act"]],
-                               {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+                                sc["ffn_act"]],
+                               {"K": hidden, "N": inter, "GELU": 0}, (inter, 1, 1))
             else:
                 for out_b, w_k, uq2, mlp_proj in [
                         (sc["gate_buf"], gw_k, uq_g, "gate_proj"),

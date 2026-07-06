@@ -160,10 +160,9 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "o_proj_out": mk(T * H * 2),
             "ffn_normed": mk(T * H * 2),
             "gate_buf":    mk(T * I * 2),
-            "up_buf":      mk(T * I * 2),
-            "ffn_act":     mk(T * I * 2),
-            "ffn_gate_up": mk(T * I * 4),  # [2*inter] for fused gate+up
-            "ffn_out":    mk(T * H * 2),
+            "up_buf":   mk(T * I * 2),
+            "ffn_act":  mk(T * I * 2),
+            "ffn_out":  mk(T * H * 2),
             "h0":         mk(T * H * 2),
             "h1":         mk(T * H * 2),
             "h2":         mk(T * H * 2),
@@ -420,12 +419,10 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             # 10. FFN
             gw_k = f"{pp}.mlp.gate_proj.weight"
             uw_k = f"{pp}.mlp.up_proj.weight"
-            self._dispatch("fused_gate_up",
+            self._dispatch("fused_gate_act",
                            [sc["ffn_normed"], self.weights[gw_k], self.weights[uw_k],
-                            sc["ffn_gate_up"]],
-                           {"K": hidden, "N": inter}, (inter, 1, 1))
-            self._dispatch("gelu_mul_fused", [sc["ffn_gate_up"], sc["ffn_act"]],
-                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+                            sc["ffn_act"]],
+                           {"K": hidden, "N": inter, "GELU": 0}, (inter, 1, 1))
 
             w_k = f"{pp}.mlp.down_proj.weight"
             self._dispatch("matmul_quant",
@@ -662,12 +659,10 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             uw_k2 = f"{p}.mlp.up_proj.weight"
             uq_g2 = _uq(gw_k2); uq_u2 = _uq(uw_k2)
             if uq_g2 == 0 and uq_u2 == 0:
-                self._dispatch("fused_gate_up",
+                self._dispatch("fused_gate_act",
                                [sc["ffn_normed"], self.weights[gw_k2], self.weights[uw_k2],
-                                sc["ffn_gate_up"]],
-                               {"K": hidden, "N": inter}, (inter, 1, 1))
-                self._dispatch("gelu_mul_fused", [sc["ffn_gate_up"], sc["ffn_act"]],
-                               {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+                                sc["ffn_act"]],
+                               {"K": hidden, "N": inter, "GELU": 0}, (inter, 1, 1))
             else:
                 for out_b, proj2, w_k, uq2 in [
                         (sc["gate_buf"], "gate_proj", gw_k2, uq_g2),

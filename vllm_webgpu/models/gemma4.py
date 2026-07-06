@@ -175,9 +175,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "ffn_normed": mk(T * H * 2),           # f16
             "gate_buf":   mk(T * I * 2),           # f16
             "up_buf":     mk(T * I * 2),           # f16
-            "ffn_act":    mk(T * I * 2),           # f16
-            "ffn_out":    mk(T * H * 2),           # f16
-            "ffn_gate_up": mk(T * I * 4),          # [2*inter] f16 — fused gate+up
+            "ffn_act":    mk(T * I * 2),
+            "ffn_out":    mk(T * H * 2),
             # Residual buffers stored in f32 for precision.
             # Gemma4 has output_norm weights up to 600 which cause f16 saturation
             # when accumulated across 48 layers — f32 residuals prevent this.
@@ -532,13 +531,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             uw_k = f"{p}.mlp.up_proj.weight"
             uq_g = _uq(gw_k); uq_u = _uq(uw_k)
             if uq_g == 0 and uq_u == 0:
-                self._dispatch("fused_gate_up",
+                self._dispatch("fused_gate_act",
                                [ffn_normed, self.weights[gw_k], self.weights[uw_k],
-                                sc["ffn_gate_up"]],
-                               {"K": hidden, "N": inter}, (inter, 1, 1))
-                self._dispatch("gelu_mul_fused", [sc["ffn_gate_up"], sc["ffn_act"]],
-                               {"N": gelu_n, "GELU": 1},
-                               ((gelu_n // 4 + 255) // 256, 1, 1))
+                                sc["ffn_act"]],
+                               {"K": hidden, "N": inter, "GELU": 1}, (inter, 1, 1))
             else:
                 for out_b, proj, w_k, uq in [
                         (sc["gate_buf"], "gate_proj", gw_k, uq_g),
