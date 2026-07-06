@@ -135,6 +135,18 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, n, usage=rw)
 
+        # Pre-allocated per-step buffers (reused every decode via write_buffer).
+        V = self.vocab_size
+        self._pre: dict[str, "WebGPUBuffer"] = {
+            "ids":      mk(T * 4),
+            "pos":      mk(T * 4),
+            "slot_map": mk(T * 4),
+            "bt":       mk(512 * 4),
+            "x":        mk(T * H * 2),
+            "norm_out": mk(T * H * 2),
+            "logits":   mk(T * V * 2),
+        }
+
         self._sc: dict[str, "WebGPUBuffer"] = {
             "normed":     mk(T * H * 2),
             "q_buf":      mk(T * Q * 2),
@@ -301,7 +313,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # 1. Pre-norm
             _rms_h = {"HIDDEN_DIM": hidden,
-                      "VALS_PER_THREAD": min(hidden // 256, 16) if hidden <= 4096 else 0}
+                      "VALS_PER_THREAD": min((hidden + 255) // 256, 16) if hidden <= 4096 else 0}
             self._dispatch("rms_norm",
                            [x_buf, self.weights[f"{pp}.input_layernorm.weight"], sc["normed"]],
                            _rms_h, (num_tokens, 1, 1))
@@ -435,19 +447,25 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535.")
 
-        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
-        x_buf = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw_usage)
-        vocab = self.vocab_size
-        norm_out = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw_usage)
-        logits_buf = WebGPUBuffer.empty(dev, num_tokens * vocab * 2, usage=rw_usage)
-
-        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
-        slot_map = WebGPUBuffer.from_numpy(
-            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
+        pre = self._pre
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(
+            pre["slot_map"].buf, 0,
+            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = np.array(
             attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
             dtype=np.uint32)
-        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+
+        ids_buf    = pre["ids"]
+        pos_buf    = pre["pos"]
+        slot_map   = pre["slot_map"]
+        bt_buf     = pre["bt"]
+        x_buf      = pre["x"]
+        norm_out   = pre["norm_out"]
+        logits_buf = pre["logits"]
+        vocab = self.vocab_size
 
         # Single outer encoder for the entire forward pass — one queue.submit().
         # Inner _batched_dispatch() calls in layer methods are re-entrant no-ops
@@ -464,7 +482,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 else:
                     x_buf = self._linear_attn_layer(i, x_buf, num_tokens)
 
-            _vpt = min(hidden // 256, 16) if hidden <= 4096 else 0
+            _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
             self._dispatch("rms_norm",
                            [x_buf, self.weights["model.norm.weight"], norm_out],
                            {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt},
