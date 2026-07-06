@@ -225,16 +225,16 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             with open(cfg_path) as f:
                 config = json.load(f)
 
-    # Gemma3 multimodal models nest language config under "text_config".
-    # Merge: text_config provides language-specific keys; parent config provides architecture/meta.
-    # Only override text_config values with non-None parent values.
-    if "text_config" in config and "hidden_size" not in config:
+    # Multimodal models nest language-specific config under "text_config"
+    # (Gemma3/4, Qwen3.5). Merge: text_config provides language keys;
+    # parent config overrides with architecture/meta fields.
+    if "text_config" in config:
         tc = config["text_config"]
-        merged = dict(tc)  # start from text_config
+        merged = dict(tc)  # start from text_config (has language-specific fields)
         merged["architectures"] = config.get("architectures", [])
         for k, v in config.items():
             if k != "text_config" and v is not None:
-                merged[k] = v  # override only with non-None parent values
+                merged[k] = v  # parent values win (don't clobber with None)
         config = merged
 
     arch = config.get("architectures", ["LlamaForCausalLM"])[0]
@@ -296,6 +296,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
                 "linear_num_key_heads", "linear_key_head_dim",
                 "linear_num_value_heads", "linear_value_head_dim",
                 "linear_conv_kernel_dim", "full_attention_interval",
+                "attn_output_gate",
                 # Gemma4 heterogeneous attention fields
                 "global_head_dim", "global_kv_heads", "num_global_key_value_heads",
                 # DiffusionGemma / MoE fields
@@ -344,6 +345,10 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     model.load_weights(gguf_path if gguf_path else model_dir)
     elapsed = time.perf_counter() - t0
     print(f"  Loaded {len(model.weights)} tensors in {elapsed:.1f}s")
+
+    # Zero out recurrent states before the first sequence.
+    if hasattr(model, "reset_recurrent_states"):
+        model.reset_recurrent_states()
 
     # Allocate KV cache — per-layer for heterogeneous models (e.g. Gemma4)
     import wgpu as wgpu_lib

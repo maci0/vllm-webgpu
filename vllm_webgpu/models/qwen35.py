@@ -81,6 +81,11 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
         # Qwen3.5 uses mrope_interleaved=True.
         self._rope_interleaved: int = 1 if getattr(model_config, "mrope_interleaved", False) else 0
+        # Attention output gate: when True, q_proj.weight has shape [2*q_dim, hidden].
+        # The first half is Q; the second half is a gate applied as silu(gate)*attn_out
+        # before the o_proj. _postprocess_weights splits the weight and stores the gate
+        # half under self_attn.q_gate_proj.weight.
+        self._attn_output_gate: bool = bool(getattr(model_config, "attn_output_gate", False))
 
         # GDN (linear-attention) architecture dimensions from config.
         # Fall back to Qwen3.5-9B defaults if not present.
@@ -171,6 +176,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "scores_buf": mk(NQ * max_ctx * 2),
             "sm_buf":     mk(NQ * max_ctx * 2),
             "attn_out":   mk(T * Q * 2),
+            "q_gate_buf": mk(T * Q * 2),  # attention output gate (silu(gate)*attn_out)
             "o_proj_out": mk(T * H * 2),
             "ffn_normed": mk(T * H * 2),
             "gate_buf":    mk(T * I * 2),
@@ -236,7 +242,13 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         return self.weights.get(w_key[:-7] + ".scales", fallback)
 
     def _postprocess_weights(self) -> None:
-        """Tile q_norm/k_norm from (head_dim,) to (num_heads * head_dim,) for full-attn layers."""
+        """Post-load weight transformations for full-attn layers:
+
+        1. Tile q_norm/k_norm from (head_dim,) to (num_heads * head_dim,).
+        2. When attn_output_gate=True: split q_proj.weight [2*q_dim, hidden] into
+           q_proj.weight [q_dim, hidden] (Q part) and q_gate_proj.weight [q_dim, hidden]
+           (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
+        """
         import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
@@ -266,6 +278,24 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                         f"expected {expected} or ({self.head_dim},)"
                     )
 
+            # Split fused Q+gate weight when attn_output_gate=True.
+            # q_proj.weight has shape [2*q_dim, hidden]: rows 0..q_dim-1 = Q,
+            # rows q_dim..2*q_dim-1 = attention output gate.
+            if self._attn_output_gate:
+                q_dim = self.num_q_heads * self.head_dim
+                q_proj_key = f"{p}.self_attn.q_proj.weight"
+                buf = self.weights.get(q_proj_key)
+                if buf is not None and len(buf.shape) >= 1 and buf.shape[0] == 2 * q_dim:
+                    arr = buf.to_numpy().view(np.float16).reshape(buf.shape)
+                    q_arr = np.ascontiguousarray(arr[:q_dim, :])
+                    gate_arr = np.ascontiguousarray(arr[q_dim:, :])
+                    self.weights[q_proj_key] = WebGPUBuffer.from_numpy(dev, q_arr, usage=rw)
+                    gate_key = f"{p}.self_attn.q_gate_proj.weight"
+                    self.weights[gate_key] = WebGPUBuffer.from_numpy(dev, gate_arr, usage=rw)
+                    logger.debug("Split q_proj gate for layer %d: q=[%d,%d] gate=[%d,%d]",
+                                 i, q_arr.shape[0], q_arr.shape[1],
+                                 gate_arr.shape[0], gate_arr.shape[1])
+
     def _alloc_lin_states(self) -> None:
         """Allocate GPU buffers for persistent GDN recurrent state.
 
@@ -294,11 +324,15 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes,  usage=rw)
             self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes, usage=rw)
 
-            # Reshape conv1d weight [CONV_DIM, KERNEL, 1] -> [CONV_DIM, KERNEL] if needed.
+            # conv1d weight may be 3D; the shader reads it as a flat [CONV_DIM, KERNEL]
+            # array via byte-offset indexing. Both [D, K, 1] (MLX) and [D, 1, K] (HF)
+            # have the same row-major memory layout as [D, K], so no reshape is needed
+            # unless the trailing 1 is in the kernel position ([D, K, 1] only).
             p = f"model.layers.{i}.linear_attn"
             conv_w_key = f"{p}.conv1d.weight"
             w = self.weights.get(conv_w_key)
             if w is not None and len(w.shape) == 3 and w.shape[2] == 1:
+                # [CONV_DIM, KERNEL, 1] → [CONV_DIM, KERNEL]: drop the trailing 1.
                 arr = w.to_numpy().view(np.float16).reshape(w.shape[0], w.shape[1])
                 self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr, usage=rw)
 
@@ -901,6 +935,23 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                 **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi},
                                _gemv_wg(dim, uq))
 
+            # When attn_output_gate=True, q_proj.weight was split at load time.
+            # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].
+            # The gate is applied as silu(gate)*attn_out before o_proj (step below).
+            if self._attn_output_gate:
+                gate_wk = f"{p}.self_attn.q_gate_proj.weight"
+                if self.weights.get(gate_wk) is not None:
+                    uq_gate = _uq(gate_wk)
+                    qi_gate = self._quant_extra(f"{p}.self_attn.q_gate_proj", uq_gate)
+                    self._dispatch("matmul_quant",
+                                   [normed_x, self.weights[gate_wk],
+                                    self._scales_buf(gate_wk, uq_gate, normed_x),
+                                    sc["q_gate_buf"]],
+                                   {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate,
+                                    **({"SPLIT_K": 0} if uq_gate not in (0, 3, 4, 5, 6) else {}),
+                                    **qi_gate},
+                                   _gemv_wg(q_dim, uq_gate))
+
             for src, dst, n_heads, w_key in [
                 (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
                 (sc["k_buf"], sc["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
@@ -941,12 +992,24 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                             "CTX_LEN": ctx_len},
                            (self.num_q_heads, 1, 1))
 
+            # Apply attention output gate if enabled: gated = silu(q_gate_buf) * attn_out.
+            # q_buf is free at this point (written in q_proj, last read in RoPE), so
+            # reuse it as the output buffer for the gated result.
+            if self._attn_output_gate and self.weights.get(f"{p}.self_attn.q_gate_proj.weight") is not None:
+                gate_n = num_tokens * q_dim
+                self._dispatch("gelu_mul",
+                               [sc["q_gate_buf"], sc["attn_out"], sc["q_buf"]],
+                               {"N": gate_n}, ((gate_n // 4 + 255) // 256, 1, 1))
+                o_proj_in = sc["q_buf"]
+            else:
+                o_proj_in = sc["attn_out"]
+
             w_key = f"{p}.self_attn.o_proj.weight"
             uq = _uq(w_key)
             qi_o = self._quant_extra(f"{p}.self_attn.o_proj", uq)
             self._dispatch("matmul_quant",
-                           [sc["attn_out"], self.weights[w_key],
-                            self._scales_buf(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
+                           [o_proj_in, self.weights[w_key],
+                            self._scales_buf(w_key, uq, o_proj_in), sc["o_proj_out"]],
                            {"K": q_dim, "N": hidden, "USE_QUANT": uq,
                             **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi_o},
                            _gemv_wg(hidden, uq))
