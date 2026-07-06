@@ -28,6 +28,13 @@ class BaseWebGPUModel:
         self._active_encoder = None  # set when inside a _batched_dispatch() context
         # Profiling
         self.profiling: bool = False
+        # GPU sampler: pre-allocated buffers for GPU argmax / Gumbel sampling.
+        # Allocated lazily on first call (need vocab_size from subclass).
+        self._gpu_sample_tok: "WebGPUBuffer | None" = None    # [1] u32 next token (STORAGE)
+        self._gpu_sample_noise: "WebGPUBuffer | None" = None  # [vocab] f32 Gumbel noise
+        self._gpu_sample_vocab: int = 0
+        self._gpu_sample_staging = None   # MAP_READ staging buffer for zero-sync readback
+        self._gpu_sample_tok_cpu: int = 0  # cached CPU result after readback
         self._prof_stats: dict[str, list[float]] = defaultdict(list)  # shader -> [ms, ...]
         self._prof_current_label: str = ""  # set per _batched_dispatch block
 
@@ -145,6 +152,80 @@ class BaseWebGPUModel:
         """Return quantization metadata for a weight base key, or empty dict."""
         meta = self.weights.get("__quant_meta__", {})
         return meta.get(base_key, {})
+
+    # ── GPU sampler helpers ───────────────────────────────────────────────────
+
+    def _ensure_gpu_sampler(self, vocab: int) -> None:
+        """Lazily allocate GPU sampler buffers sized for vocab."""
+        if self._gpu_sample_tok is not None and self._gpu_sample_vocab == vocab:
+            return
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+        dev = self.wgpu_device.wgpu_device
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        self._gpu_sample_tok   = WebGPUBuffer.empty(dev, 4, usage=rw)      # 1 × u32
+        self._gpu_sample_noise = WebGPUBuffer.empty(dev, vocab * 4, usage=rw)  # [vocab] f32
+        self._gpu_sample_vocab = vocab
+        # MAP_READ staging buffer: copy argmax result here inside the MAIN command encoder,
+        # then map after the single main sync — eliminates the second GPU sync per token.
+        self._gpu_sample_staging = dev.create_buffer(
+            size=4,
+            usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
+
+    def _copy_sample_to_staging(self) -> None:
+        """Copy the 4-byte argmax result to the MAP_READ staging buffer.
+
+        Called INSIDE _batched_dispatch() so the copy is part of the main command
+        encoder. After the main on_submitted_work_done_sync(), the result is ready
+        to map without a second submit/sync cycle.
+        """
+        if self._gpu_sample_staging is None or self._gpu_sample_tok is None:
+            return
+        if self._active_encoder is not None:
+            self._active_encoder.copy_buffer_to_buffer(
+                self._gpu_sample_tok.buf, 0, self._gpu_sample_staging, 0, 4)
+
+    def _read_sample_tok(self) -> int:
+        """Map and read the staging buffer (no submit/sync — already done by main batch)."""
+        import wgpu as wgpu_lib
+        if self._gpu_sample_staging is None:
+            return 0
+        self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
+        import struct
+        val = struct.unpack('<I', bytes(self._gpu_sample_staging.read_mapped()))[0]
+        self._gpu_sample_staging.unmap()
+        return int(val)
+
+    def gpu_next_token(self, logit_buf: "WebGPUBuffer", vocab: int,
+                       temperature: float = 0.0) -> int:
+        """Sample next token on GPU. Returns token id (int).
+
+        temperature=0  → argmax (greedy, no logit readback).
+        temperature>0  → Gumbel-max sampling (reads only 4 bytes back).
+
+        Either way only 4 bytes are transferred GPU→CPU vs vocab*2 bytes.
+        """
+        self._ensure_gpu_sampler(vocab)
+        dev = self.wgpu_device.wgpu_device
+
+        with self._batched_dispatch(label="sample"):
+            if temperature <= 0.0:
+                # Pure argmax: no logit transformation needed.
+                self._dispatch("argmax_f16",
+                               [logit_buf, self._gpu_sample_tok],
+                               {"N": vocab}, (1, 1, 1))
+            else:
+                # Gumbel-max: update noise buffer with fresh uniform random floats.
+                noise_np = np.random.uniform(0, 1, vocab).astype(np.float32)
+                dev.queue.write_buffer(self._gpu_sample_noise.buf, 0, noise_np.tobytes())
+                inv_t = float(1.0 / temperature)
+                self._dispatch("gumbel_sample",
+                               [logit_buf, self._gpu_sample_noise, self._gpu_sample_tok],
+                               {"N": vocab, "TEMPERATURE": float(temperature), "INV_TEMP": inv_t},
+                               (1, 1, 1))
+
+        # Only 4 bytes GPU→CPU.
+        return int(self._gpu_sample_tok.to_numpy().view(np.uint32)[0])
 
     def _quant_extra(self, base_key: str, uq: int) -> dict:
         """Return additional shader override constants for quantized dispatch."""

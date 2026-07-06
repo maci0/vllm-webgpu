@@ -321,9 +321,23 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                shader_subdir="gemma")
                 result_buf = capped_buf
             else:
-                result_buf = logits_buf  # no softcap for Gemma3
+                result_buf = logits_buf
 
-        return result_buf.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
+            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf(vocab)],
+                           {"N": vocab}, (1, 1, 1))
+            self._copy_sample_to_staging()
+
+        self._last_logit_buf = result_buf
+        self._last_vocab     = vocab
+        tok = self._read_sample_tok()
+        return np.array([[tok]], dtype=np.int32)
+
+    def logit_readback(self) -> "np.ndarray":
+        return self._last_logit_buf.to_numpy().view(np.float16).reshape(1, self._last_vocab).astype(np.float32)
+
+    def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
+        self._ensure_gpu_sampler(vocab)
+        return self._gpu_sample_tok
 
     def _transformer_layer(
         self,

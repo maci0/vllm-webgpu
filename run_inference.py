@@ -403,16 +403,23 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             print(f"  prefill {i+1}/{len(input_ids_list)}", end="\r", flush=True)
     print()
 
-    # Sanity: check logit quality before decode
-    top1 = int(np.argmax(logits[0]))
-    top1_val = float(logits[0][top1])
-    print(f"  Last prefill logit: argmax={top1}, value={top1_val:.2f}, std={logits[0].std():.2f}")
+    # logits is now a (1,1) int32 token array (GPU argmax path) — or full float32.
+    has_gpu_argmax = hasattr(model, 'logit_readback')
+    if has_gpu_argmax:
+        top1 = int(logits[0, 0])
+        # For sanity check only: read full logits once (not in decode hot path)
+        _real = model.logit_readback()
+        top1_val = float(_real[0][top1]); std_val = float(_real[0].std())
+        print(f"  Last prefill logit: argmax={top1}, value={top1_val:.2f}, std={std_val:.2f}")
+    else:
+        top1 = int(np.argmax(logits[0])); top1_val = float(logits[0][top1])
+        print(f"  Last prefill logit: argmax={top1}, value={top1_val:.2f}, std={logits[0].std():.2f}")
 
     # Decode loop
     print(f"\nDecoding (max {max_tokens} tokens)...")
     generated = []
     t_start = time.perf_counter()
-    last_token = np.argmax(logits[0]).item()
+    last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
 
     for step in range(max_tokens):
         if last_token == eos_id:
@@ -435,12 +442,14 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         logits = model.forward(input_arr, positions_arr, meta)
 
         if temperature == 0.0:
-            last_token = int(np.argmax(logits[0]))
+            # GPU argmax inside forward() — 4-byte readback only.
+            last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
         else:
-            scaled = logits[0].astype(np.float64) / temperature
+            # Temperature sampling: read full logits, sample on CPU.
+            full = model.logit_readback() if has_gpu_argmax else logits
+            scaled = full[0].astype(np.float64) / temperature
             scaled -= scaled.max()
-            probs = np.exp(scaled)
-            probs /= probs.sum()
+            probs = np.exp(scaled); probs /= probs.sum()
             last_token = int(np.random.choice(len(probs), p=probs))
 
         if (step + 1) % 5 == 0:

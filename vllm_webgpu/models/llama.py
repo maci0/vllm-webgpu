@@ -255,8 +255,28 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1),
             )
-        # GPU readback after the single submit has completed.
-        return logits_buf.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
+            # GPU argmax + staging copy — all inside the same command encoder.
+            # After the single main sync, map the staging buffer directly (no 2nd sync).
+            self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
+                           {"N": vocab}, (1, 1, 1))
+            self._copy_sample_to_staging()
+
+        # 4-byte readback (argmax index) as the primary return;
+        # also expose full logits lazily for callers that need them.
+        self._last_logit_buf = logits_buf
+        self._last_vocab     = vocab
+        # Map staging buffer (already copied during main sync — no extra submit).
+        tok = self._read_sample_tok()
+        return np.array([[tok]], dtype=np.int32)  # shape (1, 1), 4 bytes
+
+    def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
+        self._ensure_gpu_sampler(vocab)
+        return self._gpu_sample_tok
+
+    def logit_readback(self) -> "np.ndarray":
+        """Full vocab logits GPU→CPU (only for temperature sampling or analysis)."""
+        vocab = self._last_vocab
+        return self._last_logit_buf.to_numpy().view(np.float16).reshape(1, vocab).astype(np.float32)
 
     def _transformer_layer(
         self,

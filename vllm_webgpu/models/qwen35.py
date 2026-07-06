@@ -497,8 +497,22 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            [norm_out, lm_head_w, norm_out, logits_buf],
                            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
+            # GPU argmax inside the same encoder — 4-byte readback.
+            self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
+                           {"N": vocab}, (1, 1, 1))
+            self._copy_sample_to_staging()
 
-        return logits_buf.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
+        self._last_logit_buf = logits_buf
+        self._last_vocab     = vocab
+        tok = self._read_sample_tok()
+        return np.array([[tok]], dtype=np.int32)
+
+    def logit_readback(self) -> "np.ndarray":
+        return self._last_logit_buf.to_numpy().view(np.float16).reshape(1, self._last_vocab).astype(np.float32)
+
+    def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
+        self._ensure_gpu_sampler(vocab)
+        return self._gpu_sample_tok
 
     def _full_attn_layer(
         self,
