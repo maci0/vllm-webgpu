@@ -279,22 +279,23 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                     )
 
             # Split fused Q+gate weight when attn_output_gate=True.
-            # q_proj.weight has shape [2*q_dim, hidden]: rows 0..q_dim-1 = Q,
-            # rows q_dim..2*q_dim-1 = attention output gate.
+            # HF: q_proj(h).view(batch, seq, num_heads, head_dim*2) → chunk(2, dim=-1)
+            #   → first head_dim per head = Q, last head_dim per head = gate
+            # Weight shape [2*q_dim, hidden] stored as [num_heads, 2*head_dim, hidden].
+            # Query rows (interleaved): head_h[:head_dim] = rows [h*2*hd : h*2*hd+hd]
+            # Gate rows (interleaved):  head_h[head_dim:] = rows [h*2*hd+hd : (h+1)*2*hd]
             if self._attn_output_gate:
                 q_dim = self.num_q_heads * self.head_dim
+                hd = self.head_dim
                 q_proj_key = f"{p}.self_attn.q_proj.weight"
                 buf = self.weights.get(q_proj_key)
                 if buf is not None and len(buf.shape) >= 1 and buf.shape[0] == 2 * q_dim:
-                    arr = buf.to_numpy().view(np.float16).reshape(buf.shape)
-                    q_arr = np.ascontiguousarray(arr[:q_dim, :])
-                    gate_arr = np.ascontiguousarray(arr[q_dim:, :])
+                    arr = buf.to_numpy().view(np.float16).reshape(self.num_q_heads, 2 * hd, buf.shape[1])
+                    q_arr = np.ascontiguousarray(arr[:, :hd, :].reshape(q_dim, buf.shape[1]))
+                    gate_arr = np.ascontiguousarray(arr[:, hd:, :].reshape(q_dim, buf.shape[1]))
                     self.weights[q_proj_key] = WebGPUBuffer.from_numpy(dev, q_arr, usage=rw)
                     gate_key = f"{p}.self_attn.q_gate_proj.weight"
                     self.weights[gate_key] = WebGPUBuffer.from_numpy(dev, gate_arr, usage=rw)
-                    logger.debug("Split q_proj gate for layer %d: q=[%d,%d] gate=[%d,%d]",
-                                 i, q_arr.shape[0], q_arr.shape[1],
-                                 gate_arr.shape[0], gate_arr.shape[1])
 
     def _alloc_lin_states(self) -> None:
         """Allocate GPU buffers for persistent GDN recurrent state.
@@ -997,8 +998,9 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             # q_buf is free at this point (written in q_proj, last read in RoPE), so
             # reuse it as the output buffer for the gated result.
             if self._attn_output_gate and self.weights.get(f"{p}.self_attn.q_gate_proj.weight") is not None:
+                # HF: attn_output * sigmoid(gate), not silu(gate)*attn_output.
                 gate_n = num_tokens * q_dim
-                self._dispatch("gelu_mul",
+                self._dispatch("sigmoid_gate",
                                [sc["q_gate_buf"], sc["attn_out"], sc["q_buf"]],
                                {"N": gate_n}, ((gate_n // 4 + 255) // 256, 1, 1))
                 o_proj_in = sc["q_buf"]
