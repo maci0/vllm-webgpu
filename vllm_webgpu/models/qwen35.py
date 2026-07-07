@@ -244,7 +244,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
     def _scales_buf(self, w_key: str, uq: int, fallback: "WebGPUBuffer") -> "WebGPUBuffer":
         """Return the scales buffer for any quant format."""
-        if uq in (3, 4, 5, 6):
+        if uq in (3, 4, 5, 6, 7, 8):
             return self.weights.get(w_key + ".scales", fallback)
         return self.weights.get(w_key[:-7] + ".scales", fallback)
 

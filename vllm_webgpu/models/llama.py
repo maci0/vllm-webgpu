@@ -652,7 +652,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # normed_x is already the pre-normed input (no rms_norm dispatch here).
 
             def _scales(w_key: str, uq: int, fallback) -> "WebGPUBuffer":
-                if uq in (3, 4, 5, 6):
+                if uq in (3, 4, 5, 6, 7, 8):
                     return self.weights.get(w_key + ".scales", fallback)
                 return self.weights.get(w_key[:-7] + ".scales", fallback)
 
