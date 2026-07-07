@@ -32,6 +32,65 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+def _is_greedy(sp) -> bool:
+    """Return True when sampling params request greedy (argmax) decoding."""
+    if sp is None:
+        return True
+    temp = float(getattr(sp, "temperature", 0.0) or 0.0)
+    if temp > 1e-6:
+        return False
+    top_p = float(getattr(sp, "top_p", 1.0) or 1.0)
+    top_k = int(getattr(sp, "top_k", -1) or -1)
+    return top_p >= 1.0 and top_k <= 0
+
+
+def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
+    """Sample one token from a 1-D float32 logit vector using SamplingParams.
+
+    Applies temperature scaling, top-k, and top-p (nucleus) filtering in that
+    order, then draws from the resulting categorical distribution.  Falls back
+    to argmax when sp is None or the effective temperature is zero.
+    """
+    if sp is None or _is_greedy(sp):
+        return int(np.argmax(logits_1d))
+
+    temp = float(getattr(sp, "temperature", 1.0) or 1.0)
+    top_p = float(getattr(sp, "top_p", 1.0) or 1.0)
+    top_k = int(getattr(sp, "top_k", -1) or -1)
+
+    # Temperature scaling with numerically stable softmax.
+    scaled = logits_1d.astype(np.float32) / temp
+    scaled -= scaled.max()
+    probs = np.exp(scaled)
+    probs /= probs.sum()
+
+    # Top-k: zero out all tokens outside the top-k mass.
+    if top_k > 0:
+        k = min(top_k, len(probs))
+        threshold = np.partition(probs, -k)[-k]
+        probs = np.where(probs >= threshold, probs, 0.0)
+        s = probs.sum()
+        if s > 0:
+            probs /= s
+
+    # Top-p (nucleus): keep the smallest set of tokens whose cumulative
+    # probability exceeds top_p.
+    if 0.0 < top_p < 1.0:
+        sorted_idx = np.argsort(probs)[::-1]
+        cumsum = np.cumsum(probs[sorted_idx])
+        # Include the first token that pushes cumsum over top_p.
+        cutoff = max(1, int(np.searchsorted(cumsum, top_p, side="right")) + 1)
+        keep = sorted_idx[:cutoff]
+        mask = np.zeros_like(probs)
+        mask[keep] = 1.0
+        probs = probs * mask
+        s = probs.sum()
+        if s > 0:
+            probs /= s
+
+    return int(np.random.choice(len(probs), p=probs))
+
+
 ARCH_MAP = {
     "LlamaForCausalLM": "llama",
     "MistralForCausalLM": "llama",
@@ -425,6 +484,9 @@ class WebGPUModelRunner:
                 block_tables     = [bt]
                 max_decode_seq_len = T
 
+            if hasattr(self.model, "_greedy_decode"):
+                self.model._greedy_decode = _is_greedy(sp)
+
             last_logits = self.model.forward(
                 np.array(chunk_toks, dtype=np.uint32),
                 np.arange(T, dtype=np.uint32),
@@ -434,9 +496,12 @@ class WebGPUModelRunner:
             if last_logits is None:
                 continue
 
-            # Use the last position's logits — that is the prediction for the
-            # first generated token after this chunk.
-            first_decode_tok = int(last_logits.argmax(axis=-1)[-1]) if last_logits.shape[-1] > 1 else int(last_logits[0, 0])
+            # Use the last position's logits for the first generated token.
+            # Apply sampling when SamplingParams request non-greedy decoding.
+            if last_logits.shape[-1] > 1:
+                first_decode_tok = _sample_logits(last_logits[-1], sp)
+            else:
+                first_decode_tok = int(last_logits[0, 0])
 
             # Compute logprobs for this prefill token if the request asked for them.
             lp_data = None
@@ -475,6 +540,7 @@ class WebGPUModelRunner:
             self._req_state[rid] = {
                 "pos": T, "block_ids": blk_ids,
                 "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
+                "sampling_params": sp,
                 "all_prompt_tokens": tok_ids if T < len(tok_ids) else None,
             }
 
@@ -559,6 +625,10 @@ class WebGPUModelRunner:
                         block_tables      = [np.array(blk_ids, dtype=np.uint32)]
                         max_decode_seq_len = chunk_end
 
+                    sp = state.get("sampling_params")
+                    if hasattr(self.model, "_greedy_decode"):
+                        self.model._greedy_decode = _is_greedy(sp)
+
                     logits = self.model.forward(
                         np.array(chunk_toks, dtype=np.uint32),
                         np.arange(pos, chunk_end, dtype=np.uint32),
@@ -570,9 +640,9 @@ class WebGPUModelRunner:
 
                     self._last_logits = logits
 
-                    # Predict the next token from the last position in this chunk.
+                    # Predict the next token; apply sampling for non-greedy requests.
                     if logits.shape[-1] > 1:
-                        stok = int(logits.argmax(axis=-1)[-1])
+                        stok = _sample_logits(logits[-1], sp)
                     else:
                         stok = int(logits[0, 0])
 
@@ -593,6 +663,7 @@ class WebGPUModelRunner:
                     self._req_state[rid] = {
                         "pos": chunk_end, "block_ids": blk_ids,
                         "last_tok": stok, "num_logprobs": num_logprobs,
+                        "sampling_params": state.get("sampling_params"),
                         "all_prompt_tokens": all_prompt if chunk_end < len(all_prompt) else None,
                     }
                     all_req_ids.append(rid)
@@ -615,6 +686,10 @@ class WebGPUModelRunner:
                     block_tables      = [np.array(blk_ids, dtype=np.uint32)]
                     max_decode_seq_len = pos + 1
 
+                sp = state.get("sampling_params")
+                if hasattr(self.model, "_greedy_decode"):
+                    self.model._greedy_decode = _is_greedy(sp)
+
                 logits = self.model.forward(
                     np.array([tok], dtype=np.uint32),
                     np.array([pos], dtype=np.uint32),
@@ -622,12 +697,12 @@ class WebGPUModelRunner:
                 )
                 self._last_logits = logits
 
-                # GPU argmax path: logits is (1, 1) int32 with the token ID.
-                # Full logit path: logits is (1, vocab) float32 — argmax on CPU.
-                if hasattr(self.model, "logit_readback") and logits.shape[-1] == 1:
+                # Greedy path: model returns (1, 1) int32 with the argmax index.
+                # Non-greedy path: model returns (1, vocab) float32; sample here.
+                if logits.shape[-1] == 1:
                     stok = int(logits[0, 0])
                 else:
-                    stok = int(logits.argmax(axis=-1).flat[0])
+                    stok = _sample_logits(logits[0], sp)
 
                 # Compute logprobs if requested for this request.
                 lp_data = None
@@ -646,6 +721,7 @@ class WebGPUModelRunner:
                 self._req_state[rid] = {
                     "pos": pos + 1, "block_ids": blk_ids,
                     "last_tok": stok, "num_logprobs": num_logprobs,
+                    "sampling_params": state.get("sampling_params"),
                     "all_prompt_tokens": None,
                 }
                 all_req_ids.append(rid)
