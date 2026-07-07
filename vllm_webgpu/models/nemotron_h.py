@@ -253,6 +253,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Load weights with key remapping and Mamba-specific postprocessing."""
         super().load_weights(path)
         self._remap_weights()
+        self._pack_attn_weights()
         self._postprocess_mamba_weights()
         self._init_mamba_states()
         logger.info(
@@ -268,6 +269,68 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         for key, val in self.weights.items():
             remapped[self._remap_weight_key(key)] = val
         self.weights = remapped
+
+    def _pack_attn_weights(self) -> None:
+        """Fuse separate q/k/v projection weights into a single qkv_proj buffer.
+
+        HF NemotronH checkpoints store three tensors per attention layer:
+          {p}.q_proj.weight, {p}.k_proj.weight, {p}.v_proj.weight
+
+        The forward pass dispatches a single fused matmul against
+        {p}.qkv_proj.weight, so the three row-major matrices are concatenated
+        along axis 0 (i.e., their flat byte arrays are concatenated in order
+        Q, K, V).  The originals are deleted after packing.
+        """
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+        dev = self.wgpu_device.wgpu_device
+        rw = (
+            wgpu_lib.BufferUsage.STORAGE
+            | wgpu_lib.BufferUsage.COPY_SRC
+            | wgpu_lib.BufferUsage.COPY_DST
+        )
+
+        for i, lt in enumerate(self._layer_types):
+            if lt != "attention":
+                continue
+            p = f"model.layers.{i}.mixer"
+            q_key = f"{p}.q_proj.weight"
+            k_key = f"{p}.k_proj.weight"
+            v_key = f"{p}.v_proj.weight"
+
+            if q_key not in self.weights:
+                # Already packed or checkpoint uses a different layout.
+                continue
+
+            q_bytes = self.weights[q_key].to_numpy()
+            k_bytes = self.weights[k_key].to_numpy()
+            v_bytes = self.weights[v_key].to_numpy()
+            qkv_bytes = np.concatenate([q_bytes, k_bytes, v_bytes])
+
+            qkv_key = f"{p}.qkv_proj.weight"
+            self.weights[qkv_key] = WebGPUBuffer.from_numpy(
+                dev, np.ascontiguousarray(qkv_bytes), usage=rw
+            )
+
+            # Also pack per-weight scales (GPU quant formats store them
+            # alongside the weight at w_key + ".scales").
+            for suffix in (".scales",):
+                q_s = f"{q_key}{suffix}"
+                k_s = f"{k_key}{suffix}"
+                v_s = f"{v_key}{suffix}"
+                if q_s in self.weights and k_s in self.weights and v_s in self.weights:
+                    packed = np.concatenate([
+                        self.weights[q_s].to_numpy(),
+                        self.weights[k_s].to_numpy(),
+                        self.weights[v_s].to_numpy(),
+                    ])
+                    self.weights[f"{qkv_key}{suffix}"] = WebGPUBuffer.from_numpy(
+                        dev, np.ascontiguousarray(packed), usage=rw
+                    )
+                    del self.weights[q_s], self.weights[k_s], self.weights[v_s]
+
+            del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 
     def _postprocess_mamba_weights(self) -> None:
         """Convert A_log -> A and ensure D / dt_bias are stored as f32.
