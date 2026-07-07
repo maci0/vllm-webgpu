@@ -1,10 +1,4 @@
-"""Standalone inference script for vllm-webgpu. No vLLM required.
-
-Usage:
-    python run_inference.py --model <path_or_hf_id> --prompt "Hello" --max_tokens 50
-"""
-import argparse
-import json
+"""Standalone inference script for vllm-webgpu. No vLLM required."""
 import math
 import os
 import sys
@@ -13,189 +7,54 @@ from pathlib import Path
 
 import numpy as np
 
-# Add repo to path
 sys.path.insert(0, str(Path(__file__).parent))
 
 
-def load_tokenizer(model_dir: str):
-    """Load HuggingFace tokenizer from a model directory."""
-    from tokenizers import Tokenizer
-    tok_path = Path(model_dir) / "tokenizer.json"
-    if not tok_path.exists():
-        raise FileNotFoundError(f"tokenizer.json not found in {model_dir}")
-    tok = Tokenizer.from_file(str(tok_path))
-
-    # Load tokenizer config for special tokens
-    cfg_path = Path(model_dir) / "tokenizer_config.json"
-    eos_id = None
-    bos_id = None
-    chat_template = None
-    if cfg_path.exists():
-        with open(cfg_path) as f:
-            cfg = json.load(f)
-        eos_token = cfg.get("eos_token")
-        bos_token = cfg.get("bos_token")
-        chat_template = cfg.get("chat_template")
-        if eos_token:
-            enc = tok.encode(eos_token, add_special_tokens=False)
-            if enc.ids:
-                eos_id = enc.ids[0]
-        if bos_token:
-            enc = tok.encode(bos_token, add_special_tokens=False)
-            if enc.ids:
-                bos_id = enc.ids[0]
-
-    return tok, eos_id, bos_id, chat_template
-
-
-def build_prompt(text: str, chat_template: str | None, model_dir: str) -> str:
-    """Wrap text in chat template if available."""
-    if chat_template is None:
-        return text
-
-    # Try applying the Jinja template via transformers if available
-    try:
-        from jinja2 import Template
-        messages = [{"role": "user", "content": text}]
-        tmpl = Template(chat_template)
-        return tmpl.render(
-            messages=messages,
-            add_generation_prompt=True,
-            bos_token="",
-            eos_token="",
-        )
-    except ImportError:
-        pass
-
-    # Fallback: look for a chat_template.jinja file
-    jinja_path = Path(model_dir) / "chat_template.jinja"
-    if jinja_path.exists():
-        try:
-            from jinja2 import Template
-            tmpl = Template(jinja_path.read_text())
-            messages = [{"role": "user", "content": text}]
-            return tmpl.render(messages=messages, add_generation_prompt=True)
-        except ImportError:
-            pass
-
-    return text
-
-
 def resolve_model_dir(model_id: str) -> str:
-    """Resolve HuggingFace model ID or local path to actual directory."""
+    """Resolve HF model ID or local path to a local directory."""
     p = Path(model_id)
     if p.exists():
         return str(p)
-
-    # Try HuggingFace cache
-    hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
-    safe_id = model_id.replace("/", "--")
-    model_cache = hf_cache / f"models--{safe_id}"
-    if model_cache.exists():
-        snapshots = list((model_cache / "snapshots").iterdir())
-        if snapshots:
-            return str(sorted(snapshots)[-1])
-
-    raise FileNotFoundError(
-        f"Model not found: {model_id}. "
-        "Pass a local directory or a model that is already cached in ~/.cache/huggingface/hub"
-    )
-
-
-class FakeAttnMetadata:
-    """Minimal attn_metadata compatible with LlamaWebGPUModel._transformer_layer."""
-    def __init__(self, ctx_len: int, block_size: int = 16):
-        num_blocks = math.ceil(ctx_len / block_size) + 1
-        self.slot_mapping = [0]  # decode: one token, slot 0
-        self.block_tables = [np.zeros(num_blocks, dtype=np.uint32)]
-        self.max_decode_seq_len = ctx_len
+    from huggingface_hub import snapshot_download
+    try:
+        return snapshot_download(model_id, local_files_only=True)
+    except Exception:
+        return snapshot_download(model_id)
 
 
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0):
     print(f"\nLoading model from: {model_dir}")
 
-    model_path_obj = Path(model_dir)
-    if model_path_obj.suffix == ".gguf" or list(Path(model_dir).glob("*.gguf") if model_path_obj.is_dir() else []):
+    if Path(model_dir).suffix == ".gguf":
         raise ValueError(
-            "GGUF format is not supported by this plugin.\n"
-            "Use the vllm-gguf plugin instead, or load a safetensors / MLX model."
+            "GGUF format is not supported by this plugin. "
+            "Use the vllm-gguf plugin instead."
         )
 
-    cfg_path = Path(model_dir) / "config.json"
-    if not cfg_path.exists():
-        raise FileNotFoundError(f"No config.json in {model_dir}. "
-                                f"GGUF is not supported — use the vllm-gguf plugin.")
-    with open(cfg_path) as f:
-        config = json.load(f)
+    # AutoConfig handles text_config merging for multimodal models automatically.
+    from transformers import AutoConfig, AutoTokenizer
+    cfg = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
 
-    # Multimodal models nest language-specific config under "text_config"
-    # (Gemma3/4, Qwen3.5). Merge: text_config provides language keys;
-    # parent config overrides with architecture/meta fields.
-    if "text_config" in config:
-        tc = config["text_config"]
-        merged = dict(tc)  # start from text_config (has language-specific fields)
-        merged["architectures"] = config.get("architectures", [])
-        for k, v in config.items():
-            if k != "text_config" and v is not None:
-                merged[k] = v  # parent values win (don't clobber with None)
-        config = merged
-
-    arch = config.get("architectures", ["LlamaForCausalLM"])[0]
+    arch = (cfg.architectures or ["LlamaForCausalLM"])[0]
     print(f"Architecture: {arch}")
-    print(f"  hidden_size={config['hidden_size']}, layers={config['num_hidden_layers']}, "
-          f"heads={config['num_attention_heads']}, kv_heads={config['num_key_value_heads']}")
+    print(f"  hidden={cfg.hidden_size}, layers={cfg.num_hidden_layers}, "
+          f"heads={cfg.num_attention_heads}, kv_heads={cfg.num_key_value_heads}")
+
+    # AutoTokenizer handles chat templates, special tokens, and all tokenizer variants.
     print("\nLoading tokenizer...")
-    tok, eos_id, bos_id, chat_template = load_tokenizer(model_dir)
-    full_prompt = build_prompt(prompt, chat_template, model_dir)
-    print(f"Prompt (after template): {repr(full_prompt[:120])}")
-
-    enc = tok.encode(full_prompt)
-    input_ids_list = enc.ids
-    if bos_id is not None and (not input_ids_list or input_ids_list[0] != bos_id):
-        input_ids_list = [bos_id] + input_ids_list
+    tok = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+    messages = [{"role": "user", "content": prompt}]
+    try:
+        result = tok.apply_chat_template(
+            messages, add_generation_prompt=True, tokenize=True)
+        # transformers may return a BatchEncoding (dict-like) or a plain list.
+        input_ids_list = (result["input_ids"] if hasattr(result, "__getitem__")
+                          and not isinstance(result, list) else result)
+    except Exception:
+        input_ids_list = tok.encode(prompt)
+    eos_id = tok.eos_token_id
     print(f"Input tokens: {len(input_ids_list)}")
-
-    # Build config object
-    class ModelConfig:
-        pass
-    cfg = ModelConfig()
-    cfg.num_hidden_layers       = config["num_hidden_layers"]
-    cfg.num_attention_heads     = config["num_attention_heads"]
-    cfg.num_key_value_heads     = config["num_key_value_heads"]
-    cfg.hidden_size             = config["hidden_size"]
-    cfg.intermediate_size       = config["intermediate_size"]
-    cfg.vocab_size              = config["vocab_size"]
-    cfg.max_position_embeddings = config.get("max_position_embeddings", 4096)
-    # rope_theta: may be top-level or nested in rope_parameters (Qwen3.5 style)
-    rope_params = config.get("rope_parameters", {})
-    cfg.rope_theta = config.get("rope_theta") or rope_params.get("rope_theta", 10000.0)
-    # Some models (Gemma4, Qwen3 variants) specify head_dim explicitly
-    cfg.head_dim                = config.get("head_dim", cfg.hidden_size // cfg.num_attention_heads)
-    cfg.architectures           = config["architectures"]
-    # Pass per-layer attention params for heterogeneous models (Gemma4).
-    if "_layer_attention_params" in config:
-        cfg._layer_attention_params = config["_layer_attention_params"]
-    # partial_rotary_factor and mrope_interleaved: from top-level or rope_parameters
-    prf = config.get("partial_rotary_factor") or rope_params.get("partial_rotary_factor", None)
-    if prf is not None:
-        cfg.partial_rotary_factor = float(prf)
-    mri = config.get("mrope_interleaved") or rope_params.get("mrope_interleaved", None)
-    if mri is not None:
-        cfg.mrope_interleaved = bool(mri)
-    # Pass other optional model-specific fields (including Qwen3.5 GDN dims, DiffusionGemma MoE)
-    for key in ("final_logit_softcapping", "ple_layer_indices", "query_pre_attn_scalar",
-                "tie_word_embeddings", "layer_types",
-                "linear_num_key_heads", "linear_key_head_dim",
-                "linear_num_value_heads", "linear_value_head_dim",
-                "linear_conv_kernel_dim", "full_attention_interval",
-                "attn_output_gate",
-                # Gemma4 heterogeneous attention fields
-                "global_head_dim", "global_kv_heads", "num_global_key_value_heads",
-                # DiffusionGemma / MoE fields
-                "num_experts", "top_k_experts", "moe_intermediate_size", "canvas_length",
-                "use_bidirectional_attention", "sliding_window"):
-        if key in config:
-            setattr(cfg, key, config[key])
+    print(f"Prompt (after template): {repr(tok.decode(input_ids_list)[:120])}")
 
     # GPU device
     print("\nInitializing WebGPU device...")
@@ -213,21 +72,32 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
     from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
     from vllm_webgpu.models.diffusion_gemma import DiffusionGemmaWebGPUModel
+    try:
+        from vllm_webgpu.models.mixtral import MixtralWebGPUModel
+        _HAS_MIXTRAL = True
+    except ImportError:
+        _HAS_MIXTRAL = False
+
     ARCH_MAP = {
-        "LlamaForCausalLM": LlamaWebGPUModel,
-        "MistralForCausalLM": LlamaWebGPUModel,
-        "Qwen2ForCausalLM": LlamaWebGPUModel,
-        "Qwen3ForCausalLM": LlamaWebGPUModel,
-        "Qwen3_5ForConditionalGeneration": Qwen35WebGPUModel,
-        "Gemma3ForCausalLM": Gemma4WebGPUModel,
-        "Gemma3ForConditionalGeneration": Gemma4WebGPUModel,
-        "Gemma4ForCausalLM": Gemma4WebGPUModel,
-        "Gemma4UnifiedForConditionalGeneration": Gemma4WebGPUModel,
-        "DiffusionGemmaForBlockDiffusion": DiffusionGemmaWebGPUModel,
+        "LlamaForCausalLM":                      LlamaWebGPUModel,
+        "Qwen2ForCausalLM":                       LlamaWebGPUModel,
+        "Qwen3ForCausalLM":                       LlamaWebGPUModel,
+        "Qwen3_5ForConditionalGeneration":         Qwen35WebGPUModel,
+        "Gemma3ForCausalLM":                      Gemma4WebGPUModel,
+        "Gemma3ForConditionalGeneration":          Gemma4WebGPUModel,
+        "Gemma4ForCausalLM":                      Gemma4WebGPUModel,
+        "Gemma4UnifiedForConditionalGeneration":   Gemma4WebGPUModel,
+        "Gemma4ForConditionalGeneration":          Gemma4WebGPUModel,
+        "DiffusionGemmaForBlockDiffusion":         DiffusionGemmaWebGPUModel,
     }
+    if _HAS_MIXTRAL:
+        ARCH_MAP["MistralForCausalLM"]  = MixtralWebGPUModel
+        ARCH_MAP["MixtralForCausalLM"]  = MixtralWebGPUModel
+
     ModelClass = ARCH_MAP.get(arch)
     if ModelClass is None:
-        raise NotImplementedError(f"Architecture {arch!r} not supported. Supported: {sorted(ARCH_MAP)}")
+        raise NotImplementedError(
+            f"Architecture {arch!r} not supported. Supported: {sorted(ARCH_MAP)}")
 
     model = ModelClass(cfg, device, pipeline_cache)
 
@@ -235,53 +105,50 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nLoading weights (this may take a while)...")
     t0 = time.perf_counter()
     model.load_weights(model_dir)
-    elapsed = time.perf_counter() - t0
-    print(f"  Loaded {len(model.weights)} tensors in {elapsed:.1f}s")
+    print(f"  Loaded {len(model.weights)} tensors in {time.perf_counter() - t0:.1f}s")
 
-    # Zero out recurrent states before the first sequence.
     if hasattr(model, "reset_recurrent_states"):
         model.reset_recurrent_states()
 
-    # Allocate KV cache — per-layer for heterogeneous models (e.g. Gemma4)
+    # KV cache
     import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.config import get_config
 
     block_size = get_config().block_size
-    # Cap at 65535 (WebGPU attn_score dispatch limit per dimension).
-    # For ctx > 65535 flash_attn_decode is used automatically (no dispatch limit there).
     max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
-    num_blocks = min(math.ceil(max_ctx / block_size) + 4, 4096)  # pre-alloc cap
-    default_kv_heads = cfg.num_key_value_heads
-    default_head_dim = cfg.head_dim
+    num_blocks = min(math.ceil(max_ctx / block_size) + 4, 4096)
     rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
-    # Use per-layer params if model exposes them (Gemma4 heterogeneous attention)
     layer_params = getattr(model, "_lp", None)
     if layer_params:
         print(f"\nAllocating per-layer KV cache ({cfg.num_hidden_layers} layers, mixed dims)")
         for lp in layer_params:
             kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2
-            k = WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw)
-            v = WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw)
-            model.kv_pool.append((k, v))
+            model.kv_pool.append((
+                WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
+                WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
+            ))
     else:
-        print(f"\nAllocating KV cache: {num_blocks} blocks × {block_size} × {default_kv_heads} heads × {default_head_dim} dim")
-        for layer in range(cfg.num_hidden_layers):
-            kv_bytes = num_blocks * block_size * default_kv_heads * default_head_dim * 2
-            k = WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw)
-            v = WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw)
-            model.kv_pool.append((k, v))
+        kv_h = cfg.num_key_value_heads
+        hd   = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
+        print(f"\nAllocating KV cache: {num_blocks} blocks × {block_size} × {kv_h} heads × {hd} dim")
+        kv_bytes = num_blocks * block_size * kv_h * hd * 2
+        for _ in range(cfg.num_hidden_layers):
+            model.kv_pool.append((
+                WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
+                WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
+            ))
 
-    # --- Prefill: batch all prompt tokens in one forward() call ---
+    # Prefill
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
     T = len(input_ids_list)
     block_table = np.zeros(num_blocks, dtype=np.uint32)
     slots = []
     for i in range(T):
-        block_idx = i // block_size
-        block_table[block_idx] = block_idx
-        slots.append(block_idx * block_size + (i % block_size))
+        bi = i // block_size
+        block_table[bi] = bi
+        slots.append(bi * block_size + (i % block_size))
 
     class BatchMeta:
         slot_mapping      = slots
@@ -293,28 +160,25 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         np.arange(T, dtype=np.uint32),
         BatchMeta(),
     )
-    ctx_len = T
-    print(f"  prefill {T}/{T}")
 
-    # logits is now a (1,1) int32 token array (GPU argmax path) — or full float32.
-    has_gpu_argmax = hasattr(model, 'logit_readback')
+    has_gpu_argmax = hasattr(model, "logit_readback")
     if has_gpu_argmax:
         top1 = int(logits[0, 0])
-        # For sanity check only: read full logits once (not in decode hot path)
         _real = model.logit_readback()
-        top1_val = float(_real[0][top1]); std_val = float(_real[0].std())
-        print(f"  Last prefill logit: argmax={top1}, value={top1_val:.2f}, std={std_val:.2f}")
+        print(f"  Last prefill logit: argmax={top1}, value={float(_real[0][top1]):.2f}, "
+              f"std={float(_real[0].std()):.2f}")
     else:
-        top1 = int(np.argmax(logits[0])); top1_val = float(logits[0][top1])
-        print(f"  Last prefill logit: argmax={top1}, value={top1_val:.2f}, std={logits[0].std():.2f}")
+        top1 = int(np.argmax(logits[0]))
+        print(f"  Last prefill logit: argmax={top1}, value={float(logits[0][top1]):.2f}, "
+              f"std={float(logits[0].std()):.2f}")
 
-    # Decode loop
+    # Decode
     print(f"\nDecoding (max {max_tokens} tokens)...")
 
     class Meta:
         def __init__(self, slot, blk_table, ctx):
-            self.slot_mapping = [slot]
-            self.block_tables = [blk_table]
+            self.slot_mapping      = [slot]
+            self.block_tables      = [blk_table]
             self.max_decode_seq_len = ctx
 
     generated = []
@@ -328,57 +192,46 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         generated.append(last_token)
 
         slot = len(input_ids_list) + step
-        block_idx = slot // block_size
-        if block_idx >= num_blocks:
+        bi   = slot // block_size
+        if bi >= num_blocks:
             print(f"  [KV cache full at step {step}]")
             break
-        block_table[block_idx] = block_idx
-        ctx_len_now = len(input_ids_list) + step + 1
+        block_table[bi] = bi
 
-        meta = Meta(slot, block_table.copy(), ctx_len_now)
-        input_arr = np.array([last_token], dtype=np.uint32)
-        positions_arr = np.array([slot], dtype=np.uint32)
-
-        logits = model.forward(input_arr, positions_arr, meta)
+        meta   = Meta(slot, block_table.copy(), len(input_ids_list) + step + 1)
+        logits = model.forward(
+            np.array([last_token], dtype=np.uint32),
+            np.array([slot], dtype=np.uint32),
+            meta,
+        )
 
         if temperature == 0.0:
-            # GPU argmax inside forward() — 4-byte readback only.
             last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
         else:
-            # Temperature + repetition penalty + top-p (nucleus) sampling.
             full = model.logit_readback() if has_gpu_argmax else logits
-            raw_logits = full[0].astype(np.float64)
-            # Repetition penalty: divide logits of recently generated tokens by 1.3
-            rep_penalty = 1.3
-            seen = set(generated[-64:])  # last 64 tokens
-            for tid in seen:
-                if 0 <= tid < len(raw_logits):
-                    if raw_logits[tid] > 0:
-                        raw_logits[tid] /= rep_penalty
-                    else:
-                        raw_logits[tid] *= rep_penalty
-            scaled = raw_logits / temperature
-            scaled -= scaled.max()
-            probs = np.exp(scaled); probs /= probs.sum()
-            # Top-p nucleus filtering
-            top_p = 0.9
-            sorted_idx = np.argsort(probs)[::-1]
-            cum_probs = np.cumsum(probs[sorted_idx])
-            cutoff = np.searchsorted(cum_probs, top_p) + 1
-            keep = sorted_idx[:cutoff]
-            masked = np.zeros_like(probs); masked[keep] = probs[keep]
+            raw  = full[0].astype(np.float64)
+            rep  = 1.3
+            for tid in set(generated[-64:]):
+                if 0 <= tid < len(raw):
+                    raw[tid] = raw[tid] / rep if raw[tid] > 0 else raw[tid] * rep
+            raw  -= raw.max()
+            probs = np.exp(raw / temperature)
+            probs /= probs.sum()
+            idx   = np.argsort(probs)[::-1]
+            cum   = np.cumsum(probs[idx])
+            keep  = idx[:np.searchsorted(cum, 0.9) + 1]
+            masked = np.zeros_like(probs)
+            masked[keep] = probs[keep]
             masked /= masked.sum()
             last_token = int(np.random.choice(len(masked), p=masked))
 
         if (step + 1) % 5 == 0:
-            partial = tok.decode(generated)
-            print(f"  [{step+1} tokens]: {repr(partial[-60:])}", flush=True)
+            print(f"  [{step+1} tokens]: {repr(tok.decode(generated)[-60:])}", flush=True)
 
-    t_end = time.perf_counter()
-    n_tok = len(generated)
-    tok_per_sec = n_tok / max(t_end - t_start, 0.001)
+    n_tok       = len(generated)
+    tok_per_sec = n_tok / max(time.perf_counter() - t_start, 0.001)
+    output_text = tok.decode(generated, skip_special_tokens=True)
 
-    output_text = tok.decode(generated)
     print(f"\n{'='*60}")
     print(f"Prompt: {repr(prompt[:80])}")
     print(f"Output: {output_text}")
@@ -388,19 +241,17 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
 
 if __name__ == "__main__":
+    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="Model path or HuggingFace ID")
-    parser.add_argument("--prompt", default="What is 2+2?", help="Input prompt")
-    parser.add_argument("--max_tokens", type=int, default=64)
-    parser.add_argument("--temperature", type=float, default=0.0, help="0=greedy")
-    parser.add_argument("--gdn_bf16", action="store_true", default=False,
-                        help="Experimental: store Qwen3.5 GDN projection weights as bf16 "
-                             "(same exponent range as f32, avoids f16 clipping)")
+    parser.add_argument("--model",       required=True)
+    parser.add_argument("--prompt",      default="What is 2+2?")
+    parser.add_argument("--max_tokens",  type=int,   default=64)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--gdn_bf16",    action="store_true",
+                        help="Experimental: bf16 GDN weights for Qwen3.5 (safetensors BF16 only)")
     args = parser.parse_args()
 
-    # Set GDN_BF16 before model loading so weight_loader.py picks it up at import time.
     if args.gdn_bf16:
         os.environ["GDN_BF16"] = "1"
 
-    model_dir = resolve_model_dir(args.model)
-    run(model_dir, args.prompt, args.max_tokens, args.temperature)
+    run(resolve_model_dir(args.model), args.prompt, args.max_tokens, args.temperature)
