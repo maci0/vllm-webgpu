@@ -139,6 +139,7 @@ KV cache allocation uses `min(max_position_embeddings, 65535)` as the slot count
 | Block table cap | 512 blocks per sequence, set at init time |
 | No bfloat16 | WebGPU lacks bfloat16; Gemma models trained in bf16 see reduced output quality |
 | Grammar/structured output | `sample_tokens()` returns the cached greedy token unchanged |
+| Multi-modal inputs | Images, audio, and video are not implemented. Conditional-generation architectures (`Gemma3ForConditionalGeneration`, `Gemma4UnifiedForConditionalGeneration`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`) are registered for text-only use. Passing mm_inputs raises `NotImplementedError`. Use the `CausalLM` variant instead. |
 
 ---
 

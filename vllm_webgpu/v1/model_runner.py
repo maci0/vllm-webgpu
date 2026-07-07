@@ -374,6 +374,21 @@ class WebGPUModelRunner:
             if not tok_ids:
                 continue
 
+            # Multi-modal inputs (images, audio, video) are not implemented.
+            # Conditional-generation architectures (Gemma3ForConditionalGeneration,
+            # Gemma4UnifiedForConditionalGeneration, Qwen3_5ForConditionalGeneration,
+            # etc.) are listed in ARCH_MAP only for text-only inference. If a request
+            # carries mm_inputs, the image would be silently ignored and the model
+            # would produce text as if no image was provided. Raise early instead.
+            mm = getattr(req, "mm_inputs", None) or getattr(req, "multi_modal_inputs", None)
+            if mm:
+                raise NotImplementedError(
+                    f"req {rid}: multi-modal inputs (images/audio/video) are not supported "
+                    f"by the WebGPU backend. The conditional-generation architecture is "
+                    f"registered for text-only inference only. Use the CausalLM variant "
+                    f"of the model (e.g. Gemma3ForCausalLM) or wait for multi-modal support."
+                )
+
             # Extract per-request logprob counts from SamplingParams.
             sp = getattr(req, "sampling_params", None)
             num_logprobs = getattr(sp, "num_logprobs", None) if sp is not None else None
