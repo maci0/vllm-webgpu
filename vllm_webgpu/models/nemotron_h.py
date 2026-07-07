@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm_webgpu.models.base import BaseWebGPUModel
+from vllm_webgpu.models.llama import _gemv_wg
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -14,13 +15,6 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 logger = logging.getLogger(__name__)
-
-
-def _gemv_wg(N: int, uq: int) -> tuple:
-    """Workgroup count for matmul_quant dispatch."""
-    if uq in (0, 3, 4, 5, 6, 7, 8):
-        return (N, 1, 1)
-    return ((N + 255) // 256, 1, 1)
 
 
 class NemotronHWebGPUModel(BaseWebGPUModel):
