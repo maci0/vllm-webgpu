@@ -185,7 +185,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
 
             for i in range(self.num_layers):
-                x_buf = self._transformer_layer(
+                x_buf = self._decoder_layer(
                     i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
             self._dispatch("rms_norm_f32in",
@@ -214,9 +214,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         return result.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
 
-    # ── Override: use decoder prefix for all lookups ─────────────────────────
+    # ── Decoder layer (intentionally different signature from parent _transformer_layer) ──
+    # Parent Gemma4WebGPUModel._transformer_layer takes normed_x and returns (WebGPUBuffer, WebGPUBuffer).
+    # This class uses a fully overridden forward(), so the parent forward() is never called here.
+    # Named _decoder_layer to avoid the implicit contract violation.
 
-    def _transformer_layer(
+    def _decoder_layer(
         self,
         layer_idx: int,
         x_buf: "WebGPUBuffer",
