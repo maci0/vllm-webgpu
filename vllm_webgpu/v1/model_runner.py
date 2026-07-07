@@ -102,6 +102,7 @@ ARCH_MAP = {
     "Qwen3_5MoeForConditionalGeneration": "qwen35",  # MoE variant; FFN routing on GPU via topk_sort
     "DiffusionGemmaForBlockDiffusion": "diffusion_gemma",
     "GptOssForCausalLM": "gpt_oss",
+    "NemotronHForCausalLM": "nemotron_h",
 }
 
 
@@ -125,6 +126,9 @@ def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache:
     if family == "gpt_oss":
         from vllm_webgpu.models.gpt_oss import GptOssWebGPUModel
         return GptOssWebGPUModel(model_config, wgpu_device, pipeline_cache)
+    if family == "nemotron_h":
+        from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel
+        return NemotronHWebGPUModel(model_config, wgpu_device, pipeline_cache)
     raise NotImplementedError(
         f"Architecture {arch!r} is not supported. "
         f"Supported: {sorted(ARCH_MAP)}"

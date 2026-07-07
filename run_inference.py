@@ -72,6 +72,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
     from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
     from vllm_webgpu.models.diffusion_gemma import DiffusionGemmaWebGPUModel
+    from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel
     try:
         from vllm_webgpu.models.mixtral import MixtralWebGPUModel
         from vllm_webgpu.models.gpt_oss import GptOssWebGPUModel
@@ -90,6 +91,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         "Gemma4UnifiedForConditionalGeneration":   Gemma4WebGPUModel,
         "Gemma4ForConditionalGeneration":          Gemma4WebGPUModel,
         "DiffusionGemmaForBlockDiffusion":         DiffusionGemmaWebGPUModel,
+        "NemotronHForCausalLM":                    NemotronHWebGPUModel,
     }
     if _HAS_MIXTRAL:
         ARCH_MAP["MistralForCausalLM"]  = MixtralWebGPUModel
