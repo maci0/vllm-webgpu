@@ -1088,7 +1088,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         gelu_n = num_tokens * inter
 
         _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_h = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        _rms_h = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm}
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         with self._batched_dispatch():
