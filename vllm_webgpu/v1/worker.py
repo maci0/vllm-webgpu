@@ -79,7 +79,7 @@ class WebGPUWorker(WorkerBase):
         self.wgpu_device: "WebGPUDevice | None" = None
 
     def init_device(self) -> None:
-        from vllm_webgpu.v1.model_runner import WebGPUModelRunner  # noqa: F401
+        from vllm_webgpu.v1.model_runner import WebGPUModelRunner
 
         self.wgpu_device = WebGPUDevice.initialize(self.webgpu_config.power_preference)
 
@@ -138,7 +138,7 @@ class WebGPUWorker(WorkerBase):
         return self.model_runner.get_cache_block_size_bytes()
 
     def get_supported_tasks(self) -> tuple[str, ...]:
-        return self.model_runner.supported_worker_tasks()
+        return self.model_runner.get_supported_tasks()
 
     def add_lora(self, lora_request: Any) -> bool:
         logger.warning("LoRA not supported on WebGPU")

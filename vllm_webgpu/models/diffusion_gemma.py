@@ -37,6 +37,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
       - Self-conditioning (self_conditioning.* weights)
     """
 
+    # forward() returns full float32 logits [num_tokens, vocab], not a (1,1) token ID.
+    logit_returns_token_id: bool = False
+
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache") -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
@@ -79,7 +82,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         (num_heads * head_dim,) rather than the per-head shape (head_dim,) stored
         in the checkpoint.
         """
-        import numpy as np
         import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
@@ -114,8 +116,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             p = self._pk(i)
             ls_buf = self.weights.get(f"{p}.layer_scalar")
             if ls_buf is not None:
-                import numpy as _np
-                self._layer_scales.append(float(ls_buf.to_numpy().view(_np.float16).ravel()[0]))
+                self._layer_scales.append(float(ls_buf.to_numpy().view(np.float16).ravel()[0]))
             else:
                 self._layer_scales.append(1.0)
 
@@ -144,8 +145,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     def forward(self, input_ids, positions, attn_metadata) -> "np.ndarray":
         """Forward pass using model.decoder.* weight keys."""
-        import numpy as np
-
         dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
         hidden = self.hidden_size

@@ -10,17 +10,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 
 
-def resolve_model_dir(model_id: str) -> str:
-    """Resolve HF model ID or local path to a local directory."""
-    p = Path(model_id)
-    if p.exists():
-        return str(p)
-    from huggingface_hub import snapshot_download
-    try:
-        return snapshot_download(model_id, local_files_only=True)
-    except Exception:
-        return snapshot_download(model_id)
-
 
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0):
     print(f"\nLoading model from: {model_dir}")
@@ -165,7 +154,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         BatchMeta(),
     )
 
-    has_gpu_argmax = hasattr(model, "logit_readback")
+    has_gpu_argmax = getattr(model, "logit_returns_token_id", False)
     if has_gpu_argmax:
         top1 = int(logits[0, 0])
         _real = model.logit_readback()
@@ -258,4 +247,9 @@ if __name__ == "__main__":
     if args.gdn_bf16:
         os.environ["GDN_BF16"] = "1"
 
-    run(resolve_model_dir(args.model), args.prompt, args.max_tokens, args.temperature)
+    from vllm_webgpu.models.base import BaseWebGPUModel
+    model_path = BaseWebGPUModel._resolve_model_path(args.model)
+    if not Path(model_path).exists():
+        from huggingface_hub import snapshot_download
+        model_path = snapshot_download(args.model)
+    run(model_path, args.prompt, args.max_tokens, args.temperature)

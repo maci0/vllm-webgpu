@@ -364,8 +364,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 raw_bytes = self.weights[cw_key].to_numpy()  # u8
                 expected = self.conv_dim * self.conv_kernel
                 arr = raw_bytes.view(np.float16).ravel()
-                if len(arr) > expected:
-                    arr = arr[:expected]
+                assert len(arr) == expected, (
+                    f"conv1d.weight layer {i}: got {len(arr)} elements, expected {expected}"
+                )
                 if len(arr) == expected:
                     self.weights[cw_key] = WebGPUBuffer.from_numpy(
                         dev, np.ascontiguousarray(arr), usage=rw

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from vllm_webgpu.utils import _OVERHEAD_BYTES
@@ -18,7 +19,7 @@ class WebGPUCachePlanner:
     def from_runner(cls, wgpu_device: object, model_runner: object) -> "WebGPUCachePlanner":
         """Construct a planner from a device and model_runner without a full worker."""
         inst = object.__new__(cls)
-        inst._worker = type("_W", (), {"wgpu_device": wgpu_device, "model_runner": model_runner})()
+        inst._worker = SimpleNamespace(wgpu_device=wgpu_device, model_runner=model_runner)
         return inst
 
     def get_model_memory_usage(self) -> int:

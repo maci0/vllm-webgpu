@@ -17,6 +17,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Shader names + expected binding count for RoPE shaders that need a dummy
+# inv_freq_buf appended when USE_FREQ_BUF=0. Defined at module level to avoid
+# allocating a new set on every _dispatch() call.
+_ROPE_SHADERS_BY_LEN = {
+    ("rope", 3), ("fused_per_head_norm_rope", 4), ("fused_qk_norm_rope", 7),
+}
+
 
 def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> np.ndarray:
     """Compute YaRN-scaled inverse frequencies for RoPE.
@@ -238,8 +245,7 @@ class BaseWebGPUModel:
         if self._gpu_sample_staging is None:
             return 0
         self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
-        import struct
-        val = struct.unpack('<I', bytes(self._gpu_sample_staging.read_mapped()))[0]
+        val = int(np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32)[0])
         self._gpu_sample_staging.unmap()
         return int(val)
 
@@ -328,10 +334,7 @@ class BaseWebGPUModel:
         #   rope:                    3 bindings + dummy at slot 3
         #   fused_per_head_norm_rope: 4 bindings + dummy at slot 4
         #   fused_qk_norm_rope:      7 bindings + dummy at slot 7
-        _rope_shaders_by_len = {
-            ("rope", 3), ("fused_per_head_norm_rope", 4), ("fused_qk_norm_rope", 7),
-        }
-        if (shader_name, len(bindings)) in _rope_shaders_by_len:
+        if (shader_name, len(bindings)) in _ROPE_SHADERS_BY_LEN:
             # Use the pre-allocated rope_freq_buf placeholder (initialized in __init__).
             # When USE_FREQ_BUF=1 (YaRN), _init_rope_freq_buf() replaces it with real data.
             bindings = list(bindings) + [self._rope_freq_buf]

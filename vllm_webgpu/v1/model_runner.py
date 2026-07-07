@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -59,11 +60,14 @@ def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
     probs = np.exp(scaled)
     probs /= probs.sum()
 
-    # Top-k: zero out all tokens outside the top-k mass.
+    # Top-k: keep exactly k tokens, matching torch.topk tie-breaking behaviour.
     if top_k > 0:
         k = min(top_k, len(probs))
-        threshold = np.partition(probs, -k)[-k]
-        probs = np.where(probs >= threshold, probs, 0.0)
+        top_k_idx = np.argpartition(probs, -k)[-k:]
+        top_k_idx = top_k_idx[np.argsort(probs[top_k_idx])[::-1]]
+        mask = np.zeros_like(probs)
+        mask[top_k_idx] = 1.0
+        probs = probs * mask
         s = probs.sum()
         if s > 0:
             probs /= s
@@ -74,7 +78,7 @@ def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
         sorted_idx = np.argsort(probs)[::-1]
         cumsum = np.cumsum(probs[sorted_idx])
         # Include the first token that pushes cumsum over top_p.
-        cutoff = max(1, int(np.searchsorted(cumsum, top_p, side="right")) + 1)
+        cutoff = max(1, int(np.searchsorted(cumsum, top_p, side="left")) + 1)
         keep = sorted_idx[:cutoff]
         mask = np.zeros_like(probs)
         mask[keep] = 1.0
@@ -225,8 +229,6 @@ class WebGPUModelRunner:
                 block_size=block_size, num_kv_heads=num_kv_heads,
                 head_size=head_size, dtype=_dtype,
             )
-            if "use_mla" in params:
-                kw["use_mla"] = False
             if "kv_quant_mode" in params:
                 try:
                     from vllm.v1.kv_cache_interface import KVQuantMode
@@ -483,10 +485,7 @@ class WebGPUModelRunner:
                     )
                 slots.append(blk_ids[blk_idx] * block_size + (abs_idx % block_size))
 
-            class _BatchPM:
-                slot_mapping     = slots
-                block_tables     = [bt]
-                max_decode_seq_len = T
+            _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=T)
 
             if hasattr(self.model, "_greedy_decode"):
                 self.model._greedy_decode = _is_greedy(sp)
@@ -494,7 +493,7 @@ class WebGPUModelRunner:
             last_logits = self.model.forward(
                 np.array(chunk_toks, dtype=np.uint32),
                 np.arange(num_computed, num_computed + T, dtype=np.uint32),
-                _BatchPM(),
+                _batch_pm,
             )
 
             if last_logits is None:
@@ -622,10 +621,7 @@ class WebGPUModelRunner:
                             )
                         slots.append(blk_ids[blk_idx] * block_size + (global_idx % block_size))
 
-                    class _ChunkPM:
-                        slot_mapping      = slots
-                        block_tables      = [np.array(blk_ids, dtype=np.uint32)]
-                        max_decode_seq_len = chunk_end
+                    _chunk_pm = SimpleNamespace(slot_mapping=slots, block_tables=[np.array(blk_ids, dtype=np.uint32)], max_decode_seq_len=chunk_end)
 
                     sp = state.get("sampling_params")
                     if hasattr(self.model, "_greedy_decode"):
@@ -634,7 +630,7 @@ class WebGPUModelRunner:
                     logits = self.model.forward(
                         np.array(chunk_toks, dtype=np.uint32),
                         np.arange(pos, chunk_end, dtype=np.uint32),
-                        _ChunkPM(),
+                        _chunk_pm,
                     )
 
                     if logits is None:
@@ -681,10 +677,7 @@ class WebGPUModelRunner:
                     )
                 slot = blk_ids[pos // block_size] * block_size + (pos % block_size)
 
-                class _SM:
-                    slot_mapping      = [slot]
-                    block_tables      = [np.array(blk_ids, dtype=np.uint32)]
-                    max_decode_seq_len = pos + 1
+                _sm = SimpleNamespace(slot_mapping=[slot], block_tables=[np.array(blk_ids, dtype=np.uint32)], max_decode_seq_len=pos + 1)
 
                 sp = state.get("sampling_params")
                 if hasattr(self.model, "_greedy_decode"):
@@ -693,7 +686,7 @@ class WebGPUModelRunner:
                 logits = self.model.forward(
                     np.array([tok], dtype=np.uint32),
                     np.array([pos], dtype=np.uint32),
-                    _SM(),
+                    _sm,
                 )
 
                 # Greedy path: model returns (1, 1) int32 with the argmax index.

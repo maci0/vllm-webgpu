@@ -197,7 +197,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         fused_per_head_norm_rope shader indexes weight[head_idx * HEAD_DIM + i],
         requiring shape (num_heads * head_dim). Tile to match, using per-layer params.
         """
-        import numpy as np
         import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
@@ -235,8 +234,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             ls_buf = (self.weights.get(f"{p}.self_attn.layer_scale") or
                       self.weights.get(f"{p}.layer_scalar"))
             if ls_buf is not None:
-                import numpy as _np
-                self._layer_scales.append(float(ls_buf.to_numpy().view(_np.float16)[0]))
+                self._layer_scales.append(float(ls_buf.to_numpy().view(np.float16)[0]))
             else:
                 self._layer_scales.append(1.0)
         logger.info("Loaded %d weight tensors", len(self.weights))

@@ -1,7 +1,6 @@
 from __future__ import annotations
 import logging
 import os
-import struct
 from pathlib import Path
 
 import numpy as np
@@ -497,11 +496,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             dtype_str = header[name]["dtype"]
             t = sf.get_tensor(name)        # torch.Tensor on CPU
             if dtype_str == "BF16":
-                # Reinterpret bfloat16 bits as int16 so numpy can view them as uint16,
-                # then shift each 16-bit value into the upper half of a float32 word.
-                u16 = t.view(torch.int16).numpy().view(np.uint16)
-                f32 = (u16.astype(np.uint32) << 16).view(np.float32)
-                return f32.reshape(t.shape)
+                return t.to(torch.float32).numpy().reshape(t.shape)
             if "F8_" in dtype_str:
                 # FP8 variants (F8_E4M3, F8_E4M3FN, …): return raw uint8 bytes for
                 # the LUT-based decoder in _fp8_e4m3_to_f32.
@@ -581,11 +576,12 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             if dtype_str == "F16":
                 arr = sf.get_tensor(name).numpy()    # torch.float16 → np.float16
             elif dtype_str == "BF16":
-                u16 = sf.get_tensor(name).view(torch.int16).numpy().view(np.uint16)
+                t_bf16 = sf.get_tensor(name)
                 if _GDN_BF16 and _is_gdn_weight_key(name):
                     # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
                     # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
                     # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
+                    u16 = t_bf16.view(torch.int16).numpy().view(np.uint16)
                     u16_flat = np.ascontiguousarray(u16.ravel())
                     if u16_flat.size % 2 != 0:
                         u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
@@ -597,7 +593,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                     _maybe_flush()
                     weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
                                                             shape=tuple(shape), dtype="u32")
-                f32 = (u16.astype(np.uint32) << 16).view(np.float32)
+                f32 = t_bf16.to(torch.float32).numpy()
                 arr = np.clip(f32, -65504.0, 65504.0).reshape(shape).astype(np.float16)
             elif dtype_str == "F32":
                 arr = sf.get_tensor(name).numpy().astype(np.float16)
@@ -633,8 +629,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                             elif sc_dtype == "F16":
                                 sc_arr = sc_t.numpy().ravel()
                             elif sc_dtype == "BF16":
-                                sc_u16 = sc_t.view(torch.int16).numpy().view(np.uint16)
-                                sc_arr = ((sc_u16.astype(np.uint32) << 16).view(np.float32)).ravel()
+                                sc_arr = sc_t.to(torch.float32).numpy().ravel()
                             else:
                                 logger.warning("Int8 scale %s has unsupported dtype %s",
                                                sc_key, sc_dtype)
@@ -1227,22 +1222,22 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     for key, shard_file in index["weight_map"].items():
         shard_to_keys.setdefault(shard_file, []).append(key)
 
+    import safetensors.numpy as _sfn
+    _DTYPE_MAP = {
+        "float16": "F16",
+        "uint16": "BF16",   # safetensors.numpy returns BF16 as raw uint16 bits
+        "float32": "F32",
+        "uint32": "U32",
+    }
     raw_tensors: dict = {}
     for shard_file in sorted(shard_to_keys.keys()):
         shard_path = str(p / shard_file)
         logger.info("Loading MLX shard %s", shard_file)
-        with open(shard_path, "rb") as f:
-            header_len = struct.unpack("<Q", f.read(8))[0]
-            header_raw = f.read(header_len)
-            data_start = 8 + header_len
-            header = json.loads(header_raw)
-            f.seek(data_start)
-            raw_data = f.read()
-        for name, meta in header.items():
-            if name == "__metadata__":
-                continue
-            start, end = meta["data_offsets"]
-            raw_tensors[name] = (meta["dtype"], tuple(meta["shape"]), raw_data[start:end])
+        with _sfn.safe_open(shard_path, framework="numpy") as sf:
+            for name in sf.keys():
+                arr = sf.get_tensor(name)
+                dtype_str = _DTYPE_MAP.get(arr.dtype.name, arr.dtype.name.upper())
+                raw_tensors[name] = (dtype_str, arr.shape, arr.tobytes())
 
     weights: dict = {}
     all_keys = set(raw_tensors.keys())

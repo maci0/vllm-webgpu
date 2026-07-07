@@ -236,7 +236,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
            (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
         """
         import wgpu as wgpu_lib
-        import numpy as _np
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
         rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
@@ -245,7 +244,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         for ln_i in range(min(self.num_layers, 4)):
             ln_w = self.weights.get(f"model.layers.{ln_i}.input_layernorm.weight")
             if ln_w is not None:
-                mean_abs = float(_np.abs(ln_w.to_numpy().view(_np.float16)).mean())
+                mean_abs = float(np.abs(ln_w.to_numpy().view(np.float16)).mean())
                 self._gemma_norm = 0 if mean_abs > 0.7 else 1
                 break
 
@@ -403,7 +402,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         p = f"model.layers.{layer_idx}.linear_attn"
         pp = f"model.layers.{layer_idx}"
         add_n = num_tokens * hidden
-        gelu_n = num_tokens * inter
 
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
@@ -519,7 +517,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 w_k = f"{pp}.mlp.down_proj.weight"
                 self._dispatch("matmul_quant",
                                [sc["ffn_act"], self.weights[w_k],
-                                sc["ffn_act"], sc["ffn_out"]],
+                                sc["dummy_scales"], sc["ffn_out"]],
                                {"K": inter, "N": hidden, "USE_QUANT": 0},
                                (hidden, 1, 1))
 
@@ -759,7 +757,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 normed_x, x_buf = self._full_attn_layer(
                     i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
             else:
-                normed_x, x_buf = self._linear_attn_layer(i, normed_x, x_buf, num_tokens)
+                normed_x, x_buf = self._gdn_layer_gpu(i, normed_x, x_buf, num_tokens)
 
         self._dispatch(
             "rms_norm",
@@ -992,7 +990,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                     normed_x, x_buf = self._full_attn_layer(
                         i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
                 else:
-                    normed_x, x_buf = self._linear_attn_layer(
+                    normed_x, x_buf = self._gdn_layer_gpu(
                         i, normed_x, x_buf, num_tokens)
 
             self._dispatch("rms_norm",
@@ -1236,13 +1234,4 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         self._hstate = (self._hstate + 2) % 3
         return sc["normed"], out
 
-    def _linear_attn_layer(
-        self,
-        layer_idx: int,
-        normed_x: "WebGPUBuffer",
-        x_buf: "WebGPUBuffer",
-        num_tokens: int,
-    ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
-        """GDN linear-attention layer — delegates to _gdn_layer_gpu (pure WebGPU)."""
-        return self._gdn_layer_gpu(layer_idx, normed_x, x_buf, num_tokens)
 

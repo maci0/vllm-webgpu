@@ -6,7 +6,6 @@ Usage:
     python3 profile_kernels.py [--model MODEL_PATH] [--tokens N]
 """
 import argparse
-import sys
 import time
 import numpy as np
 
@@ -20,7 +19,6 @@ parser.add_argument("--warmup-steps", type=int, default=2,
 args = parser.parse_args()
 
 # ── Setup device ──────────────────────────────────────────────────────────────
-import wgpu
 from vllm_webgpu.webgpu.device import WebGPUDevice
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 from vllm_webgpu.utils import SHADERS_DIR
@@ -114,7 +112,7 @@ for i, tok in enumerate(tok_ids):
 
     logits = model.forward(np.array([tok], dtype=np.uint32), np.array([i], dtype=np.uint32), _PM())
 
-_has_gpu_argmax = hasattr(model, 'logit_readback')
+_has_gpu_argmax = getattr(model, 'logit_returns_token_id', False)
 
 def _top1(logits_out):
     """Extract the greedy token from either GPU-argmax (int32 [1,1]) or float logits."""

@@ -48,10 +48,6 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def is_available(cls) -> bool:
-        try:
-            import wgpu  # noqa: F401 — ensure wgpu is importable
-        except ImportError:
-            return False
         adapter = _get_wgpu_adapter()
         if adapter is None:
             return False
@@ -84,7 +80,7 @@ class WebGPUPlatform(_Platform):
         return 1
 
     @classmethod
-    def get_device_capability(cls, device_id: int = 0) -> object:
+    def get_device_capability(cls, device_id: int = 0) -> "_DeviceCapability | None":
         return _DeviceCapability(major=8, minor=0)
 
     @classmethod
@@ -97,6 +93,14 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
+        import os
+        import sys
+        # macOS (Darwin): wgpu-native uses Metal, which is not fork-safe.
+        # The parent process probes the wgpu adapter during is_available(),
+        # and after fork the child cannot call request_device_sync() on Metal.
+        # Force spawn so the EngineCore subprocess starts with a clean state.
+        if sys.platform == "darwin":
+            os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
         parallel_config = vllm_config.parallel_config
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = "vllm_webgpu.v1.worker.WebGPUWorker"
@@ -133,8 +137,7 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def set_device(cls, device) -> None:
-        import torch
-        idx = device.index if isinstance(device, torch.device) else int(device)
+        idx = device.index if device.index is not None else 0
         if idx != 0:
             raise ValueError(f"WebGPU only supports device 0, got {device}")
 
@@ -144,10 +147,6 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def synchronize(cls, device_id: int = 0) -> None:
-        pass
-
-    @classmethod
-    def verify_quantization(cls, quant: str) -> None:
         pass
 
     @classmethod

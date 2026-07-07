@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -12,11 +13,6 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 logger = logging.getLogger(__name__)
-
-
-def _gemm_wg(N: int, T: int) -> tuple:
-    """Workgroup count for matmul_quant_mr4 batch dispatch: (N, T, 1)."""
-    return (N, T, 1)
 
 
 def _gemv_wg(N: int, uq: int) -> tuple:
@@ -72,6 +68,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             if val % 4 != 0:
                 raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
+        # Precompute constants that are used every forward pass.
+        self._ln_rope_theta: float = math.log(self.rope_theta)
+        _wg_size = 256
+        _vpt = min((self.hidden_size + _wg_size - 1) // _wg_size, 16) if self.hidden_size <= _wg_size * 16 else 0
+        self._rms_consts: dict = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt}
         self._init_scratch_buffers(max_ctx)
         self._init_rope_freq_buf()
 
@@ -171,7 +172,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Our fused_per_head_norm_rope shader indexes weight[head_idx * HEAD_DIM + i],
         expecting shape (num_heads * head_dim,). Tile if the loaded shape is just (head_dim,).
         """
-        import numpy as np
         import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
@@ -350,7 +350,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-        import math as _math
 
         dev  = self.wgpu_device.wgpu_device
         rw   = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
@@ -361,7 +360,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         q_dim  = self.num_q_heads  * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
         inter  = self.intermediate_size
-        ln_rope = _math.log(self.rope_theta)
+        ln_rope = self._ln_rope_theta
 
         # Temporary batch buffers (T × size). Allocated once per prefill call;
         # overhead is negligible vs the GEMM savings.
@@ -726,19 +725,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         allows fusing the final residual-add with the next layer's pre-norm into
         a single add_rms_norm dispatch, saving 2 dispatches per non-last layer.
         """
-        import math
-
         sc = self._sc
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}"
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
         inter = self.intermediate_size
-        ln_rope = math.log(self.rope_theta)
-
-        _wg_size = 256
-        _vpt = min((hidden + _wg_size - 1) // _wg_size, 16) if hidden <= _wg_size * 16 else 0
-        _rms_c = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        ln_rope = self._ln_rope_theta
+        _rms_c = self._rms_consts
 
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
