@@ -458,802 +458,800 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
 
     Uses queue.write_buffer (not mapped_at_creation) for reliable uploads.
     """
-    import json
+    import safetensors.numpy as sfn
+    import torch
     import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
-    with open(path, "rb") as f:
-        header_len = struct.unpack("<Q", f.read(8))[0]
-        header_raw = f.read(header_len)
-        data_start = 8 + header_len
-        header = json.loads(header_raw)
-        f.seek(data_start)
-        raw_data = f.read()
+    with sfn.safe_open(path, framework="pt") as sf:
+        # Build header for format detection from safetensors metadata.
+        # get_slice() reads only the file header bytes — no tensor data is loaded yet.
+        header = {}
+        for _n in sf.keys():
+            _t = sf.get_slice(_n)
+            header[_n] = {
+                "dtype": str(_t.get_dtype()).upper(),
+                "shape": list(_t.get_shape()),
+            }
 
-    usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
-    # Detect compressed-tensors config from the model directory (needed for
-    # pack-quantized INT4 format where weight dtype alone is insufficient).
-    ct_meta = detect_compressed_tensors_fmt(Path(path).parent / "config.json")
+        # Detect compressed-tensors config from the model directory (needed for
+        # pack-quantized INT4 format where weight dtype alone is insufficient).
+        ct_meta = detect_compressed_tensors_fmt(Path(path).parent / "config.json")
 
-    # Detect quantization format from header
-    has_qweight   = any(k.endswith(".qweight")      for k in header)
-    has_wp        = any(k.endswith(".weight_packed") for k in header)   # standard NVFP4
-    # DiffusionGemma NVFP4: *.weight is U8 AND *.weight_scale is F8_E4M3 (ModelOpt format)
-    has_diffusion_nvfp4 = any(
-        header[k].get("dtype") == "U8" and k.endswith(".weight")
-        and k[:-len(".weight")] + ".weight_scale" in header
-        and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "F8_E4M3"
-        for k in header if k != "__metadata__"
-    )
-    has_fp8_weight = any(
-        header[k].get("dtype") == "F8_E4M3" and k.endswith(".weight")
-        for k in header if k != "__metadata__"
-    )
-    # MXFP4/MXFP8: *.weight U8 + *.weight_scale U8 (exponent bytes, not F8_E4M3 like diffusion_nvfp4)
-    has_mx_u8_pair = any(
-        header[k].get("dtype") == "U8" and k.endswith(".weight")
-        and k[:-len(".weight")] + ".weight_scale" in header
-        and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
-        for k in header if k != "__metadata__"
-    )
-    # BnB NF4: companion keys {base}.weight_quantized_stats (older BnB) or
-    # {base}.weight.absmax (newer bitsandbytes >= 0.41) alongside U8 weights.
-    has_bnb_nf4 = (
-        any(k.endswith(".weight_quantized_stats") for k in header)
-        or any("quant_state.bitsandbytes__nf4" in k for k in header if k != "__metadata__")
-        or any(
-            k.endswith(".weight.absmax")
-            and header.get(k[:-len(".absmax")], {}).get("dtype") == "U8"
-            for k in header if k != "__metadata__"
-        )
-    )
-    # compressed-tensors pack-quantized INT4: .weight I32 + .weight_scale F16/BF16/F32
-    # (e.g. google/gemma-4-12B-it-qat-w4a16-ct). The quantization_config in config.json
-    # is read by detect_compressed_tensors_fmt() and stored in ct_meta; the weight tensors
-    # themselves use different key names than standard GPTQ (.weight not .qweight, and
-    # .weight_scale not .scales), so they need a dedicated loading path.
-    has_ct_pack_int4 = (
-        bool(ct_meta and ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu")
-        and any(
-            header[k].get("dtype") == "I32" and k.endswith(".weight")
+        # Detect quantization format from header
+        has_qweight   = any(k.endswith(".qweight")      for k in header)
+        has_wp        = any(k.endswith(".weight_packed") for k in header)   # standard NVFP4
+        # DiffusionGemma NVFP4: *.weight is U8 AND *.weight_scale is F8_E4M3 (ModelOpt format)
+        has_diffusion_nvfp4 = any(
+            header[k].get("dtype") == "U8" and k.endswith(".weight")
             and k[:-len(".weight")] + ".weight_scale" in header
+            and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "F8_E4M3"
             for k in header if k != "__metadata__"
         )
-    )
+        has_fp8_weight = any(
+            header[k].get("dtype") == "F8_E4M3" and k.endswith(".weight")
+            for k in header if k != "__metadata__"
+        )
+        # MXFP4/MXFP8: *.weight U8 + *.weight_scale U8 (exponent bytes, not F8_E4M3 like diffusion_nvfp4)
+        has_mx_u8_pair = any(
+            header[k].get("dtype") == "U8" and k.endswith(".weight")
+            and k[:-len(".weight")] + ".weight_scale" in header
+            and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
+            for k in header if k != "__metadata__"
+        )
+        # BnB NF4: companion keys {base}.weight_quantized_stats (older BnB) or
+        # {base}.weight.absmax (newer bitsandbytes >= 0.41) alongside U8 weights.
+        has_bnb_nf4 = (
+            any(k.endswith(".weight_quantized_stats") for k in header)
+            or any("quant_state.bitsandbytes__nf4" in k for k in header if k != "__metadata__")
+            or any(
+                k.endswith(".weight.absmax")
+                and header.get(k[:-len(".absmax")], {}).get("dtype") == "U8"
+                for k in header if k != "__metadata__"
+            )
+        )
+        # compressed-tensors pack-quantized INT4: .weight I32 + .weight_scale F16/BF16/F32
+        # (e.g. google/gemma-4-12B-it-qat-w4a16-ct). The quantization_config in config.json
+        # is read by detect_compressed_tensors_fmt() and stored in ct_meta; the weight tensors
+        # themselves use different key names than standard GPTQ (.weight not .qweight, and
+        # .weight_scale not .scales), so they need a dedicated loading path.
+        has_ct_pack_int4 = (
+            bool(ct_meta and ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu")
+            and any(
+                header[k].get("dtype") == "I32" and k.endswith(".weight")
+                and k[:-len(".weight")] + ".weight_scale" in header
+                for k in header if k != "__metadata__"
+            )
+        )
 
-    if has_qweight:
-        # Distinguish AWQ from GPTQ by qweight shape, not qzeros presence.
-        # Both formats may have qzeros. The packing axis differs:
-        #   GPTQ: qweight = (K//8, N), scales = (G, N)  → scales.shape[-1] == qweight.shape[-1]
-        #   AWQ:  qweight = (K, N//8), scales = (G, N)  → scales.shape[-1] == qweight.shape[-1] * 8
-        # Cross-referencing scales is definitive. If scales are absent, fall back
-        # to the shape ratio: AWQ has shape[0] > shape[1]; GPTQ has shape[0] < shape[1].
-        fmt = "gptq"
-        for _qw_key in header:
-            if _qw_key == "__metadata__" or not _qw_key.endswith(".qweight"):
-                continue
-            _qw_shape = tuple(header[_qw_key]["shape"])
-            _base = _qw_key[:-len(".qweight")]
-            _sc_key = f"{_base}.scales"
-            if _sc_key in header:
-                _sc_shape = tuple(header[_sc_key]["shape"])
-                if _sc_shape and _qw_shape and _sc_shape[-1] == _qw_shape[-1] * 8:
-                    fmt = "awq"
-            else:
-                # AWQ: shape[0] > shape[1] (K > N//8); GPTQ: shape[0] < shape[1] (K//8 < N).
-                if len(_qw_shape) == 2 and _qw_shape[0] > _qw_shape[1]:
-                    fmt = "awq"
-            break
-    elif has_wp:
-        fmt = "nvfp4"
-    elif has_diffusion_nvfp4:
-        fmt = "diffusion_nvfp4"  # ModelOpt NVFP4: .weight U8 + .weight_scale F8 + .weight_scale_2 F32
-    elif has_fp8_weight:
-        fmt = "fp8"
-    elif has_bnb_nf4:
-        fmt = "bnb_nf4"
-    elif has_mx_u8_pair:
-        # MXFP4 or MXFP8: U8 weight + U8 exponent scale. Distinguish via config files.
-        _mx = _detect_mx_quant(Path(path).parent)
-        fmt = _mx if _mx in ("mxfp4", "mxfp8") else "plain"
-    elif has_ct_pack_int4:
-        fmt = "ct_pack_int4"
-    else:
-        fmt = "plain"
+        if has_qweight:
+            # Distinguish AWQ from GPTQ by qweight shape, not qzeros presence.
+            # Both formats may have qzeros. The packing axis differs:
+            #   GPTQ: qweight = (K//8, N), scales = (G, N)  → scales.shape[-1] == qweight.shape[-1]
+            #   AWQ:  qweight = (K, N//8), scales = (G, N)  → scales.shape[-1] == qweight.shape[-1] * 8
+            # Cross-referencing scales is definitive. If scales are absent, fall back
+            # to the shape ratio: AWQ has shape[0] > shape[1]; GPTQ has shape[0] < shape[1].
+            fmt = "gptq"
+            for _qw_key in header:
+                if _qw_key == "__metadata__" or not _qw_key.endswith(".qweight"):
+                    continue
+                _qw_shape = tuple(header[_qw_key]["shape"])
+                _base = _qw_key[:-len(".qweight")]
+                _sc_key = f"{_base}.scales"
+                if _sc_key in header:
+                    _sc_shape = tuple(header[_sc_key]["shape"])
+                    if _sc_shape and _qw_shape and _sc_shape[-1] == _qw_shape[-1] * 8:
+                        fmt = "awq"
+                else:
+                    # AWQ: shape[0] > shape[1] (K > N//8); GPTQ: shape[0] < shape[1] (K//8 < N).
+                    if len(_qw_shape) == 2 and _qw_shape[0] > _qw_shape[1]:
+                        fmt = "awq"
+                break
+        elif has_wp:
+            fmt = "nvfp4"
+        elif has_diffusion_nvfp4:
+            fmt = "diffusion_nvfp4"  # ModelOpt NVFP4: .weight U8 + .weight_scale F8 + .weight_scale_2 F32
+        elif has_fp8_weight:
+            fmt = "fp8"
+        elif has_bnb_nf4:
+            fmt = "bnb_nf4"
+        elif has_mx_u8_pair:
+            # MXFP4 or MXFP8: U8 weight + U8 exponent scale. Distinguish via config files.
+            _mx = _detect_mx_quant(Path(path).parent)
+            fmt = _mx if _mx in ("mxfp4", "mxfp8") else "plain"
+        elif has_ct_pack_int4:
+            fmt = "ct_pack_int4"
+        else:
+            fmt = "plain"
 
-    if fmt != "plain":
-        logger.info("Detected %s quantization in %s", fmt.upper(), path)
+        if fmt != "plain":
+            logger.info("Detected %s quantization in %s", fmt.upper(), path)
 
-    def _load_raw(name: str) -> np.ndarray:
-        meta = header[name]
-        dtype_str = meta["dtype"]
-        start, end = meta["data_offsets"]
-        raw = raw_data[start:end]
-        shape = tuple(meta["shape"])
-        if dtype_str == "I32":
-            return np.frombuffer(raw, dtype=np.int32).reshape(shape)
-        if dtype_str == "U8":
-            return np.frombuffer(raw, dtype=np.uint8).reshape(shape)
-        if dtype_str == "F16":
-            return np.frombuffer(raw, dtype=np.float16).reshape(shape)
-        if dtype_str == "BF16":
-            u16 = np.frombuffer(raw, dtype=np.uint16)
-            f32 = (u16.astype(np.uint32) << 16).view(np.float32)
-            return f32.reshape(shape)
-        if dtype_str == "F32":
-            return np.frombuffer(raw, dtype=np.float32).reshape(shape)
-        if dtype_str == "F8_E4M3":
-            # Load as uint8 bytes; pass to _fp8_e4m3_to_f32 later
-            return np.frombuffer(raw, dtype=np.uint8).reshape(shape)
-        raise ValueError(f"Unsupported dtype {dtype_str} for {name}")
+        def _load_raw(name: str) -> np.ndarray:
+            """Load a tensor from the open safetensors file as numpy.
 
-    def _pad4(data: bytes) -> bytes:
-        """Pad to 4-byte boundary — WebGPU write_buffer requires 4-byte-aligned size."""
-        r = len(data) % 4
-        return data if r == 0 else data + b"\x00" * (4 - r)
+            Returns float32 for BF16 tensors (bit-shifted from uint16), uint8 for
+            F8_E4M3 (raw bytes for the FP8 LUT decoder), and the native numpy dtype
+            for all other formats (F16, F32, I32, U8, I8).
+            """
+            dtype_str = header[name]["dtype"]
+            t = sf.get_tensor(name)        # torch.Tensor on CPU
+            if dtype_str == "BF16":
+                # Reinterpret bfloat16 bits as int16 so numpy can view them as uint16,
+                # then shift each 16-bit value into the upper half of a float32 word.
+                u16 = t.view(torch.int16).numpy().view(np.uint16)
+                f32 = (u16.astype(np.uint32) << 16).view(np.float32)
+                return f32.reshape(t.shape)
+            if "F8_" in dtype_str:
+                # FP8 variants (F8_E4M3, F8_E4M3FN, …): return raw uint8 bytes for
+                # the LUT-based decoder in _fp8_e4m3_to_f32.
+                return t.view(torch.uint8).numpy().reshape(t.shape)
+            return t.numpy()
 
-    # Track pending write_buffer bytes to flush periodically.
-    # Metal silently drops write_buffer operations when the pending write queue
-    # exceeds the GPU staging buffer capacity (~1-2GB). For large single-file
-    # models (e.g. Gemma4-12B at 22GB), we must flush periodically.
-    _pending_bytes: list = [0]
-    _FLUSH_THRESHOLD = 512 * 1024 * 1024  # flush every 512MB of pending writes
+        def _pad4(data: bytes) -> bytes:
+            """Pad to 4-byte boundary — WebGPU write_buffer requires 4-byte-aligned size."""
+            r = len(data) % 4
+            return data if r == 0 else data + b"\x00" * (4 - r)
 
-    def _maybe_flush() -> None:
-        if _pending_bytes[0] >= _FLUSH_THRESHOLD:
-            wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
-            wgpu_device.queue.on_submitted_work_done_sync()
-            _pending_bytes[0] = 0
+        # Track pending write_buffer bytes to flush periodically.
+        # Metal silently drops write_buffer operations when the pending write queue
+        # exceeds the GPU staging buffer capacity (~1-2GB). For large single-file
+        # models (e.g. Gemma4-12B at 22GB), we must flush periodically.
+        _pending_bytes: list = [0]
+        _FLUSH_THRESHOLD = 512 * 1024 * 1024  # flush every 512MB of pending writes
 
-    def _upload(arr: np.ndarray, name: str, weights: dict) -> None:
-        arr = np.ascontiguousarray(arr.astype(np.float16))
-        data = _pad4(arr.tobytes())
-        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, data)
-        _pending_bytes[0] += len(data)
-        _maybe_flush()
-        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                     shape=tuple(arr.shape), dtype="f16")
+        def _maybe_flush() -> None:
+            if _pending_bytes[0] >= _FLUSH_THRESHOLD:
+                wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+                wgpu_device.queue.on_submitted_work_done_sync()
+                _pending_bytes[0] = 0
 
-    def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
-        """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
-
-        Used for FP8 E4M3 and NVFP4 packed weights. The shader reads via
-        rd_byte_at() which unpacks individual bytes from the u32 array.
-        """
-        arr_flat = np.ascontiguousarray(arr.ravel().view(np.uint8))
-        # Pad to multiple of 4 bytes so u32 reinterpretation is clean.
-        r = len(arr_flat) % 4
-        if r:
-            arr_flat = np.concatenate([arr_flat, np.zeros(4 - r, dtype=np.uint8)])
-        data = _pad4(arr_flat.tobytes())
-        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, data)
-        _pending_bytes[0] += len(data)
-        _maybe_flush()
-        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                     shape=tuple(arr.shape), dtype="u8")
-
-    def _upload_int32(arr: np.ndarray, name: str, weights: dict) -> None:
-        """Upload an INT32 array (quantized weights) directly to GPU without conversion."""
-        arr = np.ascontiguousarray(arr.astype(np.int32))
-        data = _pad4(arr.tobytes())
-        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, data)
-        _pending_bytes[0] += len(data)
-        _maybe_flush()
-        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                     shape=tuple(arr.shape), dtype="i32")
-
-    def _upload_f16(arr: np.ndarray, name: str, weights: dict) -> None:
-        """Upload an F16 array (scales/norms) directly to GPU."""
-        arr = np.ascontiguousarray(arr.astype(np.float16))
-        data = _pad4(arr.tobytes())
-        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, data)
-        _pending_bytes[0] += len(data)
-        _maybe_flush()
-        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                     shape=tuple(arr.shape), dtype="f16")
-
-    weights: dict = {}
-
-    # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
-    def _upload_plain(name: str, weights: dict) -> bool:
-        meta = header.get(name)
-        if meta is None:
-            return False
-        dtype_str = meta["dtype"]
-        shape = tuple(meta["shape"])
-        start, end = meta["data_offsets"]
-        raw = raw_data[start:end]
-        if dtype_str == "F16":
-            arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
-        elif dtype_str == "BF16":
-            u16 = np.frombuffer(raw, dtype=np.uint16)
-            if _GDN_BF16 and _is_gdn_weight_key(name):
-                # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
-                # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
-                # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
-                u16_flat = np.ascontiguousarray(u16.ravel())
-                if u16_flat.size % 2 != 0:
-                    u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
-                arr_u32 = u16_flat.view(np.uint32)
-                data_u32 = _pad4(arr_u32.tobytes())
-                buf_bf16 = wgpu_device.create_buffer(size=len(data_u32), usage=usage)
-                wgpu_device.queue.write_buffer(buf_bf16, 0, data_u32)
-                _pending_bytes[0] += len(data_u32)
-                _maybe_flush()
-                weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
-                                                        shape=tuple(shape), dtype="u32")
-            f32 = (u16.astype(np.uint32) << 16).view(np.float32)
-            arr = np.clip(f32, -65504.0, 65504.0).reshape(shape).astype(np.float16)
-        elif dtype_str == "F32":
-            arr = np.frombuffer(raw, dtype=np.float32).reshape(shape).astype(np.float16)
-        elif dtype_str == "I8":
-            # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
-            # Upload raw bytes; shader does sign extension via int8_to_f32().
-            # dtype="u8" so _uq_weight() detects it via fmt="int8_gpu".
-            arr_u8 = np.frombuffer(raw, dtype=np.uint8).reshape(shape)
-            r = len(arr_u8.ravel()) % 4
-            arr_pad = np.concatenate([arr_u8.ravel(), np.zeros(4 - r if r else 0, dtype=np.uint8)])
-            data_u8 = _pad4(arr_pad.tobytes())
-            buf = wgpu_device.create_buffer(size=len(data_u8), usage=usage)
-            wgpu_device.queue.write_buffer(buf, 0, data_u8)
-            _pending_bytes[0] += len(data_u8)
+        def _upload(arr: np.ndarray, name: str, weights: dict) -> None:
+            arr = np.ascontiguousarray(arr.astype(np.float16))
+            data = _pad4(arr.tobytes())
+            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+            wgpu_device.queue.write_buffer(buf, 0, data)
+            _pending_bytes[0] += len(data)
             _maybe_flush()
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                         shape=shape, dtype="u8")
-            # Record int8 format in quant_meta for _uq() detection.
-            qmeta = weights.setdefault("__quant_meta__", {})
-            base_key = name[:-7] if name.endswith(".weight") else name
-            qmeta.setdefault(base_key, {})["fmt"] = "int8_gpu"
-            # Load companion per-channel weight scale if present.
-            # compressed-tensors int8 (strategy=channel) stores a (N,) F32 scale at
-            # {base}.weight_scale. Without it the USE_QUANT=7 shader reads scales[row]
-            # from an uninitialized or wrong buffer, producing ~127x magnitude error.
-            for sc_key in (f"{base_key}.weight_scale", f"{base_key}.scale"):
-                if sc_key in header:
-                    try:
-                        sc_meta = header[sc_key]
-                        sc_dtype = sc_meta["dtype"]
-                        sc_start, sc_end = sc_meta["data_offsets"]
-                        sc_raw = raw_data[sc_start:sc_end]
-                        if sc_dtype == "F32":
-                            sc_arr = np.frombuffer(sc_raw, dtype=np.float32).ravel()
-                        elif sc_dtype == "F16":
-                            sc_arr = np.frombuffer(sc_raw, dtype=np.float16).ravel()
-                        elif sc_dtype == "BF16":
-                            sc_u16 = np.frombuffer(sc_raw, dtype=np.uint16)
-                            sc_arr = ((sc_u16.astype(np.uint32) << 16).view(np.float32)).ravel()
-                        else:
-                            logger.warning("Int8 scale %s has unsupported dtype %s",
-                                           sc_key, sc_dtype)
-                            break
-                        _upload_f16(sc_arr.astype(np.float16), f"{name}.scales", weights)
-                        qmeta[base_key]["group_size"] = 1
-                        logger.debug("Int8 per-channel: %s scale n=%d", base_key, sc_arr.size)
-                    except Exception as exc:
-                        logger.warning("Int8 scale load failed for %s: %s", base_key, exc)
-                    break
+                                         shape=tuple(arr.shape), dtype="f16")
+
+        def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
+            """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
+
+            Used for FP8 E4M3 and NVFP4 packed weights. The shader reads via
+            rd_byte_at() which unpacks individual bytes from the u32 array.
+            """
+            arr_flat = np.ascontiguousarray(arr.ravel().view(np.uint8))
+            # Pad to multiple of 4 bytes so u32 reinterpretation is clean.
+            r = len(arr_flat) % 4
+            if r:
+                arr_flat = np.concatenate([arr_flat, np.zeros(4 - r, dtype=np.uint8)])
+            data = _pad4(arr_flat.tobytes())
+            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+            wgpu_device.queue.write_buffer(buf, 0, data)
+            _pending_bytes[0] += len(data)
+            _maybe_flush()
+            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                         shape=tuple(arr.shape), dtype="u8")
+
+        def _upload_int32(arr: np.ndarray, name: str, weights: dict) -> None:
+            """Upload an INT32 array (quantized weights) directly to GPU without conversion."""
+            arr = np.ascontiguousarray(arr.astype(np.int32))
+            data = _pad4(arr.tobytes())
+            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+            wgpu_device.queue.write_buffer(buf, 0, data)
+            _pending_bytes[0] += len(data)
+            _maybe_flush()
+            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                         shape=tuple(arr.shape), dtype="i32")
+
+        def _upload_f16(arr: np.ndarray, name: str, weights: dict) -> None:
+            """Upload an F16 array (scales/norms) directly to GPU."""
+            arr = np.ascontiguousarray(arr.astype(np.float16))
+            data = _pad4(arr.tobytes())
+            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+            wgpu_device.queue.write_buffer(buf, 0, data)
+            _pending_bytes[0] += len(data)
+            _maybe_flush()
+            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                         shape=tuple(arr.shape), dtype="f16")
+
+        weights: dict = {}
+
+        # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
+        def _upload_plain(name: str, weights: dict) -> bool:
+            meta = header.get(name)
+            if meta is None:
+                return False
+            dtype_str = meta["dtype"]
+            shape = tuple(meta["shape"])
+            if dtype_str == "F16":
+                arr = sf.get_tensor(name).numpy()    # torch.float16 → np.float16
+            elif dtype_str == "BF16":
+                u16 = sf.get_tensor(name).view(torch.int16).numpy().view(np.uint16)
+                if _GDN_BF16 and _is_gdn_weight_key(name):
+                    # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
+                    # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
+                    # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
+                    u16_flat = np.ascontiguousarray(u16.ravel())
+                    if u16_flat.size % 2 != 0:
+                        u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
+                    arr_u32 = u16_flat.view(np.uint32)
+                    data_u32 = _pad4(arr_u32.tobytes())
+                    buf_bf16 = wgpu_device.create_buffer(size=len(data_u32), usage=usage)
+                    wgpu_device.queue.write_buffer(buf_bf16, 0, data_u32)
+                    _pending_bytes[0] += len(data_u32)
+                    _maybe_flush()
+                    weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
+                                                            shape=tuple(shape), dtype="u32")
+                f32 = (u16.astype(np.uint32) << 16).view(np.float32)
+                arr = np.clip(f32, -65504.0, 65504.0).reshape(shape).astype(np.float16)
+            elif dtype_str == "F32":
+                arr = sf.get_tensor(name).numpy().astype(np.float16)
+            elif dtype_str == "I8":
+                # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
+                # Upload raw bytes; shader does sign extension via int8_to_f32().
+                # dtype="u8" so _uq_weight() detects it via fmt="int8_gpu".
+                arr_u8 = sf.get_tensor(name).numpy().view(np.uint8).reshape(shape)
+                r = len(arr_u8.ravel()) % 4
+                arr_pad = np.concatenate([arr_u8.ravel(), np.zeros(4 - r if r else 0, dtype=np.uint8)])
+                data_u8 = _pad4(arr_pad.tobytes())
+                buf = wgpu_device.create_buffer(size=len(data_u8), usage=usage)
+                wgpu_device.queue.write_buffer(buf, 0, data_u8)
+                _pending_bytes[0] += len(data_u8)
+                _maybe_flush()
+                weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                             shape=shape, dtype="u8")
+                # Record int8 format in quant_meta for _uq() detection.
+                qmeta = weights.setdefault("__quant_meta__", {})
+                base_key = name[:-7] if name.endswith(".weight") else name
+                qmeta.setdefault(base_key, {})["fmt"] = "int8_gpu"
+                # Load companion per-channel weight scale if present.
+                # compressed-tensors int8 (strategy=channel) stores a (N,) F32 scale at
+                # {base}.weight_scale. Without it the USE_QUANT=7 shader reads scales[row]
+                # from an uninitialized or wrong buffer, producing ~127x magnitude error.
+                for sc_key in (f"{base_key}.weight_scale", f"{base_key}.scale"):
+                    if sc_key in header:
+                        try:
+                            sc_dtype = header[sc_key]["dtype"]
+                            sc_t = sf.get_tensor(sc_key)
+                            if sc_dtype == "F32":
+                                sc_arr = sc_t.numpy().ravel()
+                            elif sc_dtype == "F16":
+                                sc_arr = sc_t.numpy().ravel()
+                            elif sc_dtype == "BF16":
+                                sc_u16 = sc_t.view(torch.int16).numpy().view(np.uint16)
+                                sc_arr = ((sc_u16.astype(np.uint32) << 16).view(np.float32)).ravel()
+                            else:
+                                logger.warning("Int8 scale %s has unsupported dtype %s",
+                                               sc_key, sc_dtype)
+                                break
+                            _upload_f16(sc_arr.astype(np.float16), f"{name}.scales", weights)
+                            qmeta[base_key]["group_size"] = 1
+                            logger.debug("Int8 per-channel: %s scale n=%d", base_key, sc_arr.size)
+                        except Exception as exc:
+                            logger.warning("Int8 scale load failed for %s: %s", base_key, exc)
+                        break
+                return True
+            else:
+                return False  # not a plain dtype
+            arr = np.ascontiguousarray(arr)
+            data = _pad4(arr.tobytes())
+            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+            wgpu_device.queue.write_buffer(buf, 0, data)
+            _pending_bytes[0] += len(data)
+            _maybe_flush()
+            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                         shape=tuple(arr.shape), dtype="f16")
             return True
-        else:
-            return False  # not a plain dtype
-        arr = np.ascontiguousarray(arr)
-        data = _pad4(arr.tobytes())
-        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, data)
-        _pending_bytes[0] += len(data)
-        _maybe_flush()
-        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                     shape=tuple(arr.shape), dtype="f16")
-        return True
 
-    if fmt in ("awq", "gptq"):
-        # Collect quantized bases
-        quant_bases = sorted(set(
-            k[:-len(".qweight")] for k in header if k.endswith(".qweight")
-        ))
-        quant_set = set()
-        for base in quant_bases:
-            for suf in (".qweight", ".scales", ".qzeros", ".g_idx"):
-                if f"{base}{suf}" in header:
-                    quant_set.add(f"{base}{suf}")
+        if fmt in ("awq", "gptq"):
+            # Collect quantized bases
+            quant_bases = sorted(set(
+                k[:-len(".qweight")] for k in header if k.endswith(".qweight")
+            ))
+            quant_set = set()
+            for base in quant_bases:
+                for suf in (".qweight", ".scales", ".qzeros", ".g_idx"):
+                    if f"{base}{suf}" in header:
+                        quant_set.add(f"{base}{suf}")
 
-        for name in header:
-            if name == "__metadata__" or name in quant_set:
-                continue
-            if not _upload_plain(name, weights):
-                dt = header[name].get("dtype", "?")
-                if dt not in ("F8_E4M3", "U8", "I32"):
-                    logger.warning("Skipping %s (dtype=%s)", name, dt)
+            for name in header:
+                if name == "__metadata__" or name in quant_set:
+                    continue
+                if not _upload_plain(name, weights):
+                    dt = header[name].get("dtype", "?")
+                    if dt not in ("F8_E4M3", "U8", "I32"):
+                        logger.warning("Skipping %s (dtype=%s)", name, dt)
 
-        for base in quant_bases:
-            try:
-                qw = _load_raw(f"{base}.qweight")
-                sc = _load_raw(f"{base}.scales")
-                qz_key = f"{base}.qzeros"
-                qz = _load_raw(qz_key) if qz_key in header else None
-                g_idx = _load_raw(f"{base}.g_idx") if f"{base}.g_idx" in header else None
+            for base in quant_bases:
+                try:
+                    qw = _load_raw(f"{base}.qweight")
+                    sc = _load_raw(f"{base}.scales")
+                    qz_key = f"{base}.qzeros"
+                    qz = _load_raw(qz_key) if qz_key in header else None
+                    g_idx = _load_raw(f"{base}.g_idx") if f"{base}.g_idx" in header else None
 
-                # GPU dequant path: upload raw quantized data directly.
-                # GPTQ qweight [K//8, N] is transposed to [N, K//8] so all 256
-                # threads in split-K read consecutive INT32s (coalesced access).
-                group_size = int(sc.shape[0]) and (qw.shape[1] if fmt == "gptq" else qw.shape[0]) // sc.shape[0] if sc.ndim == 2 else 128
-                if fmt == "gptq" and qz is None and g_idx is None:
-                    # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
-                    K8, N_ = qw.shape
-                    group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else 128
-                    qw_t = np.ascontiguousarray(qw.T)  # [N, K//8]
-                    sc_gn = sc.astype(np.float16)      # [G, N] f16
-                    _upload_int32(qw_t, f"{base}.weight", weights)
-                    _upload_f16(sc_gn, f"{base}.weight.scales", weights)
-                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                    weights["__quant_meta__"][base] = {"fmt": "gptq_sym", "group_size": group_size}
-                    logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
-                elif fmt == "awq" and qz is not None and g_idx is None:
-                    # GPU AWQ: check if qzeros decode to symmetric (all zero_point=8).
-                    # AWQ qzeros use same [0,4,1,5,2,6,3,7] nibble ordering.
-                    # All-zero qzeros → all zero_points = 0 → NOT symmetric.
-                    # qzeros with all nibbles = 8 → zero_point = 8 (symmetric).
-                    # We check for all-zero qzeros which means zero_point=0 (also
-                    # supported: just use -0 for zero instead of -8).
-                    K_, N8_ = qw.shape  # qw is [K, N//8]
-                    N_ = N8_ * 8
-                    G_ = sc.shape[0] if sc.ndim == 2 else K_ // 128
-                    group_size = K_ // G_ if G_ > 0 else 128
-                    # GPU AWQ: store [K, N//8] INT32 directly (no transpose needed
-                    # since AWQ access pattern is already per-k, per-output-group)
-                    sc_gn = sc.astype(np.float16) if sc.ndim == 2 else sc  # [G, N]
-                    _upload_int32(qw, f"{base}.weight", weights)    # [K, N//8]
-                    _upload_f16(sc_gn, f"{base}.weight.scales", weights)  # [G, N]
-                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                    weights["__quant_meta__"][base] = {"fmt": "awq_sym", "group_size": group_size}
-                    logger.debug("GPU AWQ: %s (K=%d, N=%d, G=%d)", base, K_, N_, G_)
-                else:
-                    # Fall back to CPU dequantization.
-                    if fmt == "awq" and qz is not None:
-                        w_f16 = _dequant_awq(qw, sc, qz)
+                    # GPU dequant path: upload raw quantized data directly.
+                    # GPTQ qweight [K//8, N] is transposed to [N, K//8] so all 256
+                    # threads in split-K read consecutive INT32s (coalesced access).
+                    group_size = int(sc.shape[0]) and (qw.shape[1] if fmt == "gptq" else qw.shape[0]) // sc.shape[0] if sc.ndim == 2 else 128
+                    if fmt == "gptq" and qz is None and g_idx is None:
+                        # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
+                        K8, N_ = qw.shape
+                        group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else 128
+                        qw_t = np.ascontiguousarray(qw.T)  # [N, K//8]
+                        sc_gn = sc.astype(np.float16)      # [G, N] f16
+                        _upload_int32(qw_t, f"{base}.weight", weights)
+                        _upload_f16(sc_gn, f"{base}.weight.scales", weights)
+                        weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                        weights["__quant_meta__"][base] = {"fmt": "gptq_sym", "group_size": group_size}
+                        logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
+                    elif fmt == "awq" and qz is not None and g_idx is None:
+                        # GPU AWQ: check if qzeros decode to symmetric (all zero_point=8).
+                        # AWQ qzeros use same [0,4,1,5,2,6,3,7] nibble ordering.
+                        # All-zero qzeros → all zero_points = 0 → NOT symmetric.
+                        # qzeros with all nibbles = 8 → zero_point = 8 (symmetric).
+                        # We check for all-zero qzeros which means zero_point=0 (also
+                        # supported: just use -0 for zero instead of -8).
+                        K_, N8_ = qw.shape  # qw is [K, N//8]
+                        N_ = N8_ * 8
+                        G_ = sc.shape[0] if sc.ndim == 2 else K_ // 128
+                        group_size = K_ // G_ if G_ > 0 else 128
+                        # GPU AWQ: store [K, N//8] INT32 directly (no transpose needed
+                        # since AWQ access pattern is already per-k, per-output-group)
+                        sc_gn = sc.astype(np.float16) if sc.ndim == 2 else sc  # [G, N]
+                        _upload_int32(qw, f"{base}.weight", weights)    # [K, N//8]
+                        _upload_f16(sc_gn, f"{base}.weight.scales", weights)  # [G, N]
+                        weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                        weights["__quant_meta__"][base] = {"fmt": "awq_sym", "group_size": group_size}
+                        logger.debug("GPU AWQ: %s (K=%d, N=%d, G=%d)", base, K_, N_, G_)
                     else:
-                        w_f16 = _dequant_gptq(
-                            qw, sc, qz if qz is not None else np.zeros_like(sc), g_idx)
-                    _upload(w_f16, f"{base}.weight", weights)
-            except Exception as exc:
-                logger.warning("Failed to process %s: %s", base, exc)
+                        # Fall back to CPU dequantization.
+                        if fmt == "awq" and qz is not None:
+                            w_f16 = _dequant_awq(qw, sc, qz)
+                        else:
+                            w_f16 = _dequant_gptq(
+                                qw, sc, qz if qz is not None else np.zeros_like(sc), g_idx)
+                        _upload(w_f16, f"{base}.weight", weights)
+                except Exception as exc:
+                    logger.warning("Failed to process %s: %s", base, exc)
 
-    elif fmt == "nvfp4":
-        # NVFP4: weight_packed (U8) + weight_scale (F8_E4M3) + weight_global_scale (F32)
-        nvfp4_bases = sorted(set(
-            k[:-len(".weight_packed")] for k in header if k.endswith(".weight_packed")
-        ))
-        nvfp4_set = set()
-        for base in nvfp4_bases:
-            for suf in (".weight_packed", ".weight_scale", ".weight_global_scale",
-                        ".input_global_scale"):
-                if f"{base}{suf}" in header:
-                    nvfp4_set.add(f"{base}{suf}")
+        elif fmt == "nvfp4":
+            # NVFP4: weight_packed (U8) + weight_scale (F8_E4M3) + weight_global_scale (F32)
+            nvfp4_bases = sorted(set(
+                k[:-len(".weight_packed")] for k in header if k.endswith(".weight_packed")
+            ))
+            nvfp4_set = set()
+            for base in nvfp4_bases:
+                for suf in (".weight_packed", ".weight_scale", ".weight_global_scale",
+                            ".input_global_scale"):
+                    if f"{base}{suf}" in header:
+                        nvfp4_set.add(f"{base}{suf}")
 
-        for name in header:
-            if name == "__metadata__" or name in nvfp4_set:
-                continue
-            if not _upload_plain(name, weights):
-                dt = header[name].get("dtype", "?")
-                if dt not in ("F8_E4M3", "U8", "I32", "F32"):
-                    logger.warning("Skipping %s (dtype=%s)", name, dt)
+            for name in header:
+                if name == "__metadata__" or name in nvfp4_set:
+                    continue
+                if not _upload_plain(name, weights):
+                    dt = header[name].get("dtype", "?")
+                    if dt not in ("F8_E4M3", "U8", "I32", "F32"):
+                        logger.warning("Skipping %s (dtype=%s)", name, dt)
 
-        for base in nvfp4_bases:
-            try:
-                wp = _load_raw(f"{base}.weight_packed")    # (N, K//2) U8
-                ws = _load_raw(f"{base}.weight_scale")     # (N, K//16) F8_E4M3 as uint8
-                wgs_key = f"{base}.weight_global_scale"
-                wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
-                N_, K2_ = wp.shape
-                K_ = K2_ * 2
-                # GPU NVFP4: upload raw weight_packed + F16-converted block scales.
-                # The shader uses GLOBAL_SCALE as an override constant and
-                # reads F8_E4M3 scales via the standard f16 scales binding.
-                ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
-                _upload_u8(wp, f"{base}.weight", weights)
-                _upload_f16(ws_f16, f"{base}.weight.scales", weights)
-                weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                weights["__quant_meta__"][base] = {
-                    "fmt": "nvfp4_gpu", "global_scale": wgs,
-                    "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
-                logger.debug("GPU NVFP4: %s (N=%d, K=%d, wgs=%.4f)", base, N_, K_, wgs)
-            except Exception as exc:
-                logger.warning("Failed to process NVFP4 %s: %s", base, exc)
-
-    elif fmt == "diffusion_nvfp4":
-        # DiffusionGemma ModelOpt NVFP4: *.weight (U8) + *.weight_scale (F8_E4M3) + *.weight_scale_2 (F32)
-        # Used for quantized expert weights. Non-expert weights (BF16) uploaded normally.
-        dnvfp4_bases = sorted(set(
-            k[:-len(".weight")] for k in header
-            if k.endswith(".weight") and header[k].get("dtype") == "U8"
-            and k[:-len(".weight")] + ".weight_scale" in header
-        ))
-        dnvfp4_set = set()
-        for base in dnvfp4_bases:
-            for suf in (".weight", ".weight_scale", ".weight_scale_2", ".input_scale"):
-                if f"{base}{suf}" in header:
-                    dnvfp4_set.add(f"{base}{suf}")
-
-        for name in header:
-            if name == "__metadata__" or name in dnvfp4_set:
-                continue
-            if not _upload_plain(name, weights):
-                dt = header[name].get("dtype", "?")
-                if dt not in ("F8_E4M3", "U8", "I32", "F32"):
-                    logger.warning("Skipping %s (dtype=%s)", name, dt)
-
-        for base in dnvfp4_bases:
-            try:
-                wp = _load_raw(f"{base}.weight")        # (N, K//2) U8
-                ws = _load_raw(f"{base}.weight_scale")  # (N, K//group_size) F8_E4M3 as uint8
-                wgs_key = f"{base}.weight_scale_2"
-                wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
-                N_, K2_ = wp.shape
-                K_ = K2_ * 2
-                ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
-                _upload_u8(wp, f"{base}.weight", weights)
-                _upload_f16(ws_f16, f"{base}.weight.scales", weights)
-                weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                weights["__quant_meta__"][base] = {
-                    "fmt": "nvfp4_gpu", "global_scale": wgs,
-                    "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
-            except Exception as exc:
-                logger.warning("Failed to process diffusion NVFP4 %s: %s", base, exc)
-
-    elif fmt == "fp8":
-        # Plain FP8 E4M3: weight stored as F8_E4M3, scale as F32 in *.weight_scale
-        fp8_names = {
-            k for k in header
-            if k != "__metadata__"
-            and k.endswith(".weight")
-            and header[k].get("dtype") == "F8_E4M3"
-        }
-        fp8_scale_names = {
-            k[:-len(".weight")] + ".weight_scale"
-            for k in fp8_names
-        }
-        fp8_set = fp8_names | fp8_scale_names
-
-        for name in header:
-            if name == "__metadata__" or name in fp8_set:
-                continue
-            if not _upload_plain(name, weights):
-                dt = header[name].get("dtype", "?")
-                if dt not in ("F8_E4M3", "U8", "I32"):
-                    logger.warning("Skipping %s (dtype=%s)", name, dt)
-
-        for wname in fp8_names:
-            base = wname[:-len(".weight")]
-            try:
-                w_fp8 = _load_raw(wname)   # uint8 array (F8_E4M3 bytes), shape (N, K)
-                scale_key = f"{base}.weight_scale"
-                # GPU FP8: upload raw F8 bytes; shader decodes inline.
-                _upload_u8(w_fp8, wname, weights)
-                weights.setdefault("__quant_meta__", {})
-                if scale_key in header:
-                    scale_arr = _load_raw(scale_key)
-                    if scale_arr.ndim == 0 or scale_arr.size == 1:
-                        # Per-tensor scale: scalar or single-element.
-                        scale_val = float(scale_arr.ravel()[0])
-                        weights["__quant_meta__"][base] = {
-                            "fmt": "fp8_gpu", "global_scale": scale_val}
-                        logger.debug("GPU FP8 (per-tensor): %s scale=%.6f", base, scale_val)
-                    else:
-                        # Per-channel scale: shape (N,) — one float per output channel.
-                        # Upload as F16 scales buffer; shader reads scales[row] when GROUP_K=1.
-                        scale_f16 = np.ascontiguousarray(
-                            scale_arr.ravel().astype(np.float16))
-                        _upload_f16(scale_f16, wname + ".scales", weights)
-                        weights["__quant_meta__"][base] = {
-                            "fmt": "fp8_gpu", "global_scale": 1.0, "group_size": 1}
-                        logger.debug("GPU FP8 (per-channel): %s n_scales=%d",
-                                     base, scale_f16.size)
-                else:
+            for base in nvfp4_bases:
+                try:
+                    wp = _load_raw(f"{base}.weight_packed")    # (N, K//2) U8
+                    ws = _load_raw(f"{base}.weight_scale")     # (N, K//16) F8_E4M3 as uint8
+                    wgs_key = f"{base}.weight_global_scale"
+                    wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
+                    N_, K2_ = wp.shape
+                    K_ = K2_ * 2
+                    # GPU NVFP4: upload raw weight_packed + F16-converted block scales.
+                    # The shader uses GLOBAL_SCALE as an override constant and
+                    # reads F8_E4M3 scales via the standard f16 scales binding.
+                    ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
+                    _upload_u8(wp, f"{base}.weight", weights)
+                    _upload_f16(ws_f16, f"{base}.weight.scales", weights)
+                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
                     weights["__quant_meta__"][base] = {
-                        "fmt": "fp8_gpu", "global_scale": 1.0}
-                    logger.debug("GPU FP8: %s (no scale key)", base)
-            except Exception as exc:
-                logger.warning("Failed to process FP8 %s: %s", base, exc)
+                        "fmt": "nvfp4_gpu", "global_scale": wgs,
+                        "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
+                    logger.debug("GPU NVFP4: %s (N=%d, K=%d, wgs=%.4f)", base, N_, K_, wgs)
+                except Exception as exc:
+                    logger.warning("Failed to process NVFP4 %s: %s", base, exc)
 
-    elif fmt == "mxfp4":
-        # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
-        # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
-        # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-        mxfp4_bases = sorted(set(
-            k[:-len(".weight")] for k in header
-            if k.endswith(".weight")
-            and header[k].get("dtype") == "U8"
-            and k[:-len(".weight")] + ".weight_scale" in header
-            and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
-        ))
-        mx4_set: set = set()
-        for base in mxfp4_bases:
-            mx4_set.add(f"{base}.weight")
-            mx4_set.add(f"{base}.weight_scale")
+        elif fmt == "diffusion_nvfp4":
+            # DiffusionGemma ModelOpt NVFP4: *.weight (U8) + *.weight_scale (F8_E4M3) + *.weight_scale_2 (F32)
+            # Used for quantized expert weights. Non-expert weights (BF16) uploaded normally.
+            dnvfp4_bases = sorted(set(
+                k[:-len(".weight")] for k in header
+                if k.endswith(".weight") and header[k].get("dtype") == "U8"
+                and k[:-len(".weight")] + ".weight_scale" in header
+            ))
+            dnvfp4_set = set()
+            for base in dnvfp4_bases:
+                for suf in (".weight", ".weight_scale", ".weight_scale_2", ".input_scale"):
+                    if f"{base}{suf}" in header:
+                        dnvfp4_set.add(f"{base}{suf}")
 
-        for name in header:
-            if name == "__metadata__" or name in mx4_set:
-                continue
-            if not _upload_plain(name, weights):
-                dt = header[name].get("dtype", "?")
-                if dt not in ("U8", "I32", "F32"):
-                    logger.warning("Skipping %s (dtype=%s)", name, dt)
+            for name in header:
+                if name == "__metadata__" or name in dnvfp4_set:
+                    continue
+                if not _upload_plain(name, weights):
+                    dt = header[name].get("dtype", "?")
+                    if dt not in ("F8_E4M3", "U8", "I32", "F32"):
+                        logger.warning("Skipping %s (dtype=%s)", name, dt)
 
-        for base in mxfp4_bases:
-            try:
-                wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
-                ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                # Convert U8 exponents to F16: scale = 2^(u8 - 127)
-                ws_f16 = np.ascontiguousarray(
-                    (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)).astype(np.float16))
-                N_, K2_ = wp.shape
-                K_ = K2_ * 2
-                _upload_u8(wp, f"{base}.weight", weights)
-                _upload_f16(ws_f16, f"{base}.weight.scales", weights)
-                weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                weights["__quant_meta__"][base] = {
-                    "fmt": "nvfp4_gpu", "global_scale": 1.0, "group_size": 32}
-                logger.debug("GPU MXFP4: %s (N=%d, K=%d)", base, N_, K_)
-            except Exception as exc:
-                logger.warning("Failed to process MXFP4 %s: %s", base, exc)
+            for base in dnvfp4_bases:
+                try:
+                    wp = _load_raw(f"{base}.weight")        # (N, K//2) U8
+                    ws = _load_raw(f"{base}.weight_scale")  # (N, K//group_size) F8_E4M3 as uint8
+                    wgs_key = f"{base}.weight_scale_2"
+                    wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
+                    N_, K2_ = wp.shape
+                    K_ = K2_ * 2
+                    ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
+                    _upload_u8(wp, f"{base}.weight", weights)
+                    _upload_f16(ws_f16, f"{base}.weight.scales", weights)
+                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                    weights["__quant_meta__"][base] = {
+                        "fmt": "nvfp4_gpu", "global_scale": wgs,
+                        "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
+                except Exception as exc:
+                    logger.warning("Failed to process diffusion NVFP4 %s: %s", base, exc)
 
-    elif fmt == "mxfp8":
-        # MXFP8 (microscaling FP8): *.weight [N, K] U8 FP8-E4M3 + *.weight_scale [N, K//32] U8 exponents.
-        # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
-        # CPU dequant: avoids shader changes for per-block FP8.
-        # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
-        mxfp8_bases = sorted(set(
-            k[:-len(".weight")] for k in header
-            if k.endswith(".weight")
-            and header[k].get("dtype") == "U8"
-            and k[:-len(".weight")] + ".weight_scale" in header
-            and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
-        ))
-        mx8_set: set = set()
-        for base in mxfp8_bases:
-            mx8_set.add(f"{base}.weight")
-            mx8_set.add(f"{base}.weight_scale")
+        elif fmt == "fp8":
+            # Plain FP8 E4M3: weight stored as F8_E4M3, scale as F32 in *.weight_scale
+            fp8_names = {
+                k for k in header
+                if k != "__metadata__"
+                and k.endswith(".weight")
+                and header[k].get("dtype") == "F8_E4M3"
+            }
+            fp8_scale_names = {
+                k[:-len(".weight")] + ".weight_scale"
+                for k in fp8_names
+            }
+            fp8_set = fp8_names | fp8_scale_names
 
-        for name in header:
-            if name == "__metadata__" or name in mx8_set:
-                continue
-            if not _upload_plain(name, weights):
-                dt = header[name].get("dtype", "?")
-                if dt not in ("U8", "I32", "F32"):
-                    logger.warning("Skipping %s (dtype=%s)", name, dt)
+            for name in header:
+                if name == "__metadata__" or name in fp8_set:
+                    continue
+                if not _upload_plain(name, weights):
+                    dt = header[name].get("dtype", "?")
+                    if dt not in ("F8_E4M3", "U8", "I32"):
+                        logger.warning("Skipping %s (dtype=%s)", name, dt)
 
-        for base in mxfp8_bases:
-            try:
-                w_u8  = _load_raw(f"{base}.weight")        # (N, K) U8 FP8 E4M3 bytes
-                ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                N_, K_ = w_u8.shape
-                # Convert U8 exponents to F32 block scales: scale = 2^(u8 - 127)
-                block_scale = (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0))
-                n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
-                block_size = K_ // n_blocks if n_blocks > 0 else K_
-                # Expand block scales to (N, K) for element-wise multiply
-                block_scale_exp = np.repeat(block_scale, block_size, axis=1)
-                # FP8 E4M3 → F32, scale, clip, cast to F16
-                w_f32 = _fp8_e4m3_to_f32(w_u8)
-                w_f16 = np.ascontiguousarray(
-                    np.clip(w_f32 * block_scale_exp, -65504.0, 65504.0).astype(np.float16))
-                _upload(w_f16, f"{base}.weight", weights)
-                logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
-            except Exception as exc:
-                logger.warning("Failed to process MXFP8 %s: %s", base, exc)
+            for wname in fp8_names:
+                base = wname[:-len(".weight")]
+                try:
+                    w_fp8 = _load_raw(wname)   # uint8 array (F8_E4M3 bytes), shape (N, K)
+                    scale_key = f"{base}.weight_scale"
+                    # GPU FP8: upload raw F8 bytes; shader decodes inline.
+                    _upload_u8(w_fp8, wname, weights)
+                    weights.setdefault("__quant_meta__", {})
+                    if scale_key in header:
+                        scale_arr = _load_raw(scale_key)
+                        if scale_arr.ndim == 0 or scale_arr.size == 1:
+                            # Per-tensor scale: scalar or single-element.
+                            scale_val = float(scale_arr.ravel()[0])
+                            weights["__quant_meta__"][base] = {
+                                "fmt": "fp8_gpu", "global_scale": scale_val}
+                            logger.debug("GPU FP8 (per-tensor): %s scale=%.6f", base, scale_val)
+                        else:
+                            # Per-channel scale: shape (N,) — one float per output channel.
+                            # Upload as F16 scales buffer; shader reads scales[row] when GROUP_K=1.
+                            scale_f16 = np.ascontiguousarray(
+                                scale_arr.ravel().astype(np.float16))
+                            _upload_f16(scale_f16, wname + ".scales", weights)
+                            weights["__quant_meta__"][base] = {
+                                "fmt": "fp8_gpu", "global_scale": 1.0, "group_size": 1}
+                            logger.debug("GPU FP8 (per-channel): %s n_scales=%d",
+                                         base, scale_f16.size)
+                    else:
+                        weights["__quant_meta__"][base] = {
+                            "fmt": "fp8_gpu", "global_scale": 1.0}
+                        logger.debug("GPU FP8: %s (no scale key)", base)
+                except Exception as exc:
+                    logger.warning("Failed to process FP8 %s: %s", base, exc)
 
-    elif fmt == "bnb_nf4":
-        # BitsAndBytes NF4: weight [N//2, K] U8 (2 NF4 codes per byte, flattened row-pairs)
-        # + absmax [N*K//64] F32 (one per block of 64 elements in flat row-major order).
-        #
-        # BnB packs flat weight elements in pairs: byte i holds codes for elements 2i and
-        # 2i+1.  Reshaped to [N//2, K], row r covers weight rows 2r and 2r+1:
-        #   - columns [0, K//2): codes for weight[2r, 0..K-1] (lo=even k, hi=odd k)
-        #   - columns [K//2, K): codes for weight[2r+1, 0..K-1]
-        # The shader expects [N, K//2] — reshape [N//2, K] → [N//2, 2, K//2] → [N, K//2].
-        # Absmax is in flat block order (block b covers weight[b//G, b%G*64..(b%G+1)*64]
-        # when K%64==0), so reshape [N*K//64] → [N, K//64] aligns with scales[n, blk].
-        #
-        # Companion key patterns supported:
-        #   old BnB: {base}.weight_quantized_stats  (F32/F16 absmax tensor)
-        #   new BnB: {base}.weight.absmax            (F32 absmax tensor)
+        elif fmt == "mxfp4":
+            # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
+            # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
+            # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
+            mxfp4_bases = sorted(set(
+                k[:-len(".weight")] for k in header
+                if k.endswith(".weight")
+                and header[k].get("dtype") == "U8"
+                and k[:-len(".weight")] + ".weight_scale" in header
+                and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
+            ))
+            mx4_set: set = set()
+            for base in mxfp4_bases:
+                mx4_set.add(f"{base}.weight")
+                mx4_set.add(f"{base}.weight_scale")
 
-        # Collect BnB bases and the set of companion keys to skip in the plain pass.
-        bnb_bases: set = set()
-        bnb_set: set = set()
+            for name in header:
+                if name == "__metadata__" or name in mx4_set:
+                    continue
+                if not _upload_plain(name, weights):
+                    dt = header[name].get("dtype", "?")
+                    if dt not in ("U8", "I32", "F32"):
+                        logger.warning("Skipping %s (dtype=%s)", name, dt)
 
-        for k in header:
-            if k == "__metadata__":
-                continue
-            if k.endswith(".weight_quantized_stats"):
-                base = k[:-len(".weight_quantized_stats")]
-                bnb_bases.add(base)
-                bnb_set.add(k)
-                wk = f"{base}.weight"
-                if wk in header:
-                    bnb_set.add(wk)
-            elif k.endswith(".weight.absmax"):
-                w_key = k[:-len(".absmax")]          # "{base}.weight"
-                if header.get(w_key, {}).get("dtype") == "U8":
-                    base = w_key[:-len(".weight")]
-                    bnb_bases.add(base)
-                    bnb_set.add(k)
-                    bnb_set.add(w_key)
-            elif "quant_state.bitsandbytes__nf4" in k:
-                w_idx = k.find(".weight.quant_state")
-                if w_idx >= 0:
-                    base = k[:w_idx]
+            for base in mxfp4_bases:
+                try:
+                    wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
+                    ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
+                    # Convert U8 exponents to F16: scale = 2^(u8 - 127)
+                    ws_f16 = np.ascontiguousarray(
+                        (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)).astype(np.float16))
+                    N_, K2_ = wp.shape
+                    K_ = K2_ * 2
+                    _upload_u8(wp, f"{base}.weight", weights)
+                    _upload_f16(ws_f16, f"{base}.weight.scales", weights)
+                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
+                    weights["__quant_meta__"][base] = {
+                        "fmt": "nvfp4_gpu", "global_scale": 1.0, "group_size": 32}
+                    logger.debug("GPU MXFP4: %s (N=%d, K=%d)", base, N_, K_)
+                except Exception as exc:
+                    logger.warning("Failed to process MXFP4 %s: %s", base, exc)
+
+        elif fmt == "mxfp8":
+            # MXFP8 (microscaling FP8): *.weight [N, K] U8 FP8-E4M3 + *.weight_scale [N, K//32] U8 exponents.
+            # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
+            # CPU dequant: avoids shader changes for per-block FP8.
+            # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
+            mxfp8_bases = sorted(set(
+                k[:-len(".weight")] for k in header
+                if k.endswith(".weight")
+                and header[k].get("dtype") == "U8"
+                and k[:-len(".weight")] + ".weight_scale" in header
+                and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
+            ))
+            mx8_set: set = set()
+            for base in mxfp8_bases:
+                mx8_set.add(f"{base}.weight")
+                mx8_set.add(f"{base}.weight_scale")
+
+            for name in header:
+                if name == "__metadata__" or name in mx8_set:
+                    continue
+                if not _upload_plain(name, weights):
+                    dt = header[name].get("dtype", "?")
+                    if dt not in ("U8", "I32", "F32"):
+                        logger.warning("Skipping %s (dtype=%s)", name, dt)
+
+            for base in mxfp8_bases:
+                try:
+                    w_u8  = _load_raw(f"{base}.weight")        # (N, K) U8 FP8 E4M3 bytes
+                    ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
+                    N_, K_ = w_u8.shape
+                    # Convert U8 exponents to F32 block scales: scale = 2^(u8 - 127)
+                    block_scale = (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0))
+                    n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
+                    block_size = K_ // n_blocks if n_blocks > 0 else K_
+                    # Expand block scales to (N, K) for element-wise multiply
+                    block_scale_exp = np.repeat(block_scale, block_size, axis=1)
+                    # FP8 E4M3 → F32, scale, clip, cast to F16
+                    w_f32 = _fp8_e4m3_to_f32(w_u8)
+                    w_f16 = np.ascontiguousarray(
+                        np.clip(w_f32 * block_scale_exp, -65504.0, 65504.0).astype(np.float16))
+                    _upload(w_f16, f"{base}.weight", weights)
+                    logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
+                except Exception as exc:
+                    logger.warning("Failed to process MXFP8 %s: %s", base, exc)
+
+        elif fmt == "bnb_nf4":
+            # BitsAndBytes NF4: weight [N//2, K] U8 (2 NF4 codes per byte, flattened row-pairs)
+            # + absmax [N*K//64] F32 (one per block of 64 elements in flat row-major order).
+            #
+            # BnB packs flat weight elements in pairs: byte i holds codes for elements 2i and
+            # 2i+1.  Reshaped to [N//2, K], row r covers weight rows 2r and 2r+1:
+            #   - columns [0, K//2): codes for weight[2r, 0..K-1] (lo=even k, hi=odd k)
+            #   - columns [K//2, K): codes for weight[2r+1, 0..K-1]
+            # The shader expects [N, K//2] — reshape [N//2, K] → [N//2, 2, K//2] → [N, K//2].
+            # Absmax is in flat block order (block b covers weight[b//G, b%G*64..(b%G+1)*64]
+            # when K%64==0), so reshape [N*K//64] → [N, K//64] aligns with scales[n, blk].
+            #
+            # Companion key patterns supported:
+            #   old BnB: {base}.weight_quantized_stats  (F32/F16 absmax tensor)
+            #   new BnB: {base}.weight.absmax            (F32 absmax tensor)
+
+            # Collect BnB bases and the set of companion keys to skip in the plain pass.
+            bnb_bases: set = set()
+            bnb_set: set = set()
+
+            for k in header:
+                if k == "__metadata__":
+                    continue
+                if k.endswith(".weight_quantized_stats"):
+                    base = k[:-len(".weight_quantized_stats")]
                     bnb_bases.add(base)
                     bnb_set.add(k)
                     wk = f"{base}.weight"
                     if wk in header:
                         bnb_set.add(wk)
-                    absmax_k = f"{base}.weight.absmax"
-                    if absmax_k in header:
-                        bnb_set.add(absmax_k)
+                elif k.endswith(".weight.absmax"):
+                    w_key = k[:-len(".absmax")]          # "{base}.weight"
+                    if header.get(w_key, {}).get("dtype") == "U8":
+                        base = w_key[:-len(".weight")]
+                        bnb_bases.add(base)
+                        bnb_set.add(k)
+                        bnb_set.add(w_key)
+                elif "quant_state.bitsandbytes__nf4" in k:
+                    w_idx = k.find(".weight.quant_state")
+                    if w_idx >= 0:
+                        base = k[:w_idx]
+                        bnb_bases.add(base)
+                        bnb_set.add(k)
+                        wk = f"{base}.weight"
+                        if wk in header:
+                            bnb_set.add(wk)
+                        absmax_k = f"{base}.weight.absmax"
+                        if absmax_k in header:
+                            bnb_set.add(absmax_k)
 
-        # Upload all non-BnB tensors normally.
-        for name in header:
-            if name == "__metadata__" or name in bnb_set:
-                continue
-            if not _upload_plain(name, weights):
-                dt = header[name].get("dtype", "?")
-                if dt not in ("U8", "I32", "F32"):
-                    logger.warning("Skipping %s (dtype=%s)", name, dt)
-
-        _BNB_GROUP_K = 64
-
-        for base in sorted(bnb_bases):
-            try:
-                w_key = f"{base}.weight"
-                if w_key not in header or header[w_key].get("dtype") != "U8":
-                    logger.warning("BnB NF4: missing or non-U8 weight for %s, skipping", base)
+            # Upload all non-BnB tensors normally.
+            for name in header:
+                if name == "__metadata__" or name in bnb_set:
                     continue
+                if not _upload_plain(name, weights):
+                    dt = header[name].get("dtype", "?")
+                    if dt not in ("U8", "I32", "F32"):
+                        logger.warning("Skipping %s (dtype=%s)", name, dt)
 
-                bnb_codes = _load_raw(w_key)     # [N//2, K] uint8
+            _BNB_GROUP_K = 64
 
-                if bnb_codes.ndim != 2:
-                    logger.warning(
-                        "BnB NF4: expected 2D weight, got shape %s for %s — skipping",
-                        bnb_codes.shape, base)
+            for base in sorted(bnb_bases):
+                try:
+                    w_key = f"{base}.weight"
+                    if w_key not in header or header[w_key].get("dtype") != "U8":
+                        logger.warning("BnB NF4: missing or non-U8 weight for %s, skipping", base)
+                        continue
+
+                    bnb_codes = _load_raw(w_key)     # [N//2, K] uint8
+
+                    if bnb_codes.ndim != 2:
+                        logger.warning(
+                            "BnB NF4: expected 2D weight, got shape %s for %s — skipping",
+                            bnb_codes.shape, base)
+                        continue
+
+                    N_half, K = bnb_codes.shape
+                    N = N_half * 2
+                    K_half = K // 2
+
+                    # Find absmax (try each companion key pattern in priority order).
+                    absmax_arr = None
+                    for abs_key in (
+                        f"{base}.weight_quantized_stats",
+                        f"{base}.weight.absmax",
+                    ):
+                        if abs_key in header:
+                            absmax_arr = _load_raw(abs_key).astype(np.float32).ravel()
+                            break
+
+                    if absmax_arr is None:
+                        logger.warning("BnB NF4: no absmax found for %s, skipping", base)
+                        continue
+
+                    expected_blocks = N * K // _BNB_GROUP_K
+                    if absmax_arr.size != expected_blocks:
+                        logger.warning(
+                            "BnB NF4: absmax size %d != expected %d (N=%d, K=%d) for %s — skipping",
+                            absmax_arr.size, expected_blocks, N, K, base)
+                        continue
+
+                    # Reshape: [N//2, K] → [N//2, 2, K//2] → [N, K//2]
+                    # BnB row r: first K//2 bytes → shader row 2r, last K//2 bytes → shader row 2r+1.
+                    shader_codes = np.ascontiguousarray(
+                        bnb_codes.reshape(N_half, 2, K_half).reshape(N, K_half))
+
+                    # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
+                    absmax_2d = np.ascontiguousarray(
+                        absmax_arr.reshape(N, K // _BNB_GROUP_K).astype(np.float16))
+
+                    _upload_u8(shader_codes, f"{base}.weight", weights)
+                    _upload_f16(absmax_2d, f"{base}.weight.scales", weights)
+                    weights.setdefault("__quant_meta__", {})[base] = {
+                        "fmt": "nf4_gpu",
+                        "group_size": _BNB_GROUP_K,
+                    }
+                    logger.debug("GPU NF4: %s (N=%d, K=%d, blocks=%d)", base, N, K, expected_blocks)
+
+                except Exception as exc:
+                    logger.warning("Failed to process BnB NF4 %s: %s", base, exc)
+
+        elif fmt == "ct_pack_int4":
+            # compressed-tensors pack-quantized INT4 (W4A16).
+            # Weight: {base}.weight [N, K//8] I32 (8 nibbles/u32, already in [N,K//8] layout)
+            # Scale:  {base}.weight_scale [N, G] F16/BF16/F32 → transpose to [G, N] for shader
+            # group_size comes from the quantization_config parsed in ct_meta.
+            _ct_group_size = ct_meta["__global__"].get("group_size", 32)
+
+            ct_bases = sorted(set(
+                k[:-len(".weight")]
+                for k in header
+                if k.endswith(".weight") and header[k].get("dtype") == "I32"
+                and k[:-len(".weight")] + ".weight_scale" in header
+            ))
+            ct_reserved = set()
+            for _b in ct_bases:
+                ct_reserved.add(f"{_b}.weight")
+                ct_reserved.add(f"{_b}.weight_scale")
+
+            for name in header:
+                if name == "__metadata__" or name in ct_reserved:
                     continue
+                if not _upload_plain(name, weights):
+                    logger.warning("Skipping %s (dtype=%s)", name, header[name].get("dtype", "?"))
 
-                N_half, K = bnb_codes.shape
-                N = N_half * 2
-                K_half = K // 2
+            weights.setdefault("__quant_meta__", {})
+            for base in ct_bases:
+                try:
+                    qw = _load_raw(f"{base}.weight")          # [N, K//8] I32
+                    sc_raw = _load_raw(f"{base}.weight_scale") # [N, G] F16/BF16/F32
 
-                # Find absmax (try each companion key pattern in priority order).
-                absmax_arr = None
-                for abs_key in (
-                    f"{base}.weight_quantized_stats",
-                    f"{base}.weight.absmax",
-                ):
-                    if abs_key in header:
-                        absmax_arr = _load_raw(abs_key).astype(np.float32).ravel()
-                        break
+                    if sc_raw.dtype == np.float32:
+                        sc = sc_raw.astype(np.float16)
+                    elif hasattr(sc_raw, "view") and sc_raw.dtype == np.uint16:
+                        sc = ((sc_raw.astype(np.uint32) << 16).view(np.float32)).astype(np.float16)
+                    else:
+                        sc = sc_raw.astype(np.float16)
 
-                if absmax_arr is None:
-                    logger.warning("BnB NF4: no absmax found for %s, skipping", base)
+                    # Transpose scale [N, G] → [G, N] to match shader expectation.
+                    if sc.ndim == 2:
+                        sc = np.ascontiguousarray(sc.T)
+
+                    _upload_int32(qw, f"{base}.weight", weights)
+                    _upload_f16(sc, f"{base}.weight.scales", weights)
+                    weights["__quant_meta__"][base] = {
+                        "fmt": "gptq_sym",
+                        "group_size": _ct_group_size,
+                    }
+                    logger.debug(
+                        "CT pack-int4: %s (N=%d, K=%d, G=%d, group_size=%d)",
+                        base, qw.shape[0], qw.shape[1] * 8,
+                        sc.shape[0], _ct_group_size)
+                except Exception as exc:
+                    logger.warning("Failed to process CT pack-int4 %s: %s", base, exc)
+
+        else:
+            # Plain BF16/F16/F32
+            for name, meta in header.items():
+                if name == "__metadata__":
                     continue
+                if not _upload_plain(name, weights):
+                    logger.warning("Unsupported dtype %s for %s, skipping",
+                                    meta.get("dtype", "?"), name)
 
-                expected_blocks = N * K // _BNB_GROUP_K
-                if absmax_arr.size != expected_blocks:
-                    logger.warning(
-                        "BnB NF4: absmax size %d != expected %d (N=%d, K=%d) for %s — skipping",
-                        absmax_arr.size, expected_blocks, N, K, base)
-                    continue
+        # Multimodal remapping for single-file models (same patterns as sharded loader).
+        # Gemma4 unified: model.language_model.X → model.X
+        # Gemma3 multimodal (rare single-file): language_model.X → X
+        keys = list(weights.keys())
+        if any(k.startswith("model.language_model.") for k in keys):
+            remapped = {}
+            for k, v in weights.items():
+                if k.startswith("model.language_model."):
+                    remapped["model." + k[len("model.language_model."):]] = v
+            weights.update(remapped)
+            logger.info("Remapped %d model.language_model.* keys", len(remapped))
+        elif any(k.startswith("language_model.") for k in keys):
+            remapped = {}
+            for k, v in weights.items():
+                if k.startswith("language_model."):
+                    remapped[k[len("language_model."):]] = v
+            weights.update(remapped)
+            logger.info("Remapped %d language_model.* keys", len(remapped))
 
-                # Reshape: [N//2, K] → [N//2, 2, K//2] → [N, K//2]
-                # BnB row r: first K//2 bytes → shader row 2r, last K//2 bytes → shader row 2r+1.
-                shader_codes = np.ascontiguousarray(
-                    bnb_codes.reshape(N_half, 2, K_half).reshape(N, K_half))
-
-                # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
-                absmax_2d = np.ascontiguousarray(
-                    absmax_arr.reshape(N, K // _BNB_GROUP_K).astype(np.float16))
-
-                _upload_u8(shader_codes, f"{base}.weight", weights)
-                _upload_f16(absmax_2d, f"{base}.weight.scales", weights)
-                weights.setdefault("__quant_meta__", {})[base] = {
-                    "fmt": "nf4_gpu",
-                    "group_size": _BNB_GROUP_K,
-                }
-                logger.debug("GPU NF4: %s (N=%d, K=%d, blocks=%d)", base, N, K, expected_blocks)
-
-            except Exception as exc:
-                logger.warning("Failed to process BnB NF4 %s: %s", base, exc)
-
-    elif fmt == "ct_pack_int4":
-        # compressed-tensors pack-quantized INT4 (W4A16).
-        # Weight: {base}.weight [N, K//8] I32 (8 nibbles/u32, already in [N,K//8] layout)
-        # Scale:  {base}.weight_scale [N, G] F16/BF16 → transpose to [G, N] for shader
-        # group_size comes from the quantization_config parsed in ct_meta.
-        _ct_group_size = ct_meta["__global__"].get("group_size", 32)
-
-        ct_bases = sorted(set(
-            k[:-len(".weight")]
-            for k in header
-            if k.endswith(".weight") and header[k].get("dtype") == "I32"
-            and k[:-len(".weight")] + ".weight_scale" in header
-        ))
-        ct_reserved = set()
-        for _b in ct_bases:
-            ct_reserved.add(f"{_b}.weight")
-            ct_reserved.add(f"{_b}.weight_scale")
-
-        for name in header:
-            if name == "__metadata__" or name in ct_reserved:
-                continue
-            if not _upload_plain(name, weights):
-                logger.warning("Skipping %s (dtype=%s)", name, header[name].get("dtype", "?"))
-
-        weights.setdefault("__quant_meta__", {})
-        for base in ct_bases:
-            try:
-                qw = _load_raw(f"{base}.weight")          # [N, K//8] I32
-                sc_raw = _load_raw(f"{base}.weight_scale") # [N, G] F16/BF16/F32
-
-                if sc_raw.dtype == np.float32:
-                    sc = sc_raw.astype(np.float16)
-                elif hasattr(sc_raw, "view") and sc_raw.dtype == np.uint16:
-                    sc = ((sc_raw.astype(np.uint32) << 16).view(np.float32)).astype(np.float16)
-                else:
-                    sc = sc_raw.astype(np.float16)
-
-                # Transpose scale [N, G] → [G, N] to match shader expectation.
-                if sc.ndim == 2:
-                    sc = np.ascontiguousarray(sc.T)
-
-                _upload_int32(qw, f"{base}.weight", weights)
-                _upload_f16(sc, f"{base}.weight.scales", weights)
-                weights["__quant_meta__"][base] = {
-                    "fmt": "gptq_sym",
-                    "group_size": _ct_group_size,
-                }
-                logger.debug(
-                    "CT pack-int4: %s (N=%d, K=%d, G=%d, group_size=%d)",
-                    base, qw.shape[0], qw.shape[1] * 8,
-                    sc.shape[0], _ct_group_size)
-            except Exception as exc:
-                logger.warning("Failed to process CT pack-int4 %s: %s", base, exc)
-
-    else:
-        # Plain BF16/F16/F32
-        for name, meta in header.items():
-            if name == "__metadata__":
-                continue
-            if not _upload_plain(name, weights):
-                logger.warning("Unsupported dtype %s for %s, skipping",
-                                meta.get("dtype", "?"), name)
-
-    # Multimodal remapping for single-file models (same patterns as sharded loader).
-    # Gemma4 unified: model.language_model.X → model.X
-    # Gemma3 multimodal (rare single-file): language_model.X → X
-    keys = list(weights.keys())
-    if any(k.startswith("model.language_model.") for k in keys):
-        remapped = {}
-        for k, v in weights.items():
-            if k.startswith("model.language_model."):
-                remapped["model." + k[len("model.language_model."):]] = v
-        weights.update(remapped)
-        logger.info("Remapped %d model.language_model.* keys", len(remapped))
-    elif any(k.startswith("language_model.") for k in keys):
-        remapped = {}
-        for k, v in weights.items():
-            if k.startswith("language_model."):
-                remapped[k[len("language_model."):]] = v
-        weights.update(remapped)
-        logger.info("Remapped %d language_model.* keys", len(remapped))
-
-    # Commit all pending write_buffer calls before returning.
-    wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
-    wgpu_device.queue.on_submitted_work_done_sync()
-    logger.info("Loaded %d tensors from %s", len(weights), path)
-    return weights
+        # Commit all pending write_buffer calls before returning.
+        wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+        wgpu_device.queue.on_submitted_work_done_sync()
+        logger.info("Loaded %d tensors from %s", len(weights), path)
+        return weights
 
 
 def _bf16_raw_to_f32(raw: bytes, shape: tuple) -> "np.ndarray":
