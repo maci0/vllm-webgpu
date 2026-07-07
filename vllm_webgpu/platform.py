@@ -62,8 +62,21 @@ class WebGPUPlatform(_Platform):
     def is_available(cls) -> bool:
         try:
             import wgpu
+        except ImportError:
+            return False
+        try:
             adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
-            return adapter is not None
+            if adapter is None:
+                return False
+            info = adapter.request_adapter_info()
+            adapter_type = info.get("adapter_type", "")
+            if isinstance(adapter_type, str) and adapter_type.lower() in ("cpu", "software"):
+                logger.debug(
+                    "WebGPU adapter is a CPU/software renderer (%s), not selecting WebGPU platform",
+                    adapter_type,
+                )
+                return False
+            return True
         except Exception:
             return False
 
