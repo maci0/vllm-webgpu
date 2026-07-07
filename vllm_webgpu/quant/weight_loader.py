@@ -22,9 +22,39 @@ def _is_mlx_quantized_dir(p: Path) -> bool:
         return False
 
 
+_UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
+
+
+def _check_unsupported_quant(model_dir: Path) -> None:
+    """Raise ValueError if config.json names an unsupported quantization scheme.
+
+    Detects AQLM, HQQ, and QuIP# by reading quantization_config.quant_type from
+    config.json. These formats cannot be loaded as safetensors by this plugin;
+    raise early with a clear message rather than silently loading wrong data.
+    """
+    import json
+    config_json = model_dir / "config.json"
+    if not config_json.exists():
+        return
+    try:
+        with open(config_json) as f:
+            cfg = json.load(f)
+    except Exception:
+        return
+    qcfg = cfg.get("quantization_config", {})
+    qt = (qcfg.get("quant_type") or qcfg.get("quant_method") or "").lower().strip()
+    if qt in _UNSUPPORTED_QUANT_TYPES:
+        raise ValueError(
+            f"Quantization format {qt!r} is not supported by vllm-webgpu. "
+            f"Supported formats: safetensors (fp16/bf16), GPTQ, AWQ, FP8, INT8, NF4, MLX-int4. "
+            f"For {qt!r}, use a dedicated plugin or dequantize the model first."
+        )
+
+
 def detect_weight_format(path: str) -> str:
     p = Path(path)
     if p.is_dir():
+        _check_unsupported_quant(p)
         if (p / "model.safetensors.index.json").exists():
             if _is_mlx_quantized_dir(p):
                 return "mlx_int4"

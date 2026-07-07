@@ -356,12 +356,12 @@ class WebGPUModelRunner:
 
     @staticmethod
     def _flat_block_ids(ids) -> list[int]:
-        """Recursively flatten block IDs from vLLM's nested tuple/list format."""
-        if not ids:
+        """Recursively flatten block IDs from vLLM's nested tuple/list/ndarray format."""
+        if ids is None or (hasattr(ids, "__len__") and len(ids) == 0):
             return []
         result = []
         for x in ids:
-            if isinstance(x, (list, tuple)):
+            if isinstance(x, (list, tuple, np.ndarray)):
                 result.extend(WebGPUModelRunner._flat_block_ids(x))
             else:
                 result.append(int(x))
@@ -376,8 +376,6 @@ class WebGPUModelRunner:
     ) -> Any:
         if ModelRunnerOutput is None:
             return None
-        import inspect as _inspect
-        out_params = set(_inspect.signature(ModelRunnerOutput.__init__).parameters)
 
         # Build LogprobsLists when at least one request supplied logprob tuples.
         built_logprobs = None
@@ -407,10 +405,28 @@ class WebGPUModelRunner:
             "logprobs": built_logprobs,
             "prompt_logprobs_dict": prompt_logprobs_dict or {},
         }
-        for opt in ("pooler_output", "kv_connector_output", "ec_connector_output",
-                    "num_nans_in_logits", "cudagraph_stats", "routed_experts"):
-            if opt in out_params:
-                kw[opt] = None
+        # Fill any required fields introduced in newer vLLM versions with None so a
+        # new required field causes a visible TypeError at import time rather than a
+        # confusing runtime crash.  Hardcoded optional names are kept for fields that
+        # need explicit None rather than MISSING.
+        import dataclasses as _dc
+        try:
+            for _f in _dc.fields(ModelRunnerOutput):  # type: ignore[arg-type]
+                if (
+                    _f.default is _dc.MISSING
+                    and _f.default_factory is _dc.MISSING  # type: ignore[misc]
+                    and _f.name not in kw
+                ):
+                    kw[_f.name] = None
+        except TypeError:
+            # ModelRunnerOutput is not a dataclass in this vLLM version; fall back
+            # to the hardcoded optional list.
+            import inspect as _inspect
+            out_params = set(_inspect.signature(ModelRunnerOutput.__init__).parameters)
+            for opt in ("pooler_output", "kv_connector_output", "ec_connector_output",
+                        "num_nans_in_logits", "cudagraph_stats", "routed_experts"):
+                if opt in out_params:
+                    kw[opt] = None
         out = ModelRunnerOutput(**kw)
         self._last_model_output = out
         return out
@@ -509,13 +525,13 @@ class WebGPUModelRunner:
             # Compute logprobs for this prefill token if the request asked for them.
             lp_data = None
             if num_logprobs is not None:
-                if last_logits.shape[-1] == 1 and hasattr(self.model, "logit_readback"):
+                if last_logits.shape[-1] == 1 and getattr(self.model, "logit_returns_token_id", False):
                     full = self.model.logit_readback()
                 elif last_logits.shape[-1] > 1:
                     full = last_logits
                 else:
                     full = None
-                    logger.warning("req %s: logprobs requested but model has no logit_readback", rid)
+                    logger.warning("req %s: logprobs requested but model does not support logit readback", rid)
                 if full is not None:
                     lp_data = self._compute_request_logprobs(full[0], first_decode_tok, num_logprobs)
 
@@ -651,14 +667,14 @@ class WebGPUModelRunner:
 
                     lp_data = None
                     if num_logprobs is not None:
-                        if logits.shape[-1] == 1 and hasattr(self.model, "logit_readback"):
+                        if logits.shape[-1] == 1 and getattr(self.model, "logit_returns_token_id", False):
                             full = self.model.logit_readback()
                         elif logits.shape[-1] > 1:
                             full = logits
                         else:
                             full = None
                             logger.warning(
-                                "req %s: logprobs requested but model has no logit_readback", rid
+                                "req %s: logprobs requested but model does not support logit readback", rid
                             )
                         if full is not None:
                             lp_data = self._compute_request_logprobs(full[-1], stok, num_logprobs)
@@ -710,13 +726,13 @@ class WebGPUModelRunner:
                 # Compute logprobs if requested for this request.
                 lp_data = None
                 if num_logprobs is not None:
-                    if logits.shape[-1] == 1 and hasattr(self.model, "logit_readback"):
+                    if logits.shape[-1] == 1 and getattr(self.model, "logit_returns_token_id", False):
                         full = self.model.logit_readback()
                     elif logits.shape[-1] > 1:
                         full = logits
                     else:
                         full = None
-                        logger.warning("req %s: logprobs requested but model has no logit_readback", rid)
+                        logger.warning("req %s: logprobs requested but model does not support logit readback", rid)
                     if full is not None:
                         lp_data = self._compute_request_logprobs(full[0], stok, num_logprobs)
 

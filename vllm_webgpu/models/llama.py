@@ -42,6 +42,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
       -> rms_norm -> lm_head -> logits
     """
 
+    # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
+    logit_returns_token_id: bool = True
+
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
         self.num_layers: int = model_config.num_hidden_layers

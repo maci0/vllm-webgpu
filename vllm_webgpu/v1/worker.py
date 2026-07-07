@@ -5,14 +5,18 @@ import time
 from typing import TYPE_CHECKING, Any
 
 try:
+    # All imports below are vLLM v1 internals verified against vllm>=0.24,<0.25.
+    # These paths have no stability guarantees; a patch release may move or rename
+    # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
+    # Update this comment and pyproject.toml when bumping the vLLM version.
     from vllm.config import VllmConfig
     from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
     from vllm.tasks import SupportedTask
-    from vllm.utils.torch_utils import set_random_seed
-    from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
-    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+    from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
+    from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput  # vllm>=0.24
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec     # vllm>=0.24
     from vllm.v1.outputs import ModelRunnerOutput
-    from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase
+    from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase   # vllm>=0.24
 except ImportError:
     VllmConfig = Any  # type: ignore[assignment,misc]
     SupportedTask = Any  # type: ignore[assignment,misc]

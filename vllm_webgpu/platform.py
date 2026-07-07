@@ -190,6 +190,15 @@ class WebGPUPlatform(_Platform):
         pass
 
     @classmethod
+    def get_device_uuid(cls, device_id: int = 0) -> str:
+        return f"webgpu:{device_id}"
+
+    @classmethod
+    def get_all_gpu_pci_bus_ids(cls) -> dict[int, str]:
+        # WebGPU does not expose PCI bus IDs; return empty rather than raising.
+        return {}
+
+    @classmethod
     def manual_seed_all(cls, seed: int) -> None:
         # WebGPU has no global RNG; Python/numpy RNG is seeded by vLLM's set_random_seed.
         pass

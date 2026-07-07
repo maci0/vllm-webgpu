@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 
 class BaseWebGPUModel:
+    # Declare whether forward() can return a (1, 1) int32 token ID instead of
+    # full (1, vocab) float32 logits. Subclasses that implement logit_readback()
+    # and GPU argmax set this to True so the runner can rely on a stable contract
+    # rather than testing for the existence of the logit_readback method.
+    logit_returns_token_id: bool = False
+
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
         self.model_config = model_config
         self.wgpu_device = wgpu_device
@@ -272,7 +278,9 @@ class BaseWebGPUModel:
         if self._is_quantized(weight_key):
             qi = self._quant_info(base_key or weight_key[:-len(".weight")])
             gk = qi.get("group_size", 128)
-            return ({"K": K, "N": N, "USE_QUANT": 3, "SPLIT_K": 1, "GROUP_K": gk},
+            # AWQ symmetric quantization requires USE_QUANT=4; all other i32 formats use 3.
+            uq = 4 if qi.get("fmt") == "awq_sym" else 3
+            return ({"K": K, "N": N, "USE_QUANT": uq, "SPLIT_K": 1, "GROUP_K": gk},
                     (N, 1, 1))
         if N > 65535:
             return ({"K": K, "N": N, "USE_QUANT": 0, "SPLIT_K": 0},
@@ -331,6 +339,30 @@ class BaseWebGPUModel:
         ...
 
     def warmup(self) -> None:
-        """Compile all pipelines upfront to avoid first-inference latency."""
-        logger.info("Warming up shader pipelines...")
-        # Subclasses override to trigger get_or_create for all shaders they use.
+        """Pre-compile shader pipelines by running a dummy single-token decode step.
+
+        Calls forward() with a single dummy token so every shader variant used in
+        the decode hot path gets compiled and cached in pipeline_cache. Any error
+        is logged and swallowed so warmup never blocks inference from starting.
+
+        Subclasses may override to also exercise prefill paths or additional
+        shader combinations (e.g. batch T>1, MoE routing).
+        """
+        if not self.weights:
+            logger.info("Skipping warmup: weights not loaded")
+            return
+        logger.info("Warming up shader pipelines via dummy decode step...")
+        try:
+            dummy_ids = np.array([0], dtype=np.uint32)
+            dummy_pos = np.array([0], dtype=np.uint32)
+
+            # Minimal attention metadata: slot 0 in block 0.
+            class _DummyAttn:
+                slot_mapping = [0]
+                block_tables = [np.array([0], dtype=np.uint32)]
+                max_decode_seq_len = 1
+
+            self.forward(dummy_ids, dummy_pos, _DummyAttn())
+            logger.info("Warmup complete")
+        except Exception as exc:
+            logger.warning("Warmup failed (non-fatal): %s", exc)
