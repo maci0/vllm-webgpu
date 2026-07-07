@@ -226,31 +226,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
         self._hstate: int = 0
 
-    def _uq_weight(self, key: str) -> int:
-        """Return USE_QUANT value for a weight key (same logic as llama.py)."""
-        # Check __quant_types__ (Q4_K type=12) before dtype to avoid misidentifying
-        # Q4_K raw bytes (dtype=u8) as FP8.
-        quant_types = self.weights.get("__quant_types__", {})
-        _qt = quant_types if isinstance(quant_types, dict) else {}
-        if _qt.get(key, 0) == 12:
-            return 2
-        w = self.weights.get(key)
-        if w is not None:
-            dtype = getattr(w, "dtype", "f16")
-            qmeta = self.weights.get("__quant_meta__", {})
-            meta = qmeta.get(key[:-7], {}) if isinstance(qmeta, dict) else {}
-            fmt = meta.get("fmt", "")
-            if dtype == "i32":
-                return 4 if fmt == "awq_sym" else 3
-            if dtype == "u8":
-                if fmt == "nvfp4_gpu": return 6
-                if fmt == "int8_gpu":  return 7
-                if fmt == "fp8_gpu":   return 5
-                if fmt == "nf4_gpu":   return 8
-        if self.weights.get(key[:-7] + ".scales") is not None:
-            return 1
-        return 0
-
     def _scales_buf(self, w_key: str, uq: int, fallback: "WebGPUBuffer") -> "WebGPUBuffer":
         """Return the scales buffer for any quant format."""
         if uq in (3, 4, 5, 6, 7, 8):
@@ -599,7 +574,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # ── Phase A: router + top-K (into current encoder) ───────────────────
         # Router: normed_x [hidden] → moe_router_out [N_E] logits
         rw_k = f"{p}.gate.weight"
-        uq_r = self._uq_weight(rw_k)
+        uq_r = self._uq_for_key(rw_k)
         qi_r = self._quant_extra(f"{p}.gate", uq_r)
         extra_r: dict = {"SPLIT_K": 0} if uq_r not in (0, 3, 4, 5, 6, 7, 8) else {}
         self._dispatch(
@@ -655,7 +630,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 {"K": hidden, "N": shared_inter, "GELU": 0},
                 (shared_inter, 1, 1),
             )
-            uq_sd = self._uq_weight(sdw_k)
+            uq_sd = self._uq_for_key(sdw_k)
             qi_sd = self._quant_extra(f"{sp}.down_proj", uq_sd)
             extra_sd: dict = {"SPLIT_K": 0} if uq_sd not in (0, 3, 4, 5, 6, 7, 8) else {}
             self._dispatch(
@@ -693,7 +668,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 (moe_inter, 1, 1),
             )
             # Down projection → moe_expert_down
-            uq_ed = self._uq_weight(edw_k)
+            uq_ed = self._uq_for_key(edw_k)
             qi_ed = self._quant_extra(f"{ep}.down_proj", uq_ed)
             extra_ed: dict = {"SPLIT_K": 0} if uq_ed not in (0, 3, 4, 5, 6, 7, 8) else {}
             self._dispatch(
@@ -1079,7 +1054,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         ln_rope = math.log(self.rope_theta)
 
         # Per-weight quantization detection: Q4_K (type 12) → GPU block decoder.
-        _uq = self._uq_weight
+        _uq = self._uq_for_key
 
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
