@@ -469,6 +469,10 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
 
     usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
+    # Detect compressed-tensors config from the model directory (needed for
+    # pack-quantized INT4 format where weight dtype alone is insufficient).
+    ct_meta = detect_compressed_tensors_fmt(Path(path).parent / "config.json")
+
     # Detect quantization format from header
     has_qweight   = any(k.endswith(".qweight")      for k in header)
     has_wp        = any(k.endswith(".weight_packed") for k in header)   # standard NVFP4
@@ -498,6 +502,19 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         or any(
             k.endswith(".weight.absmax")
             and header.get(k[:-len(".absmax")], {}).get("dtype") == "U8"
+            for k in header if k != "__metadata__"
+        )
+    )
+    # compressed-tensors pack-quantized INT4: .weight I32 + .weight_scale F16/BF16/F32
+    # (e.g. google/gemma-4-12B-it-qat-w4a16-ct). The quantization_config in config.json
+    # is read by detect_compressed_tensors_fmt() and stored in ct_meta; the weight tensors
+    # themselves use different key names than standard GPTQ (.weight not .qweight, and
+    # .weight_scale not .scales), so they need a dedicated loading path.
+    has_ct_pack_int4 = (
+        bool(ct_meta and ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu")
+        and any(
+            header[k].get("dtype") == "I32" and k.endswith(".weight")
+            and k[:-len(".weight")] + ".weight_scale" in header
             for k in header if k != "__metadata__"
         )
     )
@@ -537,6 +554,8 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         # MXFP4 or MXFP8: U8 weight + U8 exponent scale. Distinguish via config files.
         _mx = _detect_mx_quant(Path(path).parent)
         fmt = _mx if _mx in ("mxfp4", "mxfp8") else "plain"
+    elif has_ct_pack_int4:
+        fmt = "ct_pack_int4"
     else:
         fmt = "plain"
 
@@ -1144,6 +1163,60 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
 
             except Exception as exc:
                 logger.warning("Failed to process BnB NF4 %s: %s", base, exc)
+
+    elif fmt == "ct_pack_int4":
+        # compressed-tensors pack-quantized INT4 (W4A16).
+        # Weight: {base}.weight [N, K//8] I32 (8 nibbles/u32, already in [N,K//8] layout)
+        # Scale:  {base}.weight_scale [N, G] F16/BF16 → transpose to [G, N] for shader
+        # group_size comes from the quantization_config parsed in ct_meta.
+        _ct_group_size = ct_meta["__global__"].get("group_size", 32)
+
+        ct_bases = sorted(set(
+            k[:-len(".weight")]
+            for k in header
+            if k.endswith(".weight") and header[k].get("dtype") == "I32"
+            and k[:-len(".weight")] + ".weight_scale" in header
+        ))
+        ct_reserved = set()
+        for _b in ct_bases:
+            ct_reserved.add(f"{_b}.weight")
+            ct_reserved.add(f"{_b}.weight_scale")
+
+        for name in header:
+            if name == "__metadata__" or name in ct_reserved:
+                continue
+            if not _upload_plain(name, weights):
+                logger.warning("Skipping %s (dtype=%s)", name, header[name].get("dtype", "?"))
+
+        weights.setdefault("__quant_meta__", {})
+        for base in ct_bases:
+            try:
+                qw = _load_raw(f"{base}.weight")          # [N, K//8] I32
+                sc_raw = _load_raw(f"{base}.weight_scale") # [N, G] F16/BF16/F32
+
+                if sc_raw.dtype == np.float32:
+                    sc = sc_raw.astype(np.float16)
+                elif hasattr(sc_raw, "view") and sc_raw.dtype == np.uint16:
+                    sc = ((sc_raw.astype(np.uint32) << 16).view(np.float32)).astype(np.float16)
+                else:
+                    sc = sc_raw.astype(np.float16)
+
+                # Transpose scale [N, G] → [G, N] to match shader expectation.
+                if sc.ndim == 2:
+                    sc = np.ascontiguousarray(sc.T)
+
+                _upload_int32(qw, f"{base}.weight", weights)
+                _upload_f16(sc, f"{base}.weight.scales", weights)
+                weights["__quant_meta__"][base] = {
+                    "fmt": "gptq_sym",
+                    "group_size": _ct_group_size,
+                }
+                logger.debug(
+                    "CT pack-int4: %s (N=%d, K=%d, G=%d, group_size=%d)",
+                    base, qw.shape[0], qw.shape[1] * 8,
+                    sc.shape[0], _ct_group_size)
+            except Exception as exc:
+                logger.warning("Failed to process CT pack-int4 %s: %s", base, exc)
 
     else:
         # Plain BF16/F16/F32
