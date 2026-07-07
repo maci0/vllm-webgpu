@@ -87,6 +87,8 @@ GDN linear-attention layers: always USE_QUANT=0. Projections `in_proj_qkv`, `in_
 
 GDN recurrent state (SSM matrix + conv history) is stored in persistent GPU buffers and updated in-place each decode step. Call `reset_recurrent_states()` at the start of each new sequence.
 
+**GDN quality note:** Single-token predictions match HuggingFace reference output. Multi-token quality (generation beyond the prompt) degrades relative to HuggingFace due to a known mismatch in GDN computation: this runtime processes each token sequentially with a step-by-step SSM update, while HuggingFace's training and reference inference uses chunked parallel GDN evaluation. The sequential step-by-step path accumulates small numerical differences across layers that compound over longer output sequences.
+
 Qwen3.6-27B: same architecture as Qwen3.5, maps here via `Qwen3_5ForConditionalGeneration`.
 
 Qwen3.6-35B-A3B (MoE): maps here via `Qwen3_5MoeForConditionalGeneration`. Dense GDN and full-attention layers work; MoE FFN routing dispatches `topk_sort.wgsl` on GPU (256 experts, top-8 selection). Expert FFN matmuls are dispatched sequentially per selected expert.
@@ -116,13 +118,23 @@ USE_QUANT 0, 1, 2, 3 only. NVFP4 (USE_QUANT=6) not detected despite NVFP4 being 
 
 ---
 
+## Long-context support
+
+Standard 3-pass attention (attn_score + softmax + attn_output) dispatches one workgroup per (query head, context position). WebGPU's per-axis dispatch limit caps this at ctx_len = 65535.
+
+For ctx_len > 65535, the model runner automatically falls back to `flash_attn_decode.wgsl`, which loops over all KV positions inside each workgroup. This removes the per-axis limit but reduces parallelism to num_q_heads workgroups rather than num_q_heads × ctx_len.
+
+KV cache allocation uses `min(max_position_embeddings, 65535)` as the slot count. Models with max_position_embeddings > 65535 (e.g. Llama-3.1 at 131072) are capped at 65535 slots; sequences beyond that length are not supported.
+
+---
+
 ## Known limitations (all models)
 
 | Limitation | Detail |
 |---|---|
 | Single-sequence only | `forward()` accepts one sequence at a time; no request batching |
 | Token-by-token prefill | The model runner loops over prompt tokens; no batch prefill GEMM |
-| ctx_len ≤ 65535 | WebGPU dispatch dimension limit; long contexts require attention splitting |
+| ctx_len > 65535 | Standard 3-pass attention is capped at 65535 by the WebGPU dispatch limit; flash_attn_decode is used as an automatic fallback beyond that point |
 | hidden/inter must be divisible by 4 | vec4 shader requirement |
 | head_dim must be even | f16 GEMV packing requirement |
 | Block table cap | 512 blocks per sequence, set at init time |
@@ -144,6 +156,7 @@ The table below shows which fused kernels apply per model. "f16 only" means the 
 | `kv_cache_store_both` (K+V → 1) | always | always | always | no (no KV cache) |
 | `add_rms_norm` (add+norm → 1) | always | — | always | always |
 | `add_f32_rms_norm` (add+norm f32 → 1) | — | always | — | — |
+| `rms_norm_add_f32_rms_norm` (double-norm + f32 add → 1) | — | always | — | — |
 | Cross-layer norm fusion | always | always | always | always |
 
 "always" = applies regardless of weight format. "no" = not implemented for this model/path.

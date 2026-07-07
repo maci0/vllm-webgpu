@@ -367,7 +367,7 @@ Gate+up projections into a combined `[gate|up]` buffer. Used in the quantized fa
 
 ### fused_qk_norm_rope.wgsl
 
-Per-head RMSNorm + RoPE for Q and K in one dispatch. Replaces two `fused_per_head_norm_rope` calls (one for Q, one for K). Requires both Q and K to be in the same input buffer (e.g., from `fused_qkv`).
+Per-head RMSNorm + RoPE for Q and K in one dispatch. Replaces two `fused_per_head_norm_rope` calls (one for Q, one for K). Supports two input layouts: Q and K from the same buffer at different offsets (default), or K from a separate buffer via K_SEPARATE=1 (used by models with distinct q_buf/k_buf such as Gemma4 and Qwen3.5).
 
 **Dispatch:** `(NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1)` — routes on `wgid.x`.
 
@@ -376,9 +376,10 @@ Per-head RMSNorm + RoPE for Q and K in one dispatch. Replaces two `fused_per_hea
 | `HEAD_DIM`, `NUM_Q_HEADS`, `NUM_KV_HEADS` | — | Attention dimensions |
 | `ROPE_BASE`, `LN_ROPE_BASE` | — | RoPE parameters |
 | `HAS_WEIGHT`, `GEMMA_NORM`, `ROTARY_DIM`, `INTERLEAVED` | — | Same as fused_per_head_norm_rope |
-| `INPUT_OFFSET_K` | 0 | Element offset for K section in input[] (= q_dim from fused_qkv) |
+| `INPUT_OFFSET_K` | 0 | Element offset for K section in input[] (= q_dim from fused_qkv); ignored when K_SEPARATE=1 |
+| `K_SEPARATE` | 0 | 1: read K from k_input (binding 6); 0: read from input[] at INPUT_OFFSET_K |
 
-**Bindings:** 0=input(f16), 1=q_norm_w(f16), 2=k_norm_w(f16), 3=positions(u32), 4=q_rope_out(f16), 5=k_rope_out(f16)
+**Bindings:** 0=input(f16), 1=q_norm_w(f16), 2=k_norm_w(f16), 3=positions(u32), 4=q_rope_out(f16), 5=k_rope_out(f16), 6=k_input(f16, read only when K_SEPARATE=1)
 
 ---
 
