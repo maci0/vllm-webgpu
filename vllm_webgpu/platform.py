@@ -30,45 +30,14 @@ def _get_wgpu_adapter():
     return _wgpu_adapter
 
 
-def _get_platform_base_class():
-    """Get the Platform base class, returning a fallback if vllm is unavailable."""
-    try:
-        from vllm.platforms.interface import Platform
-        return Platform
-    except ImportError:
-        # Fallback: create a minimal base class for testing
-        return object
-
-
-def _get_device_capability_class():
-    """Get the DeviceCapability class, returning a fallback if vllm is unavailable."""
-    try:
-        from vllm.platforms.interface import DeviceCapability
-        return DeviceCapability
-    except ImportError:
-        # Fallback for testing
-        class DeviceCapability:
-            def __init__(self, major=0, minor=0):
-                self.major = major
-                self.minor = minor
-        return DeviceCapability
-
-
-def _get_platform_enum_class():
-    """Get the PlatformEnum class, returning a fallback if vllm is unavailable."""
-    try:
-        from vllm.platforms.interface import PlatformEnum
-        return PlatformEnum
-    except ImportError:
-        # Fallback for testing
-        class PlatformEnum:
-            OOT = "OOT"
-        return PlatformEnum
-
-
-_Platform = _get_platform_base_class()
-_DeviceCapability = _get_device_capability_class()
-_PlatformEnum = _get_platform_enum_class()
+try:
+    from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum, DeviceCapability as _DeviceCapability
+except ImportError:
+    class _Platform: pass                                   # noqa: E701
+    class _PlatformEnum: OOT = "OOT"                       # noqa: E701
+    class _DeviceCapability:                               # fallback missing .to_int() is intentional
+        def __init__(self, major=0, minor=0):
+            self.major, self.minor = major, minor
 
 
 class WebGPUPlatform(_Platform):

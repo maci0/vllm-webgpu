@@ -118,12 +118,8 @@ class WebGPUWorker(WorkerBase):
     def get_kv_cache_spec(self) -> dict:
         return self.model_runner.get_kv_cache_spec()
 
-    def initialize_cache(self, num_gpu_blocks: int, num_cpu_blocks: int) -> None:
-        if hasattr(self, "cache_config"):
-            self.cache_config.num_gpu_blocks = num_gpu_blocks
-            self.cache_config.num_cpu_blocks = num_cpu_blocks
-
     def initialize_from_config(self, kv_cache_config: Any) -> None:
+        self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def compile_or_warm_up_model(self) -> Any:

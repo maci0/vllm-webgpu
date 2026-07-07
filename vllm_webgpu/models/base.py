@@ -319,6 +319,30 @@ class BaseWebGPUModel:
             return {"GROUP_K": self._quant_info(base_key).get("group_size", 64)}
         return {}
 
+    def _uq_for_key(self, key: str) -> int:
+        """Return USE_QUANT for a weight key (closure-free helper)."""
+        quant_types = self.weights.get("__quant_types__", {})
+        _qt = quant_types if isinstance(quant_types, dict) else {}
+        tt = _qt.get(key, 0)
+        if tt == 12:
+            return 2
+        w = self.weights.get(key)
+        if w is not None:
+            dtype = getattr(w, "dtype", "f16")
+            qmeta = self.weights.get("__quant_meta__", {})
+            meta = qmeta.get(key[:-7], {}) if isinstance(qmeta, dict) else {}
+            fmt = meta.get("fmt", "")
+            if dtype == "i32":
+                return 4 if fmt == "awq_sym" else 3
+            if dtype == "u8":
+                if fmt == "nvfp4_gpu": return 6
+                if fmt == "int8_gpu":  return 7
+                if fmt == "fp8_gpu":   return 5
+                if fmt == "nf4_gpu":   return 8
+        if self.weights.get(key[:-7] + ".scales") is not None:
+            return 1
+        return 0
+
     def _gemv_consts_and_wg(self, weight_key: str, K: int, N: int,
                             base_key: str = "") -> tuple:
         """Return (constants_dict, workgroup_tuple) for a matmul_quant dispatch.

@@ -378,41 +378,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         has_v = lp["has_v_proj"]
         inter = self.intermediate_size
         ln_rope = math.log(self.rope_theta)
-        # Per-weight quant detection helper: returns USE_QUANT value for a given weight key.
-        # Q4_K (type 12) → use GPU Q4_K block decoder (USE_QUANT=2).
-        # Everything else (F16, Q6_K after eager-dequant, etc.) → plain f16 (USE_QUANT=0).
-        quant_types = self.weights.get("__quant_types__", {})
-        _qt = quant_types if isinstance(quant_types, dict) else {}
-
         # Per-layer output scale from GGUF (layer_output_scale.weight ≈ 0.053).
         # Applied to sublayer contributions before residual add.
         # Layer scale cached at load_weights() — no GPU→CPU readback per token.
         _ls = self._layer_scales[layer_idx]
-
-        def _uq(key: str) -> int:
-            # Check __quant_types__ (GGUF Q4_K = 12) before dtype to avoid
-            # misidentifying Q4_K raw bytes (u8 dtype) as FP8.
-            tt = _qt.get(key, 0)
-            if tt == 12:
-                return 2
-            w = self.weights.get(key)
-            if w is not None:
-                dtype = getattr(w, "dtype", "f16")
-                qmeta = self.weights.get("__quant_meta__", {})
-                meta = qmeta.get(key[:-7], {}) if isinstance(qmeta, dict) else {}
-                fmt = meta.get("fmt", "")
-                if dtype == "i32":
-                    return 4 if fmt == "awq_sym" else 3
-                if dtype == "u8":
-                    if fmt == "nvfp4_gpu": return 6
-                    if fmt == "int8_gpu":  return 7
-                    if fmt == "fp8_gpu":   return 5
-                    if fmt == "nf4_gpu":   return 8
-                    # u8 without a recognized fmt tag — could be GGUF raw bytes for
-                    # a non-Q4_K type; fall through to scale check below.
-            if self.weights.get(key[:-7] + ".scales") is not None:
-                return 1
-            return 0
 
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
@@ -430,7 +399,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # Q projection
             qw = f"{p}.self_attn.q_proj.weight"
-            uq = _uq(qw)
+            uq = self._uq_for_key(qw)
             self._dispatch("matmul_quant",
                            [normed_x, self.weights[qw],
                             self._scales_buf(qw, uq, normed_x), sc["q_buf"]],
@@ -441,7 +410,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # K projection
             kw = f"{p}.self_attn.k_proj.weight"
-            uq = _uq(kw)
+            uq = self._uq_for_key(kw)
             self._dispatch("matmul_quant",
                            [normed_x, self.weights[kw],
                             self._scales_buf(kw, uq, normed_x), sc["k_buf"]],
@@ -453,7 +422,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # V projection: for global layers V=K (no separate weight), reuse k_buf → v_buf
             if has_v:
                 vw = f"{p}.self_attn.v_proj.weight"
-                uq = _uq(vw)
+                uq = self._uq_for_key(vw)
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[vw],
                                 self._scales_buf(vw, uq, normed_x), sc["v_buf"]],
@@ -551,7 +520,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # Output projection → sc["o_proj_out"]
             ow = f"{p}.self_attn.o_proj.weight"
-            uq = _uq(ow)
+            uq = self._uq_for_key(ow)
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[ow],
                             self._scales_buf(ow, uq, sc["attn_out"]), sc["o_proj_out"]],
@@ -601,7 +570,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Fused gate+up (f16 only); Gemma uses tanh-GELU.
             gw_k = f"{p}.mlp.gate_proj.weight"
             uw_k = f"{p}.mlp.up_proj.weight"
-            uq_g = _uq(gw_k); uq_u = _uq(uw_k)
+            uq_g = self._uq_for_key(gw_k); uq_u = self._uq_for_key(uw_k)
             if uq_g == 0 and uq_u == 0:
                 self._dispatch("fused_gate_act",
                                [ffn_normed, self.weights[gw_k], self.weights[uw_k],
@@ -624,7 +593,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # Down projection → sc["ffn_out"]
             w_k = f"{p}.mlp.down_proj.weight"
-            uq = _uq(w_k)
+            uq = self._uq_for_key(w_k)
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[w_k],
                             self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
