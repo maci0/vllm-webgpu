@@ -132,14 +132,27 @@ KV cache allocation uses `min(max_position_embeddings, 65535)` as the slot count
 | Limitation | Detail |
 |---|---|
 | Single-sequence only | `forward()` accepts one sequence at a time; no request batching |
-| Token-by-token prefill | The model runner loops over prompt tokens; no batch prefill GEMM |
+| Quantized prefill | f16 models use `matmul_quant_mr4` batch GEMM for all T prompt tokens; quantized (GPTQ/AWQ/FP8/NF4) models fall back to sequential per-token decode-path processing during prefill |
 | ctx_len > 65535 | Standard 3-pass attention is capped at 65535 by the WebGPU dispatch limit; flash_attn_decode is used as an automatic fallback beyond that point |
 | hidden/inter must be divisible by 4 | vec4 shader requirement |
 | head_dim must be even | f16 GEMV packing requirement |
-| Block table cap | 512 blocks per sequence, set at init time |
-| No bfloat16 | WebGPU lacks bfloat16; Gemma models trained in bf16 see reduced output quality |
-| Grammar/structured output | `sample_tokens()` returns the cached greedy token unchanged |
+| Block table cap | 4096 blocks per sequence (65536 tokens at block_size=16), set at init time |
+| No native bfloat16 | WebGPU/WGSL has no bf16 type. Weights and activations use f16 (5-bit exponent) instead of bf16 (8-bit exponent, same range as f32). GDN SSM parameters (A_log, dt_bias) are kept as f32 to preserve decay range. An experimental `GDN_BF16=1` env var (or `--gdn_bf16` flag) stores Qwen3.5 GDN projection weights as packed bf16 u16 to further reduce rounding loss. |
+| Logprobs | Supported when requested via `SamplingParams(num_logprobs=N)`. Top-N computed on CPU from full logit readback; adds latency proportional to vocab_size per step. Prompt logprobs supported for prefill passes. |
+| Grammar/structured output | Raises `NotImplementedError`. Applying token masks from a grammar FSM requires the full logit distribution, which is not available on the WebGPU decode path. |
 | Multi-modal inputs | Images, audio, and video are not implemented. Conditional-generation architectures (`Gemma3ForConditionalGeneration`, `Gemma4UnifiedForConditionalGeneration`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`) are registered for text-only use. Passing mm_inputs raises `NotImplementedError`. Use the `CausalLM` variant instead. |
+| Speculative decoding | Not implemented. No draft model support. |
+| Multi-sequence batching | One sequence per `forward()` call. True batching requires N separate scratch-buffer sets and per-sequence block-table dispatch; it is an architectural change and not currently planned. |
+
+### WebGPU platform constraints
+
+These limits apply to all models and stem from the WebGPU/WGSL specification:
+
+- **No bfloat16**: WGSL float types are `f16`, `f32`, `f64`. `bf16` requires the `enable dual_source_blending` extension, which is not compute-related; bf16 is simply absent.
+- **No GPU-to-GPU atomic floats**: Reduction kernels use shared-memory tree reduction instead of `atomicAdd<f32>`.
+- **65535 dispatch limit per axis**: Standard `attn_score` is limited to ctx_len <= 65535. `flash_attn_decode` (fused, single-pass) has no such limit.
+- **No persistent threads**: WebGPU forbids infinite loops or occupancy-based kernel tricks; all loops must have statically-bounded iteration counts or dynamic exit conditions that the driver can verify as non-infinite.
+- **Metal GPU timeout (~4-8 s per command buffer)**: Batch prefill chunked encoder submission (4 layers per encoder) keeps each submit under the limit.
 
 ---
 
