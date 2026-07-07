@@ -409,28 +409,6 @@ class WebGPUModelRunner:
             "logprobs": built_logprobs,
             "prompt_logprobs_dict": prompt_logprobs_dict or {},
         }
-        # Fill any required fields introduced in newer vLLM versions with None so a
-        # new required field causes a visible TypeError at import time rather than a
-        # confusing runtime crash.  Hardcoded optional names are kept for fields that
-        # need explicit None rather than MISSING.
-        import dataclasses as _dc
-        try:
-            for _f in _dc.fields(ModelRunnerOutput):  # type: ignore[arg-type]
-                if (
-                    _f.default is _dc.MISSING
-                    and _f.default_factory is _dc.MISSING  # type: ignore[misc]
-                    and _f.name not in kw
-                ):
-                    kw[_f.name] = None
-        except TypeError:
-            # ModelRunnerOutput is not a dataclass in this vLLM version; fall back
-            # to the hardcoded optional list.
-            import inspect as _inspect
-            out_params = set(_inspect.signature(ModelRunnerOutput.__init__).parameters)
-            for opt in ("pooler_output", "kv_connector_output", "ec_connector_output",
-                        "num_nans_in_logits", "cudagraph_stats", "routed_experts"):
-                if opt in out_params:
-                    kw[opt] = None
         out = ModelRunnerOutput(**kw)
         self._last_model_output = out
         return out
