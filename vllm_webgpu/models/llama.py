@@ -22,10 +22,10 @@ def _gemm_wg(N: int, T: int) -> tuple:
 def _gemv_wg(N: int, uq: int) -> tuple:
     """Workgroup count for matmul_quant dispatch.
 
-    SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6).
+    SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6,7,8).
     Row-per-thread: USE_QUANT in (1,2).
     """
-    if uq in (0, 3, 4, 5, 6):
+    if uq in (0, 3, 4, 5, 6, 7, 8):
         return (N, 1, 1)
     return ((N + 255) // 256, 1, 1)
 
@@ -191,7 +191,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._hstate = 0
 
         if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
-            raise RuntimeError("multi-sequence batching not supported in this build")
+            # Each forward() call handles exactly one sequence. The model runner
+            # calls forward() once per decode request. Batching N sequences requires
+            # N separate pre-alloc buffer sets and per-sequence attention dispatch.
+            raise RuntimeError(
+                f"multi-sequence batching not supported: got {len(attn_metadata.block_tables)} "
+                "block tables; call forward() once per decode request"
+            )
 
         ctx_len = int(attn_metadata.max_decode_seq_len
                       if attn_metadata.max_decode_seq_len is not None
@@ -208,31 +214,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         sc = self._sc
 
         # Batch prefill: T>1 tokens use matmul_quant_mr4 (all T rows at once) plus
-        # sequential causal attention. Capped at 12 tokens because larger FFN GEMMs
-        # (N=9728, T=15 -> 145k WGs) exceed Metal's ~4s GPU command timeout.
-        # Prompts longer than 12 tokens fall back to sequential token-by-token prefill.
-        _BATCH_PREFILL_MAX = 12
-        if 1 < num_tokens <= _BATCH_PREFILL_MAX:
+        # sequential causal attention. Layers are chunked across separate command
+        # encoders (4 layers each) to stay under Metal's per-command-buffer GPU timeout.
+        if num_tokens > 1:
             return self._prefill_batch_forward(
                 input_ids, positions, attn_metadata,
                 num_tokens, hidden, ctx_len, vocab, _rms_base,
             )
-
-        if num_tokens > _BATCH_PREFILL_MAX:
-            # Sequential fallback: process each token individually (single encoder).
-            last = None
-            for t in range(num_tokens):
-                slot = [attn_metadata.slot_mapping[t]]
-                ctx_t = int(attn_metadata.slot_mapping[t]) + 1
-
-                class _SM:
-                    slot_mapping = slot
-                    block_tables = attn_metadata.block_tables
-                    max_decode_seq_len = ctx_t
-
-                last = self.forward(
-                    input_ids[t:t+1], positions[t:t+1], _SM())
-            return last
 
         # Decode path (num_tokens=1): use pre-allocated buffers for zero-alloc hot path.
         pre = self._pre
@@ -392,135 +380,150 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
                            (N_out, T, 1))
 
+        # _CHUNK layers per command encoder keeps each submit under Metal's GPU timeout.
+        # At T=19 and inter=9728, a single 36-layer encoder generates ~37M threads and
+        # exceeds the ~4-8 s per-command-buffer limit. 4 layers at a time stays safe.
+        _CHUNK = 4
         _hstate = 0
         h_names = ["h0", "h1", "h2"]
+        normed_x = b["normed"]
+        x_res    = b["x"]
 
-        with self._batched_dispatch():
-            # ── Embedding (T tokens) ──────────────────────────────────────────
-            self._dispatch("embedding_lookup",
-                           [self.weights["model.embed_tokens.weight"], ids_buf, b["x"]],
-                           {"HIDDEN_DIM": hidden}, (T, 1, 1))
+        # Build list of layer-index chunks.
+        chunks: list[list[int]] = []
+        ci = 0
+        while ci < self.num_layers:
+            chunks.append(list(range(ci, min(ci + _CHUNK, self.num_layers))))
+            ci += _CHUNK
 
-            self._dispatch("rms_norm",
-                           [b["x"], self.weights["model.layers.0.input_layernorm.weight"],
-                            b["normed"]],
-                           rms_base, (T, 1, 1))
+        for chunk_idx, chunk_layers in enumerate(chunks):
+            with self._batched_dispatch():
+                if chunk_idx == 0:
+                    # ── Embedding (T tokens) ──────────────────────────────────────────
+                    self._dispatch("embedding_lookup",
+                                   [self.weights["model.embed_tokens.weight"], ids_buf, b["x"]],
+                                   {"HIDDEN_DIM": hidden}, (T, 1, 1))
 
-            normed_x = b["normed"]
-            x_res    = b["x"]
-
-            for i in range(self.num_layers):
-                p    = f"model.layers.{i}"
-                q_wk = f"{p}.self_attn.q_proj.weight"
-                k_wk = f"{p}.self_attn.k_proj.weight"
-                v_wk = f"{p}.self_attn.v_proj.weight"
-                ow   = f"{p}.self_attn.o_proj.weight"
-                gw_k = f"{p}.mlp.gate_proj.weight"
-                uw_k = f"{p}.mlp.up_proj.weight"
-                dw_k = f"{p}.mlp.down_proj.weight"
-
-                # Only f16 batch GEMM supported; quantized weights fall back to T=1 path
-                # per-token (rare for this model class - Qwen3 is f16).
-                gemm_f16(normed_x, q_wk, b["q_buf"],    hidden, q_dim)
-                gemm_f16(normed_x, k_wk, b["k_buf"],    hidden, kv_dim)
-                gemm_f16(normed_x, v_wk, b["v_buf"],    hidden, kv_dim)
-
-                # ── Per-head RMSNorm + RoPE for all T tokens ──────────────────
-                for src, dst, n_h, wk in [
-                    (b["q_buf"],  b["q_rope"], self.num_q_heads,  f"{p}.self_attn.q_norm.weight"),
-                    (b["k_buf"],  b["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
-                ]:
-                    nw = self.weights.get(wk)
-                    if nw is not None:
-                        self._dispatch("fused_per_head_norm_rope",
-                                       [src, nw, pos_buf, dst],
-                                       {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_h,
-                                        "ROPE_BASE": float(self.rope_theta),
-                                        "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1},
-                                       (n_h, T, 1))
-                    else:
-                        self._dispatch("rope", [src, pos_buf, dst],
-                                       {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_h,
-                                        "LN_ROPE_BASE": ln_rope},
-                                       (T, n_h, 1))
-
-                k_cache, v_cache = self.kv_pool[i]
-
-                # ── KV store: all T tokens at once ────────────────────────────
-                self._dispatch("kv_cache_store_both",
-                               [b["k_rope"], k_cache, b["v_buf"], v_cache, slot_map_buf],
-                               {"BLOCK_SIZE": self.block_size,
-                                "NUM_KV_HEADS": self.num_kv_heads,
-                                "HEAD_DIM": self.head_dim},
-                               (T, self.num_kv_heads, 1))
-
-                # ── Causal attention: sequential per token ────────────────────
-                for t in range(T):
-                    ctx_t  = int(slot_map_arr[t]) + 1
-                    q_off  = t * q_dim
-                    ao_off = t * q_dim
-                    self._dispatch("attn_score",
-                                   [b["q_rope"], k_cache, bt_buf, b["scores"]],
-                                   {"BLOCK_SIZE": self.block_size,
-                                    "NUM_Q_HEADS": self.num_q_heads,
-                                    "NUM_KV_HEADS": self.num_kv_heads,
-                                    "HEAD_DIM": self.head_dim,
-                                    "MAX_SEQ_LEN": ctx_t,
-                                    "Q_TOKEN_OFFSET": q_off},
-                                   (self.num_q_heads, ctx_t, 1))
-                    self._dispatch("softmax", [b["scores"], b["sm_buf"]],
-                                   {"SEQ_LEN": ctx_t}, (self.num_q_heads, 1, 1))
-                    self._dispatch("attn_output",
-                                   [b["sm_buf"], v_cache, bt_buf, b["attn_out"]],
-                                   {"BLOCK_SIZE": self.block_size,
-                                    "NUM_Q_HEADS": self.num_q_heads,
-                                    "NUM_KV_HEADS": self.num_kv_heads,
-                                    "HEAD_DIM": self.head_dim,
-                                    "CTX_LEN": ctx_t,
-                                    "ATTN_TOKEN_OFFSET": ao_off},
-                                   (self.num_q_heads, 1, 1))
-
-                # ── O projection (batch GEMM) ─────────────────────────────────
-                gemm_f16(b["attn_out"], ow, b["o_proj"], q_dim, hidden)
-
-                # ── Fused post-attn add + FFN pre-norm ───────────────────────
-                residual = b[h_names[(_hstate + 1) % 3]]
-                out_h    = b[h_names[(_hstate + 2) % 3]]
-                self._dispatch("add_rms_norm",
-                               [x_res, b["o_proj"],
-                                self.weights[f"{p}.post_attention_layernorm.weight"],
-                                residual, b["ffn_n"]],
-                               rms_base, (T, 1, 1))
-
-                # ── FFN (batch GEMMs + SiLU) ──────────────────────────────────
-                gemm_f16(b["ffn_n"], gw_k, b["gate_buf"], hidden, inter)
-                gemm_f16(b["ffn_n"], uw_k, b["up_buf"],   hidden, inter)
-                self._dispatch("gelu_mul",
-                               [b["gate_buf"], b["up_buf"], b["ffn_act"]],
-                               {"N": T * inter},
-                               ((T * inter // 4 + 255) // 256, 1, 1))
-                gemm_f16(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden)
-
-                # ── Residual add (cross-layer fused if not last) ──────────────
-                if i < self.num_layers - 1:
-                    next_w = self.weights[f"model.layers.{i+1}.input_layernorm.weight"]
-                    self._dispatch("add_rms_norm",
-                                   [residual, b["ffn_out"], next_w, out_h, b["normed"]],
+                    self._dispatch("rms_norm",
+                                   [b["x"], self.weights["model.layers.0.input_layernorm.weight"],
+                                    b["normed"]],
                                    rms_base, (T, 1, 1))
                     normed_x = b["normed"]
-                else:
-                    add_n = T * hidden
-                    self._dispatch("add",
-                                   [residual, b["ffn_out"], out_h],
-                                   {"N": add_n},
-                                   ((add_n // 4 + 255) // 256, 1, 1))
+                    x_res    = b["x"]
 
-                x_res   = out_h
-                _hstate = (_hstate + 2) % 3
+                for i in chunk_layers:
+                    p    = f"model.layers.{i}"
+                    q_wk = f"{p}.self_attn.q_proj.weight"
+                    k_wk = f"{p}.self_attn.k_proj.weight"
+                    v_wk = f"{p}.self_attn.v_proj.weight"
+                    ow   = f"{p}.self_attn.o_proj.weight"
+                    gw_k = f"{p}.mlp.gate_proj.weight"
+                    uw_k = f"{p}.mlp.up_proj.weight"
+                    dw_k = f"{p}.mlp.down_proj.weight"
 
-            # ── Extract last token, apply final norm, run LM head ─────────────
-            # copy_buffer_to_buffer is a GPU-side copy with no CPU roundtrip.
-            # It's recorded into the active encoder (inside _batched_dispatch).
+                    # Only f16 batch GEMM supported; quantized weights fall back to T=1 path
+                    # per-token (rare for this model class - Qwen3 is f16).
+                    gemm_f16(normed_x, q_wk, b["q_buf"],    hidden, q_dim)
+                    gemm_f16(normed_x, k_wk, b["k_buf"],    hidden, kv_dim)
+                    gemm_f16(normed_x, v_wk, b["v_buf"],    hidden, kv_dim)
+
+                    # ── Per-head RMSNorm + RoPE for all T tokens ──────────────────
+                    for src, dst, n_h, wk in [
+                        (b["q_buf"],  b["q_rope"], self.num_q_heads,  f"{p}.self_attn.q_norm.weight"),
+                        (b["k_buf"],  b["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
+                    ]:
+                        nw = self.weights.get(wk)
+                        if nw is not None:
+                            self._dispatch("fused_per_head_norm_rope",
+                                           [src, nw, pos_buf, dst],
+                                           {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_h,
+                                            "ROPE_BASE": float(self.rope_theta),
+                                            "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1},
+                                           (n_h, T, 1))
+                        else:
+                            self._dispatch("rope", [src, pos_buf, dst],
+                                           {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_h,
+                                            "LN_ROPE_BASE": ln_rope},
+                                           (T, n_h, 1))
+
+                    k_cache, v_cache = self.kv_pool[i]
+
+                    # ── KV store: all T tokens at once ────────────────────────────
+                    self._dispatch("kv_cache_store_both",
+                                   [b["k_rope"], k_cache, b["v_buf"], v_cache, slot_map_buf],
+                                   {"BLOCK_SIZE": self.block_size,
+                                    "NUM_KV_HEADS": self.num_kv_heads,
+                                    "HEAD_DIM": self.head_dim},
+                                   (T, self.num_kv_heads, 1))
+
+                    # ── Causal attention: sequential per token ────────────────────
+                    for t in range(T):
+                        ctx_t  = int(slot_map_arr[t]) + 1
+                        q_off  = t * q_dim
+                        ao_off = t * q_dim
+                        self._dispatch("attn_score",
+                                       [b["q_rope"], k_cache, bt_buf, b["scores"]],
+                                       {"BLOCK_SIZE": self.block_size,
+                                        "NUM_Q_HEADS": self.num_q_heads,
+                                        "NUM_KV_HEADS": self.num_kv_heads,
+                                        "HEAD_DIM": self.head_dim,
+                                        "MAX_SEQ_LEN": ctx_t,
+                                        "Q_TOKEN_OFFSET": q_off},
+                                       (self.num_q_heads, ctx_t, 1))
+                        self._dispatch("softmax", [b["scores"], b["sm_buf"]],
+                                       {"SEQ_LEN": ctx_t}, (self.num_q_heads, 1, 1))
+                        self._dispatch("attn_output",
+                                       [b["sm_buf"], v_cache, bt_buf, b["attn_out"]],
+                                       {"BLOCK_SIZE": self.block_size,
+                                        "NUM_Q_HEADS": self.num_q_heads,
+                                        "NUM_KV_HEADS": self.num_kv_heads,
+                                        "HEAD_DIM": self.head_dim,
+                                        "CTX_LEN": ctx_t,
+                                        "ATTN_TOKEN_OFFSET": ao_off},
+                                       (self.num_q_heads, 1, 1))
+
+                    # ── O projection (batch GEMM) ─────────────────────────────────
+                    gemm_f16(b["attn_out"], ow, b["o_proj"], q_dim, hidden)
+
+                    # ── Fused post-attn add + FFN pre-norm ───────────────────────
+                    residual = b[h_names[(_hstate + 1) % 3]]
+                    out_h    = b[h_names[(_hstate + 2) % 3]]
+                    self._dispatch("add_rms_norm",
+                                   [x_res, b["o_proj"],
+                                    self.weights[f"{p}.post_attention_layernorm.weight"],
+                                    residual, b["ffn_n"]],
+                                   rms_base, (T, 1, 1))
+
+                    # ── FFN (batch GEMMs + SiLU) ──────────────────────────────────
+                    gemm_f16(b["ffn_n"], gw_k, b["gate_buf"], hidden, inter)
+                    gemm_f16(b["ffn_n"], uw_k, b["up_buf"],   hidden, inter)
+                    self._dispatch("gelu_mul",
+                                   [b["gate_buf"], b["up_buf"], b["ffn_act"]],
+                                   {"N": T * inter},
+                                   ((T * inter // 4 + 255) // 256, 1, 1))
+                    gemm_f16(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden)
+
+                    # ── Residual add (cross-layer fused if not last) ──────────────
+                    if i < self.num_layers - 1:
+                        next_w = self.weights[f"model.layers.{i+1}.input_layernorm.weight"]
+                        self._dispatch("add_rms_norm",
+                                       [residual, b["ffn_out"], next_w, out_h, b["normed"]],
+                                       rms_base, (T, 1, 1))
+                        normed_x = b["normed"]
+                    else:
+                        add_n = T * hidden
+                        self._dispatch("add",
+                                       [residual, b["ffn_out"], out_h],
+                                       {"N": add_n},
+                                       ((add_n // 4 + 255) // 256, 1, 1))
+
+                    x_res   = out_h
+                    _hstate = (_hstate + 2) % 3
+
+        # ── Extract last token, apply final norm, run LM head ─────────────
+        # Separate final encoder: copy_buffer_to_buffer is a GPU-side copy with
+        # no CPU roundtrip. Recorded into this encoder alongside norm and LM head.
+        with self._batched_dispatch():
             last_token_byte_offset = (T - 1) * hidden * 2  # f16 bytes
             if self._active_encoder is None:
                 raise RuntimeError("_active_encoder is None inside _batched_dispatch")
@@ -573,6 +576,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 if fmt == "nvfp4_gpu": return 6
                 if fmt == "int8_gpu":  return 7
                 if fmt == "fp8_gpu":   return 5
+                if fmt == "nf4_gpu":   return 8
         if self.weights.get(key[:-7] + ".scales") is not None:
             return 1
         return 0
@@ -638,6 +642,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     if fmt == "nvfp4_gpu": return 6
                     if fmt == "int8_gpu":  return 7
                     if fmt == "fp8_gpu":   return 5
+                    if fmt == "nf4_gpu":   return 8
                     # u8 without recognized fmt: fall through: fall through
             if self.weights.get(key[:-7] + ".scales") is not None:
                 return 1
@@ -692,7 +697,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     self._dispatch("matmul_quant",
                                    [normed_x, self.weights[w_key], _scales(w_key, uq, normed_x), out_buf],
                                    {"K": hidden, "N": dim, "USE_QUANT": uq,
-                                    **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi},
+                                    **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi},
                                    _gemv_wg(dim, uq))
                 _q_src = sc["q_buf"]
                 _k_src = sc["k_buf"]
@@ -774,7 +779,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
                                             _scales(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
                            {"K": q_dim, "N": hidden, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi},
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi},
                            _gemv_wg(hidden, uq))
 
             # Fused post-attn residual-add + FFN pre-norm: saves 1 dispatch/layer.
@@ -803,7 +808,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     self._dispatch("matmul_quant", [sc["ffn_normed"], self.weights[w_k],
                                                     _scales(w_k, uq2, sc["ffn_normed"]), out_b],
                                    {"K": hidden, "N": inter, "USE_QUANT": uq2,
-                                    **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6) else {}), **qi2},
+                                    **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi2},
                                    _gemv_wg(inter, uq2))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
@@ -815,7 +820,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             self._dispatch("matmul_quant", [sc["ffn_act"], self.weights[w_k],
                                             _scales(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
                            {"K": inter, "N": hidden, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}), **qi3},
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi3},
                            _gemv_wg(hidden, uq))
 
             # Final residual add: fuse with next layer's pre-norm when possible.
