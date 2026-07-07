@@ -13,18 +13,10 @@ try:
     from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
     from vllm.tasks import SupportedTask
     from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
-    from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput  # vllm>=0.24
-    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec     # vllm>=0.24
-    from vllm.v1.outputs import ModelRunnerOutput
     from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase   # vllm>=0.24
 except ImportError:
     VllmConfig = Any  # type: ignore[assignment,misc]
     SupportedTask = Any  # type: ignore[assignment,misc]
-    GrammarOutput = Any  # type: ignore[assignment,misc]
-    SchedulerOutput = Any  # type: ignore[assignment,misc]
-    KVCacheConfig = Any  # type: ignore[assignment,misc]
-    KVCacheSpec = Any  # type: ignore[assignment,misc]
-    ModelRunnerOutput = Any  # type: ignore[assignment,misc]
     CompilationTimes = Any  # type: ignore[assignment,misc]
 
     def set_random_seed(seed: int) -> None:  # type: ignore[misc]

@@ -7,16 +7,13 @@ import numpy as np
 try:
     from vllm.config import VllmConfig
     from vllm.tasks import SupportedTask
-    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec, FullAttentionSpec
-    from vllm.v1.outputs import ModelRunnerOutput, SamplerOutput, LogprobsLists, LogprobsTensors
+    from vllm.v1.kv_cache_interface import FullAttentionSpec
+    from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors
 except ImportError:
     VllmConfig = Any  # type: ignore[assignment,misc]
     SupportedTask = Any  # type: ignore[assignment,misc]
-    KVCacheConfig = Any  # type: ignore[assignment,misc]
-    KVCacheSpec = Any  # type: ignore[assignment,misc]
     FullAttentionSpec = None  # type: ignore[assignment,misc]
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
-    SamplerOutput = None  # type: ignore[assignment,misc]
     LogprobsLists = None  # type: ignore[assignment,misc]
     LogprobsTensors = None  # type: ignore[assignment,misc]
 
@@ -287,12 +284,8 @@ class WebGPUModelRunner:
     def execute_model(self, scheduler_output: "SchedulerOutput") -> Any:
         if self.model is None:
             return None
-
         try:
             return self._execute_model_v2(scheduler_output)
-        except AttributeError:
-            # vLLM < 0.24: old SchedulerOutput with scheduled_seq_groups
-            return self._execute_model_v1(scheduler_output)
         except Exception as e:
             logger.exception("execute_model failed: %s", e)
             raise
@@ -757,32 +750,6 @@ class WebGPUModelRunner:
         # vLLM's batch queue raises "unexpected error" on None from execute_model.
         return self._make_model_output(
             all_req_ids, all_sampled, all_logprobs_data, prompt_logprobs_dict
-        )
-
-    def _execute_model_v1(self, scheduler_output: "SchedulerOutput") -> Any:
-        """vLLM < 0.24 SchedulerOutput format (scheduled_seq_groups)."""
-        seq_groups = scheduler_output.scheduled_seq_groups
-        if not seq_groups:
-            return None
-        input_ids_list: list[int] = []
-        positions_list: list[int] = []
-        for sg in seq_groups:
-            seq = sg.seq_group.seqs[0]
-            tokens = seq.get_output_token_ids() or seq.get_prompt_token_ids()
-            input_ids_list.extend(tokens[-1:])
-            positions_list.append(seq.get_len() - 1)
-        input_ids = np.array(input_ids_list, dtype=np.uint32)
-        positions = np.array(positions_list, dtype=np.uint32)
-        logits = self.model.forward(input_ids, positions, scheduler_output)
-        self._last_logits = logits
-        if SamplerOutput is None or ModelRunnerOutput is None:
-            return None
-        token_ids = logits.argmax(axis=-1).tolist()
-        sampler_out = SamplerOutput(outputs=[], sampled_token_ids=token_ids, logprobs=None, prompt_logprobs=None)
-        return ModelRunnerOutput(
-            req_ids=[sg.seq_group.request_id for sg in seq_groups],
-            req_id_to_index={sg.seq_group.request_id: i for i, sg in enumerate(seq_groups)},
-            sampler_output=sampler_out, sampler_output_ready_event=None, pooler_output=[], finished_sending=None,
         )
 
     def sample_tokens(self, grammar_output: "GrammarOutput | None") -> Any:

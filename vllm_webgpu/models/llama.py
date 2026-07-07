@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, compute_standard_freqs
+from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
