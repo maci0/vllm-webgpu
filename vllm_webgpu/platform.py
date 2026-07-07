@@ -68,7 +68,7 @@ class WebGPUPlatform(_Platform):
             adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
             if adapter is None:
                 return False
-            info = adapter.request_adapter_info()
+            info = adapter.info
             adapter_type = info.get("adapter_type", "")
             if isinstance(adapter_type, str) and adapter_type.lower() in ("cpu", "software"):
                 logger.debug(
@@ -86,7 +86,7 @@ class WebGPUPlatform(_Platform):
             import wgpu
             adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
             if adapter:
-                info = adapter.request_adapter_info()
+                info = adapter.info
                 return f"WebGPU ({info.get('device', 'unknown')})"
         except Exception:
             pass

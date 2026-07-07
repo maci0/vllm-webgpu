@@ -20,7 +20,7 @@ def test_is_available_no_adapter():
 
 def test_is_available_with_adapter():
     mock_adapter = MagicMock()
-    mock_adapter.request_adapter_info.return_value = {"adapter_type": "DiscreteGpu", "device": "NVIDIA GeForce RTX 4090"}
+    mock_adapter.info = {"adapter_type": "DiscreteGpu", "device": "NVIDIA GeForce RTX 4090"}
     mock_wgpu = MagicMock()
     mock_wgpu.gpu.request_adapter_sync.return_value = mock_adapter
     with patch.dict("sys.modules", {"wgpu": mock_wgpu}):
@@ -34,7 +34,7 @@ def test_is_available_cpu_adapter_rejected():
     """SwiftShader/CPU software renderers must not cause is_available() to return True."""
     for adapter_type in ("Cpu", "cpu", "CPU", "Software", "software"):
         mock_adapter = MagicMock()
-        mock_adapter.request_adapter_info.return_value = {"adapter_type": adapter_type}
+        mock_adapter.info = {"adapter_type": adapter_type}
         mock_wgpu = MagicMock()
         mock_wgpu.gpu.request_adapter_sync.return_value = mock_adapter
         with patch.dict("sys.modules", {"wgpu": mock_wgpu}):
