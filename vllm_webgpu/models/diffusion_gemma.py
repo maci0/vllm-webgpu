@@ -422,23 +422,27 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 with self._batched_dispatch(label=f"L{layer_idx:02d}E{eid}"):
                     for ob, ew_key in [(sc["gate_buf"], f"{ep}.gate_proj.weight"),
                                        (sc["up_buf"],   f"{ep}.up_proj.weight")]:
+                        uq = _uq(ew_key)
                         self._dispatch("matmul_quant",
                                        [moe_in, self.weights[ew_key],
-                                        self.weights.get(ew_key[:-7] + ".scales", moe_in), ob],
+                                        self._scales_buf(ew_key, uq, moe_in), ob],
                                        {"K": hidden, "N": inter_moe,
-                                        "USE_QUANT": _uq(ew_key), "SPLIT_K": 1},
+                                        "USE_QUANT": uq, "SPLIT_K": 1,
+                                        **self._quant_extra(ew_key[:-7], uq)},
                                        (inter_moe, 1, 1))
                     self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                    {"N": gelu_n_moe},
                                    ((gelu_n_moe // 4 + 255) // 256, 1, 1),
                                    shader_subdir="gemma")
                     dk = f"{ep}.down_proj.weight"
+                    uq_dk = _uq(dk)
                     self._dispatch("matmul_quant",
                                    [sc["ffn_act"], self.weights[dk],
-                                    self.weights.get(dk[:-7] + ".scales", sc["ffn_act"]),
+                                    self._scales_buf(dk, uq_dk, sc["ffn_act"]),
                                     sc["ffn_out"]],
                                    {"K": inter_moe, "N": hidden,
-                                    "USE_QUANT": _uq(dk), "SPLIT_K": 1},
+                                    "USE_QUANT": uq_dk, "SPLIT_K": 1,
+                                    **self._quant_extra(dk[:-7], uq_dk)},
                                    (hidden, 1, 1))
                     # Accumulate: moe_tmp = moe_acc + ew * ffn_out (ping-pong to avoid conflict)
                     scale = float(ew)
