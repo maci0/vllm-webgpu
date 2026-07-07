@@ -696,7 +696,6 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                     # GPU dequant path: upload raw quantized data directly.
                     # GPTQ qweight [K//8, N] is transposed to [N, K//8] so all 256
                     # threads in split-K read consecutive INT32s (coalesced access).
-                    group_size = int(sc.shape[0]) and (qw.shape[1] if fmt == "gptq" else qw.shape[0]) // sc.shape[0] if sc.ndim == 2 else 128
                     if fmt == "gptq" and qz is None and g_idx is None:
                         # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
                         K8, N_ = qw.shape
