@@ -34,8 +34,8 @@ override V_BASE: u32  = 4096u;
 @group(0) @binding(0) var<storage, read>       qkv_buf  : array<f16>; // flat QKV
 @group(0) @binding(1) var<storage, read>       a_in     : array<f16>; // [NUM_K_HEADS] — dt input per K-head
 @group(0) @binding(2) var<storage, read>       b_in     : array<f16>; // [NUM_K_HEADS] — outer-product gate per K-head
-@group(0) @binding(3) var<storage, read>       A_log    : array<f16>; // [NUM_V_HEADS] — log eigenvalue per V-head
-@group(0) @binding(4) var<storage, read>       dt_bias  : array<f16>; // [NUM_V_HEADS] — dt bias per V-head
+@group(0) @binding(3) var<storage, read>       A_log    : array<f32>; // [NUM_V_HEADS] — log eigenvalue per V-head
+@group(0) @binding(4) var<storage, read>       dt_bias  : array<f32>; // [NUM_V_HEADS] — dt bias per V-head
 @group(0) @binding(5) var<storage, read_write> state    : array<f32>; // [NUM_V_HEADS, K_DIM, V_DIM]
 @group(0) @binding(6) var<storage, read_write> output   : array<f16>; // [NUM_V_HEADS, V_DIM]
 
@@ -95,9 +95,9 @@ fn main(
         // a_in / b_in are per K-head (num_k_heads entries).
         // A_log / dt_bias are per V-head (num_v_heads entries).
         // When num_v_heads > num_k_heads, multiple V-heads share the same a/b K-head.
-        let dt_raw = f32(a_in[kh]) + f32(dt_bias[vh]);
+        let dt_raw = f32(a_in[kh]) + dt_bias[vh];
         let dt = max(dt_raw, 0.0) + log(1.0 + exp(-abs(dt_raw)));   // softplus
-        sh_sq[0] = exp(-exp(f32(A_log[vh])) * dt);                   // decay (per V-head)
+        sh_sq[0] = exp(-exp(A_log[vh]) * dt);                        // decay (per V-head)
         sh_sq[1] = 1.0 / (1.0 + exp(-f32(b_in[kh])));               // b_gate = sigmoid(b) (per K-head)
     }
     workgroupBarrier();

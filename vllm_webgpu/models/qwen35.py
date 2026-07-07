@@ -353,6 +353,18 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 arr = w.to_numpy().view(np.float16).reshape(w.shape[0], w.shape[2])
                 self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr, usage=rw)
 
+            # Upgrade SSM parameter precision: A_log and dt_bias are small per-head
+            # arrays originally in bf16 but stored as f16. Keeping them as f32 avoids
+            # ~3-bit mantissa loss in the decay computation.
+            for key_suffix in ("A_log", "dt_bias"):
+                key = f"{p}.{key_suffix}"
+                w = self.weights.get(key)
+                if w is None:
+                    continue
+                f16_np = w.to_numpy().view(np.float16)
+                f32_np = f16_np.astype(np.float32)
+                self.weights[key] = WebGPUBuffer.from_numpy(dev, f32_np, usage=rw)
+
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
         self._postprocess_weights()
