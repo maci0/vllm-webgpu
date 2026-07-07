@@ -379,6 +379,17 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
                            (N_out, T, 1))
 
+        # If any projection weight is quantized, matmul_quant_mr4 (hardcoded USE_QUANT=0)
+        # would reinterpret packed quantized bytes as raw f16 values, silently producing
+        # wrong output for every token. Fall back to single-token sequential processing
+        # via _transformer_layer, which dispatches matmul_quant with the correct USE_QUANT
+        # for each weight key.
+        _rep_quant_key = "model.layers.0.self_attn.q_proj.weight"
+        if self._uq_for_key(_rep_quant_key) != 0:
+            return self._prefill_sequential_fallback(
+                input_ids, positions, attn_metadata, T, hidden, ctx_len, vocab, rms_base,
+            )
+
         # _CHUNK layers per command encoder keeps each submit under Metal's GPU timeout.
         # At T=19 and inter=9728, a single 36-layer encoder generates ~37M threads and
         # exceeds the ~4-8 s per-command-buffer limit. 4 layers at a time stays safe.
@@ -420,8 +431,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     uw_k = f"{p}.mlp.up_proj.weight"
                     dw_k = f"{p}.mlp.down_proj.weight"
 
-                    # Only f16 batch GEMM supported; quantized weights fall back to T=1 path
-                    # per-token (rare for this model class - Qwen3 is f16).
                     gemm_f16(normed_x, q_wk, b["q_buf"],    hidden, q_dim)
                     gemm_f16(normed_x, k_wk, b["k_buf"],    hidden, kv_dim)
                     gemm_f16(normed_x, v_wk, b["v_buf"],    hidden, kv_dim)
@@ -544,6 +553,103 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()  # shape (1, vocab) for non-greedy
+
+    def _prefill_sequential_fallback(
+        self,
+        input_ids: "np.ndarray",
+        positions: "np.ndarray",
+        attn_metadata: object,
+        T: int,
+        hidden: int,
+        ctx_len: int,
+        vocab: int,
+        rms_base: dict,
+    ) -> "np.ndarray":
+        """Process T prefill tokens one at a time through the decode-path infrastructure.
+
+        Used when projection weights are quantized: matmul_quant_mr4 only supports
+        USE_QUANT=0 and would silently reinterpret packed quantized bytes as f16.
+        _transformer_layer dispatches matmul_quant with the correct USE_QUANT per key.
+
+        KV entries are stored token-by-token so causal attention is satisfied at each step.
+        Only the last token's logits are returned (prefill next-token prediction).
+        """
+        dev = self.wgpu_device.wgpu_device
+        pre = self._pre
+        sc  = self._sc
+
+        bt_arr = np.array(
+            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
+            dtype=np.uint32)
+
+        x_buf: "WebGPUBuffer" = pre["x"]
+
+        for t in range(T):
+            self._hstate = 0
+            tok_pos   = int(positions[t])
+            tok_ctx   = tok_pos + 1
+            _use_flash = tok_ctx > 65535
+
+            ids_t  = input_ids[t : t + 1]
+            pos_t  = positions[t : t + 1]
+            slot_t = np.array(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32)
+
+            dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32).tobytes())
+            dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32).tobytes())
+            dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
+            dev.queue.write_buffer(pre["bt"].buf,       0, bt_arr.tobytes())
+
+            with self._batched_dispatch():
+                self._dispatch(
+                    "embedding_lookup",
+                    [self.weights["model.embed_tokens.weight"], pre["ids"], pre["x"]],
+                    {"HIDDEN_DIM": hidden}, (1, 1, 1),
+                )
+                self._dispatch(
+                    "rms_norm",
+                    [pre["x"], self.weights["model.layers.0.input_layernorm.weight"],
+                     sc["normed"]],
+                    rms_base, (1, 1, 1),
+                )
+
+            normed_x: "WebGPUBuffer" = sc["normed"]
+            x_buf                    = pre["x"]
+
+            for layer_idx in range(self.num_layers):
+                normed_x, x_buf = self._transformer_layer(
+                    layer_idx, normed_x, x_buf,
+                    pre["pos"], pre["slot_map"], pre["bt"],
+                    tok_ctx, 1, _use_flash,
+                )
+
+        # Final norm + LM head on the last token's hidden state.
+        with self._batched_dispatch():
+            self._dispatch(
+                "rms_norm",
+                [x_buf, self.weights["model.norm.weight"], pre["norm_out"]],
+                rms_base, (1, 1, 1),
+            )
+            lm_head_w = (self.weights.get("lm_head.weight") or
+                         self.weights["model.embed_tokens.weight"])
+            self._dispatch(
+                "matmul_quant",
+                [pre["norm_out"], lm_head_w,
+                 self.weights.get("lm_head.scales", pre["norm_out"]),
+                 pre["logits"]],
+                {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                ((vocab + 255) // 256, 1, 1),
+            )
+            if getattr(self, "_greedy_decode", True):
+                self._dispatch("argmax_f16", [pre["logits"], self._ensure_sample_buf(vocab)],
+                               {"N": vocab}, (1, 1, 1))
+                self._copy_sample_to_staging()
+
+        self._last_logit_buf = pre["logits"]
+        self._last_vocab     = vocab
+        if getattr(self, "_greedy_decode", True):
+            tok = self._read_sample_tok()
+            return np.array([[tok]], dtype=np.int32)
+        return self.logit_readback()
 
     def _uq_for_key(self, key: str) -> int:
         """Return USE_QUANT for a weight key (closure-free helper)."""
