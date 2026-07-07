@@ -40,7 +40,7 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     #   long  (> low_freq_len):  low-frequency dimensions, scale by factor
     #   middle: smooth linear interpolation between the two extremes
     interp_scale = (orig_ctx / wavelengths - beta_fast) / (beta_slow - beta_fast)
-    blended = inv_freq * (interp_scale * (1.0 - 1.0 / factor) + 1.0 / factor)
+    blended = inv_freq * (1.0 - interp_scale * (1.0 - 1.0 / factor))
 
     scaled_inv_freq = np.where(
         wavelengths < high_freq_len,
