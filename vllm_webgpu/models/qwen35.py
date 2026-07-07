@@ -17,10 +17,10 @@ logger = logging.getLogger(__name__)
 def _gemv_wg(N: int, uq: int) -> tuple:
     """Workgroup count for matmul_quant dispatch.
 
-    SPLIT_K=1 (shader default): one workgroup per output row when USE_QUANT=0.
-    Quantized paths (USE_QUANT=1/2) use row-per-thread: ceil(N/256) workgroups.
+    SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6,7,8).
+    Row-per-thread: USE_QUANT in (1,2).
     """
-    if uq == 0:
+    if uq in (0, 3, 4, 5, 6, 7, 8):
         return (N, 1, 1)
     return ((N + 255) // 256, 1, 1)
 
@@ -164,7 +164,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "ids":      mk(T * 4),
             "pos":      mk(T * 4),
             "slot_map": mk(T * 4),
-            "bt":       mk(512 * 4),
+            "bt":       mk(4096 * 4),  # block table: 4096 blocks = 65536 tokens
             "x":        mk(T * H * 2),
             "norm_out": mk(T * H * 2),
             "logits":   mk(T * V * 2),
@@ -237,6 +237,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 if fmt == "nvfp4_gpu": return 6
                 if fmt == "int8_gpu":  return 7
                 if fmt == "fp8_gpu":   return 5
+                if fmt == "nf4_gpu":   return 8
         if self.weights.get(key[:-7] + ".scales") is not None:
             return 1
         return 0
@@ -880,7 +881,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             for i in range(self.num_layers):
                 if self._is_full_attn(i):
                     normed_x, x_buf = self._full_attn_layer(
-                        i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+                        i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens, use_flash)
                 else:
                     normed_x, x_buf = self._linear_attn_layer(
                         i, normed_x, x_buf, num_tokens)
@@ -925,6 +926,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
+        use_flash: bool = False,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Standard full-attention transformer layer. Receives pre-normed input."""
         import math

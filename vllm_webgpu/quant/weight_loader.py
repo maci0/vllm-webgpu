@@ -426,6 +426,17 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
         for k in header if k != "__metadata__"
     )
+    # BnB NF4: companion keys {base}.weight_quantized_stats (older BnB) or
+    # {base}.weight.absmax (newer bitsandbytes >= 0.41) alongside U8 weights.
+    has_bnb_nf4 = (
+        any(k.endswith(".weight_quantized_stats") for k in header)
+        or any("quant_state.bitsandbytes__nf4" in k for k in header if k != "__metadata__")
+        or any(
+            k.endswith(".weight.absmax")
+            and header.get(k[:-len(".absmax")], {}).get("dtype") == "U8"
+            for k in header if k != "__metadata__"
+        )
+    )
 
     if has_qweight:
         fmt = "awq" if any(k.endswith(".qzeros") for k in header) else "gptq"
@@ -435,6 +446,8 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
         fmt = "diffusion_nvfp4"  # ModelOpt NVFP4: .weight U8 + .weight_scale F8 + .weight_scale_2 F32
     elif has_fp8_weight:
         fmt = "fp8"
+    elif has_bnb_nf4:
+        fmt = "bnb_nf4"
     elif has_mx_u8_pair:
         # MXFP4 or MXFP8: U8 weight + U8 exponent scale. Distinguish via config files.
         _mx = _detect_mx_quant(Path(path).parent)
@@ -865,6 +878,127 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                 logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
             except Exception as exc:
                 logger.warning("Failed to process MXFP8 %s: %s", base, exc)
+
+    elif fmt == "bnb_nf4":
+        # BitsAndBytes NF4: weight [N//2, K] U8 (2 NF4 codes per byte, flattened row-pairs)
+        # + absmax [N*K//64] F32 (one per block of 64 elements in flat row-major order).
+        #
+        # BnB packs flat weight elements in pairs: byte i holds codes for elements 2i and
+        # 2i+1.  Reshaped to [N//2, K], row r covers weight rows 2r and 2r+1:
+        #   - columns [0, K//2): codes for weight[2r, 0..K-1] (lo=even k, hi=odd k)
+        #   - columns [K//2, K): codes for weight[2r+1, 0..K-1]
+        # The shader expects [N, K//2] — reshape [N//2, K] → [N//2, 2, K//2] → [N, K//2].
+        # Absmax is in flat block order (block b covers weight[b//G, b%G*64..(b%G+1)*64]
+        # when K%64==0), so reshape [N*K//64] → [N, K//64] aligns with scales[n, blk].
+        #
+        # Companion key patterns supported:
+        #   old BnB: {base}.weight_quantized_stats  (F32/F16 absmax tensor)
+        #   new BnB: {base}.weight.absmax            (F32 absmax tensor)
+
+        # Collect BnB bases and the set of companion keys to skip in the plain pass.
+        bnb_bases: set = set()
+        bnb_set: set = set()
+
+        for k in header:
+            if k == "__metadata__":
+                continue
+            if k.endswith(".weight_quantized_stats"):
+                base = k[:-len(".weight_quantized_stats")]
+                bnb_bases.add(base)
+                bnb_set.add(k)
+                wk = f"{base}.weight"
+                if wk in header:
+                    bnb_set.add(wk)
+            elif k.endswith(".weight.absmax"):
+                w_key = k[:-len(".absmax")]          # "{base}.weight"
+                if header.get(w_key, {}).get("dtype") == "U8":
+                    base = w_key[:-len(".weight")]
+                    bnb_bases.add(base)
+                    bnb_set.add(k)
+                    bnb_set.add(w_key)
+            elif "quant_state.bitsandbytes__nf4" in k:
+                w_idx = k.find(".weight.quant_state")
+                if w_idx >= 0:
+                    base = k[:w_idx]
+                    bnb_bases.add(base)
+                    bnb_set.add(k)
+                    wk = f"{base}.weight"
+                    if wk in header:
+                        bnb_set.add(wk)
+                    absmax_k = f"{base}.weight.absmax"
+                    if absmax_k in header:
+                        bnb_set.add(absmax_k)
+
+        # Upload all non-BnB tensors normally.
+        for name in header:
+            if name == "__metadata__" or name in bnb_set:
+                continue
+            if not _upload_plain(name, weights):
+                dt = header[name].get("dtype", "?")
+                if dt not in ("U8", "I32", "F32"):
+                    logger.warning("Skipping %s (dtype=%s)", name, dt)
+
+        _BNB_GROUP_K = 64
+
+        for base in sorted(bnb_bases):
+            try:
+                w_key = f"{base}.weight"
+                if w_key not in header or header[w_key].get("dtype") != "U8":
+                    logger.warning("BnB NF4: missing or non-U8 weight for %s, skipping", base)
+                    continue
+
+                bnb_codes = _load_raw(w_key)     # [N//2, K] uint8
+
+                if bnb_codes.ndim != 2:
+                    logger.warning(
+                        "BnB NF4: expected 2D weight, got shape %s for %s — skipping",
+                        bnb_codes.shape, base)
+                    continue
+
+                N_half, K = bnb_codes.shape
+                N = N_half * 2
+                K_half = K // 2
+
+                # Find absmax (try each companion key pattern in priority order).
+                absmax_arr = None
+                for abs_key in (
+                    f"{base}.weight_quantized_stats",
+                    f"{base}.weight.absmax",
+                ):
+                    if abs_key in header:
+                        absmax_arr = _load_raw(abs_key).astype(np.float32).ravel()
+                        break
+
+                if absmax_arr is None:
+                    logger.warning("BnB NF4: no absmax found for %s, skipping", base)
+                    continue
+
+                expected_blocks = N * K // _BNB_GROUP_K
+                if absmax_arr.size != expected_blocks:
+                    logger.warning(
+                        "BnB NF4: absmax size %d != expected %d (N=%d, K=%d) for %s — skipping",
+                        absmax_arr.size, expected_blocks, N, K, base)
+                    continue
+
+                # Reshape: [N//2, K] → [N//2, 2, K//2] → [N, K//2]
+                # BnB row r: first K//2 bytes → shader row 2r, last K//2 bytes → shader row 2r+1.
+                shader_codes = np.ascontiguousarray(
+                    bnb_codes.reshape(N_half, 2, K_half).reshape(N, K_half))
+
+                # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
+                absmax_2d = np.ascontiguousarray(
+                    absmax_arr.reshape(N, K // _BNB_GROUP_K).astype(np.float16))
+
+                _upload_u8(shader_codes, f"{base}.weight", weights)
+                _upload_f16(absmax_2d, f"{base}.weight.scales", weights)
+                weights.setdefault("__quant_meta__", {})[base] = {
+                    "fmt": "nf4_gpu",
+                    "group_size": _BNB_GROUP_K,
+                }
+                logger.debug("GPU NF4: %s (N=%d, K=%d, blocks=%d)", base, N, K, expected_blocks)
+
+            except Exception as exc:
+                logger.warning("Failed to process BnB NF4 %s: %s", base, exc)
 
     else:
         # Plain BF16/F16/F32

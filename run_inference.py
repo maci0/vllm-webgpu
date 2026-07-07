@@ -251,7 +251,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Cap at 65535 (WebGPU attn_score dispatch limit per dimension).
     # For ctx > 65535 flash_attn_decode is used automatically (no dispatch limit there).
     max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
-    num_blocks = math.ceil(max_ctx / block_size) + 4
+    num_blocks = min(math.ceil(max_ctx / block_size) + 4, 4096)  # pre-alloc cap
     default_kv_heads = cfg.num_key_value_heads
     default_head_dim = cfg.head_dim
     rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST

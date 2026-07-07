@@ -228,6 +228,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     if fmt == "nvfp4_gpu": return 6
                     if fmt == "int8_gpu":  return 7
                     if fmt == "fp8_gpu":   return 5
+                    if fmt == "nf4_gpu":   return 8
             if self.weights.get(key[:-7] + ".scales") is not None:
                 return 1
             return 0

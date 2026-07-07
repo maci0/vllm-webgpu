@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 def _gemv_wg(N: int, uq: int) -> tuple:
     """Workgroup count for matmul_quant dispatch.
 
-    SPLIT_K=1 (shader default): one workgroup per output row when USE_QUANT=0.
-    Quantized paths (USE_QUANT=1/2) use row-per-thread: ceil(N/256) workgroups.
+    SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6,7,8).
+    Row-per-thread: USE_QUANT in (1,2).
     """
-    if uq == 0:
+    if uq in (0, 3, 4, 5, 6, 7, 8):
         return (N, 1, 1)
     return ((N + 255) // 256, 1, 1)
 
@@ -153,7 +153,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "ids":      mk(T * 4),         # [1] uint32 token id
             "pos":      mk(T * 4),         # [1] uint32 position
             "slot_map": mk(T * 4),         # [1] uint32 physical slot
-            "bt":       mk(512 * 4),       # [512] uint32 block table
+            "bt":       mk(4096 * 4),  # block table: 4096 blocks = 65536 tokens       # [512] uint32 block table
             "x":        mk(T * H * 4),     # [1, H] f32 residual
             "norm_out": mk(T * H * 2),     # [1, H] f16 final norm
             "logits":   mk(T * V * 2),     # [1, V] f16 logits
@@ -255,7 +255,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self._hstate = 0
 
         if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
-            raise RuntimeError("multi-sequence batching not supported in this build")
+            # Each forward() call handles exactly one sequence. The model runner
+            # calls forward() once per decode request. Batching N sequences requires
+            # N separate pre-alloc buffer sets and per-sequence attention dispatch.
+            raise RuntimeError(
+                f"multi-sequence batching not supported: got {len(attn_metadata.block_tables)} "
+                "block tables; call forward() once per decode request"
+            )
 
         ctx_len = int(attn_metadata.max_decode_seq_len
                       if attn_metadata.max_decode_seq_len is not None
@@ -398,6 +404,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     if fmt == "nvfp4_gpu": return 6
                     if fmt == "int8_gpu":  return 7
                     if fmt == "fp8_gpu":   return 5
+                    if fmt == "nf4_gpu":   return 8
                     # u8 without a recognized fmt tag — could be GGUF raw bytes for
                     # a non-Q4_K type; fall through to scale check below.
             if self.weights.get(key[:-7] + ".scales") is not None:
@@ -424,7 +431,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            [normed_x, self.weights[qw],
                             self._scales_buf(qw, uq, normed_x), sc["q_buf"]],
                            {"K": hidden, "N": q_dim, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
                             **self._quant_extra(f"{p}.self_attn.q_proj", uq)},
                            _gemv_wg(q_dim, uq))
 
@@ -435,7 +442,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            [normed_x, self.weights[kw],
                             self._scales_buf(kw, uq, normed_x), sc["k_buf"]],
                            {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
                             **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
                            _gemv_wg(kv_dim, uq))
 
@@ -447,7 +454,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                [normed_x, self.weights[vw],
                                 self._scales_buf(vw, uq, normed_x), sc["v_buf"]],
                                {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                                **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                                **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
                                 **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
                                _gemv_wg(kv_dim, uq))
                 v_src = sc["v_buf"]
@@ -540,7 +547,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            [sc["attn_out"], self.weights[ow],
                             self._scales_buf(ow, uq, sc["attn_out"]), sc["o_proj_out"]],
                            {"K": q_dim, "N": hidden, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
                             **self._quant_extra(f"{p}.self_attn.o_proj", uq)},
                            _gemv_wg(hidden, uq))
 
@@ -599,7 +606,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                    [ffn_normed, self.weights[w_k],
                                     self._scales_buf(w_k, uq2, ffn_normed), out_b],
                                    {"K": hidden, "N": inter, "USE_QUANT": uq2,
-                                    **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6) else {}),
+                                    **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
                                     **self._quant_extra(f"{p}.mlp.{proj}", uq2)},
                                    _gemv_wg(inter, uq2))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
@@ -613,7 +620,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            [sc["ffn_act"], self.weights[w_k],
                             self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
                            {"K": inter, "N": hidden, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6) else {}),
+                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
                             **self._quant_extra(f"{p}.mlp.down_proj", uq)},
                            _gemv_wg(hidden, uq))
 

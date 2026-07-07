@@ -302,17 +302,21 @@ class WebGPUModelRunner:
         # ── Decode: cached requests ────────────────────────────────────────────
         # new_token_ids is empty without pipeline parallelism (vLLM design).
         # Use last_tok stored in _req_state from the previous step instead.
+        #
+        # Multi-sequence batching is not supported: one forward() call per request.
+        # Why true batching can't be done without architecture changes:
+        #   - queue.write_buffer() executes before submit, so all N writes to the
+        #     same pre-allocated buffers would alias — only the last request's data
+        #     would survive into the encoder.
+        #   - Pre-allocated scratch buffers (_pre/_sc) are sized for T=1.
+        #   - Attention shaders accept one block table, so cross-request KV attention
+        #     would produce wrong results without per-sequence block-table dispatch.
+        # To enable true batched decode we would need: N separate pre-alloc buffer
+        # sets, N argmax result buffers, and attention shaders with a batched block
+        # table (or a flash-attn style per-sequence loop inside the shader).
         if hasattr(cached, "req_ids") and cached.req_ids:
-            decode_req_ids: list[str] = []
-            input_ids_list: list[int] = []
-            positions_list: list[int] = []
-            slot_mappings: list[int] = []
-            bt_list: list[np.ndarray] = []
-
             new_block_ids = getattr(cached, "new_block_ids", [])
 
-            # Collect decode batch inputs; don't mutate _req_state until after forward succeeds.
-            _staged: list[tuple[str, int, list[int]]] = []  # (rid, new_pos, new_blk_ids)
             for i, rid in enumerate(cached.req_ids):
                 state = self._req_state.get(rid, {"pos": 0, "block_ids": [], "last_tok": 0})
                 tok = state["last_tok"]
@@ -327,40 +331,30 @@ class WebGPUModelRunner:
                         f"{pos // block_size} but only {len(blk_ids)} blocks allocated"
                     )
                 slot = blk_ids[pos // block_size] * block_size + (pos % block_size)
-                decode_req_ids.append(rid)
-                input_ids_list.append(tok)
-                positions_list.append(pos)
-                slot_mappings.append(slot)
-                bt_list.append(np.array(blk_ids, dtype=np.uint32))
-                _staged.append((rid, pos + 1, blk_ids))
 
-            if decode_req_ids:
-                class _DM:
-                    _sm = slot_mappings
-                    _bt = bt_list
-                    _ctx = max(positions_list) + 1
-                    slot_mapping = _sm
-                    block_tables = _bt
-                    max_decode_seq_len = _ctx
+                class _SM:
+                    slot_mapping      = [slot]
+                    block_tables      = [np.array(blk_ids, dtype=np.uint32)]
+                    max_decode_seq_len = pos + 1
 
                 logits = self.model.forward(
-                    np.array(input_ids_list, dtype=np.uint32),
-                    np.array(positions_list, dtype=np.uint32),
-                    _DM(),
+                    np.array([tok], dtype=np.uint32),
+                    np.array([pos], dtype=np.uint32),
+                    _SM(),
                 )
                 self._last_logits = logits
-                # GPU argmax path returns shape (1,1) int32; full logit path returns float.
-                if hasattr(self.model, 'logit_readback') and logits.shape[-1] == 1:
-                    sampled = [int(logits[0, 0])]
+
+                # GPU argmax path: logits is (1, 1) int32 with the token ID.
+                # Full logit path: logits is (1, vocab) float32 — argmax on CPU.
+                if hasattr(self.model, "logit_readback") and logits.shape[-1] == 1:
+                    stok = int(logits[0, 0])
                 else:
-                    sampled = logits.argmax(axis=-1).tolist()
-                    if not isinstance(sampled, list):
-                        sampled = [sampled]
-                # Commit state only after successful forward.
-                for (rid, new_pos, new_blk_ids), stok in zip(_staged, sampled):
-                    self._req_state[rid] = {"pos": new_pos, "block_ids": new_blk_ids, "last_tok": int(stok)}
-                all_req_ids.extend(decode_req_ids)
-                all_sampled.extend(sampled)
+                    stok = int(logits.argmax(axis=-1).flat[0])
+
+                # Commit state after a successful forward — don't mutate on failure.
+                self._req_state[rid] = {"pos": pos + 1, "block_ids": blk_ids, "last_tok": stok}
+                all_req_ids.append(rid)
+                all_sampled.append(stok)
 
         # Return empty output rather than None when no requests scheduled.
         # vLLM's batch queue raises "unexpected error" on None from execute_model.
