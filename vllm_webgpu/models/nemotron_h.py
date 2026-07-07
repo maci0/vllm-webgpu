@@ -1,7 +1,6 @@
 from __future__ import annotations
 import logging
 import math
-import re
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -229,18 +228,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
           1. 'backbone.' prefix -> 'model.'
           2. 'embeddings.' -> 'embed_tokens.'
           3. '.A_log' -> '.A'
-          4. '.mamba.' / '.attn.' / '.mlp.' -> '.mixer.' per layer
         """
         if key.startswith("backbone."):
             key = "model." + key[len("backbone."):]
         key = key.replace("embeddings.", "embed_tokens.")
         key = key.replace(".A_log", ".A")
-        # Per-layer component submodule rename.
-        key = re.sub(
-            r"(model\.layers\.\d+)\.(mamba|attn|mlp)\.",
-            r"\1.mixer.",
-            key,
-        )
         return key
 
     def load_weights(self, path: str) -> None:
