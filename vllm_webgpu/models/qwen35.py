@@ -110,6 +110,10 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # _is_moe is set from config here and may be overridden in load_weights
         # once we can verify against actual weight keys.
         self._is_moe: bool = self._moe_num_experts > 0 and self._moe_k > 0
+        # GEMMA_NORM=1 for safetensors (weights are deviations from 1, mean≈0.2).
+        # GEMMA_NORM=0 for MLX format (weights are absolute, mean≈1.0 — +1 already baked in).
+        # Detected after load_weights() by checking the first layernorm weight mean.
+        self._gemma_norm: int = 1  # default; updated in _postprocess_weights
 
         from vllm_webgpu.config import get_config
         self.block_size: int = get_config().block_size
@@ -244,15 +248,25 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
     def _postprocess_weights(self) -> None:
         """Post-load weight transformations for full-attn layers:
 
+        0. Detect GEMMA_NORM format: deviation (safetensors, mean≈0) vs absolute (MLX, mean≈1).
         1. Tile q_norm/k_norm from (head_dim,) to (num_heads * head_dim,).
         2. When attn_output_gate=True: split q_proj.weight [2*q_dim, hidden] into
            q_proj.weight [q_dim, hidden] (Q part) and q_gate_proj.weight [q_dim, hidden]
            (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
         """
         import wgpu as wgpu_lib
+        import numpy as _np
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
         rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+
+        # Detect norm weight format from the first input_layernorm weight.
+        for ln_i in range(min(self.num_layers, 4)):
+            ln_w = self.weights.get(f"model.layers.{ln_i}.input_layernorm.weight")
+            if ln_w is not None:
+                mean_abs = float(_np.abs(ln_w.to_numpy().view(_np.float16)).mean())
+                self._gemma_norm = 0 if mean_abs > 0.7 else 1
+                break
 
         for i in range(self.num_layers):
             if not self._is_full_attn(i):
@@ -411,7 +425,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
         _rms_h = {"HIDDEN_DIM": hidden,
                   "VALS_PER_THREAD": min((hidden + 255) // 256, 16) if hidden <= 4096 else 0,
-                  "GEMMA_NORM": 1}
+                  "GEMMA_NORM": self._gemma_norm}
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # normed_x is already the pre-normalized input from the caller.
@@ -964,7 +978,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                    {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
                                     "ROPE_BASE": float(self.rope_theta),
                                     "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
-                                    "GEMMA_NORM": 1,
+                                    "GEMMA_NORM": self._gemma_norm,
                                     "ROTARY_DIM": self._rotary_dim,
                                     "INTERLEAVED": self._rope_interleaved},
                                    (n_heads, num_tokens, 1))
