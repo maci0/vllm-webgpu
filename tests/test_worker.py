@@ -82,6 +82,74 @@ def test_make_model_output_no_logprobs():
     assert out.logprobs is None
 
 
+def test_compute_prompt_logprobs():
+    """_compute_prompt_logprobs returns LogprobsTensors with correct shape."""
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, LogprobsTensors
+
+    if LogprobsTensors is None:
+        pytest.skip("vllm not available")
+
+    vocab = 32
+    T = 5
+    # Synthetic logits: position i has token i+1 as the highest logit
+    full_logits = np.zeros((T, vocab), dtype=np.float32)
+    for i in range(T):
+        full_logits[i, i + 1] = 10.0  # best prediction at pos i is token i+1
+
+    tok_ids = list(range(T + 1))  # prompt tokens [0..T]
+    num_prompt_logprobs = 2
+
+    result = WebGPUModelRunner._compute_prompt_logprobs(full_logits, tok_ids[:T], num_prompt_logprobs)
+
+    assert result is not None
+    # Shape: [T-1, num_prompt_logprobs+1]
+    assert result.logprob_token_ids.shape == (T - 1, num_prompt_logprobs + 1)
+    assert result.logprobs.shape == (T - 1, num_prompt_logprobs + 1)
+    assert result.selected_token_ranks.shape == (T - 1,)
+    # Each position predicts tok_ids[i+1] correctly, so rank should be 0
+    assert (result.selected_token_ranks == 0).all()
+    # Log-probs must be non-positive
+    assert (result.logprobs <= 0).all()
+
+
+def test_compute_prompt_logprobs_short_sequence():
+    """_compute_prompt_logprobs returns None for sequences shorter than 2 tokens."""
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, LogprobsTensors
+
+    if LogprobsTensors is None:
+        pytest.skip("vllm not available")
+
+    # Single-token prompt: no valid position to compute prompt logprobs
+    result = WebGPUModelRunner._compute_prompt_logprobs(
+        np.zeros((1, 32), dtype=np.float32), [5], 2
+    )
+    assert result is None
+
+
+def test_make_model_output_with_prompt_logprobs():
+    """_make_model_output passes prompt_logprobs_dict through to ModelRunnerOutput."""
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, LogprobsTensors, ModelRunnerOutput
+
+    if ModelRunnerOutput is None or LogprobsTensors is None:
+        pytest.skip("vllm not available")
+
+    import torch
+
+    runner = MagicMock(spec=WebGPUModelRunner)
+    runner._last_model_output = None
+
+    fake_tensors = LogprobsTensors(
+        logprob_token_ids=torch.zeros((3, 3), dtype=torch.int32),
+        logprobs=torch.full((3, 3), -1.0),
+        selected_token_ranks=torch.zeros(3, dtype=torch.int32),
+    )
+    pld = {"req-1": fake_tensors}
+
+    out = WebGPUModelRunner._make_model_output(runner, ["req-1"], [7], [None], prompt_logprobs_dict=pld)
+    assert out is not None
+    assert out.prompt_logprobs_dict == pld
+
+
 def test_worker_check_health_calls_dispatch(wgpu_device):
     """check_health submits a no-op dispatch — just verifies device is alive."""
     from vllm_webgpu.v1.worker import WebGPUWorker

@@ -8,7 +8,7 @@ try:
     from vllm.config import VllmConfig
     from vllm.tasks import SupportedTask
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec, FullAttentionSpec
-    from vllm.v1.outputs import ModelRunnerOutput, SamplerOutput, LogprobsLists
+    from vllm.v1.outputs import ModelRunnerOutput, SamplerOutput, LogprobsLists, LogprobsTensors
 except ImportError:
     VllmConfig = Any  # type: ignore[assignment,misc]
     SupportedTask = Any  # type: ignore[assignment,misc]
@@ -18,6 +18,7 @@ except ImportError:
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
     SamplerOutput = None  # type: ignore[assignment,misc]
     LogprobsLists = None  # type: ignore[assignment,misc]
+    LogprobsTensors = None  # type: ignore[assignment,misc]
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR
@@ -226,6 +227,51 @@ class WebGPUModelRunner:
         return top_ids, top_lp, rank
 
     @staticmethod
+    def _compute_prompt_logprobs(
+        full_logits: "np.ndarray",
+        tok_ids: "list[int]",
+        num_prompt_logprobs: int,
+    ) -> "Any":
+        """Compute per-position prompt logprobs for a prefill pass.
+
+        For T prompt tokens, produces T-1 rows: row i uses full_logits[i]
+        to evaluate the probability of tok_ids[i+1].  Returns a
+        LogprobsTensors of shape [T-1, num_prompt_logprobs+1], or None when
+        torch or LogprobsTensors are unavailable or T < 2.
+        """
+        if LogprobsTensors is None:
+            return None
+        T = len(tok_ids)
+        if T < 2:
+            return None
+        try:
+            import torch as _torch
+        except ImportError:
+            return None
+
+        num_positions = T - 1
+        k = num_prompt_logprobs + 1  # +1: vLLM always has a slot for the sampled token
+
+        tok_ids_arr = np.zeros((num_positions, k), dtype=np.int32)
+        logprobs_arr = np.full((num_positions, k), -np.inf, dtype=np.float32)
+        ranks_arr = np.zeros(num_positions, dtype=np.int32)
+
+        for i in range(num_positions):
+            top_ids, top_lp, rank = WebGPUModelRunner._compute_request_logprobs(
+                full_logits[i], tok_ids[i + 1], k
+            )
+            actual_k = len(top_ids)
+            tok_ids_arr[i, :actual_k] = top_ids
+            logprobs_arr[i, :actual_k] = top_lp
+            ranks_arr[i] = rank
+
+        return LogprobsTensors(
+            logprob_token_ids=_torch.from_numpy(tok_ids_arr),
+            logprobs=_torch.from_numpy(logprobs_arr),
+            selected_token_ranks=_torch.from_numpy(ranks_arr),
+        )
+
+    @staticmethod
     def _flat_block_ids(ids) -> list[int]:
         """Recursively flatten block IDs from vLLM's nested tuple/list format."""
         if not ids:
@@ -243,6 +289,7 @@ class WebGPUModelRunner:
         req_ids: list[str],
         sampled: list[int],
         logprobs_data: "list | None" = None,
+        prompt_logprobs_dict: "dict | None" = None,
     ) -> Any:
         if ModelRunnerOutput is None:
             return None
@@ -275,7 +322,7 @@ class WebGPUModelRunner:
             "req_id_to_index": {rid: i for i, rid in enumerate(req_ids)},
             "sampled_token_ids": [[t] for t in sampled],
             "logprobs": built_logprobs,
-            "prompt_logprobs_dict": {},
+            "prompt_logprobs_dict": prompt_logprobs_dict or {},
         }
         for opt in ("pooler_output", "kv_connector_output", "ec_connector_output",
                     "num_nans_in_logits", "cudagraph_stats", "routed_experts"):
@@ -297,6 +344,7 @@ class WebGPUModelRunner:
         all_req_ids: list[str] = []
         all_sampled: list[int] = []
         all_logprobs_data: list = []  # per-request logprob tuples or None
+        prompt_logprobs_dict: dict[str, Any] = {}  # req_id -> LogprobsTensors for prefill
 
         # ── Prefill: new requests ──────────────────────────────────────────────
         for req in new_reqs:
@@ -305,9 +353,10 @@ class WebGPUModelRunner:
             if not tok_ids:
                 continue
 
-            # Extract per-request logprob count from SamplingParams.
+            # Extract per-request logprob counts from SamplingParams.
             sp = getattr(req, "sampling_params", None)
             num_logprobs = getattr(sp, "num_logprobs", None) if sp is not None else None
+            num_prompt_logprobs = getattr(sp, "prompt_logprobs", None) if sp is not None else None
 
             # Reset recurrent state for models with persistent state (Qwen3.5 GDN SSM).
             if hasattr(self.model, "reset_recurrent_states"):
@@ -360,6 +409,21 @@ class WebGPUModelRunner:
                     logger.warning("req %s: logprobs requested but model has no logit_readback", rid)
                 if full is not None:
                     lp_data = self._compute_request_logprobs(full[0], first_decode_tok, num_logprobs)
+
+            # Compute prompt logprobs for each prompt position when full logits
+            # are available.  Position i uses logits[i] to evaluate tok_ids[i+1],
+            # producing T-1 rows of top-K logprob data.
+            if num_prompt_logprobs is not None and T > 1:
+                if last_logits.shape[-1] > 1:  # full [T, vocab] logits
+                    pt = self._compute_prompt_logprobs(last_logits, tok_ids, num_prompt_logprobs)
+                    if pt is not None:
+                        prompt_logprobs_dict[rid] = pt
+                else:
+                    logger.warning(
+                        "req %s: prompt_logprobs requested but model returns argmax-only "
+                        "logits; prompt logprobs cannot be computed",
+                        rid,
+                    )
 
             all_req_ids.append(rid)
             all_sampled.append(first_decode_tok)
@@ -447,7 +511,9 @@ class WebGPUModelRunner:
 
         # Return empty output rather than None when no requests scheduled.
         # vLLM's batch queue raises "unexpected error" on None from execute_model.
-        return self._make_model_output(all_req_ids, all_sampled, all_logprobs_data)
+        return self._make_model_output(
+            all_req_ids, all_sampled, all_logprobs_data, prompt_logprobs_dict
+        )
 
     def _execute_model_v1(self, scheduler_output: "SchedulerOutput") -> Any:
         """vLLM < 0.24 SchedulerOutput format (scheduled_seq_groups)."""
