@@ -54,15 +54,6 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     return (scaled_inv_freq * mscale).astype(np.float32)
 
 
-def compute_standard_freqs(head_dim: int, rope_theta: float) -> np.ndarray:
-    """Standard RoPE inverse frequencies (no scaling).
-
-    Returns: [head_dim // 2] float32 array.
-    """
-    return (
-        1.0 / (rope_theta ** (np.arange(0, head_dim, 2, dtype=np.float64) / head_dim))
-    ).astype(np.float32)
-
 
 class BaseWebGPUModel:
     # Declare whether forward() can return a (1, 1) int32 token ID instead of
