@@ -171,9 +171,11 @@ class WebGPUPlatform(_Platform):
         return False
 
     @classmethod
-    def set_device(cls, device_id: int) -> None:
-        if device_id != 0:
-            raise ValueError(f"WebGPU only supports device 0, got {device_id}")
+    def set_device(cls, device) -> None:
+        import torch
+        idx = device.index if isinstance(device, torch.device) else int(device)
+        if idx != 0:
+            raise ValueError(f"WebGPU only supports device 0, got {device}")
 
     @classmethod
     def current_device(cls) -> int:
