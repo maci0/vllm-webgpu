@@ -31,8 +31,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     string of the characters above, one per layer.
 
     Weight key remapping: HuggingFace checkpoints use 'backbone.' prefix and
-    per-component submodule names (mamba, attn, mlp). These are remapped to
-    the vLLM-canonical 'model.' prefix and 'mixer.' submodule name.
+    store all mixer weights under '.mixer.' regardless of block type. Keys are
+    remapped to the vLLM-canonical 'model.' prefix; no per-type renaming is needed.
     """
 
     logit_returns_token_id: bool = True
