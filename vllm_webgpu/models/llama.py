@@ -324,6 +324,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _qt = quant_types if isinstance(quant_types, dict) else {}
 
         def _uq(key: str) -> int:
+            # Check __quant_types__ first (GGUF Q4_K=12) to avoid misidentifying
+            # Q4_K raw bytes (u8 dtype) as FP8.
+            tt = _qt.get(key, 0)
+            if tt == 12:
+                return 2
             w = self.weights.get(key)
             if w is not None:
                 dtype = getattr(w, "dtype", "f16")
@@ -334,14 +339,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 if dtype == "i32":
                     return 4 if fmt == "awq_sym" else 3
                 if dtype == "u8":
-                    if fmt == "nvfp4_gpu":
-                        return 6
-                    if fmt == "int8_gpu":
-                        return 7
-                    return 5  # fp8_gpu
-            tt = _qt.get(key, 0)
-            if tt == 12:
-                return 2
+                    if fmt == "nvfp4_gpu": return 6
+                    if fmt == "int8_gpu":  return 7
+                    if fmt == "fp8_gpu":   return 5
+                    # u8 without recognized fmt (e.g. GGUF raw Q8_0): fall through
             if self.weights.get(key[:-7] + ".scales") is not None:
                 return 1
             return 0

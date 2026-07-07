@@ -136,9 +136,8 @@ class BaseWebGPUModel:
             # MLX community format (Qwen3.5-9B): affine int4 with bf16 scales/biases
             self.weights = load_mlx_weights(path, self.wgpu_device.wgpu_device)
         elif fmt == "gguf":
-            raise ValueError(
-                f"GGUF format not supported directly. Use the vllm-gguf plugin instead: {path}"
-            )
+            from vllm_webgpu.quant.gguf_loader import load_gguf_weights
+            self.weights = load_gguf_weights(path, self.wgpu_device.wgpu_device)
         else:
             raise ValueError(f"Unknown weight format for {path}")
         logger.info("Loaded %d weight tensors (%s format)", len(self.weights), fmt)
@@ -275,11 +274,6 @@ class BaseWebGPUModel:
                     ((N + 255) // 256, 1, 1))
         return ({"K": K, "N": N, "USE_QUANT": 0, "SPLIT_K": 1},
                 (N, 1, 1))
-
-    def _scales_buf(self, weight_key: str) -> "WebGPUBuffer":
-        """Return the scales buffer companion for a quantized weight."""
-        return self.weights.get(weight_key + ".scales",
-                                self.weights.get(weight_key, None))
 
     def _dispatch(
         self,

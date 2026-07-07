@@ -219,6 +219,12 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
     def _uq_weight(self, key: str) -> int:
         """Return USE_QUANT value for a weight key (same logic as llama.py)."""
+        # Check __quant_types__ (GGUF Q4_K=12) before dtype to avoid misidentifying
+        # Q4_K raw bytes (dtype=u8) as FP8.
+        quant_types = self.weights.get("__quant_types__", {})
+        _qt = quant_types if isinstance(quant_types, dict) else {}
+        if _qt.get(key, 0) == 12:
+            return 2
         w = self.weights.get(key)
         if w is not None:
             dtype = getattr(w, "dtype", "f16")
@@ -230,11 +236,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             if dtype == "u8":
                 if fmt == "nvfp4_gpu": return 6
                 if fmt == "int8_gpu":  return 7
-                return 5
-        quant_types = self.weights.get("__quant_types__", {})
-        _qt = quant_types if isinstance(quant_types, dict) else {}
-        if _qt.get(key, 0) == 12:
-            return 2
+                if fmt == "fp8_gpu":   return 5
         if self.weights.get(key[:-7] + ".scales") is not None:
             return 1
         return 0

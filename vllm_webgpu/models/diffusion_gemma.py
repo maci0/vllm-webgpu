@@ -213,6 +213,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         _qt = quant_types if isinstance(quant_types, dict) else {}
 
         def _uq(key: str) -> int:
+            tt = _qt.get(key, 0)
+            if tt == 12:
+                return 2
             w = self.weights.get(key)
             if w is not None:
                 dtype = getattr(w, "dtype", "f16")
@@ -224,10 +227,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 if dtype == "u8":
                     if fmt == "nvfp4_gpu": return 6
                     if fmt == "int8_gpu":  return 7
-                    return 5
-            tt = _qt.get(key, 0)
-            if tt == 12:
-                return 2
+                    if fmt == "fp8_gpu":   return 5
             if self.weights.get(key[:-7] + ".scales") is not None:
                 return 1
             return 0

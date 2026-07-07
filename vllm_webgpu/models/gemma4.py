@@ -382,6 +382,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _ls = self._layer_scales[layer_idx]
 
         def _uq(key: str) -> int:
+            # Check __quant_types__ (GGUF Q4_K = 12) before dtype to avoid
+            # misidentifying Q4_K raw bytes (u8 dtype) as FP8.
+            tt = _qt.get(key, 0)
+            if tt == 12:
+                return 2
             w = self.weights.get(key)
             if w is not None:
                 dtype = getattr(w, "dtype", "f16")
@@ -393,10 +398,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 if dtype == "u8":
                     if fmt == "nvfp4_gpu": return 6
                     if fmt == "int8_gpu":  return 7
-                    return 5
-            tt = _qt.get(key, 0)
-            if tt == 12:
-                return 2
+                    if fmt == "fp8_gpu":   return 5
+                    # u8 without a recognized fmt tag — could be GGUF raw bytes for
+                    # a non-Q4_K type; fall through to scale check below.
             if self.weights.get(key[:-7] + ".scales") is not None:
                 return 1
             return 0
