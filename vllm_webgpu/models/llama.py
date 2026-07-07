@@ -117,8 +117,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "v_buf":       mk(T * KV * 2),
             "q_rope":      mk(T * Q * 2),
             "k_rope":      mk(T * KV * 2),
-            "scores_buf": mk(NQ * max_ctx * 2),
-            "sm_buf":     mk(NQ * max_ctx * 2),
             "attn_out":   mk(T * Q * 2),
             "o_proj_out": mk(T * H * 2),
             "ffn_normed": mk(T * H * 2),
