@@ -470,15 +470,19 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # (Q from q_buf, K from k_buf — two separate buffers). Saves 1 dispatch.
             q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
             k_norm_w_l = self.weights.get(f"{p}.self_attn.k_norm.weight")
+            _freq_buf = self._rope_freq_buf
+            _g4_rope_base = {"ROPE_BASE": float(self.rope_theta),
+                             "LN_ROPE_BASE": ln_rope,
+                             "USE_FREQ_BUF": int(self._use_freq_buf)}
             if q_norm_w is not None and k_norm_w_l is not None:
+                # Binding 7 (inv_freq_buf): always provided.
                 self._dispatch("fused_qk_norm_rope",
                                [sc["q_buf"], q_norm_w, k_norm_w_l, pos_buf,
-                                sc["q_rope"], sc["k_rope"], sc["k_buf"]],
-                               {"HEAD_DIM": head_dim,
+                                sc["q_rope"], sc["k_rope"], sc["k_buf"], _freq_buf],
+                               {**_g4_rope_base,
+                                "HEAD_DIM": head_dim,
                                 "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": num_kv_heads,
-                                "ROPE_BASE": float(self.rope_theta),
-                                "LN_ROPE_BASE": ln_rope,
                                 "HAS_WEIGHT": 1,
                                 "GEMMA_NORM": self._gemma_norm_const,
                                 "INPUT_OFFSET_K": 0,
@@ -491,17 +495,18 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 ]:
                     norm_w = self.weights.get(w_key)
                     if norm_w is not None:
+                        # Binding 4 (inv_freq_buf): always provided.
                         self._dispatch("fused_per_head_norm_rope",
-                                       [src, norm_w, pos_buf, dst],
-                                       {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
-                                        "ROPE_BASE": float(self.rope_theta),
-                                        "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
+                                       [src, norm_w, pos_buf, dst, _freq_buf],
+                                       {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                        "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
                                         "GEMMA_NORM": self._gemma_norm_const},
                                        (n_heads, num_tokens, 1))
                     else:
-                        self._dispatch("rope", [src, pos_buf, dst],
-                                       {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
-                                        "LN_ROPE_BASE": ln_rope},
+                        # Binding 3 (inv_freq_buf): always provided.
+                        self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
+                                       {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                        "NUM_HEADS": n_heads},
                                        (num_tokens, n_heads, 1))
 
             # Per-head RMSNorm (no weight) on V before caching — Gemma4 only.

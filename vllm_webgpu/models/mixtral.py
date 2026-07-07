@@ -316,16 +316,19 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
             q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
             k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
+            _freq_buf = self._rope_freq_buf
             _rope_consts = {
                 "HEAD_DIM": self.head_dim,
                 "ROPE_BASE": float(self.rope_theta),
                 "LN_ROPE_BASE": ln_rope,
+                "USE_FREQ_BUF": int(self._use_freq_buf),
             }
 
             if _use_fused_qkv and q_norm_w is not None:
+                # Binding 6 (k_input): dummy (K_SEPARATE=0). Binding 7: inv_freq_buf.
                 self._dispatch("fused_qk_norm_rope",
                                [sc["qkv_buf"], q_norm_w, k_norm_w, pos_buf,
-                                sc["q_rope"], sc["k_rope"], sc["qkv_buf"]],
+                                sc["q_rope"], sc["k_rope"], sc["qkv_buf"], _freq_buf],
                                {**_rope_consts,
                                 "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": self.num_kv_heads,
@@ -340,12 +343,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 ]:
                     if norm_w is not None:
                         self._dispatch("fused_per_head_norm_rope",
-                                       [src, norm_w, pos_buf, dst],
+                                       [src, norm_w, pos_buf, dst, _freq_buf],
                                        {**_rope_consts, "NUM_HEADS": n_heads,
                                         "HAS_WEIGHT": 1, "INPUT_OFFSET": in_off},
                                        (n_heads, num_tokens, 1))
                     else:
-                        self._dispatch("rope", [src, pos_buf, dst],
+                        self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
                                        {**_rope_consts, "NUM_HEADS": n_heads},
                                        (num_tokens, n_heads, 1))
 

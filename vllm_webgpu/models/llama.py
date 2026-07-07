@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import BaseWebGPUModel
+from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, compute_standard_freqs
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -73,6 +73,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         self._init_scratch_buffers(max_ctx)
+        self._init_rope_freq_buf()
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Pre-allocate all intermediate scratch buffers used in _transformer_layer.
@@ -133,6 +134,37 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         }
         # Index into hidden-state rotation: the layer output cycles h0 -> h1 -> h2 -> h0 ...
         self._hstate: int = 0
+
+    def _init_rope_freq_buf(self) -> None:
+        """Detect YaRN rope_scaling and upload precomputed inverse frequencies to GPU.
+
+        When rope_type == 'yarn', replaces the base-class dummy buffer with actual
+        YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
+        """
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+        import wgpu as wgpu_lib
+
+        rope_scaling = getattr(self.model_config, "rope_scaling", None) or {}
+        rope_type = (rope_scaling.get("rope_type", "") or
+                     rope_scaling.get("type", ""))
+
+        if rope_type != "yarn":
+            return  # base-class dummy buffer is sufficient; _use_freq_buf stays False
+
+        dev = self.wgpu_device.wgpu_device
+        rw = (wgpu_lib.BufferUsage.STORAGE
+              | wgpu_lib.BufferUsage.COPY_SRC
+              | wgpu_lib.BufferUsage.COPY_DST)
+        freqs = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling)
+        self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs, usage=rw)
+        self._use_freq_buf = True
+        logger.info(
+            "YaRN RoPE: factor=%.1f beta_fast=%.1f beta_slow=%.1f orig_ctx=%d",
+            rope_scaling.get("factor", 1.0),
+            rope_scaling.get("beta_fast", 32.0),
+            rope_scaling.get("beta_slow", 1.0),
+            rope_scaling.get("original_max_position_embeddings", 4096),
+        )
 
     def _postprocess_weights(self) -> None:
         """Fix weight shapes that differ between model variants.
@@ -439,6 +471,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     gemm_f16(normed_x, v_wk, b["v_buf"],    hidden, kv_dim)
 
                     # ── Per-head RMSNorm + RoPE for all T tokens ──────────────────
+                    _pfill_rope_base = {"HEAD_DIM": self.head_dim,
+                                        "ROPE_BASE": float(self.rope_theta),
+                                        "LN_ROPE_BASE": ln_rope,
+                                        "USE_FREQ_BUF": int(self._use_freq_buf)}
+                    _freq_buf = self._rope_freq_buf
                     for src, dst, n_h, wk in [
                         (b["q_buf"],  b["q_rope"], self.num_q_heads,  f"{p}.self_attn.q_norm.weight"),
                         (b["k_buf"],  b["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
@@ -446,15 +483,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                         nw = self.weights.get(wk)
                         if nw is not None:
                             self._dispatch("fused_per_head_norm_rope",
-                                           [src, nw, pos_buf, dst],
-                                           {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_h,
-                                            "ROPE_BASE": float(self.rope_theta),
-                                            "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1},
+                                           [src, nw, pos_buf, dst, _freq_buf],
+                                           {**_pfill_rope_base, "NUM_HEADS": n_h, "HAS_WEIGHT": 1},
                                            (n_h, T, 1))
                         else:
-                            self._dispatch("rope", [src, pos_buf, dst],
-                                           {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_h,
-                                            "LN_ROPE_BASE": ln_rope},
+                            self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
+                                           {**_pfill_rope_base, "NUM_HEADS": n_h},
                                            (T, n_h, 1))
 
                     k_cache, v_cache = self.kv_pool[i]
@@ -806,16 +840,19 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # Otherwise: two separate fused_per_head_norm_rope (or plain rope) calls.
             q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
             k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
+            _freq_buf = self._rope_freq_buf
             _rope_consts = {"HEAD_DIM": self.head_dim,
                             "ROPE_BASE": float(self.rope_theta),
-                            "LN_ROPE_BASE": ln_rope}
+                            "LN_ROPE_BASE": ln_rope,
+                            "USE_FREQ_BUF": int(self._use_freq_buf)}
 
             if _use_fused_qkv and q_norm_w is not None:
                 # fused_qk_norm_rope: Q+K norm+rope in one dispatch.
-                # Binding 6 (k_input) is unused when K_SEPARATE=0; bind qkv_buf as dummy.
+                # Binding 6 (k_input): unused here (K_SEPARATE=0), bind qkv_buf as dummy.
+                # Binding 7 (inv_freq_buf): always provided (wgpu requires all declared bindings).
                 self._dispatch("fused_qk_norm_rope",
                                [sc["qkv_buf"], q_norm_w, k_norm_w, pos_buf,
-                                sc["q_rope"], sc["k_rope"], sc["qkv_buf"]],
+                                sc["q_rope"], sc["k_rope"], sc["qkv_buf"], _freq_buf],
                                {**_rope_consts,
                                 "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": self.num_kv_heads,
@@ -828,13 +865,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, q_dim if _use_fused_qkv else 0),
                 ]:
                     if norm_w is not None:
+                        # Binding 4 (inv_freq_buf): always provided.
                         self._dispatch("fused_per_head_norm_rope",
-                                       [src, norm_w, pos_buf, dst],
+                                       [src, norm_w, pos_buf, dst, _freq_buf],
                                        {**_rope_consts, "NUM_HEADS": n_heads,
                                         "HAS_WEIGHT": 1, "INPUT_OFFSET": in_off},
                                        (n_heads, num_tokens, 1))
                     else:
-                        self._dispatch("rope", [src, pos_buf, dst],
+                        # Binding 3 (inv_freq_buf): always provided.
+                        self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
                                        {**_rope_consts, "NUM_HEADS": n_heads},
                                        (num_tokens, n_heads, 1))
 

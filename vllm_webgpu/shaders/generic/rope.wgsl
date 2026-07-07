@@ -4,10 +4,14 @@ override HEAD_DIM: u32      = 128u;
 override NUM_HEADS: u32     = 32u;
 override ROPE_BASE: f32     = 10000.0;
 override LN_ROPE_BASE: f32  = 9.210340372;  // = log(ROPE_BASE); host sets this
+// USE_FREQ_BUF=1: read precomputed inv_freq from binding 3 instead of computing inline.
+// Enables YaRN and other scaled RoPE variants via CPU-side frequency precomputation.
+override USE_FREQ_BUF: u32  = 0u;
 
-@group(0) @binding(0) var<storage, read>       input     : array<f16>;
-@group(0) @binding(1) var<storage, read>       positions : array<u32>;
-@group(0) @binding(2) var<storage, read_write> output    : array<f16>;
+@group(0) @binding(0) var<storage, read>       input        : array<f16>;
+@group(0) @binding(1) var<storage, read>       positions    : array<u32>;
+@group(0) @binding(2) var<storage, read_write> output       : array<f16>;
+@group(0) @binding(3) var<storage, read>       inv_freq_buf : array<f32>;
 
 @compute @workgroup_size(64, 1, 1)
 fn main(
@@ -27,7 +31,12 @@ fn main(
     var i = tid;
     loop {
         if (i >= half) { break; }
-        let theta_i = exp(-f32(i * 2u) / f32(HEAD_DIM) * LN_ROPE_BASE);
+        var theta_i: f32;
+        if (USE_FREQ_BUF == 1u) {
+            theta_i = inv_freq_buf[i];
+        } else {
+            theta_i = exp(-f32(i * 2u) / f32(HEAD_DIM) * LN_ROPE_BASE);
+        }
         let angle   = pos * theta_i;
         let cos_v   = cos(angle);
         let sin_v   = sin(angle);

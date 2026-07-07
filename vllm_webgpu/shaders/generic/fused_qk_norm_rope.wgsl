@@ -29,6 +29,8 @@ enable f16;
 //   3: positions [num_tokens] u32
 //   4: q_rope_out [NUM_Q_HEADS * HEAD_DIM] f16  (output)
 //   5: k_rope_out [NUM_KV_HEADS * HEAD_DIM] f16 (output)
+//   6: k_input — separate K buffer (only when K_SEPARATE=1; bind any buf otherwise)
+//   7: inv_freq_buf [HEAD_DIM/2] f32 — precomputed RoPE freqs (only when USE_FREQ_BUF=1)
 
 override HEAD_DIM:       u32 = 128u;
 override NUM_Q_HEADS:    u32 = 32u;
@@ -44,15 +46,19 @@ override INPUT_OFFSET_K: u32 = 0u;            // f16 element offset for K in inp
 // K_SEPARATE=0: K data is in input (binding 0) at element INPUT_OFFSET_K (default).
 // When K_SEPARATE=0, bind any buffer at slot 6 (it will not be read).
 override K_SEPARATE: u32 = 0u;
+// USE_FREQ_BUF=1: read precomputed inv_freq from binding 7 instead of computing inline.
+// Enables YaRN and other scaled RoPE variants via CPU-side frequency precomputation.
+override USE_FREQ_BUF: u32 = 0u;
 
-@group(0) @binding(0) var<storage, read>       input      : array<f16>;
-@group(0) @binding(1) var<storage, read>       q_norm_w   : array<f16>;
-@group(0) @binding(2) var<storage, read>       k_norm_w   : array<f16>;
-@group(0) @binding(3) var<storage, read>       positions  : array<u32>;
-@group(0) @binding(4) var<storage, read_write> q_rope_out : array<f16>;
-@group(0) @binding(5) var<storage, read_write> k_rope_out : array<f16>;
+@group(0) @binding(0) var<storage, read>       input        : array<f16>;
+@group(0) @binding(1) var<storage, read>       q_norm_w     : array<f16>;
+@group(0) @binding(2) var<storage, read>       k_norm_w     : array<f16>;
+@group(0) @binding(3) var<storage, read>       positions    : array<u32>;
+@group(0) @binding(4) var<storage, read_write> q_rope_out   : array<f16>;
+@group(0) @binding(5) var<storage, read_write> k_rope_out   : array<f16>;
 // Separate K input buffer. When K_SEPARATE=0, bind any buffer here (not read).
-@group(0) @binding(6) var<storage, read>       k_input    : array<f16>;
+@group(0) @binding(6) var<storage, read>       k_input      : array<f16>;
+@group(0) @binding(7) var<storage, read>       inv_freq_buf : array<f32>;
 
 var<workgroup> shared_sq:    array<f32, 64>;
 var<workgroup> shared_input: array<f32, HEAD_DIM>;
@@ -147,7 +153,12 @@ fn main(
         }
 
         if (i < rot_half) {
-            let theta_i = exp(-f32(i * 2u) / f32(ROTARY_DIM) * LN_ROPE_BASE);
+            var theta_i: f32;
+            if (USE_FREQ_BUF == 1u) {
+                theta_i = inv_freq_buf[i];
+            } else {
+                theta_i = exp(-f32(i * 2u) / f32(ROTARY_DIM) * LN_ROPE_BASE);
+            }
             let angle   = pos * theta_i;
             let cos_v   = cos(angle);
             let sin_v   = sin(angle);

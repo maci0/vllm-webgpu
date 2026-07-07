@@ -17,6 +17,9 @@ override INTERLEAVED: u32   = 0u;
 // INPUT_OFFSET: element offset into the input buffer. Set to Q_DIM when reading K
 // from a fused QKV buffer, 0 for standalone Q or K buffers.
 override INPUT_OFFSET: u32  = 0u;
+// USE_FREQ_BUF=1: read precomputed inv_freq from binding 4 instead of computing inline.
+// Enables YaRN and other scaled RoPE variants via CPU-side frequency precomputation.
+override USE_FREQ_BUF: u32  = 0u;
 
 var<workgroup> shared_sq:    array<f32, 64>;
 // shared_input caches HEAD_DIM f32 values for reuse in phase 2.
@@ -24,10 +27,11 @@ var<workgroup> shared_sq:    array<f32, 64>;
 // HEAD_DIM ≤ 256 (1024 bytes) keeps us well within the 16384-byte limit.
 var<workgroup> shared_input: array<f32, HEAD_DIM>;
 
-@group(0) @binding(0) var<storage, read>       input     : array<f16>;
-@group(0) @binding(1) var<storage, read>       weight    : array<f16>;  // [num_heads, head_dim] or unused
-@group(0) @binding(2) var<storage, read>       positions : array<u32>;
-@group(0) @binding(3) var<storage, read_write> output    : array<f16>;
+@group(0) @binding(0) var<storage, read>       input        : array<f16>;
+@group(0) @binding(1) var<storage, read>       weight       : array<f16>;  // [num_heads, head_dim] or unused
+@group(0) @binding(2) var<storage, read>       positions    : array<u32>;
+@group(0) @binding(3) var<storage, read_write> output       : array<f16>;
+@group(0) @binding(4) var<storage, read>       inv_freq_buf : array<f32>;
 
 @compute @workgroup_size(64, 1, 1)
 fn main(
@@ -107,7 +111,12 @@ fn main(
 
         if (i < rot_half) {
             // RoPE applied: theta uses ROTARY_DIM for correct frequency
-            let theta_i = exp(-f32(i * 2u) / f32(ROTARY_DIM) * LN_ROPE_BASE);
+            var theta_i: f32;
+            if (USE_FREQ_BUF == 1u) {
+                theta_i = inv_freq_buf[i];
+            } else {
+                theta_i = exp(-f32(i * 2u) / f32(ROTARY_DIM) * LN_ROPE_BASE);
+            }
             let angle   = pos * theta_i;
             let cos_v   = cos(angle);
             let sin_v   = sin(angle);

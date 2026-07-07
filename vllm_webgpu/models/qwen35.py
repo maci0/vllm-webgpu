@@ -1140,15 +1140,19 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             # When both norm weights exist, fuse into one dispatch using K_SEPARATE=1.
             _q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
             _k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
+            _freq_buf = self._rope_freq_buf
+            _q35_rope_base = {"ROPE_BASE": float(self.rope_theta),
+                              "LN_ROPE_BASE": ln_rope,
+                              "USE_FREQ_BUF": int(self._use_freq_buf)}
             if _q_norm_w is not None and _k_norm_w is not None:
+                # Binding 7 (inv_freq_buf): always provided.
                 self._dispatch("fused_qk_norm_rope",
                                [sc["q_buf"], _q_norm_w, _k_norm_w, pos_buf,
-                                sc["q_rope"], sc["k_rope"], sc["k_buf"]],
-                               {"HEAD_DIM": self.head_dim,
+                                sc["q_rope"], sc["k_rope"], sc["k_buf"], _freq_buf],
+                               {**_q35_rope_base,
+                                "HEAD_DIM": self.head_dim,
                                 "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": self.num_kv_heads,
-                                "ROPE_BASE": float(self.rope_theta),
-                                "LN_ROPE_BASE": ln_rope,
                                 "HAS_WEIGHT": 1,
                                 "GEMMA_NORM": self._gemma_norm,
                                 "ROTARY_DIM": self._rotary_dim,
@@ -1163,19 +1167,20 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 ]:
                     norm_w = self.weights.get(w_key)
                     if norm_w is not None:
+                        # Binding 4 (inv_freq_buf): always provided.
                         self._dispatch("fused_per_head_norm_rope",
-                                       [src, norm_w, pos_buf, dst],
-                                       {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
-                                        "ROPE_BASE": float(self.rope_theta),
-                                        "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
+                                       [src, norm_w, pos_buf, dst, _freq_buf],
+                                       {**_q35_rope_base, "HEAD_DIM": self.head_dim,
+                                        "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
                                         "GEMMA_NORM": self._gemma_norm,
                                         "ROTARY_DIM": self._rotary_dim,
                                         "INTERLEAVED": self._rope_interleaved},
                                        (n_heads, num_tokens, 1))
                     else:
-                        self._dispatch("rope", [src, pos_buf, dst],
-                                       {"HEAD_DIM": self.head_dim, "NUM_HEADS": n_heads,
-                                        "LN_ROPE_BASE": ln_rope},
+                        # Binding 3 (inv_freq_buf): always provided.
+                        self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
+                                       {**_q35_rope_base, "HEAD_DIM": self.head_dim,
+                                        "NUM_HEADS": n_heads},
                                        (num_tokens, n_heads, 1))
 
             # Fused K+V cache store

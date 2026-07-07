@@ -275,23 +275,26 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             else:
                 v_src = sc["k_buf"]  # global attention: V = K
 
+            _freq_buf = self._rope_freq_buf
+            _dg_rope_base = {"ROPE_BASE": float(self.rope_theta), "LN_ROPE_BASE": ln_rope,
+                             "USE_FREQ_BUF": int(self._use_freq_buf)}
             for src, dst, n_heads, wk in [
                 (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
                 (sc["k_buf"], sc["k_rope"], num_kv_heads, f"{p}.self_attn.k_norm.weight"),
             ]:
                 nw = self.weights.get(wk)
                 if nw is not None:
+                    # Binding 4 (inv_freq_buf): always provided.
                     self._dispatch("fused_per_head_norm_rope",
-                                   [src, nw, pos_buf, dst],
-                                   {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
-                                    "ROPE_BASE": float(self.rope_theta),
-                                    "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
-                                    "GEMMA_NORM": self._gemma_norm_const},
+                                   [src, nw, pos_buf, dst, _freq_buf],
+                                   {**_dg_rope_base, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
+                                    "HAS_WEIGHT": 1, "GEMMA_NORM": self._gemma_norm_const},
                                    (n_heads, num_tokens, 1))
                 else:
-                    self._dispatch("rope", [src, pos_buf, dst],
-                                   {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
-                                    "LN_ROPE_BASE": ln_rope}, (num_tokens, n_heads, 1))
+                    # Binding 3 (inv_freq_buf): always provided.
+                    self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
+                                   {**_dg_rope_base, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads},
+                                   (num_tokens, n_heads, 1))
 
             v_to_cache = v_src
             self._dispatch("kv_cache_store", [sc["k_rope"], k_cache, slot_map],
