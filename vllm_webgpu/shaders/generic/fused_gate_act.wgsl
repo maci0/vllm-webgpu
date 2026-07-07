@@ -11,9 +11,12 @@ enable f16;
 // Thread tid processes k = tid*2, tid*2+512, ... (stride 512, 2 f16 per u32).
 //
 // Overrides:
-//   K      — input hidden dim
-//   N      — intermediate/output dim (gate and up both have shape [N, K/2] u32)
-//   GELU   — 0: SiLU = x*σ(x) (Llama/Qwen), 1: tanh-GELU (Gemma)
+//   K          — input hidden dim
+//   N          — intermediate/output dim (gate and up both have shape [N, K/2] u32)
+//   GELU       — 0: SiLU = x*σ(x) (Llama/Qwen), 1: tanh-GELU (Gemma) [legacy]
+//   ACTIVATION — 0: SiLU (default), 1: GELU (sigmoid approx), 2: ReLU² (Nemotron-3)
+//                Takes precedence over GELU when non-zero.
+//   CLAMP_MAX  — 0: no clamp; >0: clamp gate activation to this value (swiglu_limit)
 //
 // Bindings:
 //   0: x        [K] f16
@@ -21,14 +24,38 @@ enable f16;
 //   2: up_w     [N, K/2] u32
 //   3: ffn_act  [N] f16  (output — activated gate·up product)
 
-override K:    u32 = 2560u;
-override N:    u32 = 9728u;
-override GELU: u32 = 0u;   // 0 = SiLU, 1 = tanh-GELU
+override K:          u32 = 2560u;
+override N:          u32 = 9728u;
+override GELU:       u32 = 0u;   // 0 = SiLU, 1 = tanh-GELU (Gemma) [legacy; use ACTIVATION]
+override CLAMP_MAX:  f32 = 0.0;  // 0 = no clamp; >0 = clamp gate activation to this value (swiglu_limit)
+override ACTIVATION: u32 = 0u;   // 0 = SiLU, 1 = GELU, 2 = ReLU² (squared ReLU)
 
 @group(0) @binding(0) var<storage, read>       x       : array<f16>;
 @group(0) @binding(1) var<storage, read>       gate_w  : array<u32>;
 @group(0) @binding(2) var<storage, read>       up_w    : array<u32>;
 @group(0) @binding(3) var<storage, read_write> ffn_act : array<f16>;
+
+fn activate(x: f32) -> f32 {
+    var a: f32;
+    if (ACTIVATION == 1u) {
+        // GELU: x * Φ(x) approximated as x * sigmoid(1.702 * x)
+        a = x * (1.0f / (1.0f + exp(-1.702f * x)));
+    } else if (ACTIVATION == 2u) {
+        // ReLU² (squared ReLU, Nemotron-3)
+        let r = max(x, 0.0f);
+        a = r * r;
+    } else if (GELU == 1u) {
+        // tanh-GELU: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715*x³)))  [legacy]
+        let c   = 0.7978845608f;  // sqrt(2/π)
+        let val = c * (x + 0.044715f * x * x * x);
+        a = 0.5f * x * (1.0f + tanh(val));
+    } else {
+        // SiLU (default): x * sigmoid(x)
+        a = x * (1.0f / (1.0f + exp(-x)));
+    }
+    if (CLAMP_MAX > 0.0f) { a = min(a, CLAMP_MAX); }
+    return a;
+}
 
 var<workgroup> sh_gate: array<f32, 256>;
 var<workgroup> sh_up:   array<f32, 256>;
@@ -79,16 +106,6 @@ fn main(
     if (tid == 0u) {
         let g = sh_gate[0];
         let u = sh_up[0];
-        var activated: f32;
-        if (GELU == 0u) {
-            // SiLU: x * sigmoid(x)
-            activated = g * (1.0 / (1.0 + exp(-g)));
-        } else {
-            // tanh-GELU: 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715*x³)))
-            let c   = 0.7978845608f;  // sqrt(2/π)
-            let val = c * (g + 0.044715f * g * g * g);
-            activated = 0.5f * g * (1.0f + tanh(val));
-        }
-        ffn_act[row] = f16(clamp(activated * u, -65504.0, 65504.0));
+        ffn_act[row] = f16(clamp(activate(g) * u, -65504.0, 65504.0));
     }
 }

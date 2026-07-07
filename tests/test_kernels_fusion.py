@@ -579,6 +579,8 @@ def test_fused_qk_norm_rope_shared_input(wgpu_device):
     # Binding 6: k_input must be bound; it is evaluated by select() but the result is
     # discarded (K_SEPARATE=0). Allocate it large enough to avoid OOB on K-head indexing.
     dummy_k_buf  = WebGPUBuffer.from_numpy(dev, np.zeros(len(input_data), dtype=np.float16))
+    # dummy inv_freq (binding 7 always declared; USE_FREQ_BUF=0 so unused)
+    freq_buf = WebGPUBuffer.from_numpy(dev, np.zeros(HEAD_DIM // 2, dtype=np.float32))
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     key = PipelineKey("fused_qk_norm_rope", (
@@ -600,6 +602,7 @@ def test_fused_qk_norm_rope_shared_input(wgpu_device):
             {"binding": 4, "resource": {"buffer": q_out_buf.buf}},
             {"binding": 5, "resource": {"buffer": k_out_buf.buf}},
             {"binding": 6, "resource": {"buffer": dummy_k_buf.buf}},
+            {"binding": 7, "resource": {"buffer": freq_buf.buf}},
         ],
     )
     _dispatch(dev, pipeline, bg, (NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1))
@@ -658,6 +661,8 @@ def test_fused_qk_norm_rope_k_separate(wgpu_device):
     k_input_data = np.zeros(len(q_flat), dtype=np.float16)
     k_input_data[:len(k_flat)] = k_flat
     k_input_buf  = WebGPUBuffer.from_numpy(dev, k_input_data)
+    # dummy inv_freq (binding 7 always declared; USE_FREQ_BUF=0 so unused)
+    freq_buf = WebGPUBuffer.from_numpy(dev, np.zeros(HEAD_DIM // 2, dtype=np.float32))
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     key = PipelineKey("fused_qk_norm_rope", (
@@ -678,6 +683,7 @@ def test_fused_qk_norm_rope_k_separate(wgpu_device):
             {"binding": 4, "resource": {"buffer": q_out_buf.buf}},
             {"binding": 5, "resource": {"buffer": k_out_buf.buf}},
             {"binding": 6, "resource": {"buffer": k_input_buf.buf}},
+            {"binding": 7, "resource": {"buffer": freq_buf.buf}},
         ],
     )
     _dispatch(dev, pipeline, bg, (NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1))
@@ -732,6 +738,8 @@ def test_fused_qk_norm_rope_k_separate_equivalence(wgpu_device):
     dummy_k_buf = WebGPUBuffer.from_numpy(dev, dummy_k)
     q_out0_buf  = WebGPUBuffer.empty(dev, q_out_sz, usage=rw)
     k_out0_buf  = WebGPUBuffer.empty(dev, k_out_sz, usage=rw)
+    # dummy inv_freq (binding 7 always declared; USE_FREQ_BUF=0 so unused)
+    freq_buf = WebGPUBuffer.from_numpy(dev, np.zeros(HEAD_DIM // 2, dtype=np.float32))
 
     key0 = PipelineKey("fused_qk_norm_rope", (
         ("HEAD_DIM", HEAD_DIM),
@@ -751,6 +759,7 @@ def test_fused_qk_norm_rope_k_separate_equivalence(wgpu_device):
             {"binding": 4, "resource": {"buffer": q_out0_buf.buf}},
             {"binding": 5, "resource": {"buffer": k_out0_buf.buf}},
             {"binding": 6, "resource": {"buffer": dummy_k_buf.buf}},
+            {"binding": 7, "resource": {"buffer": freq_buf.buf}},
         ],
     )
     _dispatch(dev, p0, bg0, (NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1))
@@ -782,6 +791,7 @@ def test_fused_qk_norm_rope_k_separate_equivalence(wgpu_device):
             {"binding": 4, "resource": {"buffer": q_out1_buf.buf}},
             {"binding": 5, "resource": {"buffer": k_out1_buf.buf}},
             {"binding": 6, "resource": {"buffer": k_input1_buf.buf}},
+            {"binding": 7, "resource": {"buffer": freq_buf.buf}},
         ],
     )
     _dispatch(dev, p1, bg1, (NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1))

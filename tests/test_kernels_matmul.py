@@ -76,6 +76,8 @@ def test_matmul_quant_f16(wgpu_device):
     # dummy scales (not used in f16 path)
     scales_buf = WebGPUBuffer.from_numpy(dev, np.ones(N, dtype=np.float16))
     out_buf = WebGPUBuffer.empty(dev, N * 2, usage=rw)
+    # dummy bias (binding 4 is always declared in matmul_quant; HAS_BIAS=0 so unused)
+    bias_buf = WebGPUBuffer.from_numpy(dev, np.zeros(N, dtype=np.float16))
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     # SPLIT_K=0: row-per-thread mode, dispatch ceil(N/256) workgroups
@@ -89,6 +91,7 @@ def test_matmul_quant_f16(wgpu_device):
             {"binding": 1, "resource": {"buffer": w_buf.buf}},
             {"binding": 2, "resource": {"buffer": scales_buf.buf}},
             {"binding": 3, "resource": {"buffer": out_buf.buf}},
+            {"binding": 4, "resource": {"buffer": bias_buf.buf}},
         ],
     )
     encoder = dev.create_command_encoder()
@@ -130,6 +133,7 @@ def test_matmul_additivity_invariant(wgpu_device):
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     key = PipelineKey("matmul_quant", (("K", K), ("N", N), ("USE_QUANT", 0)))
     pipeline = cache.get_or_create(key)
+    bias_buf = WebGPUBuffer.from_numpy(dev, np.zeros(N, dtype=np.float16))
 
     results = {}
     for name, inp in [("x", x), ("y", y), ("x+y", xy)]:
@@ -140,7 +144,8 @@ def test_matmul_additivity_invariant(wgpu_device):
             entries=[{"binding": 0, "resource": {"buffer": xb.buf}},
                      {"binding": 1, "resource": {"buffer": w_buf.buf}},
                      {"binding": 2, "resource": {"buffer": scales_buf.buf}},
-                     {"binding": 3, "resource": {"buffer": ob.buf}}],
+                     {"binding": 3, "resource": {"buffer": ob.buf}},
+                     {"binding": 4, "resource": {"buffer": bias_buf.buf}}],
         )
         enc = dev.create_command_encoder()
         cp = enc.begin_compute_pass()
@@ -184,6 +189,7 @@ def test_matmul_linearity_invariant(wgpu_device):
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     key = PipelineKey("matmul_quant", (("K", K), ("N", N), ("USE_QUANT", 0)))
     pipeline = cache.get_or_create(key)
+    bias_buf = WebGPUBuffer.from_numpy(dev, np.zeros(N, dtype=np.float16))
 
     results = []
     for inp in [x, x_scaled]:
@@ -194,7 +200,8 @@ def test_matmul_linearity_invariant(wgpu_device):
             entries=[{"binding": 0, "resource": {"buffer": x_buf.buf}},
                      {"binding": 1, "resource": {"buffer": w_buf.buf}},
                      {"binding": 2, "resource": {"buffer": scales_buf.buf}},
-                     {"binding": 3, "resource": {"buffer": out_buf.buf}}],
+                     {"binding": 3, "resource": {"buffer": out_buf.buf}},
+                     {"binding": 4, "resource": {"buffer": bias_buf.buf}}],
         )
         enc = dev.create_command_encoder()
         cp = enc.begin_compute_pass()
@@ -314,6 +321,8 @@ def test_matmul_fp8_per_channel_scale(wgpu_device):
     w_buf = WebGPUBuffer.from_numpy(dev, w_u32)
     scales_buf = WebGPUBuffer.from_numpy(dev, ch_scales.astype(np.float16))
     out_buf = WebGPUBuffer.empty(dev, N * 2, usage=rw)
+    # dummy bias (binding 4 always declared; HAS_BIAS=0 so unused)
+    bias_buf = WebGPUBuffer.from_numpy(dev, np.zeros(N, dtype=np.float16))
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     key = PipelineKey("matmul_quant", (
@@ -329,6 +338,7 @@ def test_matmul_fp8_per_channel_scale(wgpu_device):
             {"binding": 1, "resource": {"buffer": w_buf.buf}},
             {"binding": 2, "resource": {"buffer": scales_buf.buf}},
             {"binding": 3, "resource": {"buffer": out_buf.buf}},
+            {"binding": 4, "resource": {"buffer": bias_buf.buf}},
         ],
     )
     encoder = dev.create_command_encoder()

@@ -24,11 +24,13 @@ override GLOBAL_SCALE: f32 = 1.0;  // per-tensor scale for USE_QUANT=5 (FP8) and
 // SPLIT_K=0: legacy row-per-thread. Dispatch ((N+255)/256, 1, 1) workgroups.
 override SPLIT_K: u32   = 1u;
 override USE_BF16: u32  = 0u;      // 1=bf16 packed u16→u32 weights (GDN projection layers)
+override HAS_BIAS: u32  = 0u;      // 1 = add bias[row] to output after matmul
 
 @group(0) @binding(0) var<storage, read>       x       : array<f16>;  // [K]
 @group(0) @binding(1) var<storage, read>       weights : array<u32>;  // raw bytes as u32
 @group(0) @binding(2) var<storage, read>       scales  : array<f16>;  // [N, K/BLOCK_K] for USE_QUANT=1
 @group(0) @binding(3) var<storage, read_write> output  : array<f16>;  // [N]
+@group(0) @binding(4) var<storage, read>       bias    : array<f16>;  // [N] bias vector (read when HAS_BIAS=1)
 
 // Read one byte from the weights u32 array at byte offset `byte_off`.
 fn rd_byte(byte_off: u32) -> u32 {
@@ -353,6 +355,9 @@ fn main(
         }
         if (tid == 0u) {
             output[row] = f16(clamp(sh_acc[0], -65504.0, 65504.0));
+            if (HAS_BIAS == 1u) {
+                output[row] = f16(f32(output[row]) + f32(bias[row]));
+            }
         }
         return;
     }
@@ -479,4 +484,7 @@ fn main(
 
     // Clip to f16 range before casting to prevent +inf/-inf which propagates as NaN.
     output[row] = f16(clamp(acc, -65504.0, 65504.0));
+    if (HAS_BIAS == 1u) {
+        output[row] = f16(f32(output[row]) + f32(bias[row]));
+    }
 }

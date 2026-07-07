@@ -44,6 +44,8 @@ def test_rope_norm_preservation_invariant(wgpu_device):
     x_buf = WebGPUBuffer.from_numpy(dev, x)
     pos_buf = WebGPUBuffer.from_numpy(dev, positions)
     out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
+    # dummy inv_freq (binding 3 always declared; USE_FREQ_BUF=0 so unused)
+    freq_buf = WebGPUBuffer.from_numpy(dev, np.zeros(head_dim // 2, dtype=np.float32))
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     pipeline = cache.get_or_create(
@@ -52,7 +54,8 @@ def test_rope_norm_preservation_invariant(wgpu_device):
         layout=pipeline.get_bind_group_layout(0),
         entries=[{"binding": 0, "resource": {"buffer": x_buf.buf}},
                  {"binding": 1, "resource": {"buffer": pos_buf.buf}},
-                 {"binding": 2, "resource": {"buffer": out_buf.buf}}],
+                 {"binding": 2, "resource": {"buffer": out_buf.buf}},
+                 {"binding": 3, "resource": {"buffer": freq_buf.buf}}],
     )
     enc = dev.create_command_encoder()
     cp = enc.begin_compute_pass()
@@ -112,6 +115,8 @@ def test_fused_per_head_norm_rope(wgpu_device):
     w_buf = WebGPUBuffer.from_numpy(dev, weight)
     pos_buf = WebGPUBuffer.from_numpy(dev, positions)
     out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
+    # dummy inv_freq (binding 4 always declared; USE_FREQ_BUF=0 so unused)
+    freq_buf = WebGPUBuffer.from_numpy(dev, np.zeros(head_dim // 2, dtype=np.float32))
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     key = PipelineKey("fused_per_head_norm_rope",
@@ -125,6 +130,7 @@ def test_fused_per_head_norm_rope(wgpu_device):
             {"binding": 1, "resource": {"buffer": w_buf.buf}},
             {"binding": 2, "resource": {"buffer": pos_buf.buf}},
             {"binding": 3, "resource": {"buffer": out_buf.buf}},
+            {"binding": 4, "resource": {"buffer": freq_buf.buf}},
         ],
     )
     encoder = dev.create_command_encoder()
@@ -156,6 +162,8 @@ def test_rope(wgpu_device):
     pos_buf = WebGPUBuffer.from_numpy(dev, positions)
     out_buf = WebGPUBuffer.empty(dev, x.nbytes,
                                  usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
+    # dummy inv_freq (binding 3 always declared; USE_FREQ_BUF=0 so unused)
+    freq_buf = WebGPUBuffer.from_numpy(dev, np.zeros(head_dim // 2, dtype=np.float32))
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
     key = PipelineKey("rope", (("HEAD_DIM", head_dim), ("NUM_HEADS", num_heads)))
@@ -167,6 +175,7 @@ def test_rope(wgpu_device):
             {"binding": 0, "resource": {"buffer": x_buf.buf}},
             {"binding": 1, "resource": {"buffer": pos_buf.buf}},
             {"binding": 2, "resource": {"buffer": out_buf.buf}},
+            {"binding": 3, "resource": {"buffer": freq_buf.buf}},
         ],
     )
     encoder = dev.create_command_encoder()
