@@ -520,3 +520,220 @@ def test_add_f32_rms_norm_scale(wgpu_device):
     np.testing.assert_allclose(got_norm.astype(np.float32), exp_norm.astype(np.float32),
                                rtol=1e-2, atol=1e-2,
                                err_msg=f"add_f32_rms_norm scale={scale}: normed_out mismatch")
+
+
+# ---------------------------------------------------------------------------
+# rms_norm_add_f32_rms_norm — double-norm fusion (Gemma4 sublayer pairs)
+# ---------------------------------------------------------------------------
+
+def rms_norm_add_f32_rms_norm_ref(delta_in, post_weight, residual_in, pre_weight,
+                                   scale=1.0, gemma_norm=True, eps=1e-6):
+    """
+    Phase 1: normed1 = rms_norm(delta_in f16, post_weight)
+    Phase 2: residual_out = residual_in + scale * normed1  (f32)
+    Phase 3: normed_out = rms_norm(residual_out, pre_weight) → f16
+    Returns (residual_out f32, normed_out f16).
+    """
+    d = delta_in.astype(np.float32)
+    rms1 = np.sqrt(np.mean(d ** 2, axis=-1, keepdims=True) + eps)
+    w1 = (1.0 + post_weight.astype(np.float32)) if gemma_norm else post_weight.astype(np.float32)
+    normed1 = d / rms1 * w1
+    res = residual_in.astype(np.float32) + np.float32(scale) * normed1
+    rms2 = np.sqrt(np.mean(res ** 2, axis=-1, keepdims=True) + eps)
+    w2 = (1.0 + pre_weight.astype(np.float32)) if gemma_norm else pre_weight.astype(np.float32)
+    return res, np.clip(res / rms2 * w2, -65504.0, 65504.0).astype(np.float16)
+
+
+def test_rms_norm_add_f32_rms_norm(wgpu_device):
+    """Correctness: fused double-norm (Gemma4 sublayer) vs numpy reference.
+
+    Fuses: rms_norm(delta, post_w) → f32 residual add → rms_norm(residual, pre_w) → f16.
+    Uses GEMMA_NORM=1 (default) so both norm weights are applied as (1+w).
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    hidden, seq = 256, 4
+    rng = np.random.default_rng(1)
+    delta_in    = rng.standard_normal((seq, hidden)).astype(np.float16)
+    post_weight = (rng.standard_normal(hidden) * 0.25).astype(np.float16)
+    residual_in = rng.standard_normal((seq, hidden)).astype(np.float32)
+    pre_weight  = (rng.standard_normal(hidden) * 0.25).astype(np.float16)
+
+    exp_res, exp_norm = rms_norm_add_f32_rms_norm_ref(
+        delta_in, post_weight, residual_in, pre_weight, scale=1.0, gemma_norm=True)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    delta_buf    = WebGPUBuffer.from_numpy(dev, delta_in)
+    post_w_buf   = WebGPUBuffer.from_numpy(dev, post_weight)
+    res_in_buf   = WebGPUBuffer.from_numpy(dev, residual_in)
+    pre_w_buf    = WebGPUBuffer.from_numpy(dev, pre_weight)
+    res_out_buf  = WebGPUBuffer.empty(dev, residual_in.nbytes, usage=rw)   # f32 out
+    norm_out_buf = WebGPUBuffer.empty(dev, delta_in.nbytes, usage=rw)      # f16 out
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    # VALS_PER_THREAD = 256 / 256 = 1 → register-tiled path; GEMMA_NORM=1 is the default
+    key = PipelineKey("rms_norm_add_f32_rms_norm",
+                      (("HIDDEN_DIM", hidden), ("VALS_PER_THREAD", 1)))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": delta_buf.buf}},
+            {"binding": 1, "resource": {"buffer": post_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": res_in_buf.buf}},
+            {"binding": 3, "resource": {"buffer": pre_w_buf.buf}},
+            {"binding": 4, "resource": {"buffer": res_out_buf.buf}},
+            {"binding": 5, "resource": {"buffer": norm_out_buf.buf}},
+        ],
+    )
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(seq, 1, 1)
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+    got_res  = res_out_buf.to_numpy().view(np.float32).reshape(seq, hidden)
+    got_norm = norm_out_buf.to_numpy().view(np.float16).reshape(seq, hidden)
+
+    np.testing.assert_allclose(got_res, exp_res, rtol=1e-4, atol=1e-3,
+                               err_msg="rms_norm_add_f32_rms_norm: f32 residual_out mismatch")
+    np.testing.assert_allclose(got_norm.astype(np.float32), exp_norm.astype(np.float32),
+                               rtol=1e-2, atol=1e-2,
+                               err_msg="rms_norm_add_f32_rms_norm: normed_out mismatch")
+
+
+def test_rms_norm_add_f32_rms_norm_standard_weight(wgpu_device):
+    """Correctness: GEMMA_NORM=0 uses plain weight (not 1+w).
+
+    Gemma4 defaults to GEMMA_NORM=1. Setting GEMMA_NORM=0 reverts to standard
+    RMSNorm weighting (w rather than 1+w). Both outputs must match the reference.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    hidden, seq = 256, 2
+    rng = np.random.default_rng(2)
+    delta_in    = rng.standard_normal((seq, hidden)).astype(np.float16)
+    post_weight = rng.standard_normal(hidden).astype(np.float16)
+    residual_in = rng.standard_normal((seq, hidden)).astype(np.float32)
+    pre_weight  = rng.standard_normal(hidden).astype(np.float16)
+
+    exp_res, exp_norm = rms_norm_add_f32_rms_norm_ref(
+        delta_in, post_weight, residual_in, pre_weight, scale=1.0, gemma_norm=False)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    delta_buf    = WebGPUBuffer.from_numpy(dev, delta_in)
+    post_w_buf   = WebGPUBuffer.from_numpy(dev, post_weight)
+    res_in_buf   = WebGPUBuffer.from_numpy(dev, residual_in)
+    pre_w_buf    = WebGPUBuffer.from_numpy(dev, pre_weight)
+    res_out_buf  = WebGPUBuffer.empty(dev, residual_in.nbytes, usage=rw)
+    norm_out_buf = WebGPUBuffer.empty(dev, delta_in.nbytes, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("rms_norm_add_f32_rms_norm",
+                      (("HIDDEN_DIM", hidden), ("VALS_PER_THREAD", 1), ("GEMMA_NORM", 0)))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": delta_buf.buf}},
+            {"binding": 1, "resource": {"buffer": post_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": res_in_buf.buf}},
+            {"binding": 3, "resource": {"buffer": pre_w_buf.buf}},
+            {"binding": 4, "resource": {"buffer": res_out_buf.buf}},
+            {"binding": 5, "resource": {"buffer": norm_out_buf.buf}},
+        ],
+    )
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(seq, 1, 1)
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+    got_res  = res_out_buf.to_numpy().view(np.float32).reshape(seq, hidden)
+    got_norm = norm_out_buf.to_numpy().view(np.float16).reshape(seq, hidden)
+
+    np.testing.assert_allclose(got_res, exp_res, rtol=1e-4, atol=1e-3,
+                               err_msg="rms_norm_add_f32_rms_norm GEMMA_NORM=0: residual_out mismatch")
+    np.testing.assert_allclose(got_norm.astype(np.float32), exp_norm.astype(np.float32),
+                               rtol=1e-2, atol=1e-2,
+                               err_msg="rms_norm_add_f32_rms_norm GEMMA_NORM=0: normed_out mismatch")
+
+
+def test_rms_norm_add_f32_rms_norm_scale(wgpu_device):
+    """Correctness: SCALE != 1.0 scales delta contribution before the residual add.
+
+    Gemma4 uses layer_output_scale (~0.053) to prevent f32 residual saturation.
+    Invariant: residual_out == residual_in + scale * rms_norm(delta_in, post_weight).
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    hidden, seq = 256, 2
+    scale = np.float32(0.053)
+    rng = np.random.default_rng(3)
+    delta_in    = rng.standard_normal((seq, hidden)).astype(np.float16)
+    post_weight = (rng.standard_normal(hidden) * 0.25).astype(np.float16)
+    residual_in = rng.standard_normal((seq, hidden)).astype(np.float32)
+    pre_weight  = (rng.standard_normal(hidden) * 0.25).astype(np.float16)
+
+    exp_res, exp_norm = rms_norm_add_f32_rms_norm_ref(
+        delta_in, post_weight, residual_in, pre_weight, scale=float(scale), gemma_norm=True)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    delta_buf    = WebGPUBuffer.from_numpy(dev, delta_in)
+    post_w_buf   = WebGPUBuffer.from_numpy(dev, post_weight)
+    res_in_buf   = WebGPUBuffer.from_numpy(dev, residual_in)
+    pre_w_buf    = WebGPUBuffer.from_numpy(dev, pre_weight)
+    res_out_buf  = WebGPUBuffer.empty(dev, residual_in.nbytes, usage=rw)
+    norm_out_buf = WebGPUBuffer.empty(dev, delta_in.nbytes, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("rms_norm_add_f32_rms_norm", (
+        ("HIDDEN_DIM", hidden), ("VALS_PER_THREAD", 1), ("SCALE", float(scale)),
+    ))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": delta_buf.buf}},
+            {"binding": 1, "resource": {"buffer": post_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": res_in_buf.buf}},
+            {"binding": 3, "resource": {"buffer": pre_w_buf.buf}},
+            {"binding": 4, "resource": {"buffer": res_out_buf.buf}},
+            {"binding": 5, "resource": {"buffer": norm_out_buf.buf}},
+        ],
+    )
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(seq, 1, 1)
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+    got_res  = res_out_buf.to_numpy().view(np.float32).reshape(seq, hidden)
+    got_norm = norm_out_buf.to_numpy().view(np.float16).reshape(seq, hidden)
+
+    np.testing.assert_allclose(got_res, exp_res, rtol=1e-4, atol=1e-3,
+                               err_msg=f"rms_norm_add_f32_rms_norm scale={scale}: residual_out mismatch")
+    np.testing.assert_allclose(got_norm.astype(np.float32), exp_norm.astype(np.float32),
+                               rtol=1e-2, atol=1e-2,
+                               err_msg=f"rms_norm_add_f32_rms_norm scale={scale}: normed_out mismatch")

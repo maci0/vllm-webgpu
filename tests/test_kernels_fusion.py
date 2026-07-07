@@ -493,3 +493,305 @@ def test_flash_attn_decode(wgpu_device):
         rtol=1e-2, atol=1e-2,
         err_msg="flash_attn_decode output differs from standard softmax attention reference",
     )
+
+
+# ---------------------------------------------------------------------------
+# fused_qk_norm_rope — per-head RMSNorm + RoPE for Q and K in one dispatch
+# ---------------------------------------------------------------------------
+
+def fused_qk_norm_rope_ref(q, k, q_norm_w, k_norm_w, positions,
+                            head_dim, rope_base=10000.0, eps=1e-6):
+    """
+    q: [num_tokens, num_q_heads, head_dim] f32
+    k: [num_tokens, num_kv_heads, head_dim] f32
+    q_norm_w: [num_q_heads * head_dim] f32
+    k_norm_w: [num_kv_heads * head_dim] f32
+    positions: [num_tokens] int
+    Returns (q_out, k_out) f16, shape identical to q/k.
+    """
+    num_tokens, num_q_heads, _ = q.shape
+    num_kv_heads = k.shape[1]
+    half = head_dim // 2
+    ln_base = np.log(rope_base)
+
+    def norm_rope(x, weights, pos):
+        x = x.astype(np.float32)
+        rms_inv = 1.0 / np.sqrt(np.mean(x ** 2) + eps)
+        xn = x * rms_inv * weights.astype(np.float32)
+        out = np.empty(head_dim, dtype=np.float32)
+        for i in range(half):
+            theta = np.exp(-(2.0 * i / head_dim) * ln_base)
+            angle = float(pos) * theta
+            c, s = np.cos(angle), np.sin(angle)
+            out[i]        = xn[i] * c - xn[half + i] * s
+            out[half + i] = xn[half + i] * c + xn[i] * s
+        return out.astype(np.float16)
+
+    q_out = np.zeros((num_tokens, num_q_heads, head_dim), dtype=np.float16)
+    k_out = np.zeros((num_tokens, num_kv_heads, head_dim), dtype=np.float16)
+    for t in range(num_tokens):
+        for h in range(num_q_heads):
+            q_out[t, h] = norm_rope(q[t, h], q_norm_w[h * head_dim:(h + 1) * head_dim], positions[t])
+        for h in range(num_kv_heads):
+            k_out[t, h] = norm_rope(k[t, h], k_norm_w[h * head_dim:(h + 1) * head_dim], positions[t])
+    return q_out, k_out
+
+
+def test_fused_qk_norm_rope_shared_input(wgpu_device):
+    """Correctness: K_SEPARATE=0 reads Q and K from a single shared input buffer.
+
+    input[] holds [Q_section | K_section]; K section starts at element INPUT_OFFSET_K.
+    Binding 6 (k_input) must be bound but is not read — any in-range buffer is valid.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM = 2, 1, 64
+    num_tokens = 2
+    rope_base  = 10000.0
+
+    rng = np.random.default_rng(10)
+    q = rng.standard_normal((num_tokens, NUM_Q_HEADS, HEAD_DIM)).astype(np.float16)
+    k = rng.standard_normal((num_tokens, NUM_KV_HEADS, HEAD_DIM)).astype(np.float16)
+    q_norm_w = rng.standard_normal(NUM_Q_HEADS * HEAD_DIM).astype(np.float16)
+    k_norm_w = rng.standard_normal(NUM_KV_HEADS * HEAD_DIM).astype(np.float16)
+    positions = np.array([0, 7], dtype=np.uint32)
+
+    exp_q, exp_k = fused_qk_norm_rope_ref(
+        q.astype(np.float32), k.astype(np.float32),
+        q_norm_w, k_norm_w, positions, HEAD_DIM, rope_base)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    # Q section followed by K section in a single buffer.
+    # INPUT_OFFSET_K = num_tokens * NUM_Q_HEADS * HEAD_DIM = 2*2*64 = 256 f16 elements.
+    INPUT_OFFSET_K = num_tokens * NUM_Q_HEADS * HEAD_DIM
+    input_data = np.concatenate([q.reshape(-1), k.reshape(-1)])
+    input_buf  = WebGPUBuffer.from_numpy(dev, input_data)
+
+    q_norm_w_buf = WebGPUBuffer.from_numpy(dev, q_norm_w)
+    k_norm_w_buf = WebGPUBuffer.from_numpy(dev, k_norm_w)
+    pos_buf      = WebGPUBuffer.from_numpy(dev, positions)
+    q_out_buf    = WebGPUBuffer.empty(dev, int(num_tokens * NUM_Q_HEADS * HEAD_DIM * 2), usage=rw)
+    k_out_buf    = WebGPUBuffer.empty(dev, int(num_tokens * NUM_KV_HEADS * HEAD_DIM * 2), usage=rw)
+    # Binding 6: k_input must be bound; it is evaluated by select() but the result is
+    # discarded (K_SEPARATE=0). Allocate it large enough to avoid OOB on K-head indexing.
+    dummy_k_buf  = WebGPUBuffer.from_numpy(dev, np.zeros(len(input_data), dtype=np.float16))
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("fused_qk_norm_rope", (
+        ("HEAD_DIM", HEAD_DIM),
+        ("NUM_Q_HEADS", NUM_Q_HEADS),
+        ("NUM_KV_HEADS", NUM_KV_HEADS),
+        ("INPUT_OFFSET_K", INPUT_OFFSET_K),
+        ("K_SEPARATE", 0),
+    ))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": input_buf.buf}},
+            {"binding": 1, "resource": {"buffer": q_norm_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": k_norm_w_buf.buf}},
+            {"binding": 3, "resource": {"buffer": pos_buf.buf}},
+            {"binding": 4, "resource": {"buffer": q_out_buf.buf}},
+            {"binding": 5, "resource": {"buffer": k_out_buf.buf}},
+            {"binding": 6, "resource": {"buffer": dummy_k_buf.buf}},
+        ],
+    )
+    _dispatch(dev, pipeline, bg, (NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1))
+
+    got_q = q_out_buf.to_numpy().view(np.float16).reshape(num_tokens, NUM_Q_HEADS, HEAD_DIM)
+    got_k = k_out_buf.to_numpy().view(np.float16).reshape(num_tokens, NUM_KV_HEADS, HEAD_DIM)
+
+    np.testing.assert_allclose(got_q.astype(np.float32), exp_q.astype(np.float32),
+                               rtol=1e-2, atol=1e-2,
+                               err_msg="fused_qk_norm_rope K_SEPARATE=0: Q output mismatch")
+    np.testing.assert_allclose(got_k.astype(np.float32), exp_k.astype(np.float32),
+                               rtol=1e-2, atol=1e-2,
+                               err_msg="fused_qk_norm_rope K_SEPARATE=0: K output mismatch")
+
+
+def test_fused_qk_norm_rope_k_separate(wgpu_device):
+    """Correctness: K_SEPARATE=1 reads K from a dedicated buffer at binding 6.
+
+    Q data stays in input[] (binding 0). K data goes into k_input[] (binding 6),
+    indexed from element 0 with the same per-head layout. INPUT_OFFSET_K must be 0.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM = 2, 1, 64
+    num_tokens = 2
+    rope_base  = 10000.0
+
+    rng = np.random.default_rng(11)
+    q = rng.standard_normal((num_tokens, NUM_Q_HEADS, HEAD_DIM)).astype(np.float16)
+    k = rng.standard_normal((num_tokens, NUM_KV_HEADS, HEAD_DIM)).astype(np.float16)
+    q_norm_w = rng.standard_normal(NUM_Q_HEADS * HEAD_DIM).astype(np.float16)
+    k_norm_w = rng.standard_normal(NUM_KV_HEADS * HEAD_DIM).astype(np.float16)
+    positions = np.array([0, 7], dtype=np.uint32)
+
+    exp_q, exp_k = fused_qk_norm_rope_ref(
+        q.astype(np.float32), k.astype(np.float32),
+        q_norm_w, k_norm_w, positions, HEAD_DIM, rope_base)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    q_flat = q.reshape(-1)   # [num_tokens * NUM_Q_HEADS * HEAD_DIM] f16
+    k_flat = k.reshape(-1)   # [num_tokens * NUM_KV_HEADS * HEAD_DIM] f16
+
+    input_buf    = WebGPUBuffer.from_numpy(dev, q_flat)
+    q_norm_w_buf = WebGPUBuffer.from_numpy(dev, q_norm_w)
+    k_norm_w_buf = WebGPUBuffer.from_numpy(dev, k_norm_w)
+    pos_buf      = WebGPUBuffer.from_numpy(dev, positions)
+    q_out_buf    = WebGPUBuffer.empty(dev, int(num_tokens * NUM_Q_HEADS * HEAD_DIM * 2), usage=rw)
+    k_out_buf    = WebGPUBuffer.empty(dev, int(num_tokens * NUM_KV_HEADS * HEAD_DIM * 2), usage=rw)
+    # k_input: K data + zero-pad to Q size so Q-head OOB reads from k_input return 0.
+    # When K_SEPARATE=1, select() evaluates k_input[in_base+col] even for Q heads;
+    # the highest Q-head index can reach len(q_flat)-1=255, while k_flat only has 128 elements.
+    k_input_data = np.zeros(len(q_flat), dtype=np.float16)
+    k_input_data[:len(k_flat)] = k_flat
+    k_input_buf  = WebGPUBuffer.from_numpy(dev, k_input_data)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("fused_qk_norm_rope", (
+        ("HEAD_DIM", HEAD_DIM),
+        ("NUM_Q_HEADS", NUM_Q_HEADS),
+        ("NUM_KV_HEADS", NUM_KV_HEADS),
+        ("K_SEPARATE", 1),
+    ))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": input_buf.buf}},
+            {"binding": 1, "resource": {"buffer": q_norm_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": k_norm_w_buf.buf}},
+            {"binding": 3, "resource": {"buffer": pos_buf.buf}},
+            {"binding": 4, "resource": {"buffer": q_out_buf.buf}},
+            {"binding": 5, "resource": {"buffer": k_out_buf.buf}},
+            {"binding": 6, "resource": {"buffer": k_input_buf.buf}},
+        ],
+    )
+    _dispatch(dev, pipeline, bg, (NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1))
+
+    got_q = q_out_buf.to_numpy().view(np.float16).reshape(num_tokens, NUM_Q_HEADS, HEAD_DIM)
+    got_k = k_out_buf.to_numpy().view(np.float16).reshape(num_tokens, NUM_KV_HEADS, HEAD_DIM)
+
+    np.testing.assert_allclose(got_q.astype(np.float32), exp_q.astype(np.float32),
+                               rtol=1e-2, atol=1e-2,
+                               err_msg="fused_qk_norm_rope K_SEPARATE=1: Q output mismatch")
+    np.testing.assert_allclose(got_k.astype(np.float32), exp_k.astype(np.float32),
+                               rtol=1e-2, atol=1e-2,
+                               err_msg="fused_qk_norm_rope K_SEPARATE=1: K output mismatch")
+
+
+def test_fused_qk_norm_rope_k_separate_equivalence(wgpu_device):
+    """Property: K_SEPARATE=0 and K_SEPARATE=1 produce identical Q and K outputs.
+
+    Both paths compute the same function; only the source buffer for K data differs.
+    Any divergence indicates a bug in the K_SEPARATE routing or in_base computation.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    NUM_Q_HEADS, NUM_KV_HEADS, HEAD_DIM = 2, 1, 64
+    num_tokens = 3
+    INPUT_OFFSET_K = num_tokens * NUM_Q_HEADS * HEAD_DIM   # = 384
+
+    rng = np.random.default_rng(12)
+    q = rng.standard_normal((num_tokens, NUM_Q_HEADS, HEAD_DIM)).astype(np.float16)
+    k = rng.standard_normal((num_tokens, NUM_KV_HEADS, HEAD_DIM)).astype(np.float16)
+    q_norm_w = rng.standard_normal(NUM_Q_HEADS * HEAD_DIM).astype(np.float16)
+    k_norm_w = rng.standard_normal(NUM_KV_HEADS * HEAD_DIM).astype(np.float16)
+    positions = np.array([0, 3, 11], dtype=np.uint32)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    q_norm_w_buf = WebGPUBuffer.from_numpy(dev, q_norm_w)
+    k_norm_w_buf = WebGPUBuffer.from_numpy(dev, k_norm_w)
+    pos_buf      = WebGPUBuffer.from_numpy(dev, positions)
+    q_out_sz     = int(num_tokens * NUM_Q_HEADS * HEAD_DIM * 2)
+    k_out_sz     = int(num_tokens * NUM_KV_HEADS * HEAD_DIM * 2)
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+
+    # --- K_SEPARATE=0: shared [Q | K] buffer ---
+    shared_input = np.concatenate([q.reshape(-1), k.reshape(-1)])
+    dummy_k = np.zeros(len(shared_input), dtype=np.float16)
+
+    input0_buf  = WebGPUBuffer.from_numpy(dev, shared_input)
+    dummy_k_buf = WebGPUBuffer.from_numpy(dev, dummy_k)
+    q_out0_buf  = WebGPUBuffer.empty(dev, q_out_sz, usage=rw)
+    k_out0_buf  = WebGPUBuffer.empty(dev, k_out_sz, usage=rw)
+
+    key0 = PipelineKey("fused_qk_norm_rope", (
+        ("HEAD_DIM", HEAD_DIM),
+        ("NUM_Q_HEADS", NUM_Q_HEADS),
+        ("NUM_KV_HEADS", NUM_KV_HEADS),
+        ("INPUT_OFFSET_K", INPUT_OFFSET_K),
+        ("K_SEPARATE", 0),
+    ))
+    p0 = cache.get_or_create(key0)
+    bg0 = dev.create_bind_group(
+        layout=p0.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": input0_buf.buf}},
+            {"binding": 1, "resource": {"buffer": q_norm_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": k_norm_w_buf.buf}},
+            {"binding": 3, "resource": {"buffer": pos_buf.buf}},
+            {"binding": 4, "resource": {"buffer": q_out0_buf.buf}},
+            {"binding": 5, "resource": {"buffer": k_out0_buf.buf}},
+            {"binding": 6, "resource": {"buffer": dummy_k_buf.buf}},
+        ],
+    )
+    _dispatch(dev, p0, bg0, (NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1))
+
+    # --- K_SEPARATE=1: Q in input[], K in k_input[] ---
+    q_flat   = q.reshape(-1)
+    k_input_data = np.zeros(len(q_flat), dtype=np.float16)
+    k_input_data[:len(k.reshape(-1))] = k.reshape(-1)
+
+    input1_buf   = WebGPUBuffer.from_numpy(dev, q_flat)
+    k_input1_buf = WebGPUBuffer.from_numpy(dev, k_input_data)
+    q_out1_buf   = WebGPUBuffer.empty(dev, q_out_sz, usage=rw)
+    k_out1_buf   = WebGPUBuffer.empty(dev, k_out_sz, usage=rw)
+
+    key1 = PipelineKey("fused_qk_norm_rope", (
+        ("HEAD_DIM", HEAD_DIM),
+        ("NUM_Q_HEADS", NUM_Q_HEADS),
+        ("NUM_KV_HEADS", NUM_KV_HEADS),
+        ("K_SEPARATE", 1),
+    ))
+    p1 = cache.get_or_create(key1)
+    bg1 = dev.create_bind_group(
+        layout=p1.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": input1_buf.buf}},
+            {"binding": 1, "resource": {"buffer": q_norm_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": k_norm_w_buf.buf}},
+            {"binding": 3, "resource": {"buffer": pos_buf.buf}},
+            {"binding": 4, "resource": {"buffer": q_out1_buf.buf}},
+            {"binding": 5, "resource": {"buffer": k_out1_buf.buf}},
+            {"binding": 6, "resource": {"buffer": k_input1_buf.buf}},
+        ],
+    )
+    _dispatch(dev, p1, bg1, (NUM_Q_HEADS + NUM_KV_HEADS, num_tokens, 1))
+
+    q0 = q_out0_buf.to_numpy().view(np.float16).reshape(num_tokens, NUM_Q_HEADS, HEAD_DIM)
+    k0 = k_out0_buf.to_numpy().view(np.float16).reshape(num_tokens, NUM_KV_HEADS, HEAD_DIM)
+    q1 = q_out1_buf.to_numpy().view(np.float16).reshape(num_tokens, NUM_Q_HEADS, HEAD_DIM)
+    k1 = k_out1_buf.to_numpy().view(np.float16).reshape(num_tokens, NUM_KV_HEADS, HEAD_DIM)
+
+    np.testing.assert_array_equal(q0, q1,
+        err_msg="K_SEPARATE=0 and K_SEPARATE=1 disagree on Q output")
+    np.testing.assert_array_equal(k0, k1,
+        err_msg="K_SEPARATE=0 and K_SEPARATE=1 disagree on K output")
