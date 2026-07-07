@@ -450,12 +450,30 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             # GPU argmax inside forward() — 4-byte readback only.
             last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
         else:
-            # Temperature sampling: read full logits, sample on CPU.
+            # Temperature + repetition penalty + top-p (nucleus) sampling.
             full = model.logit_readback() if has_gpu_argmax else logits
-            scaled = full[0].astype(np.float64) / temperature
+            raw_logits = full[0].astype(np.float64)
+            # Repetition penalty: divide logits of recently generated tokens by 1.3
+            rep_penalty = 1.3
+            seen = set(generated[-64:])  # last 64 tokens
+            for tid in seen:
+                if 0 <= tid < len(raw_logits):
+                    if raw_logits[tid] > 0:
+                        raw_logits[tid] /= rep_penalty
+                    else:
+                        raw_logits[tid] *= rep_penalty
+            scaled = raw_logits / temperature
             scaled -= scaled.max()
             probs = np.exp(scaled); probs /= probs.sum()
-            last_token = int(np.random.choice(len(probs), p=probs))
+            # Top-p nucleus filtering
+            top_p = 0.9
+            sorted_idx = np.argsort(probs)[::-1]
+            cum_probs = np.cumsum(probs[sorted_idx])
+            cutoff = np.searchsorted(cum_probs, top_p) + 1
+            keep = sorted_idx[:cutoff]
+            masked = np.zeros_like(probs); masked[keep] = probs[keep]
+            masked /= masked.sum()
+            last_token = int(np.random.choice(len(masked), p=masked))
 
         if (step + 1) % 5 == 0:
             partial = tok.decode(generated)
