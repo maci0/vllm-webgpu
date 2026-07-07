@@ -74,6 +74,13 @@ Gemma3 vs Gemma4 distinction:
 
 ### Qwen35WebGPUModel
 
+**Verified models:**
+
+| Model | Quantization | Status |
+|-------|-------------|--------|
+| Qwen3.5-0.8B | f16 (safetensors) | Working. Correct predictions for single-token inputs. Longer sequences (chat template adds 16+ prefill tokens) show f16 precision degradation from accumulated bfloat16→float16 rounding across 24 layers. |
+| Qwen3.5-9B | MLX 4-bit | Working correctly. Verified factual answers (arithmetic, factual recall). |
+
 Full-attention layers: USE_QUANT 0–6 (same `_uq_weight()` logic as LlamaWebGPUModel).
 
 GDN linear-attention layers: always USE_QUANT=0. Projections `in_proj_qkv`, `in_proj_a`, `in_proj_b`, `in_proj_z`, `out_proj`, `conv1d` are dispatched as f16 matmul_quant regardless of the loaded weight format.
@@ -85,6 +92,18 @@ Qwen3.6-27B: same architecture as Qwen3.5, maps here via `Qwen3_5ForConditionalG
 Qwen3.6-35B-A3B (MoE): maps here via `Qwen3_5MoeForConditionalGeneration`. Dense GDN and full-attention layers work; MoE FFN routing dispatches `topk_sort.wgsl` on GPU (256 experts, top-8 selection). Expert FFN matmuls are dispatched sequentially per selected expert.
 
 Interleaved RoPE (`mrope_interleaved=True` in config) is supported via `INTERLEAVED=1` override in `fused_per_head_norm_rope` / `fused_qk_norm_rope`. Partial RoPE (`partial_rotary_factor`) is supported via `ROTARY_DIM`.
+
+**Formula bugs fixed during bring-up (7 total):**
+
+1. `attn_output_gate` not applied at all: `q_proj.weight` has shape `[2*q_dim, hidden]` — first half Q, second half gate. The gate was silently ignored; `o_proj` received untrained input.
+2. `attn_output_gate` wrong weight split: code used a first-half/second-half split across all heads, but HuggingFace interleaves per head: rows `[h*2*hd : h*2*hd+hd]` are Q and `[h*2*hd+hd : (h+1)*2*hd]` are gate for each head `h`.
+3. `attn_output_gate` wrong activation: gate was passed through SiLU (`gelu_mul.wgsl`) but HF uses `torch.sigmoid(gate)`. Fixed with `sigmoid_gate.wgsl`.
+4. `GEMMA_NORM=0` for all Qwen3.5 RMSNorm dispatches: `Qwen3_5RMSNorm` uses `(1+weight)` scaling. Without `GEMMA_NORM=1`, all logits are approximately 2× off.
+5. GDN `linear_attn_norm_gate` gate formula: shader used `sigmoid(z)` but `Qwen3_5RMSNormGated` applies `F.silu(z) = z * sigmoid(z)`.
+6. GDN `causal_conv_step` SiLU: HF applies `F.silu` after the depthwise conv1d. This was incorrectly removed (then restored after layer-by-layer verification).
+7. GDN `gdn_state_update` indexing: `A_log` and `dt_bias` were indexed by V-head (`vh`) but the buffer is sized for K-heads (`num_k_heads`). When `num_v_heads > num_k_heads` (Qwen3.5-9B: 32 vs 16), this caused out-of-bounds reads for `vh >= num_k_heads`.
+
+GEMMA_NORM auto-detection: safetensors format stores layernorm weights as deviations from 1 (mean ≈ 0.24, use `GEMMA_NORM=1`). MLX format pre-absorbs the +1 into the weight (mean ≈ 1.03, use `GEMMA_NORM=0`). Detection: if `mean(|weight|) > 0.7` → absolute format, else → deviation format.
 
 ### DiffusionGemmaWebGPUModel
 
@@ -121,9 +140,20 @@ The table below shows which fused kernels apply per model. "f16 only" means the 
 | `fused_qkv` (Q+K+V → 1) | f16 only | no | no | no |
 | `fused_qk_norm_rope` (Q+K → 1) | f16+qnorm | no (sep. q_buf/k_buf) | no | no |
 | `fused_gate_act` (gate+up+act → 1) | f16 only | f16 only | f16 only | always |
+| `sigmoid_gate` (attn output gate) | no | no | always | no |
 | `kv_cache_store_both` (K+V → 1) | always | always | always | no (no KV cache) |
 | `add_rms_norm` (add+norm → 1) | always | — | always | always |
 | `add_f32_rms_norm` (add+norm f32 → 1) | — | always | — | — |
 | Cross-layer norm fusion | always | always | always | always |
 
 "always" = applies regardless of weight format. "no" = not implemented for this model/path.
+
+**Qwen3.5-specific formulas that differ from Llama:**
+
+| Component | Llama formula | Qwen3.5 formula |
+|-----------|--------------|-----------------|
+| RMSNorm weight scale | `w` (standard) | `1 + w` (GEMMA_NORM=1) |
+| Attention output gate | none | `sigmoid(gate_proj(h)) * attn_out` before `o_proj` |
+| Q/gate weight split | first half Q, second half gate | interleaved per head: rows `[h*2*hd : h*2*hd+hd]` = Q, next `hd` rows = gate |
+| GDN layer norms | n/a | `Qwen3_5RMSNorm`: `(1+w)` scaling; `Qwen3_5RMSNormGated`: `silu(z) * norm(h)` |
+| GDN state update | n/a | `A^dt * state + outer(b, v)`, A indexed by K-head, A_log/dt_bias indexed by V-head |

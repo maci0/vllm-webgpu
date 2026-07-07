@@ -371,6 +371,20 @@ Gate+up projection GEMV with inline activation — fuses `fused_gate_up` + `gelu
 
 ---
 
+### sigmoid_gate.wgsl
+
+Element-wise `sigmoid(gate) * value`. Used for Qwen3.5 `attn_output_gate`: HuggingFace applies `torch.sigmoid(gate)` before multiplying the attention output, not SiLU.
+
+**Dispatch:** `(ceil(N/4/256), 1, 1)` — 256 threads, each handles 4 elements (vec4).
+
+| Override | Default | Description |
+|----------|---------|-------------|
+| `N` | 2048 | Total element count (must be divisible by 4) |
+
+**Bindings:** 0=gate(vec4 f16), 1=value(vec4 f16), 2=output(vec4 f16)
+
+---
+
 ### flash_attn_decode.wgsl
 
 Fused QK dot-products + online Milakov-Divanov softmax + V-weighted sum for decode (M=1). Not currently wired in the model forward pass — the three-pass approach (attn_score+softmax+attn_output) provides better GPU utilization at short contexts (num_q_heads×ctx_len WGs vs num_q_heads WGs). Available for future tiled-block parallelism.
