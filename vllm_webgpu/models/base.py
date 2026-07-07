@@ -310,27 +310,6 @@ class BaseWebGPUModel:
             return 1
         return 0
 
-    def _gemv_consts_and_wg(self, weight_key: str, K: int, N: int,
-                            base_key: str = "") -> tuple:
-        """Return (constants_dict, workgroup_tuple) for a matmul_quant dispatch.
-
-        Chooses GPU dequant (USE_QUANT=3) for quantized weights, otherwise f16
-        (USE_QUANT=0) with split-K coalesced reads.  LM-head (vocab > 65535)
-        falls back to row-per-thread (SPLIT_K=0).
-        """
-        if self._is_quantized(weight_key):
-            qi = self._quant_info(base_key or weight_key[:-len(".weight")])
-            gk = qi.get("group_size", 128)
-            # AWQ symmetric quantization requires USE_QUANT=4; all other i32 formats use 3.
-            uq = 4 if qi.get("fmt") == "awq_sym" else 3
-            return ({"K": K, "N": N, "USE_QUANT": uq, "SPLIT_K": 1, "GROUP_K": gk},
-                    (N, 1, 1))
-        if N > 65535:
-            return ({"K": K, "N": N, "USE_QUANT": 0, "SPLIT_K": 0},
-                    ((N + 255) // 256, 1, 1))
-        return ({"K": K, "N": N, "USE_QUANT": 0, "SPLIT_K": 1},
-                (N, 1, 1))
-
     def _dispatch(
         self,
         shader_name: str,
