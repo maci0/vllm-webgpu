@@ -153,27 +153,25 @@ Formats dequantized to f16 at load time (USE_QUANT=0 at runtime): MXFP4, MXFP8, 
 
 See [KERNELS.md](KERNELS.md) for the full reference with dispatch shapes, overrides, and composability notes.
 
-**Decode path** (f16 weights, fused QKV, per-head norms — e.g. Qwen3-4B): **11 dispatches/layer** (down from 16 before fusion work).
+**Decode path** (f16 weights, fused QKV, per-head norms — e.g. Qwen3-4B): **9 dispatches/layer** (always using `flash_attn_decode`).
 
 | # | Shader | Operation |
 |---|--------|-----------|
 | 1 | `fused_qkv` | Q+K+V projections in one dispatch |
 | 2 | `fused_qk_norm_rope` | Q+K per-head RMSNorm + RoPE |
 | 3 | `kv_cache_store_both` | K+V paged cache write |
-| 4 | `attn_score` | QK dot-products vs paged K cache |
-| 5 | `softmax` | Online 2-pass softmax |
-| 6 | `attn_output` | Weighted V sum from paged V cache |
-| 7 | `matmul_quant` | Output projection (o_proj) |
-| 8 | `add_rms_norm` | Post-attn residual add + FFN pre-norm |
-| 9 | `fused_gate_act` | Gate+up GEMV with inline SiLU/GELU |
-| 10 | `matmul_quant` | Down projection |
-| 11 | `add_rms_norm` | Post-FFN residual add + next layer pre-norm |
+| 4 | `flash_attn_decode` | Fused QK scores + softmax + V sum (all context) |
+| 5 | `matmul_quant` | Output projection (o_proj) |
+| 6 | `add_rms_norm` | Post-attn residual add + FFN pre-norm |
+| 7 | `fused_gate_act` | Gate+up GEMV with inline SiLU/GELU |
+| 8 | `matmul_quant` | Down projection |
+| 9 | `add_rms_norm` | Post-FFN residual add + next layer pre-norm |
 
-Fallback paths (quantized weights, no per-head norms): 14-16 dispatches/layer.
+Fallback paths (quantized weights, no per-head norms): 12-14 dispatches/layer.
 
 **Prefill path:** `matmul_quant_mr4` (tiled GEMM, M×4 output tile per workgroup) for f16 models. Quantized models fall back to sequential per-token decode-path processing. Attention is handled by `flash_attn_prefill` (one dispatch for all T tokens, causal masking, online softmax). Layers are chunked across separate command encoders (4 layers each) to stay under the Metal command-buffer timeout. T is not bounded.
 
-**Long-context fallback:** `flash_attn_decode` replaces the three-pass `attn_score + softmax + attn_output` when `ctx_len > 65535` (the WebGPU dispatch-dimension limit for the three-pass approach). The fused shader loops over all KV positions internally and has no per-axis limit.
+**Decode attention:** `flash_attn_decode` is always used for the single-token decode path. It fuses QK dot-products, online softmax, and V accumulation into one dispatch per layer, replacing the three-pass `attn_score + softmax + attn_output` approach. The three-pass approach dispatched one workgroup per (query head, context position), which hit the WebGPU per-axis limit of 65535; `flash_attn_decode` loops over all KV positions inside each workgroup and has no per-axis limit.
 
 **Kernels by category:**
 - Core: `matmul_quant`, `matmul_quant_mr4`, `rms_norm`, `rms_norm_f32in`, `add_rms_norm`, `add_f32_rms_norm`, `embedding_lookup`, `add`, `argmax_f16`

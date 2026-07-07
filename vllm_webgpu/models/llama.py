@@ -239,9 +239,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
-        # For ctx_len > 65535, attn_score dispatch exceeds WebGPU per-dimension limit.
-        # flash_attn_decode has no such limit (loops inside shader) — used automatically.
-        _use_flash = ctx_len > 65535
 
         vocab = self.vocab_size
         _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
@@ -297,7 +294,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             normed_x = sc["normed"]
             for i in range(self.num_layers):
                 normed_x, x_buf = self._transformer_layer(
-                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens, _use_flash)
+                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
             # Final norm
             self._dispatch(
@@ -625,7 +622,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             self._hstate = 0
             tok_pos   = int(positions[t])
             tok_ctx   = tok_pos + 1
-            _use_flash = tok_ctx > 65535
 
             ids_t  = input_ids[t : t + 1]
             pos_t  = positions[t : t + 1]
@@ -656,7 +652,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 normed_x, x_buf = self._transformer_layer(
                     layer_idx, normed_x, x_buf,
                     pre["pos"], pre["slot_map"], pre["bt"],
-                    tok_ctx, 1, _use_flash,
+                    tok_ctx, 1,
                 )
 
         # Final norm + LM head on the last token's hidden state.
@@ -707,7 +703,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
-        use_flash: bool = False,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Returns (normed_out, raw_out).
 
@@ -834,28 +829,17 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
                            (num_tokens, self.num_kv_heads, 1))
 
-            # Attention: three-pass for ctx <= 65535 (better GPU utilization);
-            # flash_attn_decode for ctx > 65535 (only option — no dispatch limit).
-            if use_flash:
-                self._dispatch("flash_attn_decode",
-                               [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
-                               {"BLOCK_SIZE": self.block_size,
-                                "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads,
-                                "HEAD_DIM": self.head_dim,
-                                "CTX_LEN": ctx_len},
-                               (self.num_q_heads, 1, 1))
-            else:
-                self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                                "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
-                self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
-                               {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-                self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                                "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+            # Always use flash_attn_decode for single-token decode.
+            # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
+            # loops internally and has no dispatch dimension limit.
+            self._dispatch("flash_attn_decode",
+                           [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                           {"BLOCK_SIZE": self.block_size,
+                            "NUM_Q_HEADS": self.num_q_heads,
+                            "NUM_KV_HEADS": self.num_kv_heads,
+                            "HEAD_DIM": self.head_dim,
+                            "CTX_LEN": ctx_len},
+                           (self.num_q_heads, 1, 1))
 
             # Output projection
             w_key = f"{p}.self_attn.o_proj.weight"

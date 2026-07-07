@@ -164,11 +164,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         }
 
         self._sc: dict[str, "WebGPUBuffer"] = {
-            "normed":     mk(T * H * 2),          # f16
-            "q_buf":      mk(T * max_q_dim * 2),  # f16
-            "k_buf":      mk(T * max_kv_dim * 2), # f16
-            "v_buf":      mk(T * max_kv_dim * 2), # f16
-            "v_normed":   mk(T * max_kv_dim * 2), # f16
+            "normed":     mk(T * H * 2),                              # f16
+            "qkv_buf":    mk(T * (max_q_dim + 2 * max_kv_dim) * 2),  # f16 [Q|K|V]
+            "q_buf":      mk(T * max_q_dim * 2),                      # f16
+            "k_buf":      mk(T * max_kv_dim * 2),                     # f16
+            "v_buf":      mk(T * max_kv_dim * 2),                     # f16
+            "v_normed":   mk(T * max_kv_dim * 2),                     # f16
             "q_rope":     mk(T * max_q_dim * 2),  # f16
             "k_rope":     mk(T * max_kv_dim * 2), # f16
             "scores_buf": mk(NQ * max_ctx * 2),   # f16
@@ -271,7 +272,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
-        use_flash = ctx_len > 65535
 
         # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
         pre = self._pre
@@ -393,7 +393,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _rms_consts = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
 
         k_cache, v_cache = self.kv_pool[layer_idx]
-        use_flash = ctx_len > 65535
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # normed_x already pre-normalized by caller (or previous layer's fused add_f32_rms_norm).
@@ -496,28 +495,15 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": head_dim},
                            (num_tokens, num_kv_heads, 1))
 
-            if use_flash:
-                self._dispatch("flash_attn_decode",
-                               [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                                "CTX_LEN": ctx_len},
-                               (self.num_q_heads, 1, 1))
-            else:
-                self._dispatch("attn_score",
-                               [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                                "MAX_SEQ_LEN": ctx_len},
-                               (self.num_q_heads, ctx_len, 1))
-                self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
-                               {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-                self._dispatch("attn_output",
-                               [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                                "CTX_LEN": ctx_len},
-                               (self.num_q_heads, 1, 1))
+            # Always use flash_attn_decode for single-token decode.
+            # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
+            # loops internally and has no dispatch dimension limit.
+            self._dispatch("flash_attn_decode",
+                           [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                            "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
+                            "CTX_LEN": ctx_len},
+                           (self.num_q_heads, 1, 1))
 
             # Output projection → sc["o_proj_out"]
             ow = f"{p}.self_attn.o_proj.weight"

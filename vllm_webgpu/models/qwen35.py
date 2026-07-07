@@ -749,7 +749,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
-        use_flash = ctx_len > 65535
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
@@ -980,7 +979,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
-        use_flash = ctx_len > 65535
 
         # Prefill (num_tokens > 1): process tokens sequentially but batch CHUNK
         # tokens per command encoder to avoid Metal's per-command-buffer GPU timeout.
@@ -1033,7 +1031,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             for i in range(self.num_layers):
                 if self._is_full_attn(i):
                     normed_x, x_buf = self._full_attn_layer(
-                        i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens, use_flash)
+                        i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
                 else:
                     normed_x, x_buf = self._linear_attn_layer(
                         i, normed_x, x_buf, num_tokens)
@@ -1078,7 +1076,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
-        use_flash: bool = False,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Standard full-attention transformer layer. Receives pre-normed input."""
         import math
@@ -1190,26 +1187,15 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": self.head_dim},
                            (num_tokens, self.num_kv_heads, 1))
 
-            if use_flash:
-                self._dispatch("flash_attn_decode",
-                               [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                                "CTX_LEN": ctx_len},
-                               (self.num_q_heads, 1, 1))
-            else:
-                self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                                "MAX_SEQ_LEN": ctx_len},
-                               (self.num_q_heads, ctx_len, 1))
-                self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
-                               {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-                self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                                "CTX_LEN": ctx_len},
-                               (self.num_q_heads, 1, 1))
+            # Always use flash_attn_decode for single-token decode.
+            # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
+            # loops internally and has no dispatch dimension limit.
+            self._dispatch("flash_attn_decode",
+                           [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                            "CTX_LEN": ctx_len},
+                           (self.num_q_heads, 1, 1))
 
             # Apply attention output gate if enabled: gated = silu(q_gate_buf) * attn_out.
             # q_buf is free at this point (written in q_proj, last read in RoPE), so

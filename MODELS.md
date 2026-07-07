@@ -136,11 +136,11 @@ USE_QUANT 0–8. Scales key and `_quant_extra` overrides fixed in all dispatch s
 
 ---
 
-## Long-context support
+## Decode attention
 
-Standard 3-pass attention (attn_score + softmax + attn_output) dispatches one workgroup per (query head, context position). WebGPU's per-axis dispatch limit caps this at ctx_len = 65535.
+All decode steps use `flash_attn_decode.wgsl`, which fuses QK dot-products, online softmax, and V accumulation into a single dispatch per layer. This replaces the former three-pass approach (`attn_score + softmax + attn_output`), removing 2 dispatches per layer per decode step (64 fewer dispatches per token on a 32-layer model).
 
-For ctx_len > 65535, the model runner automatically falls back to `flash_attn_decode.wgsl`, which loops over all KV positions inside each workgroup. This removes the per-axis limit but reduces parallelism to num_q_heads workgroups rather than num_q_heads × ctx_len.
+The three-pass approach dispatched one workgroup per (query head, context position), which hit the WebGPU per-axis limit at ctx_len = 65535. `flash_attn_decode` loops over all KV positions inside each workgroup and has no per-axis limit, so long-context sequences are supported without a separate code path.
 
 KV cache allocation uses `min(max_position_embeddings, 65535)` as the slot count. Models with max_position_embeddings > 65535 (e.g. Llama-3.1 at 131072) are capped at 65535 slots; sequences beyond that length are not supported.
 
@@ -152,7 +152,7 @@ KV cache allocation uses `min(max_position_embeddings, 65535)` as the slot count
 |---|---|
 | Single-sequence only | `forward()` accepts one sequence at a time; no request batching |
 | Quantized prefill | f16 models use `matmul_quant_mr4` batch GEMM for all T prompt tokens; quantized (GPTQ/AWQ/FP8/NF4) models fall back to sequential per-token decode-path processing during prefill |
-| ctx_len > 65535 | Standard 3-pass attention is capped at 65535 by the WebGPU dispatch limit; flash_attn_decode is used as an automatic fallback beyond that point |
+| ctx_len > 65535 | KV cache is capped at 65535 slots (4096 blocks × block_size=16). Attention dispatch itself has no ctx_len limit — `flash_attn_decode` is always used and loops internally over the full context |
 | hidden/inter must be divisible by 4 | vec4 shader requirement |
 | head_dim must be even | f16 GEMV packing requirement |
 | Block table cap | 4096 blocks per sequence (65536 tokens at block_size=16), set at init time |
@@ -169,7 +169,7 @@ These limits apply to all models and stem from the WebGPU/WGSL specification:
 
 - **No bfloat16**: WGSL float types are `f16`, `f32`, `f64`. `bf16` requires the `enable dual_source_blending` extension, which is not compute-related; bf16 is simply absent.
 - **No GPU-to-GPU atomic floats**: Reduction kernels use shared-memory tree reduction instead of `atomicAdd<f32>`.
-- **65535 dispatch limit per axis**: Standard `attn_score` is limited to ctx_len <= 65535. `flash_attn_decode` (fused, single-pass) has no such limit.
+- **65535 dispatch limit per axis**: Standard `attn_score` dispatched one workgroup per (query head, context position), which hit this limit at ctx_len = 65535. The decode path now always uses `flash_attn_decode`, which loops internally and has no per-axis limit.
 - **No persistent threads**: WebGPU forbids infinite loops or occupancy-based kernel tricks; all loops must have statically-bounded iteration counts or dynamic exit conditions that the driver can verify as non-infinite.
 - **Metal GPU timeout (~4-8 s per command buffer)**: Batch prefill chunked encoder submission (4 layers per encoder) keeps each submit under the limit.
 

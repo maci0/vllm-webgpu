@@ -60,7 +60,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
-        use_flash: bool = False,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Mixtral _transformer_layer extended with:
 
@@ -218,44 +217,19 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 (num_tokens, self.num_kv_heads, 1),
             )
 
-            if use_flash:
-                self._dispatch(
-                    "flash_attn_decode",
-                    [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
-                    {"BLOCK_SIZE": self.block_size,
-                     "NUM_Q_HEADS": self.num_q_heads,
-                     "NUM_KV_HEADS": self.num_kv_heads,
-                     "HEAD_DIM": self.head_dim,
-                     "CTX_LEN": eff},
-                    (self.num_q_heads, 1, 1),
-                )
-            else:
-                self._dispatch(
-                    "attn_score",
-                    [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                    {"BLOCK_SIZE": self.block_size,
-                     "NUM_Q_HEADS": self.num_q_heads,
-                     "NUM_KV_HEADS": self.num_kv_heads,
-                     "HEAD_DIM": self.head_dim,
-                     "MAX_SEQ_LEN": eff},
-                    (self.num_q_heads, eff, 1),
-                )
-                self._dispatch(
-                    "softmax",
-                    [sc["scores_buf"], sc["sm_buf"]],
-                    {"SEQ_LEN": eff},
-                    (self.num_q_heads, 1, 1),
-                )
-                self._dispatch(
-                    "attn_output",
-                    [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                    {"BLOCK_SIZE": self.block_size,
-                     "NUM_Q_HEADS": self.num_q_heads,
-                     "NUM_KV_HEADS": self.num_kv_heads,
-                     "HEAD_DIM": self.head_dim,
-                     "CTX_LEN": eff},
-                    (self.num_q_heads, 1, 1),
-                )
+            # Always use flash_attn_decode for single-token decode.
+            # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
+            # loops internally and has no dispatch dimension limit.
+            self._dispatch(
+                "flash_attn_decode",
+                [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                {"BLOCK_SIZE": self.block_size,
+                 "NUM_Q_HEADS": self.num_q_heads,
+                 "NUM_KV_HEADS": self.num_kv_heads,
+                 "HEAD_DIM": self.head_dim,
+                 "CTX_LEN": eff},
+                (self.num_q_heads, 1, 1),
+            )
 
             # Output projection + optional O-projection bias.
             w_key = f"{p}.self_attn.o_proj.weight"
@@ -503,22 +477,34 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                     ((inter // 4 + 255) // 256, 1, 1),
                 )
 
+            # Down projection + weighted accumulate.
             uq_d = self._uq_for_key(w2_key)
-            qi_d = self._quant_extra(f"{ep}.w2", uq_d)
-            extra_d: dict = (
-                {"SPLIT_K": 0} if uq_d not in (0, 3, 4, 5, 6, 7, 8) else {}
-            )
-            self._dispatch(
-                "matmul_quant",
-                [msc["expert_act"], self.weights[w2_key],
-                 self._scales_buf(w2_key, uq_d, msc["dummy_scales"]),
-                 msc["expert_tmp"]],
-                {"K": inter, "N": hidden, "USE_QUANT": uq_d, **extra_d, **qi_d},
-                _gemv_wg(hidden, uq_d),
-            )
-            self._dispatch(
-                "moe_accumulate",
-                [msc["expert_out"], msc["expert_tmp"], msc["moe_w_buf"]],
-                {"N": hidden, "K_IDX": k_idx},
-                ((hidden + 255) // 256, 1, 1),
-            )
+            if uq_d == 0:
+                # f16: fuse GEMV and accumulate into a single dispatch.
+                self._dispatch(
+                    "moe_expert_down_accum",
+                    [msc["expert_act"], self.weights[w2_key],
+                     msc["expert_out"], msc["moe_w_buf"]],
+                    {"K": inter, "N": hidden, "K_IDX": k_idx},
+                    (hidden, 1, 1),
+                )
+            else:
+                # Quantized path: keep separate dispatches.
+                qi_d = self._quant_extra(f"{ep}.w2", uq_d)
+                extra_d: dict = (
+                    {"SPLIT_K": 0} if uq_d not in (0, 3, 4, 5, 6, 7, 8) else {}
+                )
+                self._dispatch(
+                    "matmul_quant",
+                    [msc["expert_act"], self.weights[w2_key],
+                     self._scales_buf(w2_key, uq_d, msc["dummy_scales"]),
+                     msc["expert_tmp"]],
+                    {"K": inter, "N": hidden, "USE_QUANT": uq_d, **extra_d, **qi_d},
+                    _gemv_wg(hidden, uq_d),
+                )
+                self._dispatch(
+                    "moe_accumulate",
+                    [msc["expert_out"], msc["expert_tmp"], msc["moe_w_buf"]],
+                    {"N": hidden, "K_IDX": k_idx},
+                    ((hidden + 255) // 256, 1, 1),
+                )
