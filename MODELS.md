@@ -16,6 +16,7 @@
 | `Qwen3_5ForConditionalGeneration` | `qwen35` | `Qwen35WebGPUModel` |
 | `Qwen3_5MoeForConditionalGeneration` | `qwen35` | `Qwen35WebGPUModel` |
 | `DiffusionGemmaForBlockDiffusion` | `diffusion_gemma` | `DiffusionGemmaWebGPUModel` |
+| `GptOssForCausalLM` | `gpt_oss` | `GptOssWebGPUModel` |
 
 ## Quantization support
 

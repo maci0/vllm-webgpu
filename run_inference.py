@@ -74,6 +74,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.models.diffusion_gemma import DiffusionGemmaWebGPUModel
     try:
         from vllm_webgpu.models.mixtral import MixtralWebGPUModel
+        from vllm_webgpu.models.gpt_oss import GptOssWebGPUModel
         _HAS_MIXTRAL = True
     except ImportError:
         _HAS_MIXTRAL = False
@@ -93,6 +94,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     if _HAS_MIXTRAL:
         ARCH_MAP["MistralForCausalLM"]  = MixtralWebGPUModel
         ARCH_MAP["MixtralForCausalLM"]  = MixtralWebGPUModel
+        ARCH_MAP["GptOssForCausalLM"]   = GptOssWebGPUModel
 
     ModelClass = ARCH_MAP.get(arch)
     if ModelClass is None:

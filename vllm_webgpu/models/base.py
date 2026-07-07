@@ -18,6 +18,52 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> np.ndarray:
+    """Compute YaRN-scaled inverse frequencies for RoPE.
+
+    Returns: [head_dim // 2] float32 array of inv_freq values.
+    The mscale factor is folded in so the shader needs no further adjustment.
+    """
+    factor    = float(rope_scaling.get("factor", 1.0))
+    beta_fast = float(rope_scaling.get("beta_fast", 32.0))
+    beta_slow = float(rope_scaling.get("beta_slow", 1.0))
+    orig_ctx  = int(rope_scaling.get("original_max_position_embeddings", 4096))
+
+    inv_freq = 1.0 / (rope_theta ** (np.arange(0, head_dim, 2, dtype=np.float64) / head_dim))
+
+    low_freq_len  = orig_ctx / beta_slow
+    high_freq_len = orig_ctx / beta_fast
+    wavelengths   = 2.0 * np.pi / inv_freq
+
+    # Three regions by wavelength:
+    #   short (< high_freq_len): high-frequency dimensions, no scaling
+    #   long  (> low_freq_len):  low-frequency dimensions, scale by factor
+    #   middle: smooth linear interpolation between the two extremes
+    interp_scale = (orig_ctx / wavelengths - beta_fast) / (beta_slow - beta_fast)
+    blended = inv_freq * (interp_scale * (1.0 - 1.0 / factor) + 1.0 / factor)
+
+    scaled_inv_freq = np.where(
+        wavelengths < high_freq_len,
+        inv_freq,
+        np.where(wavelengths > low_freq_len, inv_freq / factor, blended),
+    )
+
+    # YaRN attention scale: mscale = 0.1 * ln(factor) + 1.0
+    # Folded into inv_freq so Q scaling is transparent to the shader.
+    mscale = 0.1 * np.log(factor) + 1.0
+    return (scaled_inv_freq * mscale).astype(np.float32)
+
+
+def compute_standard_freqs(head_dim: int, rope_theta: float) -> np.ndarray:
+    """Standard RoPE inverse frequencies (no scaling).
+
+    Returns: [head_dim // 2] float32 array.
+    """
+    return (
+        1.0 / (rope_theta ** (np.arange(0, head_dim, 2, dtype=np.float64) / head_dim))
+    ).astype(np.float32)
+
+
 class BaseWebGPUModel:
     # Declare whether forward() can return a (1, 1) int32 token ID instead of
     # full (1, vocab) float32 logits. Subclasses that implement logit_readback()
@@ -43,6 +89,22 @@ class BaseWebGPUModel:
         self._gpu_sample_tok_cpu: int = 0  # cached CPU result after readback
         self._prof_stats: dict[str, list[float]] = defaultdict(list)  # shader -> [ms, ...]
         self._prof_current_label: str = ""  # set per _batched_dispatch block
+        # Dummy bias buffer for matmul_quant binding 4 (allocated on first use).
+        # The shader always declares binding 4; callers that don't use HAS_BIAS
+        # must still provide a buffer so the bind group layout matches.
+        self._dummy_bias_buf: "WebGPUBuffer | None" = None
+        # Precomputed RoPE inverse frequencies for USE_FREQ_BUF=1 (YaRN and similar).
+        # All rope/fused-rope shaders declare an inv_freq_buf binding unconditionally
+        # (wgpu-native does not eliminate dead bindings even at USE_FREQ_BUF=0), so
+        # every dispatch must provide a buffer at the slot. Initialised here as a
+        # 1-element dummy; LlamaWebGPUModel._init_rope_freq_buf() replaces it with
+        # actual YaRN frequencies when rope_scaling.rope_type == "yarn".
+        import wgpu as _wgpu
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WGPUBuf
+        _rw = _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
+        self._rope_freq_buf: "WebGPUBuffer" = _WGPUBuf.empty(
+            wgpu_device.wgpu_device, 4, usage=_rw)  # 1-element f32 placeholder
+        self._use_freq_buf: bool = False
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):
@@ -99,18 +161,8 @@ class BaseWebGPUModel:
     def _resolve_model_path(path: str) -> str:
         """Resolve a HuggingFace model ID or local path to an actual directory."""
         from pathlib import Path
-        p = Path(path)
-        if p.exists():
-            return str(p)
-        # Try HuggingFace cache
-        hf_cache = Path.home() / ".cache" / "huggingface" / "hub"
-        safe_id = path.replace("/", "--")
-        model_cache = hf_cache / f"models--{safe_id}"
-        if model_cache.exists():
-            snapshots = sorted((model_cache / "snapshots").iterdir())
-            if snapshots:
-                return str(snapshots[-1])
-        # Fall back: maybe huggingface_hub can download/locate it
+        if Path(path).exists():
+            return path
         try:
             from huggingface_hub import snapshot_download
             return snapshot_download(path, local_files_only=True)
@@ -298,6 +350,31 @@ class BaseWebGPUModel:
     ) -> None:
         import wgpu as wgpu_lib
 
+        # matmul_quant always declares binding 4 (bias). Callers that don't set
+        # HAS_BIAS=1 still need to provide a buffer so the bind group layout matches.
+        if shader_name == "matmul_quant" and len(bindings) == 4:
+            if self._dummy_bias_buf is None:
+                from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+                dev = self.wgpu_device.wgpu_device
+                self._dummy_bias_buf = WebGPUBuffer.empty(
+                    dev, 4,
+                    usage=wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC,
+                )
+            bindings = list(bindings) + [self._dummy_bias_buf]
+
+        # rope/fused RoPE shaders always declare an inv_freq_buf binding for USE_FREQ_BUF=1.
+        # Callers that keep USE_FREQ_BUF=0 (no YaRN) must still satisfy the layout.
+        #   rope:                    3 bindings + dummy at slot 3
+        #   fused_per_head_norm_rope: 4 bindings + dummy at slot 4
+        #   fused_qk_norm_rope:      7 bindings + dummy at slot 7
+        _rope_shaders_by_len = {
+            ("rope", 3), ("fused_per_head_norm_rope", 4), ("fused_qk_norm_rope", 7),
+        }
+        if (shader_name, len(bindings)) in _rope_shaders_by_len:
+            # Use the pre-allocated rope_freq_buf placeholder (initialized in __init__).
+            # When USE_FREQ_BUF=1 (YaRN), _init_rope_freq_buf() replaces it with real data.
+            bindings = list(bindings) + [self._rope_freq_buf]
+
         key = PipelineKey(
             shader_name=f"{shader_subdir}/{shader_name}",
             defines=tuple(sorted(constants.items())),
@@ -339,30 +416,43 @@ class BaseWebGPUModel:
         ...
 
     def warmup(self) -> None:
-        """Pre-compile shader pipelines by running a dummy single-token decode step.
+        """Pre-compile shader pipelines by running dummy decode and prefill steps.
 
-        Calls forward() with a single dummy token so every shader variant used in
-        the decode hot path gets compiled and cached in pipeline_cache. Any error
-        is logged and swallowed so warmup never blocks inference from starting.
+        Covers both the decode hot path (T=1) and the prefill path (T=4) so
+        that first-inference latency from shader JIT compilation is eliminated.
+        Any error is logged and swallowed so warmup never blocks inference from
+        starting.
 
-        Subclasses may override to also exercise prefill paths or additional
-        shader combinations (e.g. batch T>1, MoE routing).
+        Subclasses may override to exercise additional shader combinations.
         """
         if not self.weights:
             logger.info("Skipping warmup: weights not loaded")
             return
-        logger.info("Warming up shader pipelines via dummy decode step...")
+        if not self.kv_pool:
+            logger.info("Skipping warmup: KV pool not allocated")
+            return
+        logger.info("Warming up shader pipelines (decode + prefill)...")
         try:
-            dummy_ids = np.array([0], dtype=np.uint32)
-            dummy_pos = np.array([0], dtype=np.uint32)
-
-            # Minimal attention metadata: slot 0 in block 0.
-            class _DummyAttn:
+            # Decode warmup: compiles all decode-path shaders.
+            class _Dec:
                 slot_mapping = [0]
                 block_tables = [np.array([0], dtype=np.uint32)]
                 max_decode_seq_len = 1
+            self.forward(np.array([0], dtype=np.uint32),
+                         np.array([0], dtype=np.uint32), _Dec())
 
-            self.forward(dummy_ids, dummy_pos, _DummyAttn())
-            logger.info("Warmup complete")
+            # Prefill warmup: compiles matmul_quant_mr4, flash_attn_prefill, etc.
+            T = 4
+            bt = np.zeros(max(len(self.kv_pool[0][0].shape) if self.kv_pool else 1, T), dtype=np.uint32)
+            for i in range(T):
+                bt[i // 16] = i // 16
+            class _Pre:
+                slot_mapping = list(range(T))
+                block_tables = [bt.copy()]
+                max_decode_seq_len = T
+            self.forward(np.zeros(T, dtype=np.uint32),
+                         np.arange(T, dtype=np.uint32), _Pre())
+
+            logger.info("Warmup complete (decode + prefill)")
         except Exception as exc:
             logger.warning("Warmup failed (non-fatal): %s", exc)
