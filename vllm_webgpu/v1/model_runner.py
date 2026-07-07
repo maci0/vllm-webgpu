@@ -265,36 +265,35 @@ class WebGPUModelRunner:
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
-            # Run each prompt token through the model to populate the KV cache.
-            last_logits = None
-            for i, tok in enumerate(tok_ids):
-                # Physical KV cache slot for this token (paged addressing).
+            # Batch prefill: send all T prompt tokens in a single forward() call
+            # if the model supports it (num_tokens > 1 path). Falls back gracefully
+            # to token-by-token if the model returns None.
+            T = len(tok_ids)
+            slots = []
+            for i in range(T):
                 blk_idx = i // block_size
                 if blk_idx >= len(blk_ids):
                     raise RuntimeError(
                         f"block table too short for req {rid}: token {i} needs block "
                         f"{blk_idx} but only {len(blk_ids)} blocks allocated"
                     )
-                slot = blk_ids[blk_idx] * block_size + (i % block_size)
+                slots.append(blk_ids[blk_idx] * block_size + (i % block_size))
 
-                class _PM:
-                    _slot = slot
-                    _bt = bt
-                    _ctx = i + 1
-                    slot_mapping = [_slot]
-                    block_tables = [_bt]
-                    max_decode_seq_len = _ctx
+            class _BatchPM:
+                slot_mapping     = slots
+                block_tables     = [bt]
+                max_decode_seq_len = T
 
-                last_logits = self.model.forward(
-                    np.array([tok], dtype=np.uint32),
-                    np.array([i], dtype=np.uint32),
-                    _PM(),
-                )
+            last_logits = self.model.forward(
+                np.array(tok_ids, dtype=np.uint32),
+                np.arange(T, dtype=np.uint32),
+                _BatchPM(),
+            )
 
             if last_logits is None:
                 continue
 
-            first_decode_tok = int(last_logits.argmax(axis=-1)[0])
+            first_decode_tok = int(last_logits.argmax(axis=-1)[0]) if last_logits.shape[-1] > 1 else int(last_logits[0, 0])
             all_req_ids.append(rid)
             all_sampled.append(first_decode_tok)
             # Store last sampled token; decode path needs it (new_token_ids is empty without PP).

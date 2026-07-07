@@ -1,10 +1,13 @@
 enable f16;
 
-override BLOCK_SIZE: u32   = 16u;
-override NUM_Q_HEADS: u32  = 32u;
-override NUM_KV_HEADS: u32 = 8u;
-override HEAD_DIM: u32     = 128u;
-override CTX_LEN: u32      = 4096u;
+override BLOCK_SIZE: u32      = 16u;
+override NUM_Q_HEADS: u32     = 32u;
+override NUM_KV_HEADS: u32    = 8u;
+override HEAD_DIM: u32        = 128u;
+override CTX_LEN: u32         = 4096u;
+// ATTN_TOKEN_OFFSET: output row offset for batch prefill.
+// Token t writes to attn_out[t*NUM_Q_HEADS*HEAD_DIM : (t+1)*..].
+override ATTN_TOKEN_OFFSET: u32 = 0u;
 
 // scores: [num_q_heads, CTX_LEN]  f16
 // V_cache: [num_blocks, block_size, num_kv_heads, head_dim]  f16  (paged)
@@ -39,7 +42,7 @@ fn main(
             acc += f32(scores[q_head * CTX_LEN + ctx]) * f32(V_cache[v_base + dim_idx]);
             ctx += 1u;
         }
-        out[q_head * HEAD_DIM + dim_idx] = f16(acc);
+        out[ATTN_TOKEN_OFFSET + q_head * HEAD_DIM + dim_idx] = f16(acc);
         dim_idx += 128u;
     }
 }

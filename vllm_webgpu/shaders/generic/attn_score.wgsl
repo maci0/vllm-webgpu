@@ -1,10 +1,13 @@
 enable f16;
 
-override BLOCK_SIZE: u32   = 16u;
-override NUM_Q_HEADS: u32  = 32u;
-override NUM_KV_HEADS: u32 = 8u;
-override HEAD_DIM: u32     = 128u;
-override MAX_SEQ_LEN: u32  = 4096u;
+override BLOCK_SIZE: u32     = 16u;
+override NUM_Q_HEADS: u32    = 32u;
+override NUM_KV_HEADS: u32   = 8u;
+override HEAD_DIM: u32       = 128u;
+override MAX_SEQ_LEN: u32    = 4096u;
+// Q_TOKEN_OFFSET: row offset into Q for batch prefill.
+// Decode: 0 (single query). Prefill token t: t * NUM_Q_HEADS * HEAD_DIM.
+override Q_TOKEN_OFFSET: u32 = 0u;
 
 // Q: [num_q_heads, head_dim]  f16  (single decode token)
 // K_cache: [num_blocks, block_size, num_kv_heads, head_dim]  f16
@@ -36,7 +39,7 @@ fn main(
     let block_off = ctx_idx % BLOCK_SIZE;
     let scale     = 1.0 / sqrt(f32(HEAD_DIM));
 
-    let q_base = q_head * HEAD_DIM;
+    let q_base = Q_TOKEN_OFFSET + q_head * HEAD_DIM;
     let k_base = ((block_idx * BLOCK_SIZE + block_off) * NUM_KV_HEADS + kv_head) * HEAD_DIM;
 
     // Each thread accumulates a partial dot product. For HEAD_DIM=128, each thread handles 1 element.

@@ -271,34 +271,28 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             v = WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw)
             model.kv_pool.append((k, v))
 
-    # --- Prefill: run the prompt tokens one by one (decode-only MVP) ---
-    # We simulate prefill by running each token as a decode step.
-    # This is slow but correct for the MVP single-token decode architecture.
+    # --- Prefill: batch all prompt tokens in one forward() call ---
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
-    ctx_len = 0
-    slot_idx = 0
-
-    class Meta:
-        def __init__(self, slot, blk_table, ctx):
-            self.slot_mapping = [slot]
-            self.block_tables = [blk_table]
-            self.max_decode_seq_len = ctx
-
+    T = len(input_ids_list)
     block_table = np.zeros(num_blocks, dtype=np.uint32)
-    for i, tid in enumerate(input_ids_list):
-        slot = i
-        block_idx = slot // block_size
+    slots = []
+    for i in range(T):
+        block_idx = i // block_size
         block_table[block_idx] = block_idx
-        # ctx_len = i+1: token i attends to positions 0..i (itself + all prior).
-        # kv_cache_store writes at slot i first, then attn_score reads positions 0..i.
-        meta = Meta(slot, block_table.copy(), i + 1)
-        input_arr = np.array([tid], dtype=np.uint32)
-        positions_arr = np.array([i], dtype=np.uint32)
-        logits = model.forward(input_arr, positions_arr, meta)
-        ctx_len = i + 1
-        if (i + 1) % 10 == 0 or i == len(input_ids_list) - 1:
-            print(f"  prefill {i+1}/{len(input_ids_list)}", end="\r", flush=True)
-    print()
+        slots.append(block_idx * block_size + (i % block_size))
+
+    class BatchMeta:
+        slot_mapping      = slots
+        block_tables      = [block_table.copy()]
+        max_decode_seq_len = T
+
+    logits = model.forward(
+        np.array(input_ids_list, dtype=np.uint32),
+        np.arange(T, dtype=np.uint32),
+        BatchMeta(),
+    )
+    ctx_len = T
+    print(f"  prefill {T}/{T}")
 
     # logits is now a (1,1) int32 token array (GPU argmax path) — or full float32.
     has_gpu_argmax = hasattr(model, 'logit_readback')
@@ -314,6 +308,13 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # Decode loop
     print(f"\nDecoding (max {max_tokens} tokens)...")
+
+    class Meta:
+        def __init__(self, slot, blk_table, ctx):
+            self.slot_mapping = [slot]
+            self.block_tables = [blk_table]
+            self.max_decode_seq_len = ctx
+
     generated = []
     t_start = time.perf_counter()
     last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
