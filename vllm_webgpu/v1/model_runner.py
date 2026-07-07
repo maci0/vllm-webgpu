@@ -466,21 +466,22 @@ class WebGPUModelRunner:
             bt = np.array(blk_ids, dtype=np.uint32)
 
             # Batch prefill: send the scheduled chunk of prompt tokens in a single
-            # forward() call. With chunked prefill enabled, num_scheduled_tokens
-            # limits how many tokens to process per step; the rest are stored in
-            # state and processed in subsequent steps via the cached-req path.
+            # forward() call. With prefix caching, num_computed_tokens tokens are
+            # already in the KV cache; only the uncached tail needs to be processed.
+            num_computed = getattr(req, "num_computed_tokens", 0)
             num_sched = scheduler_output.num_scheduled_tokens.get(rid, len(tok_ids))
-            T = min(num_sched, len(tok_ids))
-            chunk_toks = tok_ids[:T]
+            T = min(num_sched, len(tok_ids) - num_computed)
+            chunk_toks = tok_ids[num_computed:num_computed + T]
             slots = []
             for idx in range(T):
-                blk_idx = idx // block_size
+                abs_idx = num_computed + idx  # absolute token position
+                blk_idx = abs_idx // block_size
                 if blk_idx >= len(blk_ids):
                     raise RuntimeError(
-                        f"block table too short for req {rid}: token {idx} needs block "
+                        f"block table too short for req {rid}: token {abs_idx} needs block "
                         f"{blk_idx} but only {len(blk_ids)} blocks allocated"
                     )
-                slots.append(blk_ids[blk_idx] * block_size + (idx % block_size))
+                slots.append(blk_ids[blk_idx] * block_size + (abs_idx % block_size))
 
             class _BatchPM:
                 slot_mapping     = slots
@@ -492,7 +493,7 @@ class WebGPUModelRunner:
 
             last_logits = self.model.forward(
                 np.array(chunk_toks, dtype=np.uint32),
-                np.arange(T, dtype=np.uint32),
+                np.arange(num_computed, num_computed + T, dtype=np.uint32),
                 _BatchPM(),
             )
 
