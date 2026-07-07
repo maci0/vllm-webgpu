@@ -40,6 +40,10 @@ override GEMMA_NORM:     u32 = 0u;
 override ROTARY_DIM:     u32 = HEAD_DIM;
 override INTERLEAVED:    u32 = 0u;
 override INPUT_OFFSET_K: u32 = 0u;            // f16 element offset for K in input[]
+// K_SEPARATE=1: K data is in k_input (binding 6) at element 0 (set INPUT_OFFSET_K=0).
+// K_SEPARATE=0: K data is in input (binding 0) at element INPUT_OFFSET_K (default).
+// When K_SEPARATE=0, bind any buffer at slot 6 (it will not be read).
+override K_SEPARATE: u32 = 0u;
 
 @group(0) @binding(0) var<storage, read>       input      : array<f16>;
 @group(0) @binding(1) var<storage, read>       q_norm_w   : array<f16>;
@@ -47,6 +51,8 @@ override INPUT_OFFSET_K: u32 = 0u;            // f16 element offset for K in inp
 @group(0) @binding(3) var<storage, read>       positions  : array<u32>;
 @group(0) @binding(4) var<storage, read_write> q_rope_out : array<f16>;
 @group(0) @binding(5) var<storage, read_write> k_rope_out : array<f16>;
+// Separate K input buffer. When K_SEPARATE=0, bind any buffer here (not read).
+@group(0) @binding(6) var<storage, read>       k_input    : array<f16>;
 
 var<workgroup> shared_sq:    array<f32, 64>;
 var<workgroup> shared_input: array<f32, HEAD_DIM>;
@@ -73,13 +79,19 @@ fn main(
     let out_base  = (seq_idx * n_heads + head_idx) * HEAD_DIM;
 
     // Phase 1: load into shared mem, accumulate sq_sum for RMSNorm.
+    // When K_SEPARATE=1, K heads read from k_input (binding 6) instead of input.
+    // select() evaluates both branches; both buffers must be bound and in-range.
     var sq_sum: f32 = 0.0;
     var col = tid;
     loop {
         if (col >= HEAD_DIM) { break; }
-        let v = f32(input[in_base + col]);
-        shared_input[col] = v;
-        sq_sum += v * v;
+        let val = select(
+            f32(input[in_base + col]),
+            f32(k_input[in_base + col]),
+            is_k && K_SEPARATE != 0u
+        );
+        shared_input[col] = val;
+        sq_sum += val * val;
         col += 64u;
     }
     shared_sq[tid] = sq_sum;

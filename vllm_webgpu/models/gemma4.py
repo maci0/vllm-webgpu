@@ -455,25 +455,44 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 v_src = sc["k_buf"]
 
-            # Fused per-head RMSNorm + RoPE for Q and K
-            for src, dst, n_heads, w_key in [
-                (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
-                (sc["k_buf"], sc["k_rope"], num_kv_heads, f"{p}.self_attn.k_norm.weight"),
-            ]:
-                norm_w = self.weights.get(w_key)
-                if norm_w is not None:
-                    self._dispatch("fused_per_head_norm_rope",
-                                   [src, norm_w, pos_buf, dst],
-                                   {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
-                                    "ROPE_BASE": float(self.rope_theta),
-                                    "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
-                                    "GEMMA_NORM": self._gemma_norm_const},
-                                   (n_heads, num_tokens, 1))
-                else:
-                    self._dispatch("rope", [src, pos_buf, dst],
-                                   {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
-                                    "LN_ROPE_BASE": ln_rope},
-                                   (num_tokens, n_heads, 1))
+            # Fused per-head RMSNorm + RoPE for Q and K.
+            # When both norm weights exist, use fused_qk_norm_rope with K_SEPARATE=1
+            # (Q from q_buf, K from k_buf — two separate buffers). Saves 1 dispatch.
+            q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
+            k_norm_w_l = self.weights.get(f"{p}.self_attn.k_norm.weight")
+            if q_norm_w is not None and k_norm_w_l is not None:
+                self._dispatch("fused_qk_norm_rope",
+                               [sc["q_buf"], q_norm_w, k_norm_w_l, pos_buf,
+                                sc["q_rope"], sc["k_rope"], sc["k_buf"]],
+                               {"HEAD_DIM": head_dim,
+                                "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": num_kv_heads,
+                                "ROPE_BASE": float(self.rope_theta),
+                                "LN_ROPE_BASE": ln_rope,
+                                "HAS_WEIGHT": 1,
+                                "GEMMA_NORM": self._gemma_norm_const,
+                                "INPUT_OFFSET_K": 0,
+                                "K_SEPARATE": 1},
+                               (self.num_q_heads + num_kv_heads, num_tokens, 1))
+            else:
+                for src, dst, n_heads, w_key in [
+                    (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
+                    (sc["k_buf"], sc["k_rope"], num_kv_heads, f"{p}.self_attn.k_norm.weight"),
+                ]:
+                    norm_w = self.weights.get(w_key)
+                    if norm_w is not None:
+                        self._dispatch("fused_per_head_norm_rope",
+                                       [src, norm_w, pos_buf, dst],
+                                       {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
+                                        "ROPE_BASE": float(self.rope_theta),
+                                        "LN_ROPE_BASE": ln_rope, "HAS_WEIGHT": 1,
+                                        "GEMMA_NORM": self._gemma_norm_const},
+                                       (n_heads, num_tokens, 1))
+                    else:
+                        self._dispatch("rope", [src, pos_buf, dst],
+                                       {"HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
+                                        "LN_ROPE_BASE": ln_rope},
+                                       (num_tokens, n_heads, 1))
 
             # Per-head RMSNorm (no weight) on V before caching — Gemma4 only.
             # Gemma3 does NOT apply V normalization (no v_norm weight in the model).
@@ -492,20 +511,31 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": head_dim},
                            (num_tokens, num_kv_heads, 1))
 
-            self._dispatch("attn_score",
-                           [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                            "MAX_SEQ_LEN": ctx_len},
-                           (self.num_q_heads, ctx_len, 1))
-            self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
-                           {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-            self._dispatch("attn_output",
-                           [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                            "CTX_LEN": ctx_len},
-                           (self.num_q_heads, 1, 1))
+            _FLASH_THRESH = 128
+            if ctx_len >= _FLASH_THRESH:
+                self._dispatch("flash_attn_decode",
+                               [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                               {"BLOCK_SIZE": self.block_size,
+                                "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": num_kv_heads,
+                                "HEAD_DIM": head_dim,
+                                "CTX_LEN": ctx_len},
+                               (self.num_q_heads, 1, 1))
+            else:
+                self._dispatch("attn_score",
+                               [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
+                                "MAX_SEQ_LEN": ctx_len},
+                               (self.num_q_heads, ctx_len, 1))
+                self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
+                               {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+                self._dispatch("attn_output",
+                               [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
+                                "CTX_LEN": ctx_len},
+                               (self.num_q_heads, 1, 1))
 
             # Output projection → sc["o_proj_out"]
             ow = f"{p}.self_attn.o_proj.weight"
@@ -523,26 +553,37 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             #   hidden = input_layernorm(x)     → attn → o_proj
             #   hidden = post_attention_layernorm(hidden)   ← norm on ATTN OUTPUT (before residual)
             #   residual = residual + hidden                ← residual add AFTER norm
+            #
+            # When both post_attn_norm and pre_ffn_norm are present, fuse them with
+            # rms_norm_add_f32_rms_norm to keep the intermediate in registers only.
             post_attn_norm_w = self.weights.get(f"{p}.post_attention_layernorm.weight")
-            if post_attn_norm_w is not None:
-                self._dispatch("rms_norm", [sc["o_proj_out"], post_attn_norm_w, sc["ffn_normed"]],
-                               _rms_consts, (num_tokens, 1, 1))
-                attn_delta = sc["ffn_normed"]
-            else:
-                attn_delta = sc["o_proj_out"]
-
-            # Fused: add_f32(x_buf, attn_delta, residual) + rms_norm_f32in(residual, pre_ffn_norm, normed)
-            # saves 1 dispatch vs the separate add_f32 → rms_norm_f32in sequence.
             pre_ffn_norm_w = self.weights.get(f"{p}.pre_feedforward_layernorm.weight")
-            if pre_ffn_norm_w is not None:
-                self._dispatch("add_f32_rms_norm",
-                               [x_buf, attn_delta, pre_ffn_norm_w, residual, sc["normed"]],
+            if post_attn_norm_w is not None and pre_ffn_norm_w is not None:
+                # Fused: rms_norm(o_proj_out, post_attn_w) + residual_add + rms_norm(residual, pre_ffn_w)
+                # Eliminates 1 dispatch vs the rms_norm → add_f32_rms_norm pair.
+                self._dispatch("rms_norm_add_f32_rms_norm",
+                               [sc["o_proj_out"], post_attn_norm_w,
+                                x_buf, pre_ffn_norm_w,
+                                residual, sc["normed"]],
                                {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
                 ffn_normed = sc["normed"]
             else:
-                self._dispatch("add_f32", [x_buf, attn_delta, residual],
-                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
-                ffn_normed = residual
+                if post_attn_norm_w is not None:
+                    self._dispatch("rms_norm", [sc["o_proj_out"], post_attn_norm_w, sc["ffn_normed"]],
+                                   _rms_consts, (num_tokens, 1, 1))
+                    attn_delta = sc["ffn_normed"]
+                else:
+                    attn_delta = sc["o_proj_out"]
+
+                if pre_ffn_norm_w is not None:
+                    self._dispatch("add_f32_rms_norm",
+                                   [x_buf, attn_delta, pre_ffn_norm_w, residual, sc["normed"]],
+                                   {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
+                    ffn_normed = sc["normed"]
+                else:
+                    self._dispatch("add_f32", [x_buf, attn_delta, residual],
+                                   {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
+                    ffn_normed = residual
 
             # Gate + up projection
             # Fused gate+up (f16 only); Gemma uses tanh-GELU.
@@ -581,22 +622,30 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            _gemv_wg(hidden, uq))
 
             # Post-FFN norm on FFN output (before residual add), then fused residual + next pre-norm.
+            # When post_ffw_w and next input_layernorm both exist (all non-last layers),
+            # fuse into rms_norm_add_f32_rms_norm to keep the intermediate in registers.
             post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
-            if post_ffw_w is not None:
-                self._dispatch("rms_norm", [sc["ffn_out"], post_ffw_w, sc["o_proj_out"]],
-                               _rms_consts, (num_tokens, 1, 1))
-                ffn_delta = sc["o_proj_out"]
-            else:
-                ffn_delta = sc["ffn_out"]
-
-            # Fused final add_f32 + next layer's input_layernorm for non-last layers.
-            # Last layer: plain add_f32 (final norm is separate).
             if layer_idx < self.num_layers - 1:
                 next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
-                self._dispatch("add_f32_rms_norm",
-                               [residual, ffn_delta, next_w, out, sc["normed"]],
-                               {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
+                if post_ffw_w is not None:
+                    # Fused: rms_norm(ffn_out, post_ffw_w) + residual_add + rms_norm(residual, next_w)
+                    self._dispatch("rms_norm_add_f32_rms_norm",
+                                   [sc["ffn_out"], post_ffw_w,
+                                    residual, next_w,
+                                    out, sc["normed"]],
+                                   {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
+                else:
+                    self._dispatch("add_f32_rms_norm",
+                                   [residual, sc["ffn_out"], next_w, out, sc["normed"]],
+                                   {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
             else:
+                # Last layer: no next pre-norm, just update residual.
+                if post_ffw_w is not None:
+                    self._dispatch("rms_norm", [sc["ffn_out"], post_ffw_w, sc["o_proj_out"]],
+                                   _rms_consts, (num_tokens, 1, 1))
+                    ffn_delta = sc["o_proj_out"]
+                else:
+                    ffn_delta = sc["ffn_out"]
                 self._dispatch("add_f32", [residual, ffn_delta, out],
                                {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
 
