@@ -185,6 +185,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 "HEAD_DIM": self.head_dim,
                 "ROPE_BASE": float(self.rope_theta),
                 "LN_ROPE_BASE": ln_rope,
+                "USE_FREQ_BUF": int(self._use_freq_buf),
             }
 
             for src, dst, n_heads, norm_w, in_off in [
