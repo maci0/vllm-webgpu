@@ -763,7 +763,18 @@ class WebGPUModelRunner:
     def sample_tokens(self, grammar_output: "GrammarOutput | None") -> Any:
         # In vLLM >= 0.24, the batch queue calls execute_model() then sample_tokens().
         # execute_model() caches its output; sample_tokens() returns it here.
-        # Grammar/structured output is not supported — return cached output as-is.
+        # Grammar/structured output (guided_json, guided_regex, guided_grammar) is not
+        # supported: the WebGPU backend performs argmax on-GPU and does not preserve
+        # the full logit distribution needed to apply token masks from the grammar FSM.
+        # Silently returning unconstrained tokens would produce output that violates
+        # the schema, so we raise early instead.
+        if grammar_output is not None:
+            raise NotImplementedError(
+                "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
+                "is not supported on the WebGPU backend. The GPU argmax path discards "
+                "the full logit distribution required to apply grammar token masks. "
+                "Use unconstrained sampling or switch to a CPU/CUDA backend."
+            )
         return self._last_model_output
 
     def supported_worker_tasks(self) -> tuple[Any, ...]:
