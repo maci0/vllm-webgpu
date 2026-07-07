@@ -302,6 +302,158 @@ def test_arch_map_includes_qwen35():
     assert ARCH_MAP["Qwen3_5ForConditionalGeneration"] == "qwen35"
 
 
+def test_arch_map_includes_qwen35_moe():
+    """ARCH_MAP also maps the MoE variant Qwen3_5MoeForConditionalGeneration."""
+    from vllm_webgpu.v1.model_runner import ARCH_MAP
+    assert "Qwen3_5MoeForConditionalGeneration" in ARCH_MAP
+    assert ARCH_MAP["Qwen3_5MoeForConditionalGeneration"] == "qwen35"
+
+
+@pytest.mark.integration
+def test_qwen36_moe_forward(wgpu_device):
+    """Qwen3.6 MoE path: GPU expert routing via topk_sort, shared expert + K selected experts.
+
+    Uses all-full-attention layers (layer_types override) to isolate the MoE FFN
+    from GDN state, keeping the test fast without sacrificing coverage of the
+    router → topk_sort → expert dispatch pipeline.
+
+    Qwen35's _forward_moe() manages encoders manually: Phase A (router + topk)
+    is submitted and synced before the CPU reads expert indices, so routing is
+    correct and expert weights are actually applied.
+    """
+    import wgpu as wgpu_lib
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    hidden      = 128
+    inter       = 256          # shared_expert_intermediate_size
+    moe_inter   = 64           # moe_intermediate_size (per routed expert)
+    n_experts   = 8
+    top_k       = 2
+    heads       = 4
+    kv_heads    = 2
+    head_dim    = 32           # hidden // heads
+    q_dim       = heads * head_dim    # 128
+    kv_dim      = kv_heads * head_dim # 64
+    vocab       = 64
+    layers      = 1
+    block_sz    = 16
+    n_blocks    = 8
+
+    class _Cfg:
+        hidden_size                      = hidden
+        num_hidden_layers                = layers
+        num_attention_heads              = heads
+        num_key_value_heads              = kv_heads
+        intermediate_size                = inter
+        vocab_size                       = vocab
+        max_position_embeddings          = 128
+        rope_theta                       = 1_000_000.0
+        head_dim                         = hidden // heads
+        # MoE
+        num_experts                      = n_experts
+        num_experts_per_tok              = top_k
+        moe_intermediate_size            = moe_inter
+        shared_expert_intermediate_size  = inter
+        # GDN — tiny dimensions; never used since all layers are full attention
+        linear_num_key_heads             = 1
+        linear_key_head_dim              = 4
+        linear_num_value_heads           = 1
+        linear_value_head_dim            = 4
+        linear_conv_kernel_dim           = 2
+        full_attention_interval          = 4   # overridden by layer_types
+        attn_output_gate                 = False
+        partial_rotary_factor            = None
+        mrope_interleaved                = False
+        # Single full-attention layer — bypasses all GDN machinery
+        layer_types                      = ["full_attention"]
+
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = Qwen35WebGPUModel(_Cfg(), wgpu_device, cache)
+
+    assert model._is_moe, "_is_moe should be True with num_experts=8, num_experts_per_tok=2"
+
+    dev = wgpu_device.wgpu_device
+    rw  = (wgpu_lib.BufferUsage.STORAGE
+           | wgpu_lib.BufferUsage.COPY_SRC
+           | wgpu_lib.BufferUsage.COPY_DST)
+    rng = np.random.default_rng(7)
+
+    def f16(shape):
+        arr = (rng.standard_normal(shape) * 0.01).astype(np.float16)
+        return WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(arr), usage=rw)
+
+    def ones_f16(shape):
+        """Norm weights as ones so _postprocess_weights detects GEMMA_NORM=0."""
+        return WebGPUBuffer.from_numpy(dev,
+            np.ones(shape, dtype=np.float16), usage=rw)
+
+    # Global weights
+    model.weights["model.embed_tokens.weight"] = f16((vocab, hidden))
+    model.weights["model.norm.weight"]         = ones_f16((hidden,))
+
+    # Layer 0 weights
+    p = "model.layers.0"
+    model.weights[f"{p}.input_layernorm.weight"]          = ones_f16((hidden,))
+    model.weights[f"{p}.post_attention_layernorm.weight"] = ones_f16((hidden,))
+
+    # Attention projections
+    model.weights[f"{p}.self_attn.q_proj.weight"] = f16((q_dim,  hidden))
+    model.weights[f"{p}.self_attn.k_proj.weight"] = f16((kv_dim, hidden))
+    model.weights[f"{p}.self_attn.v_proj.weight"] = f16((kv_dim, hidden))
+    model.weights[f"{p}.self_attn.o_proj.weight"] = f16((hidden, q_dim))
+
+    # MoE router: gate.weight [num_experts, hidden]
+    model.weights[f"{p}.mlp.gate.weight"] = f16((n_experts, hidden))
+
+    # Shared expert (always active, weight 1.0)
+    sp = f"{p}.mlp.shared_expert"
+    model.weights[f"{sp}.gate_proj.weight"] = f16((inter,  hidden))
+    model.weights[f"{sp}.up_proj.weight"]   = f16((inter,  hidden))
+    model.weights[f"{sp}.down_proj.weight"] = f16((hidden, inter))
+
+    # All n_experts routed experts (inject all so any top-k selection will succeed)
+    for eid in range(n_experts):
+        ep = f"{p}.mlp.experts.{eid}"
+        model.weights[f"{ep}.gate_proj.weight"] = f16((moe_inter, hidden))
+        model.weights[f"{ep}.up_proj.weight"]   = f16((moe_inter, hidden))
+        model.weights[f"{ep}.down_proj.weight"] = f16((hidden, moe_inter))
+
+    # _postprocess_weights detects GEMMA_NORM format from input_layernorm mean
+    # (ones → mean=1.0 > 0.7 → GEMMA_NORM=0, correct for Qwen3.5).
+    model._postprocess_weights()
+    # _alloc_lin_states initialises SSM/conv state lists (all None for full-attn layers).
+    model._alloc_lin_states()
+
+    # KV cache — required by _full_attn_layer
+    kv_bytes = n_blocks * block_sz * kv_heads * head_dim * 2  # f16 bytes
+    for _ in range(layers):
+        model.kv_pool.append((
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+        ))
+
+    class _FakeMeta:
+        slot_mapping    = [0]
+        block_tables    = [np.zeros(n_blocks, dtype=np.uint32)]
+        max_decode_seq_len = 1
+
+    result = model.forward(
+        np.array([1], dtype=np.uint32),
+        np.array([0], dtype=np.uint32),
+        _FakeMeta(),
+    )
+
+    # _forward_moe returns [[token_id]] as int32
+    assert result.shape == (1, 1), f"Expected shape (1, 1), got {result.shape}"
+    token_id = int(result[0, 0])
+    assert 0 <= token_id < vocab, (
+        f"token_id {token_id} out of range [0, {vocab})"
+    )
+
+
 def test_prefill_chunked_forward_method_exists(wgpu_device):
     """_prefill_chunked_forward exists and forward() routes to it for num_tokens > 1."""
     from vllm_webgpu.webgpu.pipeline import PipelineCache
