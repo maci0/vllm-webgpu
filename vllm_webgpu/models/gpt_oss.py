@@ -99,11 +99,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
 
-            def _scales(w_key: str, uq: int, fallback) -> "WebGPUBuffer":
-                if uq in (3, 4, 5, 6, 7, 8):
-                    return self.weights.get(w_key + ".scales", fallback)
-                return self.weights.get(w_key[:-7] + ".scales", fallback)
-
             # QKV projections.
             # GPT-OSS has no q_norm/k_norm weights, so fused_qkv is never used.
             q_wk = f"{p}.self_attn.q_proj.weight"
@@ -121,7 +116,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 self._dispatch(
                     "matmul_quant",
                     [normed_x, self.weights[w_key],
-                     _scales(w_key, uq, normed_x), out_buf_qkv],
+                     self._scales_buf(w_key, uq, normed_x), out_buf_qkv],
                     {"K": hidden, "N": dim, "USE_QUANT": uq,
                      **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
                      **qi},
@@ -215,7 +210,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [sc["attn_out"], self.weights[w_key],
-                 _scales(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
+                 self._scales_buf(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
                 {"K": q_dim, "N": hidden, "USE_QUANT": uq,
                  **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
                  **qi},
@@ -275,7 +270,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                         self._dispatch(
                             "matmul_quant",
                             [sc["ffn_normed"], self.weights[w_k],
-                             _scales(w_k, uq2, sc["ffn_normed"]), out_b],
+                             self._scales_buf(w_k, uq2, sc["ffn_normed"]), out_b],
                             {"K": hidden, "N": inter, "USE_QUANT": uq2,
                              **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
                              **qi2},
@@ -293,7 +288,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 self._dispatch(
                     "matmul_quant",
                     [sc["ffn_act"], self.weights[w_k],
-                     _scales(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
+                     self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
                     {"K": inter, "N": hidden, "USE_QUANT": uq,
                      **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
                      **qi3},
