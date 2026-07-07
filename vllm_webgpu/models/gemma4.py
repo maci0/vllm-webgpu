@@ -378,9 +378,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         has_v = lp["has_v_proj"]
         inter = self.intermediate_size
         ln_rope = math.log(self.rope_theta)
-        # Per-layer output scale from GGUF (layer_output_scale.weight ≈ 0.053).
-        # Applied to sublayer contributions before residual add.
-        # Layer scale cached at load_weights() — no GPU→CPU readback per token.
+        # Per-layer scalar from GGUF (layer_scalar weight, e.g. ~0.97 or ~0.053 depending on model).
+        # Applied to the full residual once after both attn and FFN sublayers, matching vLLM:
+        #   hidden_states = hidden_states * self.layer_scalar
+        # Cached at load_weights() — no GPU-to-CPU readback per token.
         _ls = self._layer_scales[layer_idx]
 
         h_names = ["h0", "h1", "h2"]
@@ -542,11 +543,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             if post_attn_norm_w is not None and pre_ffn_norm_w is not None:
                 # Fused: rms_norm(o_proj_out, post_attn_w) + residual_add + rms_norm(residual, pre_ffn_w)
                 # Eliminates 1 dispatch vs the rms_norm → add_f32_rms_norm pair.
+                # No SCALE here: vLLM does not apply layer_scalar at the attention sublayer.
                 self._dispatch("rms_norm_add_f32_rms_norm",
                                [sc["o_proj_out"], post_attn_norm_w,
                                 x_buf, pre_ffn_norm_w,
                                 residual, sc["normed"]],
-                               {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
+                               _rms_consts, (num_tokens, 1, 1))
                 ffn_normed = sc["normed"]
             else:
                 if post_attn_norm_w is not None:
@@ -559,11 +561,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 if pre_ffn_norm_w is not None:
                     self._dispatch("add_f32_rms_norm",
                                    [x_buf, attn_delta, pre_ffn_norm_w, residual, sc["normed"]],
-                                   {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
+                                   _rms_consts, (num_tokens, 1, 1))
                     ffn_normed = sc["normed"]
                 else:
                     self._dispatch("add_f32", [x_buf, attn_delta, residual],
-                                   {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
+                                   {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
                     ffn_normed = residual
 
             # Gate + up projection
@@ -610,15 +612,17 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
                 if post_ffw_w is not None:
                     # Fused: rms_norm(ffn_out, post_ffw_w) + residual_add + rms_norm(residual, next_w)
+                    # SCALE=1.0 (default): layer_scalar applied separately below via f32_scale_inplace.
+                    # RMSNorm is scale-invariant so normed_out is correct even after scaling out.
                     self._dispatch("rms_norm_add_f32_rms_norm",
                                    [sc["ffn_out"], post_ffw_w,
                                     residual, next_w,
                                     out, sc["normed"]],
-                                   {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
+                                   _rms_consts, (num_tokens, 1, 1))
                 else:
                     self._dispatch("add_f32_rms_norm",
                                    [residual, sc["ffn_out"], next_w, out, sc["normed"]],
-                                   {**_rms_consts, "SCALE": _ls}, (num_tokens, 1, 1))
+                                   _rms_consts, (num_tokens, 1, 1))
             else:
                 # Last layer: no next pre-norm, just update residual.
                 if post_ffw_w is not None:
@@ -628,7 +632,15 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 else:
                     ffn_delta = sc["ffn_out"]
                 self._dispatch("add_f32", [residual, ffn_delta, out],
-                               {"N": add_n, "SCALE": _ls}, ((add_n // 4 + 255) // 256, 1, 1))
+                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+
+            # Apply layer_scalar to the full residual once per decoder layer.
+            # Matches vLLM: hidden_states = hidden_states * self.layer_scalar,
+            # which scales (x + delta_attn + delta_ffn), not just the deltas.
+            if abs(_ls - 1.0) > 1e-6:
+                self._dispatch("f32_scale_inplace", [out],
+                               {"N": add_n, "SCALE": _ls},
+                               ((add_n + 255) // 256, 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
         return sc["normed"], out
