@@ -57,11 +57,19 @@ python run_inference.py \
   --model google/gemma-4-12b-it \
   --prompt "2+2="
 
-# Qwen3.5-9B (MLX 4-bit)
+# Qwen3.5-9B safetensors BF16 — experimental GDN bf16 weight precision
+python run_inference.py \
+  --model Qwen/Qwen3.5-9B \
+  --gdn_bf16 \
+  --prompt "What is 2+2?"
+
+# Qwen3.5-9B (MLX 4-bit, no bf16 benefit — weights already quantized)
 python run_inference.py \
   --model ~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-4bit/... \
   --prompt "Hello"
 ```
+
+`--gdn_bf16` (`GDN_BF16=1` env var): stores Qwen3.5 GDN projection weights as bf16 packed u16 instead of f16. Preserves the original 8-bit exponent range (same as f32/bf16) vs f16's 5-bit range. Only effective on safetensors BF16 checkpoints; has no effect on MLX/quantized weights.
 
 ## vLLM engine integration
 
@@ -77,6 +85,10 @@ llm = LLM(
 )
 outputs = llm.generate("The capital of France is", SamplingParams(max_tokens=50))
 print(outputs[0].outputs[0].text)
+
+# With logprobs (top-5 per token, computed on CPU from full logit readback):
+outputs = llm.generate("Hello", SamplingParams(max_tokens=20, logprobs=5))
+print(outputs[0].outputs[0].logprobs)
 ```
 
 vLLM selects the WebGPU platform automatically when the plugin is installed and a WebGPU adapter is available.
@@ -133,7 +145,9 @@ Block size 16 tokens. Each layer has its own KV buffer pair. Gemma4-12B uses het
 
 MLX affine-int4 and other non-native formats are dequantized to f16 at load time.
 
-Formats that are dequantized to f16 at load time (runtime USE_QUANT=0): MXFP4, MXFP8, MLX affine-int4.
+Formats dequantized to f16 at load time (USE_QUANT=0 at runtime): MXFP4, MXFP8, MLX affine-int4.
+
+`matmul_quant.wgsl` also supports `USE_BF16=1` (used internally by the `--gdn_bf16` path): weights stored as packed bf16 u16 are decoded via `bitcast<f32>(word << 16u)`, giving 8-bit exponent range vs f16's 5-bit.
 
 ## WGSL kernels
 
@@ -157,13 +171,13 @@ See [KERNELS.md](KERNELS.md) for the full reference with dispatch shapes, overri
 
 Fallback paths (quantized weights, no per-head norms): 14-16 dispatches/layer.
 
-**Prefill path:** `matmul_quant_mr4` (tiled GEMM, M×4 output tile per workgroup). Layers are chunked across separate command encoders (4 layers each) to stay under the Metal command-buffer timeout. T is not bounded.
+**Prefill path:** `matmul_quant_mr4` (tiled GEMM, M×4 output tile per workgroup) for f16 models. Quantized models fall back to sequential per-token decode-path processing. Attention is handled by `flash_attn_prefill` (one dispatch for all T tokens, causal masking, online softmax). Layers are chunked across separate command encoders (4 layers each) to stay under the Metal command-buffer timeout. T is not bounded.
 
 **Long-context fallback:** `flash_attn_decode` replaces the three-pass `attn_score + softmax + attn_output` when `ctx_len > 65535` (the WebGPU dispatch-dimension limit for the three-pass approach). The fused shader loops over all KV positions internally and has no per-axis limit.
 
 **Kernels by category:**
 - Core: `matmul_quant`, `matmul_quant_mr4`, `rms_norm`, `rms_norm_f32in`, `add_rms_norm`, `add_f32_rms_norm`, `embedding_lookup`, `add`, `argmax_f16`
-- Attention: `attn_score`, `softmax`, `attn_output`, `flash_attn_decode`, `kv_cache_store_both`, `kv_cache_store`
+- Attention: `attn_score`, `softmax`, `attn_output`, `flash_attn_prefill`, `flash_attn_decode`, `kv_cache_store_both`, `kv_cache_store`
 - Fused: `fused_qkv`, `fused_qk_norm_rope`, `fused_per_head_norm_rope`, `fused_gate_act`, `fused_gate_up`
 - Sampling: `gumbel_sample`, `topk256`, `topk_sort`
 - Gemma-specific: `logit_softcap`, `per_head_rms_norm_no_weight`, `ple_gelu_mul`, `ple_skip_scale_add`, `ple_stage1_fuse`
@@ -192,15 +206,16 @@ Model paths are resolved through the HF cache (`~/.cache/huggingface/hub/`) auto
 pytest tests/ -q
 ```
 
-68 tests covering: kernel correctness (softmax sum-to-one, RMSNorm scale invariance, RoPE norm preservation, matmul linearity, attention pipeline), quantization round-trips, model instantiation, vLLM platform integration, Qwen3.5/Gemma4 layer dispatch.
+113 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma), vLLM platform integration, Qwen3.6 MoE routing.
 
 ## Limitations
 
-- Single-sequence decode only (no request batching).
-- Batch prefill: up to T unlimited tokens per forward call (chunked encoder submission, no GPU timeout).
-- Standard 3-pass attention supports ctx_len up to 65535 tokens. `flash_attn_decode` activates automatically for ctx_len > 65535 (loops internally, no per-axis dispatch limit).
-- Gemma models: f16 residual precision gap vs bfloat16; WebGPU has no bfloat16 support.
-- Qwen3.5 GDN layers: quantization not supported (always f16).
-- Block table capped at 512 blocks per sequence at init time.
+- **Single-sequence only**: one request per `forward()` call. Multi-sequence batching requires N separate scratch-buffer sets and per-sequence block-table dispatch — architectural change, not planned.
+- **Quantized prefill**: GPTQ/AWQ/FP8/NF4 models fall back to per-token sequential processing during prefill. f16 models use the fast `matmul_quant_mr4` batch path.
+- **No bfloat16**: WebGPU/WGSL has no bf16 type. Weights load as f16 (5-bit exponent vs bf16's 8-bit). Use `--gdn_bf16` to partially mitigate for Qwen3.5 GDN layers. See [MODELS.md](MODELS.md) for the full constraint list.
+- **No speculative decoding**, no draft model support.
+- **Grammar/constrained decoding** raises `NotImplementedError` — WebGPU cannot run guided-decoding logic on-device.
+- **Multi-modal inputs** raise `NotImplementedError` — use CausalLM architecture variants for text-only inference.
+- **Block table**: 4096 blocks per sequence (65536 tokens at block_size=16).
 
-See [MODELS.md](MODELS.md) for per-model details.
+See [MODELS.md](MODELS.md) for per-model quantization support, known issues, and WebGPU platform constraints.
