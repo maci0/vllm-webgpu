@@ -30,21 +30,21 @@ def make_fake_safetensors(tmp_path: Path, tensors: dict) -> Path:
 
 
 def test_detect_format_safetensors(tmp_path):
-    from vllm_webgpu.quant.gguf_loader import detect_weight_format
+    from vllm_webgpu.quant.weight_loader import detect_weight_format
     f = tmp_path / "model.safetensors"
     f.write_bytes(b"\x00" * 16)
     assert detect_weight_format(str(f)) == "safetensors"
 
 
 def test_detect_format_gguf(tmp_path):
-    from vllm_webgpu.quant.gguf_loader import detect_weight_format
+    from vllm_webgpu.quant.weight_loader import detect_weight_format
     f = tmp_path / "model.gguf"
     f.write_bytes(b"GGUF" + b"\x00" * 12)
     assert detect_weight_format(str(f)) == "gguf"
 
 
 def test_load_safetensors(wgpu_device, tmp_path):
-    from vllm_webgpu.quant.gguf_loader import load_safetensors_weights
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
     tensors = {
         "model.embed_tokens.weight": np.random.randn(32, 64).astype(np.float16),
         "model.layers.0.self_attn.q_proj.weight": np.random.randn(64, 64).astype(np.float16),

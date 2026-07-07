@@ -219,7 +219,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
     def _uq_weight(self, key: str) -> int:
         """Return USE_QUANT value for a weight key (same logic as llama.py)."""
-        # Check __quant_types__ (GGUF Q4_K=12) before dtype to avoid misidentifying
+        # Check __quant_types__ (Q4_K type=12) before dtype to avoid misidentifying
         # Q4_K raw bytes (dtype=u8) as FP8.
         quant_types = self.weights.get("__quant_types__", {})
         _qt = quant_types if isinstance(quant_types, dict) else {}

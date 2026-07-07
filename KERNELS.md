@@ -108,8 +108,9 @@ Workgroups with `wgid.x < NUM_Q_HEADS` process Q; others process K (at element o
 | `ROTARY_DIM` | HEAD_DIM | Dimensions to rotate (partial RoPE) |
 | `INTERLEAVED` | 0 | 0=pairs (i, half+i), 1=interleaved pairs (2i, 2i+1) |
 | `INPUT_OFFSET_K` | 0 | Element offset in input[] for the K section |
+| `K_SEPARATE` | 0 | 1: read K from a separate k_input buffer (binding 6); 0: read from input[] at INPUT_OFFSET_K |
 
-**Bindings:** 0=input(f16), 1=q_norm_w(f16), 2=k_norm_w(f16), 3=positions(u32), 4=q_rope_out(f16), 5=k_rope_out(f16)
+**Bindings:** 0=input(f16), 1=q_norm_w(f16), 2=k_norm_w(f16), 3=positions(u32), 4=q_rope_out(f16), 5=k_rope_out(f16), 6=k_input(f16, read only when K_SEPARATE=1; bind any buffer otherwise)
 
 Both weight arrays are always bound; a scalar `select()` chooses the correct value per WG. WebGPU clamps OOB reads to 0, so out-of-range accesses on the unused array are harmless.
 
@@ -227,6 +228,30 @@ Same overrides and dispatch as `rms_norm.wgsl`.
 
 ---
 
+### rms_norm_add_f32_rms_norm.wgsl
+
+Double-norm fusion for Gemma4 sublayer pairs. Replaces the two-dispatch sequence used at each sublayer boundary with a single pass that keeps the intermediate in thread registers:
+
+1. `rms_norm(delta_in, post_weight)` — f16 in, intermediate stays in registers (no global write)
+2. `residual = residual_in + SCALE * intermediate` — f32 residual update, written to residual_out
+3. `rms_norm_f32in(residual, pre_weight)` — f32 in, f16 out
+
+Two shared-memory reductions are performed sequentially (sq_sum1 for the first norm, sq_sum2 for the second). The register-tiled path (VALS_PER_THREAD > 0) avoids a second global read of delta_in in phase 2; a fallback re-read path handles HIDDEN_DIM > WG_SIZE × max register slots.
+
+**Dispatch:** `(num_tokens, 1, 1)` — one workgroup per token.
+
+| Override | Default | Description |
+|----------|---------|-------------|
+| `HIDDEN_DIM` | 4096 | Hidden dimension |
+| `WG_SIZE` | 256 | Workgroup size |
+| `VALS_PER_THREAD` | 16 | Register slots per thread (HIDDEN_DIM / WG_SIZE); 0=fallback re-read path |
+| `GEMMA_NORM` | 1 | 1=(1+w) Gemma-style norm; 0=standard w |
+| `SCALE` | 1.0 | Residual contribution scale (layer_output_scale) |
+
+**Bindings:** 0=delta_in(f16), 1=post_weight(f16), 2=residual_in(f32), 3=pre_weight(f16), 4=residual_out(f32), 5=normed_out(f16)
+
+---
+
 ### attn_score.wgsl
 
 QK dot-products against the paged K cache. Produces the full attention score matrix `[num_q_heads, ctx_len]`.
@@ -240,6 +265,7 @@ QK dot-products against the paged K cache. Produces the full attention score mat
 | `BLOCK_SIZE` | 16 | KV cache block size |
 | `NUM_Q_HEADS`, `NUM_KV_HEADS`, `HEAD_DIM` | — | Attention dimensions |
 | `MAX_SEQ_LEN` | 4096 | Output stride for scores_out |
+| `Q_TOKEN_OFFSET` | 0 | Element offset into Q[] for batch prefill; for token t use `t * NUM_Q_HEADS * HEAD_DIM` |
 
 **Bindings:** 0=Q(f16), 1=K_cache(f16), 2=block_table(u32), 3=scores_out(f16)
 
@@ -271,6 +297,7 @@ Weighted sum of paged V cache using softmaxed scores. Produces `[num_q_heads, he
 |----------|---------|-------------|
 | `BLOCK_SIZE` | 16 | KV cache block size |
 | `NUM_Q_HEADS`, `NUM_KV_HEADS`, `HEAD_DIM`, `CTX_LEN` | — | Attention dimensions |
+| `ATTN_TOKEN_OFFSET` | 0 | Output element offset for batch prefill; token t writes at `t * NUM_Q_HEADS * HEAD_DIM` |
 
 **Bindings:** 0=scores(f16), 1=V_cache(f16), 2=block_table(u32), 3=out(f16)
 
@@ -387,7 +414,7 @@ Element-wise `sigmoid(gate) * value`. Used for Qwen3.5 `attn_output_gate`: Huggi
 
 ### flash_attn_decode.wgsl
 
-Fused QK dot-products + online Milakov-Divanov softmax + V-weighted sum for decode (M=1). Not currently wired in the model forward pass — the three-pass approach (attn_score+softmax+attn_output) provides better GPU utilization at short contexts (num_q_heads×ctx_len WGs vs num_q_heads WGs). Available for future tiled-block parallelism.
+Fused QK dot-products + online Milakov-Divanov softmax + V-weighted sum for decode (M=1). Automatic fallback when ctx_len > 65535, where the three-pass approach (attn_score + softmax + attn_output) hits the WebGPU dispatch dimension limit. The fused shader loops over all KV positions inside the workgroup, so it has no per-axis dispatch limit. At short contexts, the three-pass approach has better GPU utilization (num_q_heads × ctx_len workgroups vs num_q_heads here); flash_attn_decode is selected only when ctx_len > 65535.
 
 **Dispatch:** `(NUM_Q_HEADS, 1, 1)` — one WG per query head.
 

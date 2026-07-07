@@ -116,10 +116,10 @@ class BaseWebGPUModel:
         """Load model weights from a HuggingFace safetensors directory.
 
         Supports single-file (model.safetensors) and sharded (model.safetensors.index.json)
-        safetensors formats. GGUF is not supported here — use the vllm-gguf plugin instead.
+        safetensors formats. GGUF loading not supported — use the vllm-gguf plugin.
         MLX affine-int4 (Qwen3.5-9B MLX community format) is supported as a special case.
         """
-        from vllm_webgpu.quant.gguf_loader import (
+        from vllm_webgpu.quant.weight_loader import (
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded, load_mlx_weights,
         )

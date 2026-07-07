@@ -25,9 +25,9 @@ import wgpu
 from vllm_webgpu.webgpu.device import WebGPUDevice
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 from vllm_webgpu.utils import SHADERS_DIR
-from vllm_webgpu.quant.gguf_loader import (
-    detect_weight_format, gguf_read_config,
-    load_safetensors_weights_sharded, load_safetensors_weights, load_gguf_weights,
+from vllm_webgpu.quant.weight_loader import (
+    detect_weight_format,
+    load_safetensors_weights_sharded, load_safetensors_weights,
 )
 from vllm_webgpu.models.base import BaseWebGPUModel
 
@@ -41,15 +41,7 @@ print(f"Model: {model_path}")
 print(f"Format: {fmt}")
 
 if fmt == "gguf":
-    cfg_dict = gguf_read_config(model_path)
-
-    class _HFConfig:
-        pass
-
-    hf_cfg = _HFConfig()
-    for k, v in cfg_dict.items():
-        setattr(hf_cfg, k, v)
-    arch = (cfg_dict.get("architectures") or ["LlamaForCausalLM"])[0]
+    raise RuntimeError("GGUF profiling not supported in this build (use safetensors models).")
 else:
     import json
     cfg_path = pathlib.Path(model_path) / "config.json"
@@ -144,7 +136,15 @@ for i, tok in enumerate(tok_ids):
 
     logits = model.forward(np.array([tok], dtype=np.uint32), np.array([i], dtype=np.uint32), _PM())
 
-decode_tok = int(logits.argmax(axis=-1)[0])
+_has_gpu_argmax = hasattr(model, 'logit_readback')
+
+def _top1(logits_out):
+    """Extract the greedy token from either GPU-argmax (int32 [1,1]) or float logits."""
+    if _has_gpu_argmax:
+        return int(logits_out[0, 0])
+    return int(np.argmax(logits_out[0]))
+
+decode_tok = _top1(logits)
 pos = len(tok_ids)
 print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")
 
@@ -161,7 +161,7 @@ for step in range(args.warmup_steps + 5):  # 5 extra for production timing
     t0 = time.perf_counter()
     logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _DM())
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    decode_tok = int(logits.argmax(axis=-1)[0])
+    decode_tok = _top1(logits)
     pos += 1
     if step >= args.warmup_steps:
         prod_times.append(elapsed_ms)
@@ -184,7 +184,7 @@ for step in range(args.decode_steps):
 
     t0 = time.perf_counter()
     logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _DM2())
-    decode_tok = int(logits.argmax(axis=-1)[0])
+    decode_tok = _top1(logits)
     decode_times.append((time.perf_counter() - t0) * 1000.0)
     pos += 1
 

@@ -349,9 +349,13 @@ class WebGPUModelRunner:
                     _DM(),
                 )
                 self._last_logits = logits
-                sampled = logits.argmax(axis=-1).tolist()
-                if not isinstance(sampled, list):
-                    sampled = [sampled]
+                # GPU argmax path returns shape (1,1) int32; full logit path returns float.
+                if hasattr(self.model, 'logit_readback') and logits.shape[-1] == 1:
+                    sampled = [int(logits[0, 0])]
+                else:
+                    sampled = logits.argmax(axis=-1).tolist()
+                    if not isinstance(sampled, list):
+                        sampled = [sampled]
                 # Commit state only after successful forward.
                 for (rid, new_pos, new_blk_ids), stok in zip(_staged, sampled):
                     self._req_state[rid] = {"pos": new_pos, "block_ids": new_blk_ids, "last_tok": int(stok)}

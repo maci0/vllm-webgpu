@@ -260,7 +260,7 @@ def test_gdn_decode_sequential_tokens(wgpu_device):
 def test_mlx_detect_format():
     """detect_weight_format returns 'mlx_int4' for the MLX model directory."""
     import os
-    from vllm_webgpu.quant.gguf_loader import detect_weight_format
+    from vllm_webgpu.quant.weight_loader import detect_weight_format
 
     model_dir = os.path.expanduser(
         "~/.cache/huggingface/hub/models--mlx-community--Qwen3.5-9B-4bit"
@@ -275,7 +275,7 @@ def test_mlx_detect_format():
 
 def test_mlx_dequant_correctness():
     """_dequant_mlx_int4 correctly unpacks nibbles and applies affine transform."""
-    from vllm_webgpu.quant.gguf_loader import _dequant_mlx_int4
+    from vllm_webgpu.quant.weight_loader import _dequant_mlx_int4
 
     # All-zero weights + bias of 3.0 -> every output = 3.0
     w = np.zeros((2, 2), dtype=np.uint32)    # 2 rows, 16 input cols

@@ -638,7 +638,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     if fmt == "nvfp4_gpu": return 6
                     if fmt == "int8_gpu":  return 7
                     if fmt == "fp8_gpu":   return 5
-                    # u8 without recognized fmt (e.g. GGUF raw Q8_0): fall through
+                    # u8 without recognized fmt: fall through: fall through
             if self.weights.get(key[:-7] + ".scales") is not None:
                 return 1
             return 0
