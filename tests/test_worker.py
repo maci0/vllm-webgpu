@@ -163,3 +163,108 @@ def test_worker_check_health_calls_dispatch(wgpu_device):
     worker = MagicMock(spec=WebGPUWorker)
     worker.wgpu_device = wgpu_device
     WebGPUWorker.check_health(worker)   # should not raise
+
+
+def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
+                                  global_hd=512, global_kv=1,
+                                  hidden_size=4096, num_q_heads=16,
+                                  num_hidden_layers=None):
+    """Build a WebGPUModelRunner mock with model=None and a Gemma4-style hf_config."""
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
+    from vllm_webgpu.config import WebGPUConfig
+
+    if num_hidden_layers is None:
+        num_hidden_layers = len(layer_types)
+
+    hf_config = MagicMock()
+    hf_config.num_hidden_layers = num_hidden_layers
+    hf_config.hidden_size = hidden_size
+    hf_config.num_attention_heads = num_q_heads
+    hf_config.num_key_value_heads = default_kv
+    hf_config.head_dim = default_hd
+    hf_config.global_head_dim = global_hd
+    hf_config.global_kv_heads = global_kv
+    hf_config.layer_types = layer_types
+    # Simulate safetensors: no _layer_attention_params on hf_config
+    del hf_config._layer_attention_params
+
+    vllm_config = MagicMock()
+    vllm_config.model_config.hf_config = hf_config
+
+    runner = MagicMock(spec=WebGPUModelRunner)
+    runner.model = None  # not yet loaded
+    runner.vllm_config = vllm_config
+    runner.webgpu_config = WebGPUConfig()
+    return runner
+
+
+def test_get_kv_cache_spec_pre_load_gemma4_heterogeneous():
+    """get_kv_cache_spec derives correct per-layer specs from layer_types before load_model()."""
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, FullAttentionSpec
+
+    if FullAttentionSpec is None:
+        pytest.skip("vllm not available")
+
+    # 6-layer model: every 6th (index 5) is full_attention (global), others are local
+    layer_types = ["sliding_attention"] * 5 + ["full_attention"]
+    runner = _make_gemma4_runner_pre_load(
+        layer_types=layer_types,
+        default_hd=256, default_kv=8,
+        global_hd=512, global_kv=1,
+    )
+
+    spec = WebGPUModelRunner.get_kv_cache_spec(runner)
+
+    assert len(spec) == 6, f"expected 6 specs, got {len(spec)}"
+
+    # Local layers (0-4): num_kv_heads=8, head_size=256
+    for i in range(5):
+        key = f"model.layers.{i}.self_attn"
+        assert key in spec, f"missing key {key}"
+        s = spec[key]
+        assert s.num_kv_heads == 8, f"layer {i}: expected num_kv_heads=8, got {s.num_kv_heads}"
+        assert s.head_size == 256, f"layer {i}: expected head_size=256, got {s.head_size}"
+
+    # Global layer (5): num_kv_heads=1, head_size=512
+    key = "model.layers.5.self_attn"
+    assert key in spec, f"missing key {key}"
+    s = spec[key]
+    assert s.num_kv_heads == 1, f"layer 5: expected num_kv_heads=1, got {s.num_kv_heads}"
+    assert s.head_size == 512, f"layer 5: expected head_size=512, got {s.head_size}"
+
+
+def test_get_kv_cache_spec_pre_load_gemma4_uniform_fallback():
+    """get_kv_cache_spec falls back to uniform specs when no layer_types and model=None."""
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, FullAttentionSpec
+
+    if FullAttentionSpec is None:
+        pytest.skip("vllm not available")
+
+    # No layer_types: uniform Llama/Gemma3 config
+    hf_config = MagicMock()
+    hf_config.num_hidden_layers = 4
+    hf_config.hidden_size = 2048
+    hf_config.num_attention_heads = 16
+    hf_config.num_key_value_heads = 4
+    hf_config.head_dim = 128
+    # Simulate no layer_types and no _layer_attention_params
+    del hf_config.layer_types
+    del hf_config._layer_attention_params
+
+    from vllm_webgpu.config import WebGPUConfig
+    vllm_config = MagicMock()
+    vllm_config.model_config.hf_config = hf_config
+
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
+    runner = MagicMock(spec=WebGPUModelRunner)
+    runner.model = None
+    runner.vllm_config = vllm_config
+    runner.webgpu_config = WebGPUConfig()
+
+    spec = WebGPUModelRunner.get_kv_cache_spec(runner)
+
+    assert len(spec) == 4
+    for i in range(4):
+        s = spec[f"model.layers.{i}.self_attn"]
+        assert s.num_kv_heads == 4
+        assert s.head_size == 128

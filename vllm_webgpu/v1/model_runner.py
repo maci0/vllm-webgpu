@@ -172,6 +172,27 @@ class WebGPUModelRunner:
         # over the raw HF config attribute, which may not be set for safetensors.
         lp_list = (getattr(self.model, "_lp", None) or
                    getattr(mc, "_layer_attention_params", None))
+
+        # Fallback: derive lp_list from layer_types + global_head_dim when the
+        # model has not been loaded yet and hf_config lacks _layer_attention_params.
+        # This covers Gemma4 safetensors where vLLM may call get_kv_cache_spec()
+        # before load_model(), so self.model is still None. Mirrors the derivation
+        # in Gemma4WebGPUModel.__init__() to ensure uniform and per-layer specs agree.
+        if not lp_list:
+            layer_types = getattr(mc, "layer_types", None)
+            if layer_types and len(layer_types) == mc.num_hidden_layers:
+                default_hd = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
+                default_kv = getattr(mc, "num_key_value_heads", 1)
+                global_hd = getattr(mc, "global_head_dim", default_hd)
+                global_kv = getattr(mc, "global_kv_heads",
+                                    getattr(mc, "num_global_key_value_heads", 1))
+                lp_list = []
+                for lt in layer_types:
+                    if lt == "full_attention":
+                        lp_list.append({"num_kv_heads": global_kv, "head_dim": global_hd})
+                    else:
+                        lp_list.append({"num_kv_heads": default_kv, "head_dim": default_hd})
+
         if lp_list and len(lp_list) == mc.num_hidden_layers:
             for i, lp in enumerate(lp_list):
                 spec[f"model.layers.{i}.self_attn"] = _make_spec(
