@@ -6,12 +6,10 @@ import numpy as np
 
 try:
     from vllm.config import VllmConfig
-    from vllm.tasks import SupportedTask
     from vllm.v1.kv_cache_interface import FullAttentionSpec
     from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors
 except ImportError:
     VllmConfig = Any  # type: ignore[assignment,misc]
-    SupportedTask = Any  # type: ignore[assignment,misc]
     FullAttentionSpec = None  # type: ignore[assignment,misc]
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
     LogprobsLists = None  # type: ignore[assignment,misc]
@@ -751,13 +749,8 @@ class WebGPUModelRunner:
             )
         return self._last_model_output
 
-    def supported_worker_tasks(self) -> tuple[Any, ...]:
-        # vLLM < 0.11: SupportedTask.GENERATE enum member
-        # vLLM >= 0.24: SupportedTask is a type alias; tasks are plain strings
-        try:
-            return (SupportedTask.GENERATE,)
-        except AttributeError:
-            return ("generate",)
+    def get_supported_tasks(self) -> tuple[str, ...]:
+        return ("generate",)
 
     def reset_mm_cache(self) -> None:
         pass
