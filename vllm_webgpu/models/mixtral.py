@@ -226,30 +226,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         kv_dim = self.num_kv_heads * self.head_dim
         inter = self.intermediate_size
         ln_rope = math.log(self.rope_theta)
-        quant_types = self.weights.get("__quant_types__", {})
-        _qt = quant_types if isinstance(quant_types, dict) else {}
-
-        def _uq(key: str) -> int:
-            tt = _qt.get(key, 0)
-            if tt == 12:
-                return 2
-            w = self.weights.get(key)
-            if w is not None:
-                dtype = getattr(w, "dtype", "f16")
-                base = key[:-7]
-                qmeta = self.weights.get("__quant_meta__", {})
-                meta = qmeta.get(base, {}) if isinstance(qmeta, dict) else {}
-                fmt = meta.get("fmt", "")
-                if dtype == "i32":
-                    return 4 if fmt == "awq_sym" else 3
-                if dtype == "u8":
-                    if fmt == "nvfp4_gpu": return 6
-                    if fmt == "int8_gpu":  return 7
-                    if fmt == "fp8_gpu":   return 5
-                    if fmt == "nf4_gpu":   return 8
-            if self.weights.get(key[:-7] + ".scales") is not None:
-                return 1
-            return 0
 
         _wg_size = 256
         _vpt = min((hidden + _wg_size - 1) // _wg_size, 16) if hidden <= _wg_size * 16 else 0
@@ -275,7 +251,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             q_wk = f"{p}.self_attn.q_proj.weight"
             k_wk = f"{p}.self_attn.k_proj.weight"
             v_wk = f"{p}.self_attn.v_proj.weight"
-            uq_q, uq_k, uq_v = _uq(q_wk), _uq(k_wk), _uq(v_wk)
+            uq_q, uq_k, uq_v = self._uq_for_key(q_wk), self._uq_for_key(k_wk), self._uq_for_key(v_wk)
             _has_qnorm = self.weights.get(f"{p}.self_attn.q_norm.weight") is not None
 
             _use_fused_qkv = uq_q == 0 and uq_k == 0 and uq_v == 0 and _has_qnorm
@@ -372,7 +348,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
             # Output projection
             w_key = f"{p}.self_attn.o_proj.weight"
-            uq = _uq(w_key)
+            uq = self._uq_for_key(w_key)
             qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[w_key],
@@ -398,8 +374,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             else:
                 gw_k = f"{p}.mlp.gate_proj.weight"
                 uw_k = f"{p}.mlp.up_proj.weight"
-                uq_g = _uq(gw_k)
-                uq_u = _uq(uw_k)
+                uq_g = self._uq_for_key(gw_k)
+                uq_u = self._uq_for_key(uw_k)
                 if uq_g == 0 and uq_u == 0:
                     self._dispatch("fused_gate_act",
                                    [sc["ffn_normed"], self.weights[gw_k], self.weights[uw_k],
@@ -426,7 +402,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                                    ((gelu_n // 4 + 255) // 256, 1, 1))
 
                 w_k = f"{p}.mlp.down_proj.weight"
-                uq = _uq(w_k)
+                uq = self._uq_for_key(w_k)
                 qi3 = self._quant_extra(f"{p}.mlp.down_proj", uq)
                 self._dispatch(
                     "matmul_quant",
