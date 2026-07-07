@@ -257,6 +257,94 @@ def test_add_commutativity_invariant(wgpu_device):
                                   err_msg="add commutativity violated: add(a,b) != add(b,a)")
 
 
+def test_matmul_fp8_per_channel_scale(wgpu_device):
+    """USE_QUANT=5 + GROUP_K=1: each output row uses its own scale from scales[row]."""
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+    from vllm_webgpu.quant.weight_loader import _fp8_e4m3_to_f32
+
+    K, N = 32, 8
+    rng = np.random.default_rng(42)
+
+    # Build weight matrix in FP8 E4M3 (stored as uint8 bytes)
+    W_f32 = rng.uniform(-1.0, 1.0, (N, K)).astype(np.float32)
+    # Encode to FP8 E4M3 by rounding to representable values (use scale=1 for simplicity)
+    W_f32_clipped = np.clip(W_f32, -448.0, 448.0)
+    # Simple FP8 encoding: store as raw bytes (use float16 as proxy then re-decode for reference)
+    W_f16 = W_f32_clipped.astype(np.float16)
+    # Use the f16 values as "FP8 weights" by re-encoding to FP8 via CPU dequant reference
+    # For test purposes: just use small values that encode cleanly in FP8 E4M3
+    W_f32_small = rng.uniform(-1.0, 1.0, (N, K)).astype(np.float32) * 0.5
+    # Pack as uint8 FP8 bytes: encode each float32 to FP8 E4M3
+    def encode_fp8(v: float) -> int:
+        """Encode a float32 to FP8 E4M3 (brute-force via lookup)."""
+        best, best_err = 0, float("inf")
+        for code in range(256):
+            decoded = _fp8_e4m3_to_f32(np.array([code], dtype=np.uint8))[0]
+            err = abs(float(decoded) - v)
+            if err < best_err:
+                best_err = err
+                best = code
+        return best
+
+    W_u8 = np.array([[encode_fp8(W_f32_small[n, k]) for k in range(K)]
+                     for n in range(N)], dtype=np.uint8)
+    W_decoded = _fp8_e4m3_to_f32(W_u8)  # (N, K) float32
+
+    # Per-channel scales: distinct value per output row
+    ch_scales = rng.uniform(0.1, 2.0, N).astype(np.float32)
+    x = rng.uniform(-1.0, 1.0, K).astype(np.float32).astype(np.float16)
+
+    # Reference: W_decoded[n,:] * ch_scales[n] dotted with x
+    expected = np.array([(W_decoded[n] * ch_scales[n] * x.astype(np.float32)).sum()
+                         for n in range(N)], dtype=np.float32)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    # Pack W_u8 as a flat u32 array (shader reads via rd_byte_at)
+    w_flat = np.ascontiguousarray(W_u8.ravel())
+    pad = (4 - len(w_flat) % 4) % 4
+    if pad:
+        w_flat = np.concatenate([w_flat, np.zeros(pad, dtype=np.uint8)])
+    w_u32 = w_flat.view(np.uint32)
+
+    x_buf = WebGPUBuffer.from_numpy(dev, x)
+    w_buf = WebGPUBuffer.from_numpy(dev, w_u32)
+    scales_buf = WebGPUBuffer.from_numpy(dev, ch_scales.astype(np.float16))
+    out_buf = WebGPUBuffer.empty(dev, N * 2, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("matmul_quant", (
+        ("K", K), ("N", N), ("USE_QUANT", 5), ("SPLIT_K", 1),
+        ("GROUP_K", 1), ("GLOBAL_SCALE", 1.0),
+    ))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": x_buf.buf}},
+            {"binding": 1, "resource": {"buffer": w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": scales_buf.buf}},
+            {"binding": 3, "resource": {"buffer": out_buf.buf}},
+        ],
+    )
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(N, 1, 1)
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+    result = out_buf.to_numpy().view(np.float16).astype(np.float32)[:N]
+    # FP8 + f16 accumulation: tolerate ~5% relative error
+    np.testing.assert_allclose(result, expected, rtol=0.05, atol=0.05,
+                               err_msg="per-channel FP8 GEMV output mismatch")
+
+
 def test_embedding_exactness_invariant(wgpu_device):
     """Property proof: embedding lookup returns EXACT copies (no approximation).
 

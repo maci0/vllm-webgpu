@@ -246,8 +246,12 @@ class BaseWebGPUModel:
         if uq in (5, 6):
             meta = self._quant_info(base_key)
             d: dict = {"GLOBAL_SCALE": float(meta.get("global_scale", 1.0))}
+            gs = meta.get("group_size")
             if uq == 6:
-                d["GROUP_K"] = meta.get("group_size", 16)
+                d["GROUP_K"] = gs if gs is not None else 16
+            elif gs == 1:
+                # Per-channel FP8: GROUP_K=1 signals the shader to read scales[row].
+                d["GROUP_K"] = 1
             return d
         if uq == 7:
             # Int8 per-channel: no group size, no global scale — just USE_QUANT=7.

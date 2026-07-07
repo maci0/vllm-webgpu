@@ -781,14 +781,31 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             try:
                 w_fp8 = _load_raw(wname)   # uint8 array (F8_E4M3 bytes), shape (N, K)
                 scale_key = f"{base}.weight_scale"
-                scale_val = float(_load_raw(scale_key).ravel()[0]) \
-                    if scale_key in header else 1.0
-                # GPU FP8: upload raw F8 bytes; shader decodes inline with GLOBAL_SCALE.
+                # GPU FP8: upload raw F8 bytes; shader decodes inline.
                 _upload_u8(w_fp8, wname, weights)
-                weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                weights["__quant_meta__"][base] = {
-                    "fmt": "fp8_gpu", "global_scale": scale_val}
-                logger.debug("GPU FP8: %s scale=%.4f", base, scale_val)
+                weights.setdefault("__quant_meta__", {})
+                if scale_key in header:
+                    scale_arr = _load_raw(scale_key)
+                    if scale_arr.ndim == 0 or scale_arr.size == 1:
+                        # Per-tensor scale: scalar or single-element.
+                        scale_val = float(scale_arr.ravel()[0])
+                        weights["__quant_meta__"][base] = {
+                            "fmt": "fp8_gpu", "global_scale": scale_val}
+                        logger.debug("GPU FP8 (per-tensor): %s scale=%.6f", base, scale_val)
+                    else:
+                        # Per-channel scale: shape (N,) — one float per output channel.
+                        # Upload as F16 scales buffer; shader reads scales[row] when GROUP_K=1.
+                        scale_f16 = np.ascontiguousarray(
+                            scale_arr.ravel().astype(np.float16))
+                        _upload_f16(scale_f16, wname + ".scales", weights)
+                        weights["__quant_meta__"][base] = {
+                            "fmt": "fp8_gpu", "global_scale": 1.0, "group_size": 1}
+                        logger.debug("GPU FP8 (per-channel): %s n_scales=%d",
+                                     base, scale_f16.size)
+                else:
+                    weights["__quant_meta__"][base] = {
+                        "fmt": "fp8_gpu", "global_scale": 1.0}
+                    logger.debug("GPU FP8: %s (no scale key)", base)
             except Exception as exc:
                 logger.warning("Failed to process FP8 %s: %s", base, exc)
 

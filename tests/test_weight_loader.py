@@ -8,6 +8,31 @@ import struct
 _DTYPE_MAP = {np.float16: "F16", np.float32: "F32", np.uint8: "U8", np.int32: "I32"}
 
 
+def make_fake_safetensors_raw(tmp_path: Path, tensors: list, filename: str = "model.safetensors") -> Path:
+    """Write a safetensors file accepting explicit dtype strings (e.g. 'F8_E4M3').
+
+    tensors: list of (name, dtype_str, shape, np_array) tuples.
+    """
+    import json
+    metadata = {}
+    offset = 0
+    data_parts = []
+    for name, dtype_str, shape, arr in tensors:
+        data = arr.ravel().view(np.uint8).tobytes()
+        metadata[name] = {
+            "dtype": dtype_str,
+            "shape": list(shape),
+            "data_offsets": [offset, offset + len(data)],
+        }
+        data_parts.append(data)
+        offset += len(data)
+    header_bytes = json.dumps(metadata).encode("utf-8")
+    header_len = struct.pack("<Q", len(header_bytes))
+    out = tmp_path / filename
+    out.write_bytes(header_len + header_bytes + b"".join(data_parts))
+    return out
+
+
 def make_fake_safetensors(tmp_path: Path, tensors: dict, filename: str = "model.safetensors") -> Path:
     """Write a minimal safetensors file for testing.
 
@@ -163,3 +188,67 @@ def test_load_bnb_nf4_nibble_layout(wgpu_device, tmp_path):
     assert np.all(arr[2] == 2)
     # Shader row 3 comes from BnB row 1, cols K//2..K-1 (value=2)
     assert np.all(arr[3] == 2)
+
+
+def test_load_fp8_per_tensor_scale(wgpu_device, tmp_path):
+    """FP8 with a scalar per-tensor scale is uploaded as fp8_gpu with global_scale."""
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
+
+    N, K = 8, 16
+    base = "model.layers.0.self_attn.q_proj"
+    w_fp8 = np.zeros((N, K), dtype=np.uint8)  # all-zero FP8 bytes
+    scale = np.array([0.125], dtype=np.float32)
+
+    st_path = make_fake_safetensors_raw(tmp_path, [
+        (f"{base}.weight", "F8_E4M3", (N, K), w_fp8),
+        (f"{base}.weight_scale", "F32", (1,), scale),
+    ])
+    weights = load_safetensors_weights(str(st_path), wgpu_device.wgpu_device)
+
+    w_key = f"{base}.weight"
+    assert w_key in weights
+    assert weights[w_key].dtype == "u8"
+
+    qmeta = weights.get("__quant_meta__", {})
+    entry = qmeta.get(base, {})
+    assert entry.get("fmt") == "fp8_gpu"
+    assert abs(entry.get("global_scale", 0) - 0.125) < 1e-5
+    # Per-tensor: no separate scales buffer, no group_size=1
+    assert f"{w_key}.scales" not in weights
+    assert entry.get("group_size") != 1
+
+
+def test_load_fp8_per_channel_scale(wgpu_device, tmp_path):
+    """FP8 with a per-channel scale tensor uploads a .scales buffer and sets group_size=1."""
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
+
+    N, K = 8, 16
+    base = "model.layers.0.self_attn.q_proj"
+    w_fp8 = np.zeros((N, K), dtype=np.uint8)
+    # Per-channel: one scale per output row
+    scale_per_ch = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], dtype=np.float32)
+    assert scale_per_ch.shape == (N,)
+
+    st_path = make_fake_safetensors_raw(tmp_path, [
+        (f"{base}.weight", "F8_E4M3", (N, K), w_fp8),
+        (f"{base}.weight_scale", "F32", (N,), scale_per_ch),
+    ])
+    weights = load_safetensors_weights(str(st_path), wgpu_device.wgpu_device)
+
+    w_key = f"{base}.weight"
+    s_key = f"{w_key}.scales"
+    assert w_key in weights, f"{w_key} not in weights"
+    assert s_key in weights, f"{s_key} not in weights (per-channel scales must be uploaded)"
+    assert weights[w_key].dtype == "u8"
+    assert weights[s_key].dtype == "f16"
+    assert weights[s_key].shape == (N,)
+
+    qmeta = weights.get("__quant_meta__", {})
+    entry = qmeta.get(base, {})
+    assert entry.get("fmt") == "fp8_gpu"
+    assert entry.get("group_size") == 1, "group_size must be 1 for per-channel FP8"
+    assert entry.get("global_scale") == 1.0
+
+    # Verify the uploaded scale values match the input (within f16 precision)
+    uploaded = weights[s_key].to_numpy().view(np.float16).astype(np.float32)
+    np.testing.assert_allclose(uploaded[:N], scale_per_ch, rtol=1e-3, atol=1e-3)

@@ -225,20 +225,36 @@ fn main(
         } else if (USE_QUANT == 5u) {
             // GPU FP8 E4M3 (split-K, coalesced).
             // weights: [N, K] raw F8 bytes packed 4-per-u32 in binding 1.
-            // GLOBAL_SCALE: per-tensor F32 scale (override constant).
+            // GROUP_K == 1: per-channel mode — scales[row] (F16 in binding 2) is the scale.
+            // GROUP_K != 1: per-tensor mode — GLOBAL_SCALE override constant applies to all rows.
             // Coalesced: thread t reads bytes at row*K+t*2 and row*K+t*2+1.
             // Every 2 threads share one u32 → 128 u32 reads per step (coalesced).
             let row_base = row * K;
             var k_fp8 = tid * 2u;
-            loop {
-                if (k_fp8 >= K) { break; }
-                let b0 = rd_byte_at(row_base + k_fp8);
-                acc += fp8_to_f32(b0) * GLOBAL_SCALE * f32(x[k_fp8]);
-                if (k_fp8 + 1u < K) {
-                    let b1 = rd_byte_at(row_base + k_fp8 + 1u);
-                    acc += fp8_to_f32(b1) * GLOBAL_SCALE * f32(x[k_fp8 + 1u]);
+            if (GROUP_K == 1u) {
+                // Per-channel: one scale per output row, read from the scales binding.
+                let ch_scale = f32(scales[row]);
+                loop {
+                    if (k_fp8 >= K) { break; }
+                    let b0 = rd_byte_at(row_base + k_fp8);
+                    acc += fp8_to_f32(b0) * ch_scale * f32(x[k_fp8]);
+                    if (k_fp8 + 1u < K) {
+                        let b1 = rd_byte_at(row_base + k_fp8 + 1u);
+                        acc += fp8_to_f32(b1) * ch_scale * f32(x[k_fp8 + 1u]);
+                    }
+                    k_fp8 += 512u;
                 }
-                k_fp8 += 512u;
+            } else {
+                loop {
+                    if (k_fp8 >= K) { break; }
+                    let b0 = rd_byte_at(row_base + k_fp8);
+                    acc += fp8_to_f32(b0) * GLOBAL_SCALE * f32(x[k_fp8]);
+                    if (k_fp8 + 1u < K) {
+                        let b1 = rd_byte_at(row_base + k_fp8 + 1u);
+                        acc += fp8_to_f32(b1) * GLOBAL_SCALE * f32(x[k_fp8 + 1u]);
+                    }
+                    k_fp8 += 512u;
+                }
             }
         } else if (USE_QUANT == 6u) {
             // GPU NVFP4 (split-K, coalesced).
