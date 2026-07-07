@@ -20,6 +20,7 @@ override M: u32        = 1u;
 override BLOCK_K: u32  = 32u;
 override USE_QUANT: u32 = 1u;
 override MR: u32       = 4u;   // unused (kept for API compatibility)
+override GROUP_K: u32  = 128u; // quantization group size for USE_QUANT=3 (GPTQ)
 
 @group(0) @binding(0) var<storage, read>       X       : array<f16>;  // [M, K]
 @group(0) @binding(1) var<storage, read>       weights : array<u32>;
@@ -41,7 +42,36 @@ fn main(
 
     var acc: f32 = 0.0;
 
-    if (USE_QUANT != 0u) {
+    if (USE_QUANT == 3u) {
+        // GPTQ INT4 path: weights[N, K//8] INT32, scales[G, N] f16, zero_point=8.
+        // Mirrors the split-K GEMV path in matmul_quant.wgsl (USE_QUANT=3) but adds
+        // the in_row dimension so all M input tokens are processed in one dispatch.
+        let K8 = K / 8u;
+        var q_step = tid;
+        loop {
+            if (q_step >= K8) { break; }
+            let k_base = q_step * 8u;
+
+            // Coalesced read: weights[out_col, q_step] in [N, K//8] layout.
+            let q = weights[out_col * K8 + q_step];
+
+            // Scale for this K-group: scales[grp, out_col] in [G, N] layout.
+            let grp = q_step / (GROUP_K / 8u);
+            let sc  = f32(scales[grp * N + out_col]);
+
+            // Unpack 8 nibbles (zero_point = 8) and accumulate.
+            acc += (f32(i32( q        & 0xFu) - 8) * sc) * f32(X[in_row * K + k_base      ]);
+            acc += (f32(i32((q >>  4u)& 0xFu) - 8) * sc) * f32(X[in_row * K + k_base + 1u]);
+            acc += (f32(i32((q >>  8u)& 0xFu) - 8) * sc) * f32(X[in_row * K + k_base + 2u]);
+            acc += (f32(i32((q >> 12u)& 0xFu) - 8) * sc) * f32(X[in_row * K + k_base + 3u]);
+            acc += (f32(i32((q >> 16u)& 0xFu) - 8) * sc) * f32(X[in_row * K + k_base + 4u]);
+            acc += (f32(i32((q >> 20u)& 0xFu) - 8) * sc) * f32(X[in_row * K + k_base + 5u]);
+            acc += (f32(i32((q >> 24u)& 0xFu) - 8) * sc) * f32(X[in_row * K + k_base + 6u]);
+            acc += (f32(i32((q >> 28u)& 0xFu) - 8) * sc) * f32(X[in_row * K + k_base + 7u]);
+
+            q_step += 256u;
+        }
+    } else if (USE_QUANT != 0u) {
         // Symmetric Q4 path: one scale per BLOCK_K weights.
         let blocks    = K / BLOCK_K;
         let row_bytes = K / 2u;

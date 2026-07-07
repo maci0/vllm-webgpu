@@ -402,6 +402,123 @@ def test_embedding_exactness_invariant(wgpu_device):
                                   err_msg="embedding_lookup exactness violated: output != table[token_ids]")
 
 
+def test_matmul_quant_mr4_gptq(wgpu_device):
+    """matmul_quant_mr4 USE_QUANT=3 output matches reference GPTQ dequant per token.
+
+    Builds a small [N, K//8] INT4 weight matrix (symmetric, zero_point=8), runs M
+    input rows through the batch shader, and cross-checks each row against a pure
+    Python reference. Also verifies consistency with the single-row matmul_quant GEMV
+    (USE_QUANT=3, SPLIT_K=1) to confirm the two shaders agree on the same layout.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    K, N, M, GROUP_K = 128, 32, 4, 64
+    rng = np.random.default_rng(7)
+
+    # Scales: [G, N] f16 where G = K // GROUP_K.
+    G = K // GROUP_K
+    scales = rng.uniform(0.05, 0.2, (G, N)).astype(np.float16)
+
+    # Random nibble values 0-15 (before zero_point subtraction) for each (n, k).
+    raw_nibbles = rng.integers(0, 16, size=(N, K), dtype=np.int32)
+
+    # Pack 8 nibbles into each INT32: weights[n, q] covers k positions q*8 .. q*8+7.
+    K8 = K // 8
+    weights_u32 = np.zeros((N, K8), dtype=np.uint32)
+    for q in range(K8):
+        pack = np.zeros(N, dtype=np.uint32)
+        for b in range(8):
+            pack |= (raw_nibbles[:, q * 8 + b].astype(np.uint32) & 0xF) << (b * 4)
+        weights_u32[:, q] = pack
+
+    # Input activations: [M, K] f16.
+    X = rng.standard_normal((M, K)).astype(np.float16)
+
+    # Python reference: dequantize nibbles and compute dot product per (m, n).
+    # dequant(nibble) = (nibble - 8) * scales[k // GROUP_K, n]
+    expected = np.zeros((M, N), dtype=np.float32)
+    for m in range(M):
+        for n in range(N):
+            s = 0.0
+            for k in range(K):
+                grp = k // GROUP_K
+                sc = float(scales[grp, n])
+                s += (int(raw_nibbles[n, k]) - 8) * sc * float(X[m, k])
+            expected[m, n] = s
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    x_buf  = WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(X))
+    w_buf  = WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(weights_u32))
+    sc_buf = WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(scales))
+    out_buf = WebGPUBuffer.empty(dev, M * N * 2, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key = PipelineKey("matmul_quant_mr4", (
+        ("K", K), ("N", N), ("M", M), ("USE_QUANT", 3), ("GROUP_K", GROUP_K),
+    ))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": x_buf.buf}},
+            {"binding": 1, "resource": {"buffer": w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": sc_buf.buf}},
+            {"binding": 3, "resource": {"buffer": out_buf.buf}},
+        ],
+    )
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(N, M, 1)
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+    result = out_buf.to_numpy().view(np.float16).reshape(M, N).astype(np.float32)
+    np.testing.assert_allclose(
+        result, expected, rtol=0.05, atol=0.05,
+        err_msg="matmul_quant_mr4 GPTQ output mismatch vs python reference",
+    )
+
+    # Cross-check: single-token GEMV via matmul_quant (USE_QUANT=3, SPLIT_K=1) for row 0.
+    x0_buf  = WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(X[0]))
+    out0_buf = WebGPUBuffer.empty(dev, N * 2, usage=rw)
+    bias_buf = WebGPUBuffer.from_numpy(dev, np.zeros(N, dtype=np.float16))
+
+    gemv_key = PipelineKey("matmul_quant", (
+        ("K", K), ("N", N), ("USE_QUANT", 3), ("SPLIT_K", 1), ("GROUP_K", GROUP_K),
+    ))
+    gemv_pip = cache.get_or_create(gemv_key)
+    bg2 = dev.create_bind_group(
+        layout=gemv_pip.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": x0_buf.buf}},
+            {"binding": 1, "resource": {"buffer": w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": sc_buf.buf}},
+            {"binding": 3, "resource": {"buffer": out0_buf.buf}},
+            {"binding": 4, "resource": {"buffer": bias_buf.buf}},
+        ],
+    )
+    enc2 = dev.create_command_encoder()
+    cp2 = enc2.begin_compute_pass()
+    cp2.set_pipeline(gemv_pip)
+    cp2.set_bind_group(0, bg2)
+    cp2.dispatch_workgroups(N, 1, 1)
+    cp2.end()
+    dev.queue.submit([enc2.finish()])
+
+    gemv_row0 = out0_buf.to_numpy().view(np.float16).astype(np.float32)
+    np.testing.assert_allclose(
+        result[0], gemv_row0, rtol=0.01, atol=0.01,
+        err_msg="mr4 row 0 disagrees with single-row GEMV for same GPTQ weights",
+    )
+
+
 def test_embedding_lookup(wgpu_device):
     import wgpu
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer

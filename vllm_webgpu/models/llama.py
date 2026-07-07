@@ -403,21 +403,36 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Small dummy scales buffer for USE_QUANT=0 f16 path (binding 2 not read).
         _dummy = alloc(4)
 
-        def gemm_f16(x_buf: "WebGPUBuffer", w_key: str, out_buf: "WebGPUBuffer",
-                     K_in: int, N_out: int) -> None:
-            """Batch GEMM (f16 only): out[T, N_out] = x[T, K_in] @ w[N_out, K_in]."""
-            self._dispatch("matmul_quant_mr4",
-                           [x_buf, self.weights[w_key], _dummy, out_buf],
-                           {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
-                           (N_out, T, 1))
+        def gemm_batch(x_buf: "WebGPUBuffer", w_key: str, out_buf: "WebGPUBuffer",
+                       K_in: int, N_out: int) -> None:
+            """Batch GEMM: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T.
 
-        # If any projection weight is quantized, matmul_quant_mr4 (hardcoded USE_QUANT=0)
-        # would reinterpret packed quantized bytes as raw f16 values, silently producing
-        # wrong output for every token. Fall back to single-token sequential processing
-        # via _transformer_layer, which dispatches matmul_quant with the correct USE_QUANT
-        # for each weight key.
+            Supports USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4).
+            """
+            uq = self._uq_for_key(w_key)
+            if uq == 3:
+                base_key = w_key[:-7]  # strip ".weight" suffix
+                group_k = self._quant_extra(base_key, uq).get("GROUP_K", 128)
+                sc_buf = self.weights.get(w_key + ".scales", _dummy)
+                self._dispatch("matmul_quant_mr4",
+                               [x_buf, self.weights[w_key], sc_buf, out_buf],
+                               {"K": K_in, "N": N_out, "M": T,
+                                "USE_QUANT": 3, "GROUP_K": group_k},
+                               (N_out, T, 1))
+            else:
+                # f16 path (uq == 0)
+                self._dispatch("matmul_quant_mr4",
+                               [x_buf, self.weights[w_key], _dummy, out_buf],
+                               {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
+                               (N_out, T, 1))
+
+        # Fall back to per-token sequential only for formats matmul_quant_mr4 cannot handle.
+        # USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4) are both supported in the batch path.
+        # All other quant types (AWQ, FP8, NF4, Q4_K, ...) fall through to _transformer_layer
+        # which dispatches matmul_quant with the correct USE_QUANT per key.
         _rep_quant_key = "model.layers.0.self_attn.q_proj.weight"
-        if self._uq_for_key(_rep_quant_key) != 0:
+        _rep_uq = self._uq_for_key(_rep_quant_key)
+        if _rep_uq not in (0, 3):
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T, hidden, ctx_len, vocab, rms_base,
             )
@@ -463,9 +478,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     uw_k = f"{p}.mlp.up_proj.weight"
                     dw_k = f"{p}.mlp.down_proj.weight"
 
-                    gemm_f16(normed_x, q_wk, b["q_buf"],    hidden, q_dim)
-                    gemm_f16(normed_x, k_wk, b["k_buf"],    hidden, kv_dim)
-                    gemm_f16(normed_x, v_wk, b["v_buf"],    hidden, kv_dim)
+                    gemm_batch(normed_x, q_wk, b["q_buf"],    hidden, q_dim)
+                    gemm_batch(normed_x, k_wk, b["k_buf"],    hidden, kv_dim)
+                    gemm_batch(normed_x, v_wk, b["v_buf"],    hidden, kv_dim)
 
                     # ── Per-head RMSNorm + RoPE for all T tokens ──────────────────
                     _pfill_rope_base = {"HEAD_DIM": self.head_dim,
@@ -511,7 +526,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                    (self.num_q_heads, T, 1))
 
                     # ── O projection (batch GEMM) ─────────────────────────────────
-                    gemm_f16(b["attn_out"], ow, b["o_proj"], q_dim, hidden)
+                    gemm_batch(b["attn_out"], ow, b["o_proj"], q_dim, hidden)
 
                     # ── Fused post-attn add + FFN pre-norm ───────────────────────
                     residual = b[h_names[(_hstate + 1) % 3]]
@@ -523,13 +538,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                    rms_base, (T, 1, 1))
 
                     # ── FFN (batch GEMMs + SiLU) ──────────────────────────────────
-                    gemm_f16(b["ffn_n"], gw_k, b["gate_buf"], hidden, inter)
-                    gemm_f16(b["ffn_n"], uw_k, b["up_buf"],   hidden, inter)
+                    gemm_batch(b["ffn_n"], gw_k, b["gate_buf"], hidden, inter)
+                    gemm_batch(b["ffn_n"], uw_k, b["up_buf"],   hidden, inter)
                     self._dispatch("gelu_mul",
                                    [b["gate_buf"], b["up_buf"], b["ffn_act"]],
                                    {"N": T * inter},
                                    ((T * inter // 4 + 255) // 256, 1, 1))
-                    gemm_f16(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden)
+                    gemm_batch(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden)
 
                     # ── Residual add (cross-layer fused if not last) ──────────────
                     if i < self.num_layers - 1:
