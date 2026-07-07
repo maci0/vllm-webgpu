@@ -410,16 +410,19 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
       4-bit int  + group          -> USE_QUANT=3, fmt='gptq_gpu'
       other                       -> empty dict with a logged warning
     """
-    import json
     p = Path(config_path)
     if not p.exists():
         return {}
     try:
-        with open(p) as f:
-            config = json.load(f)
-    except Exception:
-        return {}
-    quant_cfg = config.get("quantization_config", {})
+        from compressed_tensors import get_quantization_config as _get_ct_config
+        quant_cfg = _get_ct_config(str(p)) or {}
+    except (ImportError, Exception):
+        try:
+            import json as _json
+            with open(p) as _f:
+                quant_cfg = _json.load(_f).get("quantization_config") or {}
+        except Exception:
+            return {}
     config_groups = quant_cfg.get("config_groups")
     if not config_groups:
         return {}
