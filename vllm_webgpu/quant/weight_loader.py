@@ -281,33 +281,6 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
 
 
-def _is_awq_format(header: dict) -> bool:
-    """Return True if header looks like AWQ (qweight shape is (K, N//8)).
-
-    AWQ packs 8 int4 along the output (N) axis, so qweight.shape[-1] * 8 == scales.shape[-1].
-    GPTQ packs along the input (K) axis, so qweight.shape[-1] == scales.shape[-1].
-    Both may have qzeros, so qzeros presence alone does not distinguish them.
-    """
-    for k in header:
-        if k == "__metadata__" or not k.endswith(".qweight"):
-            continue
-        qw_shape = tuple(header[k]["shape"])
-        base = k[:-len(".qweight")]
-        sc_key = f"{base}.scales"
-        if sc_key in header:
-            sc_shape = tuple(header[sc_key]["shape"])
-            return bool(sc_shape and qw_shape and sc_shape[-1] == qw_shape[-1] * 8)
-        # Fall back to shape ratio if no scales key found.
-        if len(qw_shape) == 2:
-            return qw_shape[0] > qw_shape[1]
-        break
-    return False
-
-
-def _is_gptq_format(header: dict) -> bool:
-    return any(k.endswith(".qweight") for k in header)
-
-
 def _detect_mx_quant(model_dir: Path) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
 
