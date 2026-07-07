@@ -53,7 +53,7 @@ Quantization is handled inside `matmul_quant.wgsl` via the `USE_QUANT` override.
 
 ### LlamaWebGPUModel
 
-Full support for USE_QUANT 0–6. Applies to all projections: Q, K, V, o_proj, gate, up, down. LM head is always USE_QUANT=0 with SPLIT_K=0 (vocab_size > 65535 exceeds the per-axis dispatch limit).
+Full support for USE_QUANT 0–8. Applies to all projections: Q, K, V, o_proj, gate, up, down. LM head is always USE_QUANT=0 with SPLIT_K=0 (vocab_size > 65535 exceeds the per-axis dispatch limit).
 
 The fused QKV path (`fused_qkv.wgsl`) and `fused_gate_act.wgsl` require f16 weights (USE_QUANT=0). Quantized weights fall back to three separate `matmul_quant` calls for QKV, and separate gate/up matmuls followed by `gelu_mul`.
 

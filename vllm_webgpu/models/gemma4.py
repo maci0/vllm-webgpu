@@ -420,6 +420,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _rms_consts = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
 
         k_cache, v_cache = self.kv_pool[layer_idx]
+        use_flash = ctx_len > 65535
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # normed_x already pre-normalized by caller (or previous layer's fused add_f32_rms_norm).

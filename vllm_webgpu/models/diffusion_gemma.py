@@ -255,8 +255,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 uq = _uq(wk)
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[wk],
-                                self.weights.get(wk[:-7] + ".scales", sc["normed"]), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": uq, "SPLIT_K": 1},
+                                self._scales_buf(wk, uq, sc["normed"]), out_buf],
+                               {"K": hidden, "N": dim, "USE_QUANT": uq, "SPLIT_K": 1,
+                                **self._quant_extra(wk[:-7], uq)},
                                (dim, 1, 1))
             # v_proj: global attention layers (no separate V; V=K) have no v_proj weight
             vw_key = f"{p}.self_attn.v_proj.weight"
@@ -265,9 +266,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 uq = _uq(vw_key)
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[vw_key],
-                                self.weights.get(vw_key[:-7] + ".scales", sc["normed"]),
+                                self._scales_buf(vw_key, uq, sc["normed"]),
                                 sc["v_buf"]],
-                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq, "SPLIT_K": 1},
+                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq, "SPLIT_K": 1,
+                                **self._quant_extra(vw_key[:-7], uq)},
                                (kv_dim, 1, 1))
                 v_src = sc["v_buf"]
             else:
@@ -310,11 +312,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                             "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
 
             ow = f"{p}.self_attn.o_proj.weight"
+            uq_ow = _uq(ow)
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[ow],
-                            self.weights.get(ow[:-7] + ".scales", sc["attn_out"]),
+                            self._scales_buf(ow, uq_ow, sc["attn_out"]),
                             sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": _uq(ow), "SPLIT_K": 1},
+                           {"K": q_dim, "N": hidden, "USE_QUANT": uq_ow, "SPLIT_K": 1,
+                            **self._quant_extra(ow[:-7], uq_ow)},
                            (hidden, 1, 1))
 
             # post_attention norm + residual add
@@ -344,18 +348,21 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 uq = _uq(wk)
                 self._dispatch("matmul_quant",
                                [ffn_in, self.weights[wk],
-                                self.weights.get(wk[:-7] + ".scales", ffn_in), out_b],
-                               {"K": hidden, "N": inter_shared, "USE_QUANT": uq, "SPLIT_K": 1},
+                                self._scales_buf(wk, uq, ffn_in), out_b],
+                               {"K": hidden, "N": inter_shared, "USE_QUANT": uq, "SPLIT_K": 1,
+                                **self._quant_extra(wk[:-7], uq)},
                                (inter_shared, 1, 1))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                            {"N": gelu_n_shared}, ((gelu_n_shared // 4 + 255) // 256, 1, 1),
                            shader_subdir="gemma")
 
             dw = f"{p}.mlp.down_proj.weight"
+            uq_dw = _uq(dw)
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[dw],
-                            self.weights.get(dw[:-7] + ".scales", sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter_shared, "N": hidden, "USE_QUANT": _uq(dw), "SPLIT_K": 1},
+                            self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
+                           {"K": inter_shared, "N": hidden, "USE_QUANT": uq_dw, "SPLIT_K": 1,
+                            **self._quant_extra(dw[:-7], uq_dw)},
                            (hidden, 1, 1))
 
             pfn1_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
@@ -385,12 +392,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     moe_in = sc["normed"]
 
                 rw_ = f"{p}.router.proj.weight"
+                uq_rw = _uq(rw_)
                 self._dispatch("matmul_quant",
                                [moe_in, self.weights[rw_],
-                                self.weights.get(rw_[:-7] + ".scales", moe_in),
+                                self._scales_buf(rw_, uq_rw, moe_in),
                                 router_logits_buf],
                                {"K": hidden, "N": self.num_experts,
-                                "USE_QUANT": _uq(rw_), "SPLIT_K": 0},
+                                "USE_QUANT": uq_rw, "SPLIT_K": 0,
+                                **self._quant_extra(rw_[:-7], uq_rw)},
                                ((self.num_experts + 255) // 256, 1, 1))
                 # GPU top-K: sorts N_EXPERTS logits, picks top-K indices + softmax weights.
                 # Eliminates the GPU→CPU readback that previously cost ~1ms per MoE layer.
