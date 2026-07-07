@@ -428,7 +428,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
           9. add(x, out_buf)               → residual
           10. FFN (rms_norm → gate/up → gelu → down → add)
         """
-        import math
         sc = self._sc
         hidden = self.hidden_size
         inter = self.intermediate_size
@@ -587,7 +586,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         the residual connection) land in that new encoder, which is correct.
         """
         import struct
-        import wgpu as wgpu_lib
 
         dev = self.wgpu_device.wgpu_device
         sc = self._sc
@@ -733,8 +731,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         _moe_ffn_dispatch() flushes and replaces _active_encoder mid-layer to
         handle the CPU readback required for expert index selection.
         """
-        import wgpu as wgpu_lib
-
         dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
         hidden = self.hidden_size

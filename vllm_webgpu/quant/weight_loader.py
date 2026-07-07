@@ -76,7 +76,7 @@ def detect_weight_format(path: str) -> str:
             return "safetensors_sharded"
         if (p / "model.safetensors").exists():
             return "safetensors"
-        # Fall through to magic-byte check if single file found
+        # No known safetensors manifest found in directory; default.
         return "safetensors"
     if p.suffix == ".gguf":
         return "gguf"

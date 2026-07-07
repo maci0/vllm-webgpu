@@ -109,7 +109,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def forward(self, input_ids, positions, attn_metadata) -> "np.ndarray":
         """Forward pass using model.decoder.* weight keys."""
         import numpy as np
-        import wgpu as wgpu_lib
 
         dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)

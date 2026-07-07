@@ -172,7 +172,6 @@ class WebGPUWorker(WorkerBase):
         if self.wgpu_device is None:
             raise RuntimeError("WebGPU device not initialized")
         try:
-            import wgpu as wgpu_lib
             dev = self.wgpu_device.wgpu_device
             # Empty command encoder — flush forces the queue to process.
             encoder = dev.create_command_encoder()

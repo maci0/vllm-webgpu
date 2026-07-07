@@ -247,7 +247,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         positions: np.ndarray,
         attn_metadata: object,
     ) -> np.ndarray:
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         import wgpu as wgpu_lib
 
         dev = self.wgpu_device.wgpu_device
