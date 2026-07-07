@@ -244,30 +244,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         ln_rope = math.log(self.rope_theta)
         p = self._pk(layer_idx)
 
-        quant_types = self.weights.get("__quant_types__", {})
-        _qt = quant_types if isinstance(quant_types, dict) else {}
-
-        def _uq(key: str) -> int:
-            tt = _qt.get(key, 0)
-            if tt == 12:
-                return 2
-            w = self.weights.get(key)
-            if w is not None:
-                dtype = getattr(w, "dtype", "f16")
-                qmeta = self.weights.get("__quant_meta__", {})
-                meta = qmeta.get(key[:-7], {}) if isinstance(qmeta, dict) else {}
-                fmt = meta.get("fmt", "")
-                if dtype == "i32":
-                    return 4 if fmt == "awq_sym" else 3
-                if dtype == "u8":
-                    if fmt == "nvfp4_gpu": return 6
-                    if fmt == "int8_gpu":  return 7
-                    if fmt == "fp8_gpu":   return 5
-                    if fmt == "nf4_gpu":   return 8
-            if self.weights.get(key[:-7] + ".scales") is not None:
-                return 1
-            return 0
-
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
         out      = sc[h_names[(self._hstate + 2) % 3]]
@@ -287,7 +263,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             for out_buf, proj, dim in [(sc["q_buf"], "q_proj", q_dim),
                                        (sc["k_buf"], "k_proj", kv_dim)]:
                 wk = f"{p}.self_attn.{proj}.weight"
-                uq = _uq(wk)
+                uq = self._uq_for_key(wk)
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[wk],
                                 self._scales_buf(wk, uq, sc["normed"]), out_buf],
@@ -298,7 +274,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             vw_key = f"{p}.self_attn.v_proj.weight"
             has_v_proj = vw_key in self.weights
             if has_v_proj:
-                uq = _uq(vw_key)
+                uq = self._uq_for_key(vw_key)
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[vw_key],
                                 self._scales_buf(vw_key, uq, sc["normed"]),
@@ -350,7 +326,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                             "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
 
             ow = f"{p}.self_attn.o_proj.weight"
-            uq_ow = _uq(ow)
+            uq_ow = self._uq_for_key(ow)
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[ow],
                             self._scales_buf(ow, uq_ow, sc["attn_out"]),
@@ -383,7 +359,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Shared expert gate + up → SwiGLU (Gemma uses GELU)
             for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
                 wk = f"{p}.mlp.{proj}.weight"
-                uq = _uq(wk)
+                uq = self._uq_for_key(wk)
                 self._dispatch("matmul_quant",
                                [ffn_in, self.weights[wk],
                                 self._scales_buf(wk, uq, ffn_in), out_b],
@@ -395,7 +371,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            shader_subdir="gemma")
 
             dw = f"{p}.mlp.down_proj.weight"
-            uq_dw = _uq(dw)
+            uq_dw = self._uq_for_key(dw)
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[dw],
                             self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
@@ -430,7 +406,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     moe_in = shared_residual
 
                 rw_ = f"{p}.router.proj.weight"
-                uq_rw = _uq(rw_)
+                uq_rw = self._uq_for_key(rw_)
                 self._dispatch("matmul_quant",
                                [moe_in, self.weights[rw_],
                                 self._scales_buf(rw_, uq_rw, moe_in),
@@ -469,7 +445,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 with self._batched_dispatch(label=f"L{layer_idx:02d}E{eid}"):
                     for ob, ew_key in [(sc["gate_buf"], f"{ep}.gate_proj.weight"),
                                        (sc["up_buf"],   f"{ep}.up_proj.weight")]:
-                        uq = _uq(ew_key)
+                        uq = self._uq_for_key(ew_key)
                         self._dispatch("matmul_quant",
                                        [moe_in, self.weights[ew_key],
                                         self._scales_buf(ew_key, uq, moe_in), ob],
@@ -482,7 +458,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    ((gelu_n_moe // 4 + 255) // 256, 1, 1),
                                    shader_subdir="gemma")
                     dk = f"{ep}.down_proj.weight"
-                    uq_dk = _uq(dk)
+                    uq_dk = self._uq_for_key(dk)
                     self._dispatch("matmul_quant",
                                    [sc["ffn_act"], self.weights[dk],
                                     self._scales_buf(dk, uq_dk, sc["ffn_act"]),
