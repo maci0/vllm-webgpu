@@ -10,6 +10,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Sentinel used to distinguish "not yet probed" from None (probe failed).
+_ADAPTER_NOT_PROBED = object()
+_wgpu_adapter = _ADAPTER_NOT_PROBED
+
+
+def _get_wgpu_adapter():
+    """Return the wgpu adapter, probing once and caching the result.
+
+    Returns None if wgpu is unavailable or the probe failed.
+    """
+    global _wgpu_adapter
+    if _wgpu_adapter is _ADAPTER_NOT_PROBED:
+        try:
+            import wgpu
+            _wgpu_adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+        except Exception:
+            _wgpu_adapter = None
+    return _wgpu_adapter
+
 
 def _get_platform_base_class():
     """Get the Platform base class, returning a fallback if vllm is unavailable."""
@@ -61,13 +80,13 @@ class WebGPUPlatform(_Platform):
     @classmethod
     def is_available(cls) -> bool:
         try:
-            import wgpu
+            import wgpu  # noqa: F401 — ensure wgpu is importable
         except ImportError:
             return False
+        adapter = _get_wgpu_adapter()
+        if adapter is None:
+            return False
         try:
-            adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
-            if adapter is None:
-                return False
             info = adapter.info
             adapter_type = info.get("adapter_type", "")
             if isinstance(adapter_type, str) and adapter_type.lower() in ("cpu", "software"):
@@ -76,15 +95,14 @@ class WebGPUPlatform(_Platform):
                     adapter_type,
                 )
                 return False
-            return True
         except Exception:
             return False
+        return True
 
     @classmethod
     def get_device_name(cls, device_id: int = 0) -> str:
         try:
-            import wgpu
-            adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+            adapter = _get_wgpu_adapter()
             if adapter:
                 info = adapter.info
                 return f"WebGPU ({info.get('device', 'unknown')})"
