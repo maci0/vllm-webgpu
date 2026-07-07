@@ -901,6 +901,13 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
     return weights
 
 
+def _bf16_raw_to_f32(raw: bytes, shape: tuple) -> "np.ndarray":
+    """Convert raw BF16 bytes to float32 numpy array."""
+    u16 = np.frombuffer(raw, dtype=np.uint16)
+    f32 = (u16.astype(np.uint32) << 16).view(np.float32)
+    return f32.reshape(shape)
+
+
 def _dequant_mlx_int4(
     weight_u32: "np.ndarray",
     scales_f32: "np.ndarray",
