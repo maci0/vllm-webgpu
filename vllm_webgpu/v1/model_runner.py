@@ -154,9 +154,12 @@ class WebGPUModelRunner:
         num_blocks = cc.num_gpu_blocks
 
         # Per-layer KV pool: Gemma4 has heterogeneous head_dim/num_kv_heads per layer.
-        lp_list = getattr(hf, "_layer_attention_params", None)
-        if lp_list and self.model is not None and hasattr(self.model, "_lp"):
-            lp_list = self.model._lp
+        # Prefer model._lp (populated at load time) over hf._layer_attention_params, which
+        # is absent for safetensors checkpoints. Matches the priority order in get_kv_cache_spec().
+        lp_list = (
+            (getattr(self.model, "_lp", None) if self.model is not None else None)
+            or getattr(hf, "_layer_attention_params", None)
+        )
 
         if lp_list:
             import wgpu as wgpu_lib
