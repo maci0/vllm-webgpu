@@ -96,14 +96,6 @@ class WebGPUPlatform(_Platform):
             return 0
 
     @classmethod
-    def get_device_available_memory(cls, device_id: int = 0) -> int:
-        try:
-            import psutil
-            return psutil.virtual_memory().available
-        except Exception:
-            return 0
-
-    @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
         parallel_config = vllm_config.parallel_config
         if parallel_config.worker_cls == "auto":

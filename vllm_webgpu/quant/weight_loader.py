@@ -194,61 +194,6 @@ def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
     return LUT[data.ravel().view(np.uint8)].reshape(data.shape)
 
 
-# NV FP4 E2M1 value table (index = 4-bit code, value = float)
-_FP4_LUT = np.array([
-    0.0,  0.5,  1.0,  1.5,  2.0,  3.0,  4.0,  6.0,
-    0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
-], dtype=np.float32)
-
-
-def _dequant_nvfp4(weight_packed: np.ndarray, weight_scale_fp8: np.ndarray,
-                   weight_global_scale: float) -> np.ndarray:
-    """Dequantize NVFP4 (NVidia FP4) weights to float16.
-
-    NVFP4 packs two FP4 E2M1 values per U8 byte. Each block of 16 weight
-    values along K shares one FP8 E4M3 scale. A global F32 scale is also applied.
-
-    weight_packed:    (N, K//2) U8    — two FP4 per byte, lower nibble first
-    weight_scale_fp8: (N, K//16) F8_E4M3 — one scale per 16 K-elements
-    weight_global_scale: F32 scalar
-
-    Output: (N, K) F16 ready for the matmul_quant shader.
-    """
-    N, Kh = weight_packed.shape
-    K = Kh * 2
-
-    # Unpack 2 FP4 nibbles per byte → (N, K) uint8 FP4 codes
-    lo = (weight_packed & 0xF).astype(np.uint8)          # lower nibble (even k)
-    hi = ((weight_packed >> 4) & 0xF).astype(np.uint8)   # upper nibble (odd k)
-    fp4 = np.empty((N, K), dtype=np.uint8)
-    fp4[:, 0::2] = lo
-    fp4[:, 1::2] = hi
-
-    # FP4 → F32 via lookup table
-    w_f32 = _FP4_LUT[fp4]  # (N, K)
-
-    # FP8 scales → F32: each covers K // num_scale_blocks K values
-    scale_f32 = _fp8_e4m3_to_f32(weight_scale_fp8)      # (N, num_blocks)
-    num_blocks = weight_scale_fp8.shape[1]
-    block_size = K // num_blocks if num_blocks > 0 else K
-    scale_exp = np.repeat(scale_f32, block_size, axis=1)  # (N, K)
-
-    w = w_f32 * scale_exp * weight_global_scale  # (N, K)
-    return np.ascontiguousarray(np.clip(w, -65504.0, 65504.0).astype(np.float16))
-
-
-def _dequant_fp8(weight_fp8: np.ndarray, scale: "np.ndarray | float") -> np.ndarray:
-    """Dequantize plain FP8 E4M3 weights to float16.
-
-    weight_fp8: (N, K) stored as uint8 bytes (E4M3 encoding)
-    scale: scalar F32 or (N, 1) per-channel F32 scale tensor
-    Output: (N, K) F16 for the matmul_quant shader.
-    """
-    w_f32 = _fp8_e4m3_to_f32(weight_fp8)
-    result = w_f32 * np.asarray(scale, dtype=np.float32)
-    return np.ascontiguousarray(np.clip(result, -65504.0, 65504.0).astype(np.float16))
-
-
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
     """Dequantize AWQ int4 weights to float16.
 

@@ -138,7 +138,6 @@ class WebGPUModelRunner:
         self.webgpu_config = get_config()
         self.pipeline_cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
         self.model: "BaseWebGPUModel | None" = None
-        self._last_logits: np.ndarray | None = None
         self._last_model_output: Any = None  # cached for sample_tokens()
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
 
@@ -437,6 +436,10 @@ class WebGPUModelRunner:
         if ModelRunnerOutput is None or self.model is None:
             return None
 
+        # Prune state for requests that completed in the previous step.
+        for rid in getattr(scheduler_output, "finished_req_ids", []):
+            self._req_state.pop(rid, None)
+
         cached = scheduler_output.scheduled_cached_reqs
         new_reqs = scheduler_output.scheduled_new_reqs
         block_size = self.webgpu_config.block_size
@@ -459,7 +462,7 @@ class WebGPUModelRunner:
             # etc.) are listed in ARCH_MAP only for text-only inference. If a request
             # carries mm_inputs, the image would be silently ignored and the model
             # would produce text as if no image was provided. Raise early instead.
-            mm = getattr(req, "mm_inputs", None) or getattr(req, "multi_modal_inputs", None)
+            mm = getattr(req, "mm_features", None)
             if mm:
                 raise NotImplementedError(
                     f"req {rid}: multi-modal inputs (images/audio/video) are not supported "
@@ -534,7 +537,7 @@ class WebGPUModelRunner:
                     full = None
                     logger.warning("req %s: logprobs requested but model does not support logit readback", rid)
                 if full is not None:
-                    lp_data = self._compute_request_logprobs(full[0], first_decode_tok, num_logprobs)
+                    lp_data = self._compute_request_logprobs(full[-1], first_decode_tok, num_logprobs)
 
             # Compute prompt logprobs for each prompt position when full logits
             # are available.  Position i uses logits[i] to evaluate tok_ids[i+1],
@@ -656,8 +659,6 @@ class WebGPUModelRunner:
                     if logits is None:
                         continue
 
-                    self._last_logits = logits
-
                     # Predict the next token; apply sampling for non-greedy requests.
                     if logits.shape[-1] > 1:
                         stok = _sample_logits(logits[-1], sp)
@@ -713,7 +714,6 @@ class WebGPUModelRunner:
                     np.array([pos], dtype=np.uint32),
                     _SM(),
                 )
-                self._last_logits = logits
 
                 # Greedy path: model returns (1, 1) int32 with the argmax index.
                 # Non-greedy path: model returns (1, vocab) float32; sample here.

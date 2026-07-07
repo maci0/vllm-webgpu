@@ -392,7 +392,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    _rms, (num_tokens, 1, 1))
                     moe_in = sc["normed"]
                 else:
-                    moe_in = sc["normed"]
+                    moe_in = shared_residual
 
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = _uq(rw_)
@@ -458,17 +458,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    (hidden, 1, 1))
                     # Accumulate: moe_tmp = moe_acc + ew * ffn_out (ping-pong to avoid conflict)
                     scale = float(ew)
-                    if idx == 0:
-                        # First expert: moe_tmp = ffn_out * scale (moe_acc is empty)
-                        self._dispatch("add",
-                                       [sc["ffn_out"], sc["ffn_out"], moe_tmp],
-                                       {"N": add_n, "SCALE": scale},
-                                       ((add_n // 4 + 255) // 256, 1, 1))
-                    else:
-                        self._dispatch("add",
-                                       [moe_acc, sc["ffn_out"], moe_tmp],
-                                       {"N": add_n, "SCALE": scale},
-                                       ((add_n // 4 + 255) // 256, 1, 1))
+                    self._dispatch("add",
+                                   [moe_acc, sc["ffn_out"], moe_tmp],
+                                   {"N": add_n, "SCALE": scale},
+                                   ((add_n // 4 + 255) // 256, 1, 1))
                     moe_acc, moe_tmp = moe_tmp, moe_acc  # swap ping-pong
 
             # Post-MoE norm + residual add
