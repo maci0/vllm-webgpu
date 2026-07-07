@@ -252,3 +252,66 @@ def test_load_fp8_per_channel_scale(wgpu_device, tmp_path):
     # Verify the uploaded scale values match the input (within f16 precision)
     uploaded = weights[s_key].to_numpy().view(np.float16).astype(np.float32)
     np.testing.assert_allclose(uploaded[:N], scale_per_ch, rtol=1e-3, atol=1e-3)
+
+
+def test_load_int8_per_channel_scale(wgpu_device, tmp_path):
+    """Int8 weight with companion weight_scale uploads a .scales buffer and sets group_size=1."""
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
+
+    N, K = 8, 16
+    base = "model.layers.0.self_attn.q_proj"
+    # Signed int8 weight values covering the full range
+    w_i8 = np.array(
+        [i % 256 - 128 for i in range(N * K)], dtype=np.int8
+    ).reshape(N, K)
+    scale_per_ch = np.array([0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08],
+                             dtype=np.float32)
+    assert scale_per_ch.shape == (N,)
+
+    st_path = make_fake_safetensors_raw(tmp_path, [
+        (f"{base}.weight", "I8", (N, K), w_i8.view(np.uint8)),
+        (f"{base}.weight_scale", "F32", (N,), scale_per_ch),
+    ])
+    weights = load_safetensors_weights(str(st_path), wgpu_device.wgpu_device)
+
+    w_key = f"{base}.weight"
+    s_key = f"{w_key}.scales"
+    assert w_key in weights, f"{w_key} not in weights"
+    assert s_key in weights, f"{s_key} not in weights (per-channel int8 scale must be uploaded)"
+    assert weights[w_key].dtype == "u8"
+    assert weights[s_key].dtype == "f16"
+    assert weights[s_key].shape == (N,)
+
+    qmeta = weights.get("__quant_meta__", {})
+    entry = qmeta.get(base, {})
+    assert entry.get("fmt") == "int8_gpu", f"expected int8_gpu, got {entry.get('fmt')}"
+    assert entry.get("group_size") == 1, "group_size must be 1 for per-channel int8"
+
+    # Verify scale values round-trip correctly through f16
+    uploaded = weights[s_key].to_numpy().view(np.float16).astype(np.float32)
+    np.testing.assert_allclose(uploaded[:N], scale_per_ch, rtol=1e-3, atol=1e-4)
+
+
+def test_load_int8_no_scale(wgpu_device, tmp_path):
+    """Int8 weight without a scale tensor still uploads correctly (no crash)."""
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
+
+    N, K = 4, 8
+    base = "model.layers.0.mlp.down_proj"
+    w_i8 = np.zeros((N, K), dtype=np.int8)
+
+    st_path = make_fake_safetensors_raw(tmp_path, [
+        (f"{base}.weight", "I8", (N, K), w_i8.view(np.uint8)),
+    ])
+    weights = load_safetensors_weights(str(st_path), wgpu_device.wgpu_device)
+
+    w_key = f"{base}.weight"
+    assert w_key in weights
+    assert weights[w_key].dtype == "u8"
+    # No companion scale: .scales should not be present, group_size not set
+    assert f"{w_key}.scales" not in weights
+
+    qmeta = weights.get("__quant_meta__", {})
+    entry = qmeta.get(base, {})
+    assert entry.get("fmt") == "int8_gpu"
+    assert entry.get("group_size") is None

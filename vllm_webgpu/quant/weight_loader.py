@@ -587,6 +587,34 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             qmeta = weights.setdefault("__quant_meta__", {})
             base_key = name[:-7] if name.endswith(".weight") else name
             qmeta.setdefault(base_key, {})["fmt"] = "int8_gpu"
+            # Load companion per-channel weight scale if present.
+            # compressed-tensors int8 (strategy=channel) stores a (N,) F32 scale at
+            # {base}.weight_scale. Without it the USE_QUANT=7 shader reads scales[row]
+            # from an uninitialized or wrong buffer, producing ~127x magnitude error.
+            for sc_key in (f"{base_key}.weight_scale", f"{base_key}.scale"):
+                if sc_key in header:
+                    try:
+                        sc_meta = header[sc_key]
+                        sc_dtype = sc_meta["dtype"]
+                        sc_start, sc_end = sc_meta["data_offsets"]
+                        sc_raw = raw_data[sc_start:sc_end]
+                        if sc_dtype == "F32":
+                            sc_arr = np.frombuffer(sc_raw, dtype=np.float32).ravel()
+                        elif sc_dtype == "F16":
+                            sc_arr = np.frombuffer(sc_raw, dtype=np.float16).ravel()
+                        elif sc_dtype == "BF16":
+                            sc_u16 = np.frombuffer(sc_raw, dtype=np.uint16)
+                            sc_arr = ((sc_u16.astype(np.uint32) << 16).view(np.float32)).ravel()
+                        else:
+                            logger.warning("Int8 scale %s has unsupported dtype %s",
+                                           sc_key, sc_dtype)
+                            break
+                        _upload_f16(sc_arr.astype(np.float16), f"{name}.scales", weights)
+                        qmeta[base_key]["group_size"] = 1
+                        logger.debug("Int8 per-channel: %s scale n=%d", base_key, sc_arr.size)
+                    except Exception as exc:
+                        logger.warning("Int8 scale load failed for %s: %s", base_key, exc)
+                    break
             return True
         else:
             return False  # not a plain dtype
