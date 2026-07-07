@@ -794,6 +794,136 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         tok = self._read_sample_tok()
         return np.array([[tok]], dtype=np.int32)
 
+    def _prefill_chunked_forward(
+        self,
+        input_ids: np.ndarray,
+        positions: np.ndarray,
+        attn_metadata: object,
+        num_tokens: int,
+    ) -> np.ndarray:
+        """Sequential prefill with chunked GPU submission to avoid Metal GPU timeout.
+
+        Each token is processed in its own single-token forward pass (sequential),
+        but groups of _CHUNK tokens share one command encoder. GDN SSM and conv
+        states are updated in-place across tokens, which is correct for the
+        recurrent formulation. Only the last token's logits are sampled.
+
+        Per-token input buffers (ids, pos, slot_map) are allocated upfront so that
+        write_buffer calls do not race with encoder dispatches that reference the
+        same buffer from a prior token.
+        """
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+        dev = self.wgpu_device.wgpu_device
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+
+        hidden = self.hidden_size
+        vocab = self.vocab_size
+        # Tokens per command encoder. 6 tokens of 36 Qwen3.5-9B layers
+        # generates ~6x less GPU work per submit than the full sequence,
+        # keeping each encoder well under Metal's per-command-buffer timeout.
+        _CHUNK = 6
+
+        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
+        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt,
+                     "GEMMA_NORM": self._gemma_norm}
+        sc = self._sc
+        pre = self._pre
+
+        # Allocate one small buffer set per token for ids/pos/slot_map.
+        # Shared scratch (sc["normed"], sc["h0/h1/h2"]) is safe to reuse because
+        # the GPU executes dispatches within each encoder in submission order.
+        bt_arr = np.array(
+            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
+            dtype=np.uint32)
+        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr, usage=rw)
+
+        tok_ids_bufs: list = []
+        tok_pos_bufs: list = []
+        tok_slot_bufs: list = []
+        for tc in range(num_tokens):
+            tok_ids_bufs.append(WebGPUBuffer.from_numpy(
+                dev, input_ids[tc:tc+1].astype(np.uint32), usage=rw))
+            tok_pos_bufs.append(WebGPUBuffer.from_numpy(
+                dev, positions[tc:tc+1].astype(np.uint32), usage=rw))
+            tok_slot_bufs.append(WebGPUBuffer.from_numpy(
+                dev, np.array([attn_metadata.slot_mapping[tc]], dtype=np.uint32),
+                usage=rw))
+
+        lm_head_w = (self.weights.get("lm_head.weight")
+                     or self.weights.get("model.lm_head.weight")
+                     or self.weights["model.embed_tokens.weight"])
+        self._ensure_sample_buf(vocab)
+
+        for chunk_start in range(0, num_tokens, _CHUNK):
+            chunk_end = min(chunk_start + _CHUNK, num_tokens)
+
+            # Open one encoder for this chunk.
+            # Layer method _batched_dispatch calls become re-entrant no-ops
+            # because _active_encoder is already set, so all dispatches land here.
+            self._active_encoder = dev.create_command_encoder()
+
+            for tc in range(chunk_start, chunk_end):
+                ctx_t = int(attn_metadata.slot_mapping[tc]) + 1
+                ids_buf  = tok_ids_bufs[tc]
+                pos_buf  = tok_pos_bufs[tc]
+                slot_map = tok_slot_bufs[tc]
+                use_flash_t = ctx_t > 65535
+
+                # Reset h-state rotation: each token's forward pass starts at h0.
+                self._hstate = 0
+
+                # Embedding: token id → hidden state in pre["x"]
+                x_buf = pre["x"]
+                self._dispatch("embedding_lookup",
+                               [self.weights["model.embed_tokens.weight"],
+                                ids_buf, x_buf],
+                               {"HIDDEN_DIM": hidden}, (1, 1, 1))
+
+                # Pre-norm for layer 0 (subsequent pre-norms fused in add_rms_norm)
+                self._dispatch("rms_norm",
+                               [x_buf,
+                                self.weights["model.layers.0.input_layernorm.weight"],
+                                sc["normed"]],
+                               _rms_base, (1, 1, 1))
+                normed_x = sc["normed"]
+
+                for i in range(self.num_layers):
+                    if self._is_full_attn(i):
+                        normed_x, x_buf = self._full_attn_layer(
+                            i, normed_x, x_buf, pos_buf, slot_map, bt_buf,
+                            ctx_t, 1, use_flash_t)
+                    else:
+                        normed_x, x_buf = self._gdn_layer_gpu(
+                            i, normed_x, x_buf, 1)
+
+                # For the last token: final norm, LM head, argmax, staging copy.
+                if tc == num_tokens - 1:
+                    self._dispatch("rms_norm",
+                                   [x_buf, self.weights["model.norm.weight"],
+                                    pre["norm_out"]],
+                                   _rms_base, (1, 1, 1))
+                    self._dispatch("matmul_quant",
+                                   [pre["norm_out"], lm_head_w,
+                                    pre["norm_out"], pre["logits"]],
+                                   {"K": hidden, "N": vocab,
+                                    "USE_QUANT": 0, "SPLIT_K": 0},
+                                   ((vocab + 255) // 256, 1, 1))
+                    self._dispatch("argmax_f16",
+                                   [pre["logits"], self._gpu_sample_tok],
+                                   {"N": vocab}, (1, 1, 1))
+                    self._copy_sample_to_staging()
+
+            # Submit all dispatches for this chunk.
+            dev.queue.submit([self._active_encoder.finish()])
+            self._active_encoder = None
+
+        self._last_logit_buf = pre["logits"]
+        self._last_vocab = vocab
+        tok = self._read_sample_tok()
+        return np.array([[tok]], dtype=np.int32)
+
     def forward(
         self,
         input_ids: np.ndarray,
@@ -803,14 +933,10 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         if self._is_moe:
             return self._forward_moe(input_ids, positions, attn_metadata)
 
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-        import wgpu as wgpu_lib
-
         dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
         hidden = self.hidden_size
         self._hstate = 0
-        rw_usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
         if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
             raise RuntimeError("multi-sequence batching not supported in this build")
@@ -822,21 +948,13 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             ctx_len = num_tokens
         use_flash = ctx_len > 65535
 
-        # Pre-allocated buffers are decode-only (T=1). For prefill (num_tokens>1) fall
-        # back to sequential token-by-token calls so each sees a single token.
+        # Prefill (num_tokens > 1): process tokens sequentially but batch CHUNK
+        # tokens per command encoder to avoid Metal's per-command-buffer GPU timeout.
+        # GDN SSM state is updated in-place on the GPU; sequential order is preserved
+        # because dispatches within an encoder execute in submission order.
         if num_tokens > 1:
-            last = None
-            for t in range(num_tokens):
-                slot = [attn_metadata.slot_mapping[t]]
-                ctx_t = int(attn_metadata.slot_mapping[t]) + 1
-
-                class _SM:
-                    slot_mapping = slot
-                    block_tables = attn_metadata.block_tables
-                    max_decode_seq_len = ctx_t
-
-                last = self.forward(input_ids[t:t+1], positions[t:t+1], _SM())
-            return last
+            return self._prefill_chunked_forward(
+                input_ids, positions, attn_metadata, num_tokens)
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())

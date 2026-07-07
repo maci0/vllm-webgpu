@@ -300,3 +300,38 @@ def test_arch_map_includes_qwen35():
     from vllm_webgpu.v1.model_runner import ARCH_MAP
     assert "Qwen3_5ForConditionalGeneration" in ARCH_MAP
     assert ARCH_MAP["Qwen3_5ForConditionalGeneration"] == "qwen35"
+
+
+def test_prefill_chunked_forward_method_exists(wgpu_device):
+    """_prefill_chunked_forward exists and forward() routes to it for num_tokens > 1."""
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+    from unittest.mock import patch, MagicMock
+
+    cfg = make_qwen35_config()
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = Qwen35WebGPUModel(cfg, wgpu_device, cache)
+    model._is_moe = False
+
+    assert hasattr(model, "_prefill_chunked_forward"), (
+        "_prefill_chunked_forward method missing from Qwen35WebGPUModel")
+
+    sentinel = np.array([[7]], dtype=np.int32)
+    am = MagicMock()
+    am.block_tables = [[0]]
+    am.slot_mapping = [0, 1, 2]
+    am.max_decode_seq_len = 3
+
+    with patch.object(model, "_prefill_chunked_forward", return_value=sentinel) as mock_pfc:
+        result = model.forward(
+            np.array([10, 11, 12], dtype=np.int32),
+            np.array([0, 1, 2], dtype=np.int32),
+            am,
+        )
+        mock_pfc.assert_called_once_with(
+            pytest.approx(np.array([10, 11, 12], dtype=np.int32)),
+            pytest.approx(np.array([0, 1, 2], dtype=np.int32)),
+            am, 3,
+        )
+        assert np.array_equal(result, sentinel)
