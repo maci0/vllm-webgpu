@@ -56,9 +56,33 @@ def _register() -> str | None:
         pass
 
     from vllm_webgpu.platform import WebGPUPlatform
-    if WebGPUPlatform.is_available():
-        return "vllm_webgpu.platform.WebGPUPlatform"
-    return None
+    if not WebGPUPlatform.is_available():
+        return None
+
+    # Do not preempt native GPU platforms unless the user explicitly requests it.
+    # On a CUDA/ROCm machine where wgpu is also installed, wgpu can reach the
+    # GPU via Vulkan and is_available() returns True. Because OOT plugins take
+    # priority over all built-in plugins in vLLM's platform resolution, this
+    # would silently redirect inference to the WebGPU CPU-path backend.
+    if not os.environ.get("VLLM_WEBGPU_FORCE", "").strip():
+        for plugin_name in ("cuda_platform_plugin", "rocm_platform_plugin"):
+            try:
+                mod = __import__(
+                    "vllm.platforms",
+                    fromlist=[plugin_name],
+                )
+                plugin_fn = getattr(mod, plugin_name, None)
+                if plugin_fn is not None and plugin_fn():
+                    logger.info(
+                        "vllm_webgpu: native GPU platform (%s) detected; "
+                        "yielding to it. Set VLLM_WEBGPU_FORCE=1 to override.",
+                        plugin_name,
+                    )
+                    return None
+            except Exception:
+                pass
+
+    return "vllm_webgpu.platform.WebGPUPlatform"
 
 
 def __getattr__(name: str):
