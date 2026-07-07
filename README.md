@@ -6,7 +6,7 @@ A [vLLM](https://github.com/vllm-project/vllm) out-of-tree platform plugin that 
 
 - Registers as a vLLM platform plugin — the full vLLM scheduler, block allocator, and engine remain in use.
 - Replaces only the compute layer with custom WGSL kernels.
-- Loads models from HuggingFace safetensors (f16/bf16) or GGUF (Q4\_K, Q6\_K, f32).
+- Loads models from HuggingFace safetensors (f16/bf16) and MLX format.
 - Runs on any WebGPU-capable GPU via wgpu-py: Apple M-series (Metal), NVIDIA/AMD (Vulkan/DX12).
 
 ## Supported models
@@ -52,9 +52,9 @@ Python 3.12+ required. vLLM 0.24.0 tested.
 # Qwen3-4B (HuggingFace safetensors)
 python run_inference.py --model Qwen/Qwen3-4B --prompt "The capital of France is"
 
-# Gemma4-12B (GGUF)
+# Gemma4-12B (safetensors)
 python run_inference.py \
-  --model ~/.cache/huggingface/hub/models--unsloth--gemma-4-12b-it-GGUF/.../gemma-4-12b-it-Q4_K_M.gguf \
+  --model google/gemma-4-12b-it \
   --prompt "2+2="
 
 # Qwen3.5-9B (MLX 4-bit)
@@ -124,7 +124,6 @@ Block size 16 tokens. Each layer has its own KV buffer pair. Gemma4-12B uses het
 | USE_QUANT | Format | Notes |
 |---|---|---|
 | 0 | f16 | Two f16 per u32, standard HF format |
-| 2 | GGUF Q4_K | 144 bytes/256 weights, GPU block decoder |
 | 3 | GPTQ int4 | Symmetric, group_size=128, transposed to [N, K/8] |
 | 4 | AWQ int4 | [K, N/8] nibble order, zero_point=8 |
 | 5 | FP8 E4M3 | Raw u8 bytes, GLOBAL_SCALE constant |
@@ -132,7 +131,7 @@ Block size 16 tokens. Each layer has its own KV buffer pair. Gemma4-12B uses het
 | 7 | Int8 per-channel | Raw I8 bytes; shader sign-extends to f32 |
 | 8 | BnB NF4 | 4-bit normal-float, GROUP_K=64 absmax block |
 
-Q6_K, F32, and MLX affine-int4 are dequantized to f16 at load time.
+MLX affine-int4 and other non-native formats are dequantized to f16 at load time.
 
 ## WGSL kernels
 
@@ -174,7 +173,6 @@ Fallback paths (quantized weights, no per-head norms): 14-16 dispatches/layer.
 |---|---|
 | HuggingFace model ID or local dir | `model.safetensors.index.json` present |
 | Single-shard `.safetensors` | file extension |
-| `.gguf` file | magic bytes `GGUF` |
 | MLX directory | `.biases` keys in safetensors index |
 
 Model paths are resolved through the HF cache (`~/.cache/huggingface/hub/`) automatically. All format detection and upload logic lives in `vllm_webgpu/quant/weight_loader.py`.
