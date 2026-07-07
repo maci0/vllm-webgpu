@@ -100,7 +100,12 @@ class WebGPUWorker(WorkerBase):
 
         self.model_runner = WebGPUModelRunner(self.vllm_config, self.wgpu_device)
 
-    def load_model(self) -> None:
+    def load_model(self, *, load_dummy_weights: bool = False) -> None:
+        if load_dummy_weights:
+            logger.warning(
+                "load_dummy_weights=True requested but WebGPU backend does not "
+                "support dummy weight loading; loading real weights instead."
+            )
         self.model_runner.load_model()
 
     def determine_available_memory(self) -> int:
