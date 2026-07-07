@@ -1,8 +1,11 @@
 enable f16;
 
-override HEAD_DIM: u32  = 256u;
-override NUM_HEADS: u32 = 8u;
-override WG_SIZE: u32   = 128u;
+override HEAD_DIM: u32    = 256u;
+override NUM_HEADS: u32   = 8u;
+override WG_SIZE: u32     = 128u;
+// V_IN_OFFSET: f16 element offset into input. Set to (Q_DIM + KV_DIM) when V
+// is read from a fused QKV buffer; leave at 0 for a standalone V buffer.
+override V_IN_OFFSET: u32 = 0u;
 
 var<workgroup> shared_sq:    array<f32, 128>;
 // Size driven by HEAD_DIM override so it works for both head_dim=256 (1KB) and 512 (2KB).
@@ -19,7 +22,7 @@ fn main(
     let seq_idx  = wgid.y;
     let head_idx = wgid.x;
     let tid      = lid.x;
-    let base     = (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
+    let base     = V_IN_OFFSET + (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
     let eps      = 1e-6f;
 
     var sq_sum: f32 = 0.0;

@@ -397,46 +397,70 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # normed_x already pre-normalized by caller (or previous layer's fused add_f32_rms_norm).
 
-            # Q projection
+            # QKV projections: fused for f16 local layers; separate for quantized weights or
+            # global layers (has_v=False, no v_proj weight).
             qw = f"{p}.self_attn.q_proj.weight"
-            uq = self._uq_for_key(qw)
-            self._dispatch("matmul_quant",
-                           [normed_x, self.weights[qw],
-                            self._scales_buf(qw, uq, normed_x), sc["q_buf"]],
-                           {"K": hidden, "N": q_dim, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                            **self._quant_extra(f"{p}.self_attn.q_proj", uq)},
-                           _gemv_wg(q_dim, uq))
-
-            # K projection
             kw = f"{p}.self_attn.k_proj.weight"
-            uq = self._uq_for_key(kw)
-            self._dispatch("matmul_quant",
-                           [normed_x, self.weights[kw],
-                            self._scales_buf(kw, uq, normed_x), sc["k_buf"]],
-                           {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                            **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
-                           _gemv_wg(kv_dim, uq))
-
-            # V projection: for global layers V=K (no separate weight), reuse k_buf → v_buf
+            uq_q = self._uq_for_key(qw)
+            uq_k = self._uq_for_key(kw)
             if has_v:
                 vw = f"{p}.self_attn.v_proj.weight"
-                uq = self._uq_for_key(vw)
+                uq_v = self._uq_for_key(vw)
+                _use_fused_qkv = (uq_q == 0 and uq_k == 0 and uq_v == 0)
+            else:
+                vw = None
+                uq_v = 0
+                _use_fused_qkv = False
+
+            if _use_fused_qkv:
+                # All f16: single fused_qkv dispatch → sc["qkv_buf"] laid out as [Q | K | V].
+                self._dispatch("fused_qkv",
+                               [normed_x, self.weights[qw], self.weights[kw], self.weights[vw],
+                                sc["qkv_buf"]],
+                               {"K": hidden, "Q_DIM": q_dim, "KV_DIM": kv_dim},
+                               (q_dim + 2 * kv_dim, 1, 1))
+                _q_src = sc["qkv_buf"]       # Q at element offset 0
+                _k_src = sc["qkv_buf"]       # K at element offset q_dim
+                _v_src = sc["qkv_buf"]       # V at element offset q_dim + kv_dim
+                _v_src_offset = q_dim + kv_dim
+            else:
+                # Separate projections (quantized weights or global attention layer).
+                uq = uq_q
                 self._dispatch("matmul_quant",
-                               [normed_x, self.weights[vw],
-                                self._scales_buf(vw, uq, normed_x), sc["v_buf"]],
+                               [normed_x, self.weights[qw],
+                                self._scales_buf(qw, uq, normed_x), sc["q_buf"]],
+                               {"K": hidden, "N": q_dim, "USE_QUANT": uq,
+                                **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
+                                **self._quant_extra(f"{p}.self_attn.q_proj", uq)},
+                               _gemv_wg(q_dim, uq))
+                uq = uq_k
+                self._dispatch("matmul_quant",
+                               [normed_x, self.weights[kw],
+                                self._scales_buf(kw, uq, normed_x), sc["k_buf"]],
                                {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
                                 **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                                **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
+                                **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
                                _gemv_wg(kv_dim, uq))
-                v_src = sc["v_buf"]
-            else:
-                v_src = sc["k_buf"]
+                if has_v:
+                    uq = uq_v
+                    self._dispatch("matmul_quant",
+                                   [normed_x, self.weights[vw],
+                                    self._scales_buf(vw, uq, normed_x), sc["v_buf"]],
+                                   {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
+                                    **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
+                                    **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
+                                   _gemv_wg(kv_dim, uq))
+                    _v_src = sc["v_buf"]
+                else:
+                    _v_src = sc["k_buf"]  # global attention: V = K
+                _q_src = sc["q_buf"]
+                _k_src = sc["k_buf"]
+                _v_src_offset = 0
 
-            # Fused per-head RMSNorm + RoPE for Q and K.
-            # When both norm weights exist, use fused_qk_norm_rope with K_SEPARATE=1
-            # (Q from q_buf, K from k_buf — two separate buffers). Saves 1 dispatch.
+            # Per-head RMSNorm + RoPE for Q and K.
+            # When both norm weights exist: fused_qk_norm_rope handles both in one dispatch.
+            #   Fused QKV path: K_SEPARATE=0, both Q and K in qkv_buf (INPUT_OFFSET_K=q_dim).
+            #   Separate buffer path: K_SEPARATE=1, Q in q_buf (binding 0), K in k_buf (binding 6).
             q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
             k_norm_w_l = self.weights.get(f"{p}.self_attn.k_norm.weight")
             _freq_buf = self._rope_freq_buf
@@ -444,55 +468,72 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                              "LN_ROPE_BASE": ln_rope,
                              "USE_FREQ_BUF": int(self._use_freq_buf)}
             if q_norm_w is not None and k_norm_w_l is not None:
-                # Binding 7 (inv_freq_buf): always provided.
+                _k_separate = 0 if _use_fused_qkv else 1
+                _k_in_offset = q_dim if _use_fused_qkv else 0
+                _k_bind = sc["qkv_buf"] if _use_fused_qkv else sc["k_buf"]
                 self._dispatch("fused_qk_norm_rope",
-                               [sc["q_buf"], q_norm_w, k_norm_w_l, pos_buf,
-                                sc["q_rope"], sc["k_rope"], sc["k_buf"], _freq_buf],
+                               [_q_src, q_norm_w, k_norm_w_l, pos_buf,
+                                sc["q_rope"], sc["k_rope"], _k_bind, _freq_buf],
                                {**_g4_rope_base,
                                 "HEAD_DIM": head_dim,
                                 "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": num_kv_heads,
                                 "HAS_WEIGHT": 1,
                                 "GEMMA_NORM": self._gemma_norm_const,
-                                "INPUT_OFFSET_K": 0,
-                                "K_SEPARATE": 1},
+                                "INPUT_OFFSET_K": _k_in_offset,
+                                "K_SEPARATE": _k_separate},
                                (self.num_q_heads + num_kv_heads, num_tokens, 1))
             else:
-                for src, dst, n_heads, w_key in [
-                    (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
-                    (sc["k_buf"], sc["k_rope"], num_kv_heads, f"{p}.self_attn.k_norm.weight"),
+                # Fallback: separate per-head norm+rope or plain rope for each of Q and K.
+                _k_in_off = q_dim if _use_fused_qkv else 0
+                for src, dst, n_heads, w_key, in_off in [
+                    (_q_src, sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight", 0),
+                    (_k_src, sc["k_rope"], num_kv_heads, f"{p}.self_attn.k_norm.weight", _k_in_off),
                 ]:
                     norm_w = self.weights.get(w_key)
                     if norm_w is not None:
-                        # Binding 4 (inv_freq_buf): always provided.
                         self._dispatch("fused_per_head_norm_rope",
                                        [src, norm_w, pos_buf, dst, _freq_buf],
                                        {**_g4_rope_base, "HEAD_DIM": head_dim,
                                         "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
-                                        "GEMMA_NORM": self._gemma_norm_const},
+                                        "GEMMA_NORM": self._gemma_norm_const,
+                                        "INPUT_OFFSET": in_off},
                                        (n_heads, num_tokens, 1))
-                    else:
-                        # Binding 3 (inv_freq_buf): always provided.
+                    elif not _use_fused_qkv:
+                        # Plain rope from standalone buffer (no offset needed).
                         self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
                                        {**_g4_rope_base, "HEAD_DIM": head_dim,
                                         "NUM_HEADS": n_heads},
                                        (num_tokens, n_heads, 1))
+                    else:
+                        # Rope from fused QKV buffer at in_off — use HAS_WEIGHT=0 variant.
+                        self._dispatch("fused_per_head_norm_rope",
+                                       [src, src, pos_buf, dst, _freq_buf],
+                                       {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                        "NUM_HEADS": n_heads, "HAS_WEIGHT": 0,
+                                        "GEMMA_NORM": 0, "INPUT_OFFSET": in_off},
+                                       (n_heads, num_tokens, 1))
 
             # Per-head RMSNorm (no weight) on V before caching — Gemma4 only.
             # Gemma3 does NOT apply V normalization (no v_norm weight in the model).
+            # V_IN_OFFSET is non-zero when V lives inside the fused qkv_buf.
             if self._apply_v_norm:
-                self._dispatch("per_head_rms_norm_no_weight", [v_src, sc["v_normed"]],
-                               {"HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads, "WG_SIZE": min(head_dim, 128)},
+                self._dispatch("per_head_rms_norm_no_weight", [_v_src, sc["v_normed"]],
+                               {"HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads,
+                                "WG_SIZE": min(head_dim, 128),
+                                "V_IN_OFFSET": _v_src_offset},
                                (num_kv_heads, num_tokens, 1), shader_subdir="gemma")
                 v_to_cache = sc["v_normed"]
+                _v_cache_offset = 0
             else:
-                v_to_cache = v_src  # Gemma3: use V directly without normalization
+                v_to_cache = _v_src  # Gemma3: use V directly without normalization
+                _v_cache_offset = _v_src_offset  # 0 when not fused; q_dim+kv_dim when fused
 
             # Fused K+V cache store — single dispatch saves 1 overhead per layer.
             self._dispatch("kv_cache_store_both",
                            [sc["k_rope"], k_cache, v_to_cache, v_cache, slot_map],
                            {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
-                            "HEAD_DIM": head_dim},
+                            "HEAD_DIM": head_dim, "V_IN_OFFSET": _v_cache_offset},
                            (num_tokens, num_kv_heads, 1))
 
             # Always use flash_attn_decode for single-token decode.
