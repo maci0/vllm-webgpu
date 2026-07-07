@@ -805,3 +805,185 @@ def test_fused_qk_norm_rope_k_separate_equivalence(wgpu_device):
         err_msg="K_SEPARATE=0 and K_SEPARATE=1 disagree on Q output")
     np.testing.assert_array_equal(k0, k1,
         err_msg="K_SEPARATE=0 and K_SEPARATE=1 disagree on K output")
+
+
+# ---------------------------------------------------------------------------
+# moe_expert_down_accum — fused down-proj GEMV + weighted MoE accumulate
+# ---------------------------------------------------------------------------
+
+def moe_expert_down_accum_ref(act, down_w, accum, weight):
+    """Reference: accum[row] += weight * (down_w[row, :] @ act)."""
+    result32 = down_w.astype(np.float32) @ act.astype(np.float32)  # [N]
+    return np.clip(
+        accum.astype(np.float32) + weight * result32,
+        -65504.0, 65504.0,
+    ).astype(np.float16)
+
+
+def test_moe_expert_down_accum_correctness(wgpu_device):
+    """Correctness: fused down-proj + weighted accumulate vs numpy reference.
+
+    With a zero initial accumulator this is equivalent to weight * (W @ act).
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    rng = np.random.default_rng(7)
+    K, N = 256, 64
+    act    = (rng.standard_normal(K) * 0.1).astype(np.float16)
+    down_w = (rng.standard_normal((N, K)) * 0.1).astype(np.float16)
+    accum  = np.zeros(N, dtype=np.float16)
+    weight = np.float32(0.6)
+
+    expected = moe_expert_down_accum_ref(act, down_w, accum, weight)
+
+    dev = wgpu_device.wgpu_device
+    rw  = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    act_buf    = WebGPUBuffer.from_numpy(dev, act)
+    down_w_buf = WebGPUBuffer.from_numpy(dev, _pack_weights(down_w))
+    accum_buf  = WebGPUBuffer.from_numpy(dev, accum, usage=rw)
+    # w_buf holds top_k routing weights; K_IDX=0 selects the first slot.
+    w_buf      = WebGPUBuffer.from_numpy(dev,
+                     np.array([weight], dtype=np.float32), usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key   = PipelineKey("moe_expert_down_accum", (("K", K), ("N", N), ("K_IDX", 0)))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": act_buf.buf}},
+            {"binding": 1, "resource": {"buffer": down_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": accum_buf.buf}},
+            {"binding": 3, "resource": {"buffer": w_buf.buf}},
+        ],
+    )
+    _dispatch(dev, pipeline, bg, (N, 1, 1))
+
+    result = accum_buf.to_numpy().view(np.float16)
+    np.testing.assert_allclose(
+        result.astype(np.float32), expected.astype(np.float32),
+        rtol=1e-2, atol=0.05,
+        err_msg="moe_expert_down_accum single-expert correctness mismatch",
+    )
+
+
+def test_moe_expert_down_accum_two_experts(wgpu_device):
+    """Two sequential expert calls accumulate correctly.
+
+    The second dispatch must add to (not overwrite) the result of the first.
+    This validates the read_write accumulation semantics of the shader.
+    """
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    rng = np.random.default_rng(13)
+    K, N = 256, 64
+
+    act0   = (rng.standard_normal(K) * 0.1).astype(np.float16)
+    act1   = (rng.standard_normal(K) * 0.1).astype(np.float16)
+    down_w = (rng.standard_normal((N, K)) * 0.1).astype(np.float16)
+    w0, w1 = np.float32(0.4), np.float32(0.6)
+
+    # Reference: two sequential weighted adds to a zero-initialized accumulator.
+    ref0 = moe_expert_down_accum_ref(act0, down_w, np.zeros(N, np.float16), w0)
+    ref1 = moe_expert_down_accum_ref(act1, down_w, ref0, w1)
+
+    dev = wgpu_device.wgpu_device
+    rw  = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    act0_buf   = WebGPUBuffer.from_numpy(dev, act0)
+    act1_buf   = WebGPUBuffer.from_numpy(dev, act1)
+    down_w_buf = WebGPUBuffer.from_numpy(dev, _pack_weights(down_w))
+    accum_buf  = WebGPUBuffer.from_numpy(dev, np.zeros(N, dtype=np.float16), usage=rw)
+    w_buf      = WebGPUBuffer.from_numpy(dev,
+                     np.array([w0, w1], dtype=np.float32), usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+
+    # Expert 0 (K_IDX=0, weight=w0)
+    key0 = PipelineKey("moe_expert_down_accum", (("K", K), ("N", N), ("K_IDX", 0)))
+    p0   = cache.get_or_create(key0)
+    bg0  = dev.create_bind_group(
+        layout=p0.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": act0_buf.buf}},
+            {"binding": 1, "resource": {"buffer": down_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": accum_buf.buf}},
+            {"binding": 3, "resource": {"buffer": w_buf.buf}},
+        ],
+    )
+    _dispatch(dev, p0, bg0, (N, 1, 1))
+
+    # Expert 1 (K_IDX=1, weight=w1) — adds to the existing accumulator.
+    key1 = PipelineKey("moe_expert_down_accum", (("K", K), ("N", N), ("K_IDX", 1)))
+    p1   = cache.get_or_create(key1)
+    bg1  = dev.create_bind_group(
+        layout=p1.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": act1_buf.buf}},
+            {"binding": 1, "resource": {"buffer": down_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": accum_buf.buf}},
+            {"binding": 3, "resource": {"buffer": w_buf.buf}},
+        ],
+    )
+    _dispatch(dev, p1, bg1, (N, 1, 1))
+
+    result = accum_buf.to_numpy().view(np.float16)
+    np.testing.assert_allclose(
+        result.astype(np.float32), ref1.astype(np.float32),
+        rtol=1e-2, atol=0.05,
+        err_msg="moe_expert_down_accum two-expert accumulation mismatch",
+    )
+
+
+def test_moe_expert_down_accum_nonzero_init(wgpu_device):
+    """Non-zero initial accumulator: shader must add to existing values, not reset."""
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    rng = np.random.default_rng(99)
+    K, N = 128, 32
+    act    = (rng.standard_normal(K) * 0.05).astype(np.float16)
+    down_w = (rng.standard_normal((N, K)) * 0.05).astype(np.float16)
+    # Non-zero starting accumulator (simulates prior expert already accumulated).
+    accum_init = (rng.standard_normal(N) * 0.1).astype(np.float16)
+    weight     = np.float32(0.5)
+
+    expected = moe_expert_down_accum_ref(act, down_w, accum_init, weight)
+
+    dev = wgpu_device.wgpu_device
+    rw  = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+
+    act_buf    = WebGPUBuffer.from_numpy(dev, act)
+    down_w_buf = WebGPUBuffer.from_numpy(dev, _pack_weights(down_w))
+    accum_buf  = WebGPUBuffer.from_numpy(dev, accum_init, usage=rw)
+    w_buf      = WebGPUBuffer.from_numpy(dev,
+                     np.array([weight], dtype=np.float32), usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    key   = PipelineKey("moe_expert_down_accum", (("K", K), ("N", N), ("K_IDX", 0)))
+    pipeline = cache.get_or_create(key)
+
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": act_buf.buf}},
+            {"binding": 1, "resource": {"buffer": down_w_buf.buf}},
+            {"binding": 2, "resource": {"buffer": accum_buf.buf}},
+            {"binding": 3, "resource": {"buffer": w_buf.buf}},
+        ],
+    )
+    _dispatch(dev, pipeline, bg, (N, 1, 1))
+
+    result = accum_buf.to_numpy().view(np.float16)
+    np.testing.assert_allclose(
+        result.astype(np.float32), expected.astype(np.float32),
+        rtol=1e-2, atol=0.05,
+        err_msg="moe_expert_down_accum non-zero init: values not preserved before add",
+    )
