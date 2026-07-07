@@ -6,7 +6,6 @@ Usage:
     python3 profile_kernels.py [--model MODEL_PATH] [--tokens N]
 """
 import argparse
-import pathlib
 import sys
 import time
 import numpy as np
@@ -43,27 +42,9 @@ print(f"Format: {fmt}")
 if fmt == "gguf":
     raise RuntimeError("GGUF profiling not supported in this build (use safetensors models).")
 else:
-    import json
-    cfg_path = pathlib.Path(model_path) / "config.json"
-    cfg_dict = json.loads(cfg_path.read_text())
-
-    # Flatten text_config (multimodal models: Gemma3/4, Qwen3.5) into top-level.
-    if "text_config" in cfg_dict:
-        tc = cfg_dict["text_config"]
-        merged = dict(tc)
-        merged["architectures"] = cfg_dict.get("architectures", [])
-        for k, v in cfg_dict.items():
-            if k != "text_config" and v is not None:
-                merged[k] = v
-        cfg_dict = merged
-
-    class _HFConfig:
-        pass
-
-    hf_cfg = _HFConfig()
-    for k, v in cfg_dict.items():
-        setattr(hf_cfg, k, v)
-    arch = (cfg_dict.get("architectures") or ["LlamaForCausalLM"])[0]
+    from transformers import AutoConfig
+    hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
 
 print(f"Architecture: {arch}")
 
