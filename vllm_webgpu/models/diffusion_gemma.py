@@ -70,6 +70,42 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def _pk(self, layer_idx: int) -> str:
         return f"model.decoder.layers.{layer_idx}"
 
+    def _postprocess_weights(self) -> None:
+        """Tile per-head norm weights using the decoder prefix (model.decoder.layers.N).
+
+        Overrides the parent which uses 'model.layers.N', which does not exist for
+        DiffusionGemma. The fused_per_head_norm_rope shader indexes weight at
+        head_idx * HEAD_DIM + i, so each norm buffer must have shape
+        (num_heads * head_dim,) rather than the per-head shape (head_dim,) stored
+        in the checkpoint.
+        """
+        import numpy as np
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+        dev = self.wgpu_device.wgpu_device
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+
+        for i, lp in enumerate(self._lp):
+            p = self._pk(i)
+            hd = lp["head_dim"]
+            for norm_key, num_heads in [
+                (f"{p}.self_attn.q_norm.weight", lp["num_q_heads"]),
+                (f"{p}.self_attn.k_norm.weight", lp["num_kv_heads"]),
+            ]:
+                buf = self.weights.get(norm_key)
+                if buf is None:
+                    continue
+                expected_len = num_heads * hd
+                raw = buf.to_numpy().view(np.float16)
+                if len(raw) == expected_len:
+                    continue
+                if len(raw) == hd:
+                    tiled = np.tile(raw, num_heads)
+                    self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled, usage=rw)
+                else:
+                    logger.warning("Unexpected q/k_norm shape for %s: got %d, expected %d or %d",
+                                   norm_key, len(raw), expected_len, hd)
+
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
         # Cache layer_scalar values at load time — avoid per-layer GPU→CPU readbacks.
