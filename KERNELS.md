@@ -413,6 +413,25 @@ Element-wise `sigmoid(gate) * value`. Used for Qwen3.5 `attn_output_gate`: Huggi
 
 ---
 
+### flash_attn_prefill.wgsl
+
+Prefill causal self-attention (dense Q/K/V, online softmax, causal masking). Replaces T×3 dispatches (attn_score + softmax + attn_output per token) with one dispatch that covers all T prompt tokens. Dense inputs: Q, K, V each shaped [NUM_T, heads, HEAD_DIM] — no paged cache needed.
+
+**Dispatch:** `(NUM_Q_HEADS, NUM_T, 1)` — one workgroup per (query head, query token).
+
+| Override | Default | Description |
+|----------|---------|-------------|
+| `NUM_Q_HEADS` | 32 | Number of query heads |
+| `NUM_KV_HEADS` | 8 | Number of key/value heads (GQA) |
+| `HEAD_DIM` | 128 | Per-head dimension |
+| `NUM_T` | 64 | Number of prompt tokens |
+
+**Bindings:** 0=Q(f16), 1=K(f16), 2=V(f16), 3=out(f16)
+
+GQA: `kv_head = q_head / (NUM_Q_HEADS / NUM_KV_HEADS)`. Each workgroup loads its query into shared memory, then streams over t_k in [0, t_q] applying online Milakov-Divanov softmax, accumulating V directly into registers. Output written once at the end.
+
+---
+
 ### flash_attn_decode.wgsl
 
 Fused QK dot-products + online Milakov-Divanov softmax + V-weighted sum for decode (M=1). Automatic fallback when ctx_len > 65535, where the three-pass approach (attn_score + softmax + attn_output) hits the WebGPU dispatch dimension limit. The fused shader loops over all KV positions inside the workgroup, so it has no per-axis dispatch limit. At short contexts, the three-pass approach has better GPU utilization (num_q_heads × ctx_len workgroups vs num_q_heads here); flash_attn_decode is selected only when ctx_len > 65535.

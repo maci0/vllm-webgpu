@@ -355,9 +355,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "last_tok":  alloc(hidden),   # raw last-token hidden state (from copy)
             "last_norm": alloc(hidden),   # normed last-token hidden state
             "logits":    alloc(vocab),
-            # Attention scratch - reused per token position
-            "scores":   WebGPUBuffer.empty(dev, self.num_q_heads * ctx_len * 2, usage=rw),
-            "sm_buf":   WebGPUBuffer.empty(dev, self.num_q_heads * ctx_len * 2, usage=rw),
         }
 
         slot_map_arr = np.array(attn_metadata.slot_mapping, dtype=np.uint32)
@@ -456,31 +453,17 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                     "HEAD_DIM": self.head_dim},
                                    (T, self.num_kv_heads, 1))
 
-                    # ── Causal attention: sequential per token ────────────────────
-                    for t in range(T):
-                        ctx_t  = int(slot_map_arr[t]) + 1
-                        q_off  = t * q_dim
-                        ao_off = t * q_dim
-                        self._dispatch("attn_score",
-                                       [b["q_rope"], k_cache, bt_buf, b["scores"]],
-                                       {"BLOCK_SIZE": self.block_size,
-                                        "NUM_Q_HEADS": self.num_q_heads,
-                                        "NUM_KV_HEADS": self.num_kv_heads,
-                                        "HEAD_DIM": self.head_dim,
-                                        "MAX_SEQ_LEN": ctx_t,
-                                        "Q_TOKEN_OFFSET": q_off},
-                                       (self.num_q_heads, ctx_t, 1))
-                        self._dispatch("softmax", [b["scores"], b["sm_buf"]],
-                                       {"SEQ_LEN": ctx_t}, (self.num_q_heads, 1, 1))
-                        self._dispatch("attn_output",
-                                       [b["sm_buf"], v_cache, bt_buf, b["attn_out"]],
-                                       {"BLOCK_SIZE": self.block_size,
-                                        "NUM_Q_HEADS": self.num_q_heads,
-                                        "NUM_KV_HEADS": self.num_kv_heads,
-                                        "HEAD_DIM": self.head_dim,
-                                        "CTX_LEN": ctx_t,
-                                        "ATTN_TOKEN_OFFSET": ao_off},
-                                       (self.num_q_heads, 1, 1))
+                    # ── Causal attention: all T tokens in one fused dispatch ──────
+                    # flash_attn_prefill reads dense Q/K/V (already in b["q_rope"],
+                    # b["k_rope"], b["v_buf"]) and applies causal masking internally.
+                    # Replaces T×3 dispatches (attn_score + softmax + attn_output per token).
+                    self._dispatch("flash_attn_prefill",
+                                   [b["q_rope"], b["k_rope"], b["v_buf"], b["attn_out"]],
+                                   {"NUM_Q_HEADS": self.num_q_heads,
+                                    "NUM_KV_HEADS": self.num_kv_heads,
+                                    "HEAD_DIM": self.head_dim,
+                                    "NUM_T": T},
+                                   (self.num_q_heads, T, 1))
 
                     # ── O projection (batch GEMM) ─────────────────────────────────
                     gemm_f16(b["attn_out"], ow, b["o_proj"], q_dim, hidden)

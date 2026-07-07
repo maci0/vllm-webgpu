@@ -881,7 +881,11 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 ids_buf  = tok_ids_bufs[tc]
                 pos_buf  = tok_pos_bufs[tc]
                 slot_map = tok_slot_bufs[tc]
-                use_flash_t = ctx_t > 65535
+                # During prefill, full_attn layers always use flash_attn_decode
+                # (1 dispatch vs 3 for the score+softmax+output path). The 3-pass
+                # approach dispatches num_q_heads×ctx_t workgroups which grows with
+                # each token; flash_attn_decode dispatches only num_q_heads regardless.
+                use_flash_t = True
 
                 # Reset h-state rotation: each token's forward pass starts at h0.
                 self._hstate = 0
