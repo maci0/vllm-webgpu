@@ -526,16 +526,6 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                 wgpu_device.queue.on_submitted_work_done_sync()
                 _pending_bytes[0] = 0
 
-        def _upload(arr: np.ndarray, name: str, weights: dict) -> None:
-            arr = np.ascontiguousarray(arr.astype(np.float16))
-            data = _pad4(arr.tobytes())
-            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-            wgpu_device.queue.write_buffer(buf, 0, data)
-            _pending_bytes[0] += len(data)
-            _maybe_flush()
-            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                         shape=tuple(arr.shape), dtype="f16")
-
         def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
             """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
 
@@ -576,6 +566,8 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             _maybe_flush()
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                          shape=tuple(arr.shape), dtype="f16")
+
+        _upload = _upload_f16
 
         weights: dict = {}
 
