@@ -26,8 +26,8 @@ See [MODELS.md](MODELS.md) for the full matrix including quantization formats an
 
 | Model | tok/s |
 |---|---|
-| Qwen3-4B (f16) | ~18-19 tok/s |
-| Qwen3-0.6B (f16) | ~60 tok/s |
+| Qwen3-4B (f16) | ~18 tok/s |
+| Qwen3-0.6B (f16) | ~47 tok/s |
 | Qwen3.5-9B (MLX 4-bit) | ~11 tok/s |
 
 ## Install
