@@ -5,7 +5,8 @@
 | HuggingFace architecture | Backend | Model class |
 |---|---|---|
 | `LlamaForCausalLM` | `llama` | `LlamaWebGPUModel` |
-| `MistralForCausalLM` | `llama` | `LlamaWebGPUModel` |
+| `MistralForCausalLM` | `mixtral` | `MixtralWebGPUModel` |
+| `MixtralForCausalLM` | `mixtral` | `MixtralWebGPUModel` |
 | `Qwen2ForCausalLM` | `llama` | `LlamaWebGPUModel` |
 | `Qwen3ForCausalLM` | `llama` | `LlamaWebGPUModel` |
 | `Gemma3ForCausalLM` | `gemma4` | `Gemma4WebGPUModel` |
@@ -57,6 +58,23 @@ Full support for USE_QUANT 0–8. Applies to all projections: Q, K, V, o_proj, g
 The fused QKV path (`fused_qkv.wgsl`) and `fused_gate_act.wgsl` require f16 weights (USE_QUANT=0). Quantized weights fall back to three separate `matmul_quant` calls for QKV, and separate gate/up matmuls followed by `gelu_mul`.
 
 Q/K norms (`q_norm.weight`, `k_norm.weight`) that are shape `(head_dim,)` rather than `(num_heads * head_dim,)` are tiled to the expected shape at load time (Qwen3 uses shared norms across heads).
+
+### MixtralWebGPUModel
+
+Extends `LlamaWebGPUModel` for Mistral (dense) and Mixtral (sparse MoE FFN) architectures.
+
+**Sliding Window Attention (SWA):** When `sliding_window` is set in the model config, `_effective_ctx(ctx_len)` caps the context length passed to attention dispatches. For the decode path this means `attn_score MAX_SEQ_LEN`, `softmax SEQ_LEN`, `attn_output CTX_LEN`, and `flash_attn_decode CTX_LEN` are all bounded by the window size. For the batch prefill path, `flash_attn_prefill.wgsl` accepts a `WINDOW_SIZE` override that restricts each query token to attend only to its most recent `WINDOW_SIZE` tokens.
+
+**MoE FFN (Mixtral):** When `num_local_experts > 0` and `num_experts_per_tok > 0`, the standard gate/up/down FFN is replaced by sparse expert dispatch using the Phase A/B pattern:
+
+- Phase A: router matmul (`block_sparse_moe.gate.weight`) + `topk_sort` dispatched into the current command encoder, then flushed and CPU-synced so expert indices can be read back.
+- Phase B: a new encoder is created; the top-K selected experts are dispatched sequentially. Each expert runs gate (`w1`) + up (`w3`) + SiLU via `fused_gate_act` (f16) or separate `matmul_quant` + `gelu_mul` (quantized), then down (`w2`) into a per-expert scratch buffer. `moe_accumulate` adds `weight[k] * expert_tmp` into the shared `expert_out` accumulator.
+
+There is no shared expert in Mixtral (unlike Qwen3.6-35B-A3B). The accumulation buffer is zero-initialized via `write_buffer` before Phase B begins.
+
+Weight naming: `model.layers.{i}.block_sparse_moe.{gate|experts.{j}.w1|experts.{j}.w3|experts.{j}.w2}`.
+
+**Quant support:** USE_QUANT 0-8 via the same `_uq()` closure and `_uq_for_key()` logic as `LlamaWebGPUModel`. Applies to all projections including router, expert gate/up/down, Q/K/V, and o_proj.
 
 ### Gemma4WebGPUModel
 

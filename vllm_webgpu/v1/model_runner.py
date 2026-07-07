@@ -93,7 +93,8 @@ def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
 
 ARCH_MAP = {
     "LlamaForCausalLM": "llama",
-    "MistralForCausalLM": "llama",
+    "MistralForCausalLM": "mixtral",
+    "MixtralForCausalLM": "mixtral",
     "Qwen2ForCausalLM": "llama",
     "Qwen3ForCausalLM": "llama",
     "Gemma3ForCausalLM": "gemma4",
@@ -111,6 +112,9 @@ def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache:
     if family == "llama":
         from vllm_webgpu.models.llama import LlamaWebGPUModel
         return LlamaWebGPUModel(model_config, wgpu_device, pipeline_cache)
+    if family == "mixtral":
+        from vllm_webgpu.models.mixtral import MixtralWebGPUModel
+        return MixtralWebGPUModel(model_config, wgpu_device, pipeline_cache)
     if family == "gemma4":
         from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
         return Gemma4WebGPUModel(model_config, wgpu_device, pipeline_cache)

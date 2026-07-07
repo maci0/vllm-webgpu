@@ -29,6 +29,7 @@ override NUM_Q_HEADS:  u32 = 32u;
 override NUM_KV_HEADS: u32 = 8u;
 override HEAD_DIM:     u32 = 128u;
 override NUM_T:        u32 = 64u;
+override WINDOW_SIZE:  u32 = 0u;  // 0 = full causal; >0 = sliding-window prefix length
 
 @group(0) @binding(0) var<storage, read>       Q   : array<f16>;
 @group(0) @binding(1) var<storage, read>       K   : array<f16>;
@@ -75,8 +76,11 @@ fn main(
     var acc2: f32 = 0.0f;
     var acc3: f32 = 0.0f;
 
-    // Causal: token t_q attends to t_k in [0, t_q] inclusive.
-    var t_k = 0u;
+    // Causal: token t_q attends to t_k in [window_start, t_q] inclusive.
+    // When WINDOW_SIZE==0 (default), window_start=0 — full causal attention, unchanged.
+    // When WINDOW_SIZE>0, only the last WINDOW_SIZE tokens are attended to (SWA).
+    let window_start = select(0u, t_q + 1u - WINDOW_SIZE, WINDOW_SIZE > 0u && t_q + 1u > WINDOW_SIZE);
+    var t_k = window_start;
     loop {
         if (t_k > t_q) { break; }
 
