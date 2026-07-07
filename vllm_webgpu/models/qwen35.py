@@ -768,7 +768,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         vocab = self.vocab_size
 
         _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": 1}
+        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm}
 
         # Start the first command encoder manually.
         # Layer methods see _active_encoder is not None → their _batched_dispatch
@@ -1002,7 +1002,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # Inner _batched_dispatch() calls in layer methods are re-entrant no-ops
         # when profiling=False (default), recording all dispatches here.
         _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": 1}
+        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm}
         sc = self._sc
 
         with self._batched_dispatch():
