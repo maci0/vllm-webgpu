@@ -21,6 +21,21 @@ def make_qwen35_config(num_layers=4, vocab_size=32):
     cfg.max_position_embeddings = 128
     cfg.rope_theta = 1_000_000.0
     cfg.head_dim = 256
+    # MoE fields — must be integers for comparison in __init__
+    cfg.num_experts = 0
+    cfg.num_experts_per_tok = 0
+    cfg.moe_intermediate_size = 0
+    cfg.shared_expert_intermediate_size = 12288
+    # Linear attention (GDN) architecture fields — must be integers
+    cfg.linear_num_key_heads = 16
+    cfg.linear_num_value_heads = 16
+    cfg.linear_key_head_dim = 128
+    cfg.linear_value_head_dim = 128
+    cfg.linear_conv_kernel_dim = 4
+    cfg.full_attention_interval = 4
+    cfg.attn_output_gate = False
+    cfg.partial_rotary_factor = None
+    cfg.mrope_interleaved = False
     # 3 linear-attention layers followed by 1 full-attention layer
     cfg.layer_types = (
         ["linear_attention"] * (num_layers - 1) + ["full_attention"]
@@ -43,11 +58,11 @@ def _make_gdn_gpu_weights(wgpu_device, hidden: int = 4096) -> dict:
 
     from vllm_webgpu.models.qwen35 import _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM, _LIN_CONV_DIM
 
-    return {
+    weights = {
         "model.layers.0.linear_attn.in_proj_qkv.weight": r_f16(8192, hidden),
         "model.layers.0.linear_attn.in_proj_z.weight":   r_f16(4096, hidden),
-        "model.layers.0.linear_attn.in_proj_a.weight":   r_f16(_LIN_V_HEADS, hidden),
-        "model.layers.0.linear_attn.in_proj_b.weight":   r_f16(_LIN_V_HEADS, hidden),
+        "model.layers.0.linear_attn.in_proj_a.weight":   r_f16(16, hidden),
+        "model.layers.0.linear_attn.in_proj_b.weight":   r_f16(16, hidden),
         "model.layers.0.linear_attn.conv1d.weight":
             WebGPUBuffer.from_numpy(dev,
                 np.ascontiguousarray(
@@ -55,15 +70,27 @@ def _make_gdn_gpu_weights(wgpu_device, hidden: int = 4096) -> dict:
                 usage=rw),
         "model.layers.0.linear_attn.A_log":
             WebGPUBuffer.from_numpy(dev,
-                np.full(_LIN_V_HEADS, -1.0, dtype=np.float16), usage=rw),
+                np.full(16, -1.0, dtype=np.float16), usage=rw),
         "model.layers.0.linear_attn.dt_bias":
             WebGPUBuffer.from_numpy(dev,
-                np.zeros(_LIN_V_HEADS, dtype=np.float16), usage=rw),
+                np.zeros(16, dtype=np.float16), usage=rw),
         "model.layers.0.linear_attn.norm.weight":
             WebGPUBuffer.from_numpy(dev,
                 np.ones(_LIN_V_DIM, dtype=np.float16), usage=rw),
         "model.layers.0.linear_attn.out_proj.weight": r_f16(hidden, 4096),
+        # Weights needed by _gdn_layer_gpu for the FFN and norm dispatches
+        "model.layers.0.post_attention_layernorm.weight":
+            WebGPUBuffer.from_numpy(dev, np.ones(hidden, dtype=np.float16), usage=rw),
+        "model.layers.0.mlp.gate_proj.weight": r_f16(hidden, hidden),
+        "model.layers.0.mlp.up_proj.weight":   r_f16(hidden, hidden),
+        "model.layers.0.mlp.down_proj.weight": r_f16(hidden, hidden),
+        # Cross-layer norm weight (used when layer_idx < num_layers-1)
+        "model.layers.1.input_layernorm.weight":
+            WebGPUBuffer.from_numpy(dev, np.ones(hidden, dtype=np.float16), usage=rw),
+        "dummy_scales":
+            WebGPUBuffer.from_numpy(dev, np.ones(1, dtype=np.float16), usage=rw),
     }
+    return weights
 
 
 def test_qwen35_model_instantiates(wgpu_device):
@@ -178,8 +205,9 @@ def test_gdn_decode_shape_and_stability(wgpu_device):
     x_np = (rng.standard_normal(hidden) * 0.1).astype(np.float16)
     x_buf = WebGPUBuffer.from_numpy(dev, x_np, usage=rw)
 
-    out_buf = model._gdn_layer_gpu(0, x_buf, 1)
-    out = out_buf.to_numpy().view(np.float16).reshape(hidden)
+    # _gdn_layer_gpu(layer_idx, normed_x, x_buf, num_tokens) → (normed_out, raw_out)
+    _, raw_out = model._gdn_layer_gpu(0, x_buf, x_buf, 1)
+    out = raw_out.to_numpy().view(np.float16).reshape(hidden)
 
     assert out.shape == (hidden,), f"Expected ({hidden},), got {out.shape}"
     assert not np.any(np.isnan(out)), "GDN output contains NaN"
@@ -197,7 +225,7 @@ def test_gdn_decode_conv_state_update(wgpu_device):
 
     x_np = np.ones(hidden, dtype=np.float16) * 0.1
     x_buf = WebGPUBuffer.from_numpy(dev, x_np, usage=rw)
-    model._gdn_layer_gpu(0, x_buf, 1)
+    model._gdn_layer_gpu(0, x_buf, x_buf, 1)
 
     # Conv state should be non-zero after update (causal_conv_step writes to it)
     conv_data = model._conv_gpu[0].to_numpy().view(np.float16)
@@ -221,8 +249,10 @@ def test_gdn_decode_sequential_tokens(wgpu_device):
     x1 = WebGPUBuffer.from_numpy(dev, (rng.standard_normal(hidden) * 0.1).astype(np.float16), usage=rw)
     x2 = WebGPUBuffer.from_numpy(dev, (rng.standard_normal(hidden) * 0.1).astype(np.float16), usage=rw)
 
-    out1 = model._gdn_layer_gpu(0, x1, 1).to_numpy().view(np.float16).copy()
-    out2 = model._gdn_layer_gpu(0, x2, 1).to_numpy().view(np.float16).copy()
+    _, raw1 = model._gdn_layer_gpu(0, x1, x1, 1)
+    _, raw2 = model._gdn_layer_gpu(0, x2, x2, 1)
+    out1 = raw1.to_numpy().view(np.float16).copy()
+    out2 = raw2.to_numpy().view(np.float16).copy()
 
     assert not np.allclose(out1, out2), "GDN GPU outputs should differ across sequential calls"
 

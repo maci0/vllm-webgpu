@@ -78,7 +78,8 @@ def test_matmul_quant_f16(wgpu_device):
     out_buf = WebGPUBuffer.empty(dev, N * 2, usage=rw)
 
     cache = PipelineCache(dev, SHADERS_DIR / "generic")
-    key = PipelineKey("matmul_quant", (("K", K), ("N", N), ("USE_QUANT", 0)))
+    # SPLIT_K=0: row-per-thread mode, dispatch ceil(N/256) workgroups
+    key = PipelineKey("matmul_quant", (("K", K), ("N", N), ("USE_QUANT", 0), ("SPLIT_K", 0)))
     pipeline = cache.get_or_create(key)
 
     bg = dev.create_bind_group(

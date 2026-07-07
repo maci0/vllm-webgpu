@@ -121,10 +121,18 @@ def test_full_pipeline_smoke(wgpu_device, tmp_path):
     input_ids = np.array([42], dtype=np.uint32)
     positions = np.array([0], dtype=np.uint32)
 
-    logits = model.forward(input_ids, positions, _FakeMeta())
+    result = model.forward(input_ids, positions, _FakeMeta())
+
+    # forward() now returns a 4-byte argmax token ID (GPU argmax path).
+    # Use logit_readback() to get the full logit array if needed.
+    if hasattr(model, 'logit_readback'):
+        logits = model.logit_readback()
+        token_id = int(result[0, 0])
+    else:
+        logits = result
+        token_id = int(logits.argmax(axis=-1)[0])
 
     assert logits.shape == (1, vocab), f"Expected (1, {vocab}), got {logits.shape}"
     assert np.isfinite(logits).all(), "Logits contain NaN or Inf"
-    token_id = int(logits.argmax(axis=-1)[0])
     assert 0 <= token_id < vocab
     logger.info("Smoke test passed: predicted token_id=%d", token_id)
