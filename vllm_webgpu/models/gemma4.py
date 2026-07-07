@@ -262,8 +262,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
-        if ctx_len > 65535:
-            raise RuntimeError(f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535")
+        use_flash = ctx_len > 65535
 
         # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
         pre = self._pre
@@ -511,20 +510,28 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": head_dim},
                            (num_tokens, num_kv_heads, 1))
 
-            self._dispatch("attn_score",
-                           [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                            "MAX_SEQ_LEN": ctx_len},
-                           (self.num_q_heads, ctx_len, 1))
-            self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
-                           {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-            self._dispatch("attn_output",
-                           [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                            "CTX_LEN": ctx_len},
-                           (self.num_q_heads, 1, 1))
+            if use_flash:
+                self._dispatch("flash_attn_decode",
+                               [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
+                                "CTX_LEN": ctx_len},
+                               (self.num_q_heads, 1, 1))
+            else:
+                self._dispatch("attn_score",
+                               [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
+                                "MAX_SEQ_LEN": ctx_len},
+                               (self.num_q_heads, ctx_len, 1))
+                self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
+                               {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+                self._dispatch("attn_output",
+                               [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
+                                "CTX_LEN": ctx_len},
+                               (self.num_q_heads, 1, 1))
 
             # Output projection → sc["o_proj_out"]
             ow = f"{p}.self_attn.o_proj.weight"

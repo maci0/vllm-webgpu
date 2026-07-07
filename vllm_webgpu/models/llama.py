@@ -94,7 +94,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
-        max_bt_blocks = 512  # max block table entries; enough for 512 * block_size ctx
+        max_bt_blocks = 4096  # block table entries; 4096 × 16 = 65536 tokens max
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      mk(T * 4),              # [1] uint32 token id
             "pos":      mk(T * 4),              # [1] uint32 position
@@ -198,11 +198,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
-        if ctx_len > 65535:
-            raise RuntimeError(
-                f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535. "
-                "Long-context support requires splitting the attention computation."
-            )
+        # For ctx_len > 65535, attn_score dispatch exceeds WebGPU per-dimension limit.
+        # flash_attn_decode has no such limit (loops inside shader) — used automatically.
+        _use_flash = ctx_len > 65535
 
         vocab = self.vocab_size
         _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
@@ -276,7 +274,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             normed_x = sc["normed"]
             for i in range(self.num_layers):
                 normed_x, x_buf = self._transformer_layer(
-                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens, _use_flash)
 
             # Final norm
             self._dispatch(
@@ -598,6 +596,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
+        use_flash: bool = False,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Returns (normed_out, raw_out).
 
@@ -745,19 +744,28 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
                            (num_tokens, self.num_kv_heads, 1))
 
-            # Three-pass attention (always): num_q_heads*ctx_len WGs for attn_score
-            # gives much better GPU utilization than flash_attn_decode's num_q_heads WGs.
-            # On unified-memory GPUs bandwidth savings don't compensate for parallelism loss.
-            self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                            "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
-            self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
-                           {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-            self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                            "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+            # Attention: three-pass for ctx <= 65535 (better GPU utilization);
+            # flash_attn_decode for ctx > 65535 (only option — no dispatch limit).
+            if use_flash:
+                self._dispatch("flash_attn_decode",
+                               [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                               {"BLOCK_SIZE": self.block_size,
+                                "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": self.num_kv_heads,
+                                "HEAD_DIM": self.head_dim,
+                                "CTX_LEN": ctx_len},
+                               (self.num_q_heads, 1, 1))
+            else:
+                self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                                "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
+                self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
+                               {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+                self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                                "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
 
             # Output projection
             w_key = f"{p}.self_attn.o_proj.weight"

@@ -248,7 +248,9 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.config import get_config
 
     block_size = get_config().block_size
-    max_ctx = min(cfg.max_position_embeddings, 2048)
+    # Cap at 65535 (WebGPU attn_score dispatch limit per dimension).
+    # For ctx > 65535 flash_attn_decode is used automatically (no dispatch limit there).
+    max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
     num_blocks = math.ceil(max_ctx / block_size) + 4
     default_kv_heads = cfg.num_key_value_heads
     default_head_dim = cfg.head_dim

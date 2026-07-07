@@ -718,9 +718,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
-        if ctx_len > 65535:
-            raise RuntimeError(
-                f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535.")
+        use_flash = ctx_len > 65535
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
@@ -821,8 +819,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                       else num_tokens)
         if ctx_len <= 0:
             ctx_len = num_tokens
-        if ctx_len > 65535:
-            raise RuntimeError(f"ctx_len={ctx_len} exceeds WebGPU dispatch limit of 65535.")
+        use_flash = ctx_len > 65535
 
         # Pre-allocated buffers are decode-only (T=1). For prefill (num_tokens>1) fall
         # back to sequential token-by-token calls so each sees a single token.
@@ -1034,18 +1031,26 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": self.head_dim},
                            (num_tokens, self.num_kv_heads, 1))
 
-            self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                            "MAX_SEQ_LEN": ctx_len},
-                           (self.num_q_heads, ctx_len, 1))
-            self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
-                           {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-            self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                            "CTX_LEN": ctx_len},
-                           (self.num_q_heads, 1, 1))
+            if use_flash:
+                self._dispatch("flash_attn_decode",
+                               [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                                "CTX_LEN": ctx_len},
+                               (self.num_q_heads, 1, 1))
+            else:
+                self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                                "MAX_SEQ_LEN": ctx_len},
+                               (self.num_q_heads, ctx_len, 1))
+                self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
+                               {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+                self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                                "CTX_LEN": ctx_len},
+                               (self.num_q_heads, 1, 1))
 
             # Apply attention output gate if enabled: gated = silu(q_gate_buf) * attn_out.
             # q_buf is free at this point (written in q_proj, last read in RoPE), so
