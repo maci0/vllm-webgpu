@@ -133,6 +133,8 @@ Block size 16 tokens. Each layer has its own KV buffer pair. Gemma4-12B uses het
 
 MLX affine-int4 and other non-native formats are dequantized to f16 at load time.
 
+Formats that are dequantized to f16 at load time (runtime USE_QUANT=0): MXFP4, MXFP8, MLX affine-int4.
+
 ## WGSL kernels
 
 See [KERNELS.md](KERNELS.md) for the full reference with dispatch shapes, overrides, and composability notes.

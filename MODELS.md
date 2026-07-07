@@ -24,7 +24,6 @@ Quantization is handled inside `matmul_quant.wgsl` via the `USE_QUANT` override.
 |-----------|--------|-----------|-----------|------------|
 | 0 | f16 (plain) | — | default | — |
 | 1 | Simple Q4 + external scales | — | `.scales` key present | per-tensor |
-| 2 | GGUF Q4_K | (outside registry) | `__quant_types__[key] == 12` | 256 |
 | 3 | GPTQ int4 | `gptq`, `gptq_marlin` | `dtype == "i32"`, `fmt != "awq_sym"` | 128 (configurable) |
 | 4 | AWQ int4 | `awq`, `awq_marlin` | `dtype == "i32"`, `fmt == "awq_sym"` | 128 (configurable) |
 | 5 | FP8 E4M3 | `fp8`, `modelopt` | `dtype == "u8"`, `fmt == "fp8_gpu"` | global scale |
@@ -36,10 +35,10 @@ Quantization is handled inside `matmul_quant.wgsl` via the `USE_QUANT` override.
 
 | Format | vLLM name | Status |
 |--------|-----------|--------|
-| MXFP8 | `mxfp8`, `modelopt_mxfp8` | ✓ Implemented — u8 exponent scales dequanted to f16 at load time, plain f16 weights uploaded |
-| MXFP4 | `mxfp4` | ✓ Implemented — u8 exponent scales → f16 via 2^(e-127), routes to USE_QUANT=6 (GROUP_K=32) |
+| MXFP8 | `mxfp8`, `modelopt_mxfp8` | ✓ Implemented — u8 exponent scales → f16 at load time, runs as USE_QUANT=0 at runtime |
+| MXFP4 | `mxfp4` | ✓ Implemented — u8 exponent scales → f16 at load time, runs as USE_QUANT=0 at runtime |
 | compressed-tensors | `compressed-tensors` | ✓ Implemented — config_groups JSON parsed, routes to USE_QUANT 3/5/7 by sub-format |
-| NF4 double-quant | `bitsandbytes` (advanced) | Planned — nested absmax not yet decoded |
+| NF4 | `bitsandbytes` | ✓ Implemented — [N//2, K] packed codes + absmax scales → USE_QUANT=8 |
 | torchao int4/int8 | `torchao` | Planned — checkpoint-specific format |
 
 **Not feasible for WebGPU** (CUDA-specific memory layouts or missing hardware support):
@@ -61,7 +60,7 @@ Q/K norms (`q_norm.weight`, `k_norm.weight`) that are shape `(head_dim,)` rather
 
 ### Gemma4WebGPUModel
 
-USE_QUANT 0, 1, 2 only. Q6_K is eagerly dequantized to f16 at load time; GPTQ/AWQ/FP8/NVFP4 are not detected.
+USE_QUANT 0–8. All projections (Q, K, V, o_proj, gate, up, down) dispatch `matmul_quant.wgsl` with the same detection logic as `LlamaWebGPUModel._uq()`. The fused QKV path requires f16 weights (USE_QUANT=0); quantized weights fall back to separate Q/K/V matmuls.
 
 Uses an f32 residual stream to avoid saturation from large `output_norm` weights (up to ~600). Adds and norms operate in f32 via `add_f32.wgsl`, `rms_norm_f32in.wgsl`, `add_f32_rms_norm.wgsl`.
 
@@ -83,7 +82,7 @@ Gemma3 vs Gemma4 distinction:
 
 Full-attention layers: USE_QUANT 0–6 (same `_uq_weight()` logic as LlamaWebGPUModel).
 
-GDN linear-attention layers: always USE_QUANT=0. Projections `in_proj_qkv`, `in_proj_a`, `in_proj_b`, `in_proj_z`, `out_proj`, `conv1d` are dispatched as f16 matmul_quant regardless of the loaded weight format.
+GDN linear-attention layers: always USE_QUANT=0. Projections `in_proj_qkv`, `in_proj_a`, `in_proj_b`, `in_proj_z`, `out_proj`, `conv1d` are dispatched as f16 matmul_quant regardless of the loaded weight format. A_log and dt_bias SSM parameters are precision-upgraded to f32 at load time to reduce accumulation drift.
 
 GDN recurrent state (SSM matrix + conv history) is stored in persistent GPU buffers and updated in-place each decode step. Call `reset_recurrent_states()` at the start of each new sequence.
 
@@ -114,7 +113,7 @@ Extends `Gemma4WebGPUModel`. Architecture differences:
 - `forward()` returns full f32 logits (no GPU argmax; diffusion generation needs the full distribution).
 - MoE router: `topk_sort.wgsl` on GPU for 128 experts, top-8 active. Reads back 2×8 scalars (64 bytes) per MoE layer for Python-side dispatch. Expert FFN buffers (moe_ping/moe_pong) not pre-allocated.
 
-USE_QUANT 0, 1, 2, 3 only. NVFP4 (USE_QUANT=6) not detected despite NVFP4 being the primary expert weight format for DiffusionGemma NVFP4 checkpoints.
+USE_QUANT 0–8. Scales key and `_quant_extra` overrides fixed in all dispatch sites (Q, K, V, o_proj, shared gate/up, shared down, router). Expert FFN dispatches already used `_scales_buf` and `_quant_extra` correctly.
 
 ---
 
