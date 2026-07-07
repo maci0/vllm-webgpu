@@ -760,7 +760,9 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                             w_f16 = _dequant_awq(qw, sc, qz)
                         else:
                             w_f16 = _dequant_gptq(
-                                qw, sc, qz if qz is not None else np.zeros_like(sc), g_idx)
+                                qw, sc,
+                                qz if qz is not None else np.zeros((sc.shape[0], qw.shape[1] // 8), dtype=np.int32),
+                                g_idx)
                         _upload(w_f16, f"{base}.weight", weights)
                 except Exception as exc:
                     logger.warning("Failed to process %s: %s", base, exc)
