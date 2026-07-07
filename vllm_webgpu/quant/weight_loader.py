@@ -1,9 +1,24 @@
 from __future__ import annotations
 import logging
+import os
 import struct
 from pathlib import Path
 
 import numpy as np
+
+# When set, GDN projection weights with BF16 dtype are uploaded in their native
+# bf16 bit pattern (packed u16 pairs → u32) under key + "__bf16", in addition to
+# the standard f16 version. The matmul_quant shader decodes them with
+# bitcast<f32>(word << 16u), preserving the full 8-bit bf16 exponent range.
+_GDN_BF16 = os.environ.get("GDN_BF16", "0") == "1"
+
+
+def _is_gdn_weight_key(key: str) -> bool:
+    """True for GDN linear-attention projection weights that benefit from bf16 storage."""
+    return "linear_attn" in key and any(
+        p in key for p in ("in_proj_qkv", "in_proj_a", "in_proj_b", "in_proj_z",
+                           "out_proj", "conv1d")
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -635,6 +650,21 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
         elif dtype_str == "BF16":
             u16 = np.frombuffer(raw, dtype=np.uint16)
+            if _GDN_BF16 and _is_gdn_weight_key(name):
+                # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
+                # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
+                # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
+                u16_flat = np.ascontiguousarray(u16.ravel())
+                if u16_flat.size % 2 != 0:
+                    u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
+                arr_u32 = u16_flat.view(np.uint32)
+                data_u32 = _pad4(arr_u32.tobytes())
+                buf_bf16 = wgpu_device.create_buffer(size=len(data_u32), usage=usage)
+                wgpu_device.queue.write_buffer(buf_bf16, 0, data_u32)
+                _pending_bytes[0] += len(data_u32)
+                _maybe_flush()
+                weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
+                                                        shape=tuple(shape), dtype="u32")
             f32 = (u16.astype(np.uint32) << 16).view(np.float32)
             arr = np.clip(f32, -65504.0, 65504.0).reshape(shape).astype(np.float16)
         elif dtype_str == "F32":

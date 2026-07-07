@@ -393,7 +393,14 @@ if __name__ == "__main__":
     parser.add_argument("--prompt", default="What is 2+2?", help="Input prompt")
     parser.add_argument("--max_tokens", type=int, default=64)
     parser.add_argument("--temperature", type=float, default=0.0, help="0=greedy")
+    parser.add_argument("--gdn_bf16", action="store_true", default=False,
+                        help="Experimental: store Qwen3.5 GDN projection weights as bf16 "
+                             "(same exponent range as f32, avoids f16 clipping)")
     args = parser.parse_args()
+
+    # Set GDN_BF16 before model loading so weight_loader.py picks it up at import time.
+    if args.gdn_bf16:
+        os.environ["GDN_BF16"] = "1"
 
     model_dir = resolve_model_dir(args.model)
     run(model_dir, args.prompt, args.max_tokens, args.temperature)

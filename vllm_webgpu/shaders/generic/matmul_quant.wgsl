@@ -23,6 +23,7 @@ override GLOBAL_SCALE: f32 = 1.0;  // per-tensor scale for USE_QUANT=5 (FP8) and
 // 8-barrier workgroup reduction finalises the partial sums.
 // SPLIT_K=0: legacy row-per-thread. Dispatch ((N+255)/256, 1, 1) workgroups.
 override SPLIT_K: u32   = 1u;
+override USE_BF16: u32  = 0u;      // 1=bf16 packed u16→u32 weights (GDN projection layers)
 
 @group(0) @binding(0) var<storage, read>       x       : array<f16>;  // [K]
 @group(0) @binding(1) var<storage, read>       weights : array<u32>;  // raw bytes as u32
@@ -317,15 +318,25 @@ fn main(
                 k_nf4 += 512u;
             }
         } else {
-            // USE_QUANT=0: f16 split-K — 512 F16 elements (256 u32) per step.
+            // USE_QUANT=0: f16 or bf16 split-K — 512 elements (256 u32) per step.
             // Coalesced: all threads read consecutive u32 from weights[row, ...].
+            // USE_BF16=1: weights hold raw bf16 u16 pairs packed into u32;
+            //   decode via bitcast<f32>(word << 16u) — preserves 8-bit bf16 exponent.
             let row_base = row * K;
             var k = tid * 2u;
             loop {
                 if (k >= K) { break; }
-                let wp = unpack2x16float(weights[(row_base + k) / 2u]);
-                acc += wp.x * f32(x[k]);
-                if (k + 1u < K) { acc += wp.y * f32(x[k + 1u]); }
+                let raw_w = weights[(row_base + k) / 2u];
+                var wx: f32; var wy: f32;
+                if (USE_BF16 == 1u) {
+                    wx = bitcast<f32>((raw_w & 0xFFFFu) << 16u);
+                    wy = bitcast<f32>((raw_w >> 16u) << 16u);
+                } else {
+                    let wp = unpack2x16float(raw_w);
+                    wx = wp.x; wy = wp.y;
+                }
+                acc += wx * f32(x[k]);
+                if (k + 1u < K) { acc += wy * f32(x[k + 1u]); }
                 k += 512u;
             }
         }
@@ -433,19 +444,36 @@ fn main(
             acc += block_acc * scale;
         }
     } else {
-        // f16 path: 8-element unroll, 4 consecutive u32 loads per iteration.
+        // f16/bf16 path: 8-element unroll, 4 consecutive u32 loads per iteration.
         // K must be divisible by 8 (all practical models satisfy this).
         // Each iteration issues 4 128-bit-aligned word loads — optimal for Metal.
+        // USE_BF16=1: weights hold raw bf16 u16 pairs packed into u32;
+        //   decode via bitcast<f32>(word << 16u) — preserves 8-bit bf16 exponent.
         for (var k = 0u; k < K; k += 8u) {
             let base = (row * K + k) / 2u;
-            let w0 = unpack2x16float(weights[base]);
-            let w1 = unpack2x16float(weights[base + 1u]);
-            let w2 = unpack2x16float(weights[base + 2u]);
-            let w3 = unpack2x16float(weights[base + 3u]);
-            acc += w0.x * f32(x[k])       + w0.y * f32(x[k + 1u]);
-            acc += w1.x * f32(x[k + 2u]) + w1.y * f32(x[k + 3u]);
-            acc += w2.x * f32(x[k + 4u]) + w2.y * f32(x[k + 5u]);
-            acc += w3.x * f32(x[k + 6u]) + w3.y * f32(x[k + 7u]);
+            if (USE_BF16 == 1u) {
+                let r0 = weights[base];
+                let r1 = weights[base + 1u];
+                let r2 = weights[base + 2u];
+                let r3 = weights[base + 3u];
+                acc += bitcast<f32>((r0 & 0xFFFFu) << 16u) * f32(x[k]);
+                acc += bitcast<f32>((r0 >> 16u) << 16u) * f32(x[k + 1u]);
+                acc += bitcast<f32>((r1 & 0xFFFFu) << 16u) * f32(x[k + 2u]);
+                acc += bitcast<f32>((r1 >> 16u) << 16u) * f32(x[k + 3u]);
+                acc += bitcast<f32>((r2 & 0xFFFFu) << 16u) * f32(x[k + 4u]);
+                acc += bitcast<f32>((r2 >> 16u) << 16u) * f32(x[k + 5u]);
+                acc += bitcast<f32>((r3 & 0xFFFFu) << 16u) * f32(x[k + 6u]);
+                acc += bitcast<f32>((r3 >> 16u) << 16u) * f32(x[k + 7u]);
+            } else {
+                let w0 = unpack2x16float(weights[base]);
+                let w1 = unpack2x16float(weights[base + 1u]);
+                let w2 = unpack2x16float(weights[base + 2u]);
+                let w3 = unpack2x16float(weights[base + 3u]);
+                acc += w0.x * f32(x[k])       + w0.y * f32(x[k + 1u]);
+                acc += w1.x * f32(x[k + 2u]) + w1.y * f32(x[k + 3u]);
+                acc += w2.x * f32(x[k + 4u]) + w2.y * f32(x[k + 5u]);
+                acc += w3.x * f32(x[k + 6u]) + w3.y * f32(x[k + 7u]);
+            }
         }
     }
 

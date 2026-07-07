@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -117,6 +118,11 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # GEMMA_NORM=0 for MLX format (weights are absolute, mean≈1.0 — +1 already baked in).
         # Detected after load_weights() by checking the first layernorm weight mean.
         self._gemma_norm: int = 1  # default; updated in _postprocess_weights
+
+        # GDN_BF16: when set, GDN projection matmuls use bf16-preserved weight buffers
+        # (key + "__bf16") instead of the default f16 version. Falls back silently if
+        # the __bf16 buffer is absent (model not BF16 or flag off).
+        self._gdn_bf16: bool = os.environ.get("GDN_BF16", "0") == "1"
 
         from vllm_webgpu.config import get_config
         self.block_size: int = get_config().block_size
@@ -454,11 +460,20 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             vh = self._lin_v_heads
             vdh = self._lin_v_dim
 
+            # Helper: resolve weight buffer, preferring the bf16-preserved variant when
+            # GDN_BF16 is active. Returns (buffer, use_bf16_flag).
+            def _gdn_w(key: str):
+                if self._gdn_bf16:
+                    bf16_buf = self.weights.get(key + "__bf16")
+                    if bf16_buf is not None:
+                        return bf16_buf, 1
+                return self.weights[key], 0
+
             # 2. QKV projection: [hidden] → [conv_dim]
+            _w_qkv, _bf16_qkv = _gdn_w(f"{p}.in_proj_qkv.weight")
             self._dispatch("matmul_quant",
-                           [normed_x, self.weights[f"{p}.in_proj_qkv.weight"],
-                            sc["dummy_scales"], sc["qkv_buf"]],
-                           {"K": hidden, "N": cd, "USE_QUANT": 0},
+                           [normed_x, _w_qkv, sc["dummy_scales"], sc["qkv_buf"]],
+                           {"K": hidden, "N": cd, "USE_QUANT": 0, "USE_BF16": _bf16_qkv},
                            (cd, 1, 1))
 
             # 3. Causal conv step: updates conv_state in-place, writes qkv_conv
@@ -469,24 +484,24 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            ((cd + 255) // 256, 1, 1))
 
             # 4. a projection: normed → [K_HEADS] (dt for decay)
+            _w_a, _bf16_a = _gdn_w(f"{p}.in_proj_a.weight")
             self._dispatch("matmul_quant",
-                           [normed_x, self.weights[f"{p}.in_proj_a.weight"],
-                            sc["dummy_scales"], sc["a_buf"]],
-                           {"K": hidden, "N": kh, "USE_QUANT": 0},
+                           [normed_x, _w_a, sc["dummy_scales"], sc["a_buf"]],
+                           {"K": hidden, "N": kh, "USE_QUANT": 0, "USE_BF16": _bf16_a},
                            (kh, 1, 1))
 
             # 5a. b projection: normed → [K_HEADS] (outer-product gate)
+            _w_b, _bf16_b = _gdn_w(f"{p}.in_proj_b.weight")
             self._dispatch("matmul_quant",
-                           [normed_x, self.weights[f"{p}.in_proj_b.weight"],
-                            sc["dummy_scales"], sc["b_buf"]],
-                           {"K": hidden, "N": kh, "USE_QUANT": 0},
+                           [normed_x, _w_b, sc["dummy_scales"], sc["b_buf"]],
+                           {"K": hidden, "N": kh, "USE_QUANT": 0, "USE_BF16": _bf16_b},
                            (kh, 1, 1))
 
             # 5b. z gate projection: normed → [val_dim]
+            _w_z, _bf16_z = _gdn_w(f"{p}.in_proj_z.weight")
             self._dispatch("matmul_quant",
-                           [normed_x, self.weights[f"{p}.in_proj_z.weight"],
-                            sc["dummy_scales"], sc["z_buf"]],
-                           {"K": hidden, "N": vd, "USE_QUANT": 0},
+                           [normed_x, _w_z, sc["dummy_scales"], sc["z_buf"]],
+                           {"K": hidden, "N": vd, "USE_QUANT": 0, "USE_BF16": _bf16_z},
                            (vd, 1, 1))
 
             # 6. GDN state update: updates ssm_state in-place, writes gdn_out
@@ -508,10 +523,10 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            (vh, 1, 1))
 
             # 8. Output projection: [val_dim] → [hidden]
+            _w_out, _bf16_out = _gdn_w(f"{p}.out_proj.weight")
             self._dispatch("matmul_quant",
-                           [sc["gated"], self.weights[f"{p}.out_proj.weight"],
-                            sc["dummy_scales"], sc["o_proj_out"]],
-                           {"K": vd, "N": hidden, "USE_QUANT": 0},
+                           [sc["gated"], _w_out, sc["dummy_scales"], sc["o_proj_out"]],
+                           {"K": vd, "N": hidden, "USE_QUANT": 0, "USE_BF16": _bf16_out},
                            (hidden, 1, 1))
 
             # 9+10 fused: add(x, attn_out, residual) + rms_norm(residual, post_attn_norm) → ffn_normed
