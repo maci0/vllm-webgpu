@@ -14,8 +14,9 @@ try:
     from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
     from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase   # vllm>=0.24
 except ImportError:
+    from collections import namedtuple as _namedtuple
     VllmConfig = Any  # type: ignore[assignment,misc]
-    CompilationTimes = Any  # type: ignore[assignment,misc]
+    CompilationTimes = _namedtuple("CompilationTimes", ["language_model", "encoder"])  # type: ignore[assignment,misc]
 
     def set_random_seed(seed: int) -> None:  # type: ignore[misc]
         pass
@@ -118,9 +119,7 @@ class WebGPUWorker(WorkerBase):
         start = time.perf_counter()
         self.model_runner.warm_up()
         elapsed = time.perf_counter() - start
-        if CompilationTimes is not Any:
-            return CompilationTimes(language_model=elapsed, encoder=0.0)
-        return elapsed
+        return CompilationTimes(language_model=elapsed, encoder=0.0)
 
     def execute_model(self, scheduler_output: Any) -> Any:
         return self.model_runner.execute_model(scheduler_output)
