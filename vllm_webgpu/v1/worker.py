@@ -11,12 +11,10 @@ try:
     # Update this comment and pyproject.toml when bumping the vLLM version.
     from vllm.config import VllmConfig
     from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
-    from vllm.tasks import SupportedTask
     from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
     from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase   # vllm>=0.24
 except ImportError:
     VllmConfig = Any  # type: ignore[assignment,misc]
-    SupportedTask = Any  # type: ignore[assignment,misc]
     CompilationTimes = Any  # type: ignore[assignment,misc]
 
     def set_random_seed(seed: int) -> None:  # type: ignore[misc]
@@ -140,7 +138,7 @@ class WebGPUWorker(WorkerBase):
     def get_cache_block_size_bytes(self) -> int:
         return self.model_runner.get_cache_block_size_bytes()
 
-    def get_supported_tasks(self) -> tuple:
+    def get_supported_tasks(self) -> tuple[str, ...]:
         return self.model_runner.supported_worker_tasks()
 
     def add_lora(self, lora_request: Any) -> bool:
