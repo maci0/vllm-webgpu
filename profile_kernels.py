@@ -24,10 +24,7 @@ import wgpu
 from vllm_webgpu.webgpu.device import WebGPUDevice
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 from vllm_webgpu.utils import SHADERS_DIR
-from vllm_webgpu.quant.weight_loader import (
-    detect_weight_format,
-    load_safetensors_weights_sharded, load_safetensors_weights,
-)
+from vllm_webgpu.quant.weight_loader import detect_weight_format
 from vllm_webgpu.models.base import BaseWebGPUModel
 
 wgpu_dev = WebGPUDevice.initialize()
