@@ -26,7 +26,26 @@ def _register() -> str | None:
     try:
         import vllm.envs
         from vllm_webgpu.envs import environment_variables
-        vllm.envs.environment_variables.update(environment_variables)
+        target = vllm.envs.environment_variables
+        for key, factory in environment_variables.items():
+            if key in target:
+                existing = target[key]
+                if existing is not factory:
+                    logger.warning(
+                        "vllm_webgpu: env var %r already registered with a "
+                        "different factory; skipping to avoid overwrite",
+                        key,
+                    )
+            else:
+                try:
+                    target[key] = factory
+                except TypeError:
+                    logger.warning(
+                        "vllm_webgpu: vllm.envs.environment_variables is "
+                        "read-only; could not register %r",
+                        key,
+                    )
+                    break
     except ImportError:
         pass
 
