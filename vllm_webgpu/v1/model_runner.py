@@ -388,19 +388,22 @@ class WebGPUModelRunner:
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
-            # Batch prefill: send all T prompt tokens in a single forward() call
-            # if the model supports it (num_tokens > 1 path). Falls back gracefully
-            # to token-by-token if the model returns None.
-            T = len(tok_ids)
+            # Batch prefill: send the scheduled chunk of prompt tokens in a single
+            # forward() call. With chunked prefill enabled, num_scheduled_tokens
+            # limits how many tokens to process per step; the rest are stored in
+            # state and processed in subsequent steps via the cached-req path.
+            num_sched = scheduler_output.num_scheduled_tokens.get(rid, len(tok_ids))
+            T = min(num_sched, len(tok_ids))
+            chunk_toks = tok_ids[:T]
             slots = []
-            for i in range(T):
-                blk_idx = i // block_size
+            for idx in range(T):
+                blk_idx = idx // block_size
                 if blk_idx >= len(blk_ids):
                     raise RuntimeError(
-                        f"block table too short for req {rid}: token {i} needs block "
+                        f"block table too short for req {rid}: token {idx} needs block "
                         f"{blk_idx} but only {len(blk_ids)} blocks allocated"
                     )
-                slots.append(blk_ids[blk_idx] * block_size + (i % block_size))
+                slots.append(blk_ids[blk_idx] * block_size + (idx % block_size))
 
             class _BatchPM:
                 slot_mapping     = slots
@@ -408,7 +411,7 @@ class WebGPUModelRunner:
                 max_decode_seq_len = T
 
             last_logits = self.model.forward(
-                np.array(tok_ids, dtype=np.uint32),
+                np.array(chunk_toks, dtype=np.uint32),
                 np.arange(T, dtype=np.uint32),
                 _BatchPM(),
             )
@@ -416,7 +419,9 @@ class WebGPUModelRunner:
             if last_logits is None:
                 continue
 
-            first_decode_tok = int(last_logits.argmax(axis=-1)[0]) if last_logits.shape[-1] > 1 else int(last_logits[0, 0])
+            # Use the last position's logits — that is the prediction for the
+            # first generated token after this chunk.
+            first_decode_tok = int(last_logits.argmax(axis=-1)[-1]) if last_logits.shape[-1] > 1 else int(last_logits[0, 0])
 
             # Compute logprobs for this prefill token if the request asked for them.
             lp_data = None
@@ -450,14 +455,23 @@ class WebGPUModelRunner:
             all_sampled.append(first_decode_tok)
             all_logprobs_data.append(lp_data)
             # Store last sampled token; decode path needs it (new_token_ids is empty without PP).
+            # When chunked prefill is active (T < len(tok_ids)), store the full prompt so
+            # subsequent chunks can be processed correctly via the cached-req path.
             self._req_state[rid] = {
-                "pos": len(tok_ids), "block_ids": blk_ids,
+                "pos": T, "block_ids": blk_ids,
                 "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
+                "all_prompt_tokens": tok_ids if T < len(tok_ids) else None,
             }
 
-        # ── Decode: cached requests ────────────────────────────────────────────
+        # ── Decode / chunked-prefill continuation: cached requests ─────────────
         # new_token_ids is empty without pipeline parallelism (vLLM design).
         # Use last_tok stored in _req_state from the previous step instead.
+        #
+        # Chunked prefill: when a prompt spans multiple scheduling steps, vLLM
+        # places the request in scheduled_cached_reqs for the second and later
+        # chunks, with is_context_phase() == True. We detect this via
+        # num_output_tokens == 0 and the presence of all_prompt_tokens in state,
+        # then run a prefill forward pass for the next chunk rather than a decode.
         #
         # Multi-sequence batching is not supported: one forward() call per request.
         # Why true batching can't be done without architecture changes:
@@ -472,15 +486,107 @@ class WebGPUModelRunner:
         # table (or a flash-attn style per-sequence loop inside the shader).
         if hasattr(cached, "req_ids") and cached.req_ids:
             new_block_ids = getattr(cached, "new_block_ids", [])
+            resumed_req_ids = getattr(cached, "resumed_req_ids", set())
 
             for i, rid in enumerate(cached.req_ids):
                 state = self._req_state.get(rid, {"pos": 0, "block_ids": [], "last_tok": 0})
-                tok = state["last_tok"]
                 pos = state["pos"]
                 blk_ids = list(state.get("block_ids", []))
                 num_logprobs = state.get("num_logprobs")
-                if new_block_ids and i < len(new_block_ids) and new_block_ids[i]:
-                    blk_ids.extend(self._flat_block_ids(new_block_ids[i]))
+                all_prompt = state.get("all_prompt_tokens")
+
+                # Update block table: preempted/resumed requests replace their
+                # block table entirely; others append newly allocated blocks.
+                cur_new_bids = (new_block_ids[i]
+                                if new_block_ids and i < len(new_block_ids) and new_block_ids[i]
+                                else None)
+                if cur_new_bids is not None:
+                    flat_new = self._flat_block_ids(cur_new_bids)
+                    if rid in resumed_req_ids:
+                        blk_ids = flat_new
+                    else:
+                        blk_ids.extend(flat_new)
+
+                # Detect chunked-prefill continuation: request is still in the
+                # context (prefill) phase and has remaining prompt tokens stored.
+                is_context = (
+                    all_prompt is not None
+                    and pos < len(all_prompt)
+                    and (
+                        not hasattr(cached, "num_output_tokens")
+                        or (i < len(cached.num_output_tokens)
+                            and cached.num_output_tokens[i] == 0)
+                    )
+                )
+
+                if is_context:
+                    # Run a prefill forward pass for the next prompt chunk.
+                    num_sched = scheduler_output.num_scheduled_tokens.get(rid, len(all_prompt) - pos)
+                    chunk_end = min(pos + num_sched, len(all_prompt))
+                    chunk_toks = all_prompt[pos:chunk_end]
+
+                    if not chunk_toks:
+                        logger.warning("req %s: context phase but no chunk tokens; skipping", rid)
+                        continue
+
+                    slots = []
+                    for global_idx in range(pos, chunk_end):
+                        blk_idx = global_idx // block_size
+                        if blk_idx >= len(blk_ids):
+                            raise RuntimeError(
+                                f"block table too short for req {rid}: token {global_idx} "
+                                f"needs block {blk_idx} but only {len(blk_ids)} allocated"
+                            )
+                        slots.append(blk_ids[blk_idx] * block_size + (global_idx % block_size))
+
+                    class _ChunkPM:
+                        slot_mapping      = slots
+                        block_tables      = [np.array(blk_ids, dtype=np.uint32)]
+                        max_decode_seq_len = chunk_end
+
+                    logits = self.model.forward(
+                        np.array(chunk_toks, dtype=np.uint32),
+                        np.arange(pos, chunk_end, dtype=np.uint32),
+                        _ChunkPM(),
+                    )
+
+                    if logits is None:
+                        continue
+
+                    self._last_logits = logits
+
+                    # Predict the next token from the last position in this chunk.
+                    if logits.shape[-1] > 1:
+                        stok = int(logits.argmax(axis=-1)[-1])
+                    else:
+                        stok = int(logits[0, 0])
+
+                    lp_data = None
+                    if num_logprobs is not None:
+                        if logits.shape[-1] == 1 and hasattr(self.model, "logit_readback"):
+                            full = self.model.logit_readback()
+                        elif logits.shape[-1] > 1:
+                            full = logits
+                        else:
+                            full = None
+                            logger.warning(
+                                "req %s: logprobs requested but model has no logit_readback", rid
+                            )
+                        if full is not None:
+                            lp_data = self._compute_request_logprobs(full[-1], stok, num_logprobs)
+
+                    self._req_state[rid] = {
+                        "pos": chunk_end, "block_ids": blk_ids,
+                        "last_tok": stok, "num_logprobs": num_logprobs,
+                        "all_prompt_tokens": all_prompt if chunk_end < len(all_prompt) else None,
+                    }
+                    all_req_ids.append(rid)
+                    all_sampled.append(stok)
+                    all_logprobs_data.append(lp_data)
+                    continue
+
+                # Decode step: forward one token at the current position.
+                tok = state["last_tok"]
 
                 if pos // block_size >= len(blk_ids):
                     raise RuntimeError(
@@ -525,6 +631,7 @@ class WebGPUModelRunner:
                 self._req_state[rid] = {
                     "pos": pos + 1, "block_ids": blk_ids,
                     "last_tok": stok, "num_logprobs": num_logprobs,
+                    "all_prompt_tokens": None,
                 }
                 all_req_ids.append(rid)
                 all_sampled.append(stok)
