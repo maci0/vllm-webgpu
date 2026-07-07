@@ -745,30 +745,19 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
                            (num_tokens, self.num_kv_heads, 1))
 
-            # Attention: fused flash_attn_decode for ctx >= threshold, three-pass fallback
-            # for short ctx where fine-grained parallelism (num_q_heads * ctx_len WGs)
-            # matters more than bandwidth reduction.
-            _FLASH_THRESH = 128
-            if ctx_len >= _FLASH_THRESH:
-                self._dispatch("flash_attn_decode",
-                               [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
-                               {"BLOCK_SIZE": self.block_size,
-                                "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads,
-                                "HEAD_DIM": self.head_dim,
-                                "CTX_LEN": ctx_len},
-                               (self.num_q_heads, 1, 1))
-            else:
-                self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                                "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
-                self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
-                               {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-                self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                                "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+            # Three-pass attention (always): num_q_heads*ctx_len WGs for attn_score
+            # gives much better GPU utilization than flash_attn_decode's num_q_heads WGs.
+            # On unified-memory GPUs bandwidth savings don't compensate for parallelism loss.
+            self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
+                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                            "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
+            self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
+                           {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+            self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
+                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                            "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
 
             # Output projection
             w_key = f"{p}.self_attn.o_proj.weight"
