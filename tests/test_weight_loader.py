@@ -315,3 +315,89 @@ def test_load_int8_no_scale(wgpu_device, tmp_path):
     entry = qmeta.get(base, {})
     assert entry.get("fmt") == "int8_gpu"
     assert entry.get("group_size") is None
+
+
+def _make_gptq_tensors(K: int, N: int, G: int):
+    """Build minimal GPTQ int4 tensors. qweight is (K//8, N), scales is (G, N), qzeros is (G, N//8)."""
+    qweight = np.random.randint(0, 2**31, size=(K // 8, N), dtype=np.int32)
+    scales = np.random.randn(G, N).astype(np.float16)
+    qzeros = np.zeros((G, N // 8), dtype=np.int32)
+    return qweight, scales, qzeros
+
+
+def _make_awq_tensors(K: int, N: int, G: int):
+    """Build minimal AWQ int4 tensors. qweight is (K, N//8), scales is (G, N), qzeros is (G, N//8)."""
+    qweight = np.random.randint(0, 2**31, size=(K, N // 8), dtype=np.int32)
+    scales = np.random.randn(G, N).astype(np.float16)
+    qzeros = np.zeros((G, N // 8), dtype=np.int32)
+    return qweight, scales, qzeros
+
+
+def test_gptq_with_qzeros_not_misidentified_as_awq(wgpu_device, tmp_path):
+    """Asymmetric GPTQ (has qzeros) must not be routed through the AWQ dequant path.
+
+    Before the fix, any qweight file containing .qzeros keys was labelled AWQ.
+    GPTQ qweight shape is (K//8, N); AWQ is (K, N//8). The shape check is definitive.
+
+    When correctly identified as GPTQ, the weight is CPU-dequantized via _dequant_gptq
+    and uploaded as plain F16 with shape (N, K). The CPU path does not write a
+    __quant_meta__ entry, but the weight's presence and shape confirm correct routing.
+    If the old AWQ path were taken, _dequant_awq would raise a shape mismatch (its K
+    and N calculations produce incompatible dimensions) and the weight would be absent.
+    """
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
+
+    K, N, G = 64, 256, 2   # GPTQ: qweight (8, 256), scales (2, 256), qzeros (2, 32)
+    base = "model.layers.0.self_attn.q_proj"
+    qweight, scales, qzeros = _make_gptq_tensors(K, N, G)
+
+    st_path = make_fake_safetensors(tmp_path, {
+        f"{base}.qweight": qweight,
+        f"{base}.scales": scales,
+        f"{base}.qzeros": qzeros,
+    })
+    weights = load_safetensors_weights(str(st_path), wgpu_device.wgpu_device)
+
+    w_key = f"{base}.weight"
+    # Weight must be present (AWQ path would throw a shape error and silently drop it).
+    assert w_key in weights, (
+        f"{w_key} not found — GPTQ with qzeros was likely misrouted through AWQ dequant; "
+        f"keys={list(weights.keys())}"
+    )
+    # Shape after CPU GPTQ dequant is (N, K) = (256, 64). AWQ dequant with these
+    # GPTQ shapes raises an exception (incompatible qzeros dims), so the presence
+    # and correct shape together confirm the right path was taken.
+    assert weights[w_key].shape == (N, K), (
+        f"Expected (N={N}, K={K}), got {weights[w_key].shape}"
+    )
+    assert weights[w_key].dtype == "f16"
+    # Must not be tagged as AWQ in quant_meta (GPU AWQ path is shape-gated).
+    qmeta = weights.get("__quant_meta__", {})
+    entry = qmeta.get(base, {})
+    assert entry.get("fmt") not in ("awq_sym", "awq"), (
+        f"Weight was incorrectly tagged as AWQ in quant_meta: {entry}"
+    )
+
+
+def test_awq_identified_by_shape(wgpu_device, tmp_path):
+    """AWQ format is correctly detected via qweight/scales shape cross-reference."""
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
+
+    K, N, G = 256, 64, 2   # AWQ: qweight (256, 8), scales (2, 64), qzeros (2, 8)
+    base = "model.layers.0.self_attn.q_proj"
+    qweight, scales, qzeros = _make_awq_tensors(K, N, G)
+
+    st_path = make_fake_safetensors(tmp_path, {
+        f"{base}.qweight": qweight,
+        f"{base}.scales": scales,
+        f"{base}.qzeros": qzeros,
+    })
+    weights = load_safetensors_weights(str(st_path), wgpu_device.wgpu_device)
+
+    w_key = f"{base}.weight"
+    assert w_key in weights, f"{w_key} not found; keys={list(weights.keys())}"
+    qmeta = weights.get("__quant_meta__", {})
+    entry = qmeta.get(base, {})
+    assert entry.get("fmt") in ("awq_sym", "awq"), (
+        f"AWQ model not identified correctly: fmt={entry.get('fmt')!r}"
+    )

@@ -292,7 +292,26 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
 
 def _is_awq_format(header: dict) -> bool:
-    return any(k.endswith(".qweight") and "qzeros" in "\n".join(header) for k in header)
+    """Return True if header looks like AWQ (qweight shape is (K, N//8)).
+
+    AWQ packs 8 int4 along the output (N) axis, so qweight.shape[-1] * 8 == scales.shape[-1].
+    GPTQ packs along the input (K) axis, so qweight.shape[-1] == scales.shape[-1].
+    Both may have qzeros, so qzeros presence alone does not distinguish them.
+    """
+    for k in header:
+        if k == "__metadata__" or not k.endswith(".qweight"):
+            continue
+        qw_shape = tuple(header[k]["shape"])
+        base = k[:-len(".qweight")]
+        sc_key = f"{base}.scales"
+        if sc_key in header:
+            sc_shape = tuple(header[sc_key]["shape"])
+            return bool(sc_shape and qw_shape and sc_shape[-1] == qw_shape[-1] * 8)
+        # Fall back to shape ratio if no scales key found.
+        if len(qw_shape) == 2:
+            return qw_shape[0] > qw_shape[1]
+        break
+    return False
 
 
 def _is_gptq_format(header: dict) -> bool:
@@ -439,7 +458,28 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
     )
 
     if has_qweight:
-        fmt = "awq" if any(k.endswith(".qzeros") for k in header) else "gptq"
+        # Distinguish AWQ from GPTQ by qweight shape, not qzeros presence.
+        # Both formats may have qzeros. The packing axis differs:
+        #   GPTQ: qweight = (K//8, N), scales = (G, N)  → scales.shape[-1] == qweight.shape[-1]
+        #   AWQ:  qweight = (K, N//8), scales = (G, N)  → scales.shape[-1] == qweight.shape[-1] * 8
+        # Cross-referencing scales is definitive. If scales are absent, fall back
+        # to the shape ratio: AWQ has shape[0] > shape[1]; GPTQ has shape[0] < shape[1].
+        fmt = "gptq"
+        for _qw_key in header:
+            if _qw_key == "__metadata__" or not _qw_key.endswith(".qweight"):
+                continue
+            _qw_shape = tuple(header[_qw_key]["shape"])
+            _base = _qw_key[:-len(".qweight")]
+            _sc_key = f"{_base}.scales"
+            if _sc_key in header:
+                _sc_shape = tuple(header[_sc_key]["shape"])
+                if _sc_shape and _qw_shape and _sc_shape[-1] == _qw_shape[-1] * 8:
+                    fmt = "awq"
+            else:
+                # AWQ: shape[0] > shape[1] (K > N//8); GPTQ: shape[0] < shape[1] (K//8 < N).
+                if len(_qw_shape) == 2 and _qw_shape[0] > _qw_shape[1]:
+                    fmt = "awq"
+            break
     elif has_wp:
         fmt = "nvfp4"
     elif has_diffusion_nvfp4:
