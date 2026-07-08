@@ -203,10 +203,6 @@ class BaseWebGPUModel:
             raise ValueError(f"Unknown weight format for {path}")
         logger.info("Loaded %d weight tensors (%s format)", len(self.weights), fmt)
 
-    def _is_quantized(self, weight_key: str) -> bool:
-        """Return True if the weight is stored quantized (INT32) for GPU dequant."""
-        buf = self.weights.get(weight_key)
-        return buf is not None and getattr(buf, "dtype", "f16") == "i32"
 
     def _quant_info(self, base_key: str) -> dict:
         """Return quantization metadata for a weight base key, or empty dict."""
