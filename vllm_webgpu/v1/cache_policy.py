@@ -98,6 +98,7 @@ def allocate_kv_from_hf_config(
     hf_config,
     num_blocks: int,
     block_size: int,
+    model_config=None,
 ) -> None:
     """Allocate KV cache from a HuggingFace config object.
 
@@ -107,7 +108,13 @@ def allocate_kv_from_hf_config(
     Priority order:
       1. model._lp (populated at load time for heterogeneous-dim models)
       2. hf_config._layer_attention_params (absent for safetensors checkpoints)
-      3. Uniform allocation from hf_config scalar fields
+      3. Uniform allocation via model_config canonical accessors (when provided)
+         or raw hf_config scalar fields (standalone scripts without vLLM engine)
+
+    Pass model_config (a vLLM ModelConfig) whenever the vLLM engine is running.
+    Its get_head_size() and get_total_num_kv_heads() handle non-standard attribute
+    names across architectures (PLaMo2.1, Falcon, DeepSeek-MLA, etc.), keeping
+    this path consistent with get_kv_cache_spec().
     """
     lp_list = (
         getattr(model, "_lp", None)
@@ -122,11 +129,15 @@ def allocate_kv_from_hf_config(
         )
         return
 
-    num_kv_heads = hf_config.num_key_value_heads
-    head_dim = getattr(
-        hf_config, "head_dim",
-        hf_config.hidden_size // hf_config.num_attention_heads,
-    )
+    if model_config is not None:
+        num_kv_heads = model_config.get_total_num_kv_heads()
+        head_dim = model_config.get_head_size()
+    else:
+        num_kv_heads = hf_config.num_key_value_heads
+        head_dim = getattr(
+            hf_config, "head_dim",
+            hf_config.hidden_size // hf_config.num_attention_heads,
+        )
     # model._layer_types wins; fall back to hf_config fields used by different
     # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
     layer_types = (

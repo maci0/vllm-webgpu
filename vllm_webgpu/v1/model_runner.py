@@ -139,6 +139,7 @@ class WebGPUModelRunner:
             hf,
             num_blocks=num_blocks,
             block_size=block_size,
+            model_config=mc,
         )
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
