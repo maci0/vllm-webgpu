@@ -150,6 +150,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 "ROPE_BASE": float(self.rope_theta),
                 "LN_ROPE_BASE": ln_rope,
                 "USE_FREQ_BUF": int(self._use_freq_buf),
+                "ATTN_SCALE": self._yarn_mscale,
             }
 
             for src, dst, n_heads, norm_w, in_off in [
