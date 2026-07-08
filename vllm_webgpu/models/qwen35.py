@@ -153,7 +153,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             "ids":      mk(T * 4),
             "pos":      mk(T * 4),
             "slot_map": mk(T * 4),
-            "bt":       mk(4096 * 4),  # block table: 4096 blocks = 65536 tokens
+            "bt":       mk(max(4096, (max_ctx + self.block_size - 1) // self.block_size) * 4),
             "x":        mk(T * H * 2),
             "norm_out": mk(T * H * 2),
             "logits":   mk(T * V * 2),
