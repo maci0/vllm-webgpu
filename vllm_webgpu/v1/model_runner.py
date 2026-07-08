@@ -267,10 +267,14 @@ class WebGPUModelRunner:
         if num_logprobs < 0:
             num_logprobs = log_probs.size
         k = min(num_logprobs, log_probs.size)
-        top_ids = np.argpartition(log_probs, -k)[-k:]
-        order = np.argsort(log_probs[top_ids])[::-1]
-        top_ids = top_ids[order].astype(np.int32)
-        top_lp = log_probs[top_ids].astype(np.float32)
+        if k == 0:
+            top_ids = np.array([], dtype=np.int32)
+            top_lp = np.array([], dtype=np.float32)
+        else:
+            top_ids = np.argpartition(log_probs, -k)[-k:]
+            order = np.argsort(log_probs[top_ids])[::-1]
+            top_ids = top_ids[order].astype(np.int32)
+            top_lp = log_probs[top_ids].astype(np.float32)
         rank = int((log_probs >= log_probs[sampled_tok]).sum())
 
         # Ensure the sampled token is at slot 0.  For non-greedy requests the
