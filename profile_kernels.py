@@ -180,7 +180,7 @@ if stats:
     attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
     ffn_w = 2 * (hid * inter_sz * 3)  # gate, up, down
     total_w_mb = (attn_w + ffn_w) * num_layers / 1e6
-    bw_util_gb_s = total_w_mb * 1000 / total  # GB/s
+    bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
     print(f"  Weight data moved: {total_w_mb:.0f} MB")
     print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (M3 Peak: ~200-400 GB/s)")
     print(f"  BW utilization: {bw_util_gb_s/300*100:.1f}%")
