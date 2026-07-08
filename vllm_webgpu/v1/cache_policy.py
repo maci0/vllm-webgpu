@@ -127,7 +127,8 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
         )
         return available
 
-    # Explicit fraction: user asked for `memory_fraction` of device total for KV.
-    available = int(total * config.memory_fraction) - model_mem - OVERHEAD_BYTES
+    # Explicit fraction: scale the free memory (after model weights and overhead)
+    # by memory_fraction. A value of 1.0 is equivalent to the auto path.
+    available = int((total - model_mem - OVERHEAD_BYTES) * config.memory_fraction)
     return max(available, 0)
 
