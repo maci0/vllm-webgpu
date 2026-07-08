@@ -353,16 +353,11 @@ def _detect_mx_quant(model_dir: Path) -> str:
             pass
     config_json = model_dir / "config.json"
     if config_json.exists():
-        try:
-            with open(config_json) as f:
-                cfg = json.load(f)
-            qt = cfg.get("quantization_config", {}).get("quant_type", "")
-            if qt.lower() == "mxfp4":
-                return "mxfp4"
-            if qt.lower() == "mxfp8":
-                return "mxfp8"
-        except Exception:
-            pass
+        qt = _load_quant_cfg(config_json).get("quant_type", "").lower()
+        if qt == "mxfp4":
+            return "mxfp4"
+        if qt == "mxfp8":
+            return "mxfp8"
     return ""
 
 
