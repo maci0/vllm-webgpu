@@ -74,63 +74,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
-    def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
-        """Override: size all T-dependent scratch buffers for the full canvas length.
+    def _scratch_token_count(self) -> int:
+        return getattr(self.model_config, "canvas_length", 256)
 
-        Allocates _pre and _sc directly with T=canvas_length from the start,
-        skipping the parent's T=1 allocation to avoid wasted GPU memory.
-        """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
-        T = getattr(self.model_config, "canvas_length", 256)
-        H = self.hidden_size
-        I_shared = self.intermediate_size
-        moe_inter = getattr(self.model_config, "moe_intermediate_size", I_shared)
-        I = max(I_shared, moe_inter)
-        V = self.vocab_size
-        NQ = self.num_q_heads
-        dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
-
-        def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, n, usage=rw)
-
-        # Initialize _pre buffers sized for the full canvas (T tokens)
-        self._pre: dict = {
-            "ids":      mk(T * 4),
-            "pos":      mk(T * 4),
-            "slot_map": mk(T * 4),
-            "bt":       mk(4096 * 4),
-            "x":        mk(T * H * 4),
-            "norm_out": mk(T * H * 2),
-            "logits":   mk(T * V * 2),
-            "capped":   mk(T * V * 2),
-        }
-
-        # Initialize _sc buffers sized for the full canvas (T tokens)
-        self._sc: dict = {
-            "normed":     mk(T * H * 2),
-            "qkv_buf":    mk(T * (max_q_dim + 2 * max_kv_dim) * 2),
-            "q_buf":      mk(T * max_q_dim * 2),
-            "k_buf":      mk(T * max_kv_dim * 2),
-            "v_buf":      mk(T * max_kv_dim * 2),
-            "v_normed":   mk(T * max_kv_dim * 2),
-            "q_rope":     mk(T * max_q_dim * 2),
-            "k_rope":     mk(T * max_kv_dim * 2),
-            "scores_buf": mk(NQ * max_ctx * 2),
-            "sm_buf":     mk(NQ * max_ctx * 2),
-            "attn_out":   mk(T * max_q_dim * 2),
-            "o_proj_out": mk(T * H * 2),
-            "ffn_normed": mk(T * H * 2),
-            "gate_buf":   mk(T * I * 2),
-            "up_buf":     mk(T * I * 2),
-            "ffn_act":    mk(T * I * 2),
-            "ffn_out":    mk(T * H * 2),
-            "h0":         mk(T * H * 4),
-            "h1":         mk(T * H * 4),
-            "h2":         mk(T * H * 4),
-        }
-        self._hstate: int = 0
+    def _scratch_inter_size(self) -> int:
+        moe_inter = getattr(self.model_config, "moe_intermediate_size", self.intermediate_size)
+        return max(self.intermediate_size, moe_inter)
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 

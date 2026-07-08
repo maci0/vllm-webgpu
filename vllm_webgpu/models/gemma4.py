@@ -129,15 +129,23 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
         self._ln_rope_theta: float = math.log(self.rope_theta)
 
+    def _scratch_token_count(self) -> int:
+        """Number of tokens to size T-dependent scratch buffers for. Override in subclasses."""
+        return 1
+
+    def _scratch_inter_size(self) -> int:
+        """Intermediate size for FFN scratch buffers. Override in subclasses."""
+        return self.intermediate_size
+
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Pre-allocate scratch buffers at maximum layer dimensions."""
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
         rw = self._rw_flags()
-        T = 1
+        T = self._scratch_token_count()
         H = self.hidden_size
-        I = self.intermediate_size
+        I = self._scratch_inter_size()
         NQ = self.num_q_heads
 
         def mk(n: int) -> "WebGPUBuffer":
