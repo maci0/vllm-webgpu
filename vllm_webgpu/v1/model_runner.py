@@ -136,8 +136,8 @@ class WebGPUModelRunner:
                 self.wgpu_device.wgpu_device, self.model, num_blocks, block_size, lp_list
             )
         else:
-            num_kv_heads = hf.num_key_value_heads
-            head_dim = getattr(hf, "head_dim", hf.hidden_size // hf.num_attention_heads)
+            num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
+            head_dim = self.vllm_config.model_config.get_head_size()
             layer_types = getattr(hf, "layer_types", None) or getattr(hf, "layers_block_type", None)
             allocate_kv_pool_hybrid(
                 self.wgpu_device.wgpu_device,
@@ -203,17 +203,18 @@ class WebGPUModelRunner:
                 spec[f"model.layers.{i}.self_attn"] = _make_spec(
                     lp["num_kv_heads"], lp["head_dim"])
         else:
-            head_size = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
+            head_size = self.vllm_config.model_config.get_head_size()
+            num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
             for i in range(mc.num_hidden_layers):
                 spec[f"model.layers.{i}.self_attn"] = _make_spec(
-                    mc.num_key_value_heads, head_size)
+                    num_kv_heads, head_size)
         return spec
 
     def get_cache_block_size_bytes(self) -> int:
         mc = self.vllm_config.model_config.hf_config
         block_size = self.webgpu_config.block_size
-        head_dim = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
-        num_kv_heads = mc.num_key_value_heads
+        head_dim = self.vllm_config.model_config.get_head_size()
+        num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
         # Use the maximum per-layer values when heterogeneous layer params are available
         # (e.g. Gemma4 models with mixed local/global attention dimensions).
         lp_list = (

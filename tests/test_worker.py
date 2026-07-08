@@ -254,6 +254,8 @@ def test_get_kv_cache_spec_pre_load_gemma4_uniform_fallback():
     from vllm_webgpu.config import WebGPUConfig
     vllm_config = MagicMock()
     vllm_config.model_config.hf_config = hf_config
+    vllm_config.model_config.get_head_size.return_value = 128
+    vllm_config.model_config.get_total_num_kv_heads.return_value = 4
 
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
     runner = MagicMock(spec=WebGPUModelRunner)
