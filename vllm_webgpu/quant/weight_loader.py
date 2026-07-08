@@ -1174,7 +1174,7 @@ def load_safetensors_weights(
                     if sc.ndim == 2:
                         sc = np.ascontiguousarray(sc.T)
 
-                    _upload_int32(qw, weight_key, weights)
+                    _upload_int32(qw, f"{base}.weight", weights)
                     _upload_f16(sc, f"{base}.weight.scales", weights)
                     weights["__quant_meta__"][base] = {
                         "fmt": "gptq_sym",
