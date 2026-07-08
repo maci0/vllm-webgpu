@@ -326,10 +326,16 @@ def _make_gptq_tensors(K: int, N: int, G: int):
 
 
 def _make_awq_tensors(K: int, N: int, G: int):
-    """Build minimal AWQ int4 tensors. qweight is (K, N//8), scales is (G, N), qzeros is (G, N//8)."""
+    """Build minimal AWQ int4 tensors. qweight is (K, N//8), scales is (G, N), qzeros is (G, N//8).
+
+    qzeros are packed int32 values where every nibble is 8 (zero_point=8), the
+    standard symmetric AWQ encoding. All-zero qzeros encode zero_point=0 and are
+    routed to CPU dequant; they are not valid test data for the GPU AWQ path.
+    """
     qweight = np.random.randint(0, 2**31, size=(K, N // 8), dtype=np.int32)
     scales = np.random.randn(G, N).astype(np.float16)
-    qzeros = np.zeros((G, N // 8), dtype=np.int32)
+    # 0x88888888 as signed int32 = -2004318072: each nibble is 0x8 = 8, meaning zero_point=8.
+    qzeros = np.full((G, N // 8), fill_value=-2004318072, dtype=np.int32)
     return qweight, scales, qzeros
 
 

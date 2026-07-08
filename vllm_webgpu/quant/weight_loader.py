@@ -243,13 +243,14 @@ def _awq_qzeros_symmetric(qzeros: np.ndarray) -> bool:
     AWQ packs zero-points with nibble order [0,4,1,5,2,6,3,7], i.e. bit
     offsets [0,16,4,20,8,24,12,28].  Symmetric checkpoints produced by
     standard AWQ have all zero-points equal to 8 (midpoint of uint4).
-    Some loaders also store all-zero qzeros, which effectively sets the
-    zero-point to 0 (a valid degenerate case the GPU shader handles).
+    All-zero qzeros encode zero_point=0, which the GPU shader cannot handle
+    correctly because the shader hardcodes `nibble - 8` and never receives
+    qzeros. Those checkpoints must fall through to CPU dequantisation.
     Any other value means the checkpoint uses per-group asymmetric zeros
-    and must fall back to CPU dequantisation.
+    and must also fall back to CPU dequantisation.
     """
     all_nibbles = (np.asarray(qzeros, dtype=np.int32)[..., np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF
-    return bool(np.all((all_nibbles == 0) | (all_nibbles == 8)))
+    return bool(np.all(all_nibbles == 8))
 
 
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
