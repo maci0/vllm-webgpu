@@ -719,7 +719,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
             layer_scalar = self._layer_scales[layer_idx]
             pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
-            if pfn_w is not None and not _pfn1_used_fallback:
+            if pfn_w is not None:
                 self._dispatch("rms_norm", [hidden_states_1, pfn_w, sc["normed"]], _rms,
                                (num_tokens, 1, 1))
                 hidden_states_1 = sc["normed"]
