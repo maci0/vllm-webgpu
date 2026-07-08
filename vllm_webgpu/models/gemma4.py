@@ -219,6 +219,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """Return the weight key prefix for layer i. Subclasses may override."""
         return f"model.layers.{layer_idx}"
 
+    def _embed_key(self) -> str:
+        """Return the weight key for the embedding table. Subclasses may override."""
+        return "model.embed_tokens.weight"
+
+    def _norm_key(self) -> str:
+        """Return the weight key for the final layer norm. Subclasses may override."""
+        return "model.norm.weight"
+
     def _load_layer_scales(self) -> None:
         """Cache layer_scalar values on CPU at load time.
 
@@ -296,13 +304,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         with self._batched_dispatch():
             # Embedding lookup → f32 output for f32 residual pipeline
             self._dispatch("embedding_lookup_f32",
-                           [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
+                           [self.weights[self._embed_key()], ids_buf, x_buf],
                            {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
 
             # Initial pre-norm for layer 0 (subsequent pre-norms are fused into each
             # layer's final add_f32_rms_norm dispatch).
             self._dispatch("rms_norm_f32in",
-                           [x_buf, self.weights["model.layers.0.input_layernorm.weight"], sc["normed"]],
+                           [x_buf, self.weights[f"{self._layer_key_prefix(0)}.input_layernorm.weight"], sc["normed"]],
                            _rms_base, (num_tokens, 1, 1))
 
             normed_x = sc["normed"]
@@ -312,11 +320,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # Final norm: reads f32 residual, writes f16 norm_out
             self._dispatch("rms_norm_f32in",
-                           [x_buf, self.weights["model.norm.weight"], norm_out],
+                           [x_buf, self.weights[self._norm_key()], norm_out],
                            _rms_base, (num_tokens, 1, 1))
 
             lm_head_w = self.weights.get("lm_head.weight",
-                                         self.weights["model.embed_tokens.weight"])
+                                         self.weights[self._embed_key()])
             # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
