@@ -9,13 +9,11 @@ try:
     # These paths have no stability guarantees; a patch release may move or rename
     # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
     # Update this comment and pyproject.toml when bumping the vLLM version.
-    from vllm.config import VllmConfig
     from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
     from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
     from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase   # vllm>=0.24
 except ImportError:
     from collections import namedtuple as _namedtuple
-    VllmConfig = Any  # type: ignore[assignment,misc]
     CompilationTimes = _namedtuple("CompilationTimes", ["language_model", "encoder"])  # type: ignore[assignment,misc]
 
     def set_random_seed(seed: int) -> None:  # type: ignore[misc]
