@@ -563,6 +563,14 @@ class WebGPUModelRunner:
             # Compute prompt logprobs for each prompt position when full logits
             # are available.  Position i uses logits[i] to evaluate tok_ids[i+1],
             # producing T-1 rows of top-K logprob data.
+            #
+            # For chunked prefill the prompt spans multiple scheduling steps.
+            # Only write prompt_logprobs_dict on the final chunk; for earlier
+            # chunks, save the partial LogprobsTensors in _req_state so the
+            # is_context continuation path can concatenate and emit the full
+            # tensor once all prompt positions are covered.
+            _chunk_is_final = (num_computed + T) >= len(tok_ids)
+            _in_progress_plp = None
             if num_prompt_logprobs is not None and T > 1:
                 if last_logits.shape[-1] > 1:  # full [T, vocab] logits
                     # Pass only the chunk token window so full_logits[i] and
@@ -573,7 +581,10 @@ class WebGPUModelRunner:
                         num_prompt_logprobs,
                     )
                     if pt is not None:
-                        prompt_logprobs_dict[rid] = pt
+                        if _chunk_is_final:
+                            prompt_logprobs_dict[rid] = pt
+                        else:
+                            _in_progress_plp = pt  # accumulate across continuation chunks
                 else:
                     logger.warning(
                         "req %s: prompt_logprobs requested but model returns argmax-only "
@@ -590,8 +601,10 @@ class WebGPUModelRunner:
             self._req_state[rid] = {
                 "pos": num_computed + T, "block_ids": blk_ids,
                 "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
+                "num_prompt_logprobs": num_prompt_logprobs,
                 "sampling_params": sp,
                 "all_prompt_tokens": tok_ids if T < len(tok_ids) else None,
+                "in_progress_prompt_logprobs": _in_progress_plp,
             }
 
         # ── Decode / chunked-prefill continuation: cached requests ─────────────
@@ -624,7 +637,9 @@ class WebGPUModelRunner:
                 pos = state["pos"]
                 blk_ids = list(state.get("block_ids", []))
                 num_logprobs = state.get("num_logprobs")
+                num_prompt_logprobs = state.get("num_prompt_logprobs")
                 all_prompt = state.get("all_prompt_tokens")
+                in_progress_plp = state.get("in_progress_prompt_logprobs")
 
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.
@@ -690,11 +705,35 @@ class WebGPUModelRunner:
 
                     lp_data = self._extract_logprob_data(logits, -1, stok, num_logprobs, rid)
 
+                    # Accumulate prompt logprobs across continuation chunks.
+                    # all_prompt[pos:chunk_end+1] gives the token window: logits[i]
+                    # predicts all_prompt[pos+i+1], so we cover positions [pos, chunk_end-1).
+                    # On the final chunk (chunk_end >= len(all_prompt)), commit the
+                    # full accumulated tensor to prompt_logprobs_dict.
+                    _chunk_is_final = chunk_end >= len(all_prompt)
+                    _updated_plp = in_progress_plp
+                    if num_prompt_logprobs is not None and logits.shape[-1] > 1 and (chunk_end - pos) > 1:
+                        chunk_tok_window = all_prompt[pos:chunk_end + 1]
+                        pt = self._compute_prompt_logprobs(logits, chunk_tok_window, num_prompt_logprobs)
+                        if pt is not None:
+                            if _updated_plp is None:
+                                _updated_plp = pt
+                            else:
+                                _updated_plp = LogprobsTensors(
+                                    torch.cat([_updated_plp.logprob_token_ids, pt.logprob_token_ids], dim=0),
+                                    torch.cat([_updated_plp.logprobs, pt.logprobs], dim=0),
+                                    torch.cat([_updated_plp.selected_token_ranks, pt.selected_token_ranks], dim=0),
+                                )
+                    if _chunk_is_final and _updated_plp is not None:
+                        prompt_logprobs_dict[rid] = _updated_plp
+
                     self._req_state[rid] = {
                         "pos": chunk_end, "block_ids": blk_ids,
                         "last_tok": stok, "num_logprobs": num_logprobs,
+                        "num_prompt_logprobs": num_prompt_logprobs,
                         "sampling_params": state.get("sampling_params"),
                         "all_prompt_tokens": all_prompt if chunk_end < len(all_prompt) else None,
+                        "in_progress_prompt_logprobs": None if _chunk_is_final else _updated_plp,
                     }
                     all_req_ids.append(rid)
                     all_sampled.append(stok)
