@@ -121,8 +121,8 @@ class WebGPUCachePlanner:
         model_mem = self.get_model_memory_usage()
 
         try:
-            import psutil
-            total: int | None = psutil.virtual_memory().total
+            from vllm.utils.mem_utils import get_cpu_memory
+            total: int | None = get_cpu_memory()
         except Exception:
             total = None
 
