@@ -16,6 +16,7 @@ def make_tiny_gemma4_config():
     cfg.final_logit_softcapping = 30.0
     cfg.architectures = ["Gemma3ForCausalLM"]
     cfg.ple_layer_indices = []
+    cfg.max_position_embeddings = 128
     return cfg
 
 

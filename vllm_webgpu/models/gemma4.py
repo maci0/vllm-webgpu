@@ -155,7 +155,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "ids":      mk(T * 4),         # [1] uint32 token id
             "pos":      mk(T * 4),         # [1] uint32 position
             "slot_map": mk(T * 4),         # [1] uint32 physical slot
-            "bt":       mk(4096 * 4),  # block table: 4096 blocks = 65536 tokens       # [512] uint32 block table
+            "bt":       mk(max(4096, (max_ctx + self.block_size - 1) // self.block_size) * 4),  # block table
             "x":        mk(T * H * 4),     # [1, H] f32 residual
             "norm_out": mk(T * H * 2),     # [1, H] f16 final norm
             "logits":   mk(T * V * 2),     # [1, V] f16 logits
