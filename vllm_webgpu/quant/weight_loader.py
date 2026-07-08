@@ -9,6 +9,7 @@ import numpy as np
 # AWQ nibble reorder: position i in int32 holds nibble at bit offset
 # [0, 16, 4, 20, 8, 24, 12, 28] = [0,4,1,5,2,6,3,7] * 4
 _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 16, 4, 20, 8, 24, 12, 28], dtype=np.int32)
+_F16_MAX: float = np.finfo(np.float16).max
 
 # When set, GDN projection weights with BF16 dtype are uploaded in their native
 # bf16 bit pattern (packed u16 pairs → u32) under key + "__bf16", in addition to
@@ -671,9 +672,9 @@ def load_safetensors_weights(
                     weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
                                                             shape=tuple(shape), dtype="u32")
                 f32 = t_bf16.to(torch.float32).numpy()
-                arr = np.clip(f32, -65504.0, 65504.0).astype(np.float16)
+                arr = np.clip(f32, -_F16_MAX, _F16_MAX).astype(np.float16)
             elif dtype_str == "F32":
-                arr = np.clip(sf.get_tensor(name).numpy(), -65504.0, 65504.0).astype(np.float16)
+                arr = np.clip(sf.get_tensor(name).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
             elif dtype_str == "I8":
                 # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
                 # Upload raw bytes; shader does sign extension via int8_to_f32().
@@ -999,7 +1000,7 @@ def load_safetensors_weights(
                     # FP8 E4M3 → F32, scale, clip, cast to F16
                     w_f32 = _fp8_e4m3_to_f32(w_u8)
                     w_f16 = np.ascontiguousarray(
-                        np.clip(w_f32 * block_scale_exp, -65504.0, 65504.0).astype(np.float16))
+                        np.clip(w_f32 * block_scale_exp, -_F16_MAX, _F16_MAX).astype(np.float16))
                     _upload_f16(w_f16, f"{base}.weight", weights)
                     logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
                 except Exception as exc:
@@ -1299,7 +1300,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
             # Not actually an int4 weight; upload as plain float.
             processed.discard(sk)
             processed.discard(bk)
-            arr = t.to(_torch.float16).numpy() if t.dtype == _torch.float16 else np.clip(t.to(_torch.float32).numpy(), -65504.0, 65504.0).astype(np.float16)
+            arr = t.to(_torch.float16).numpy() if t.dtype == _torch.float16 else np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
             local_key = wk.removeprefix("language_model.")
             weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
             continue
@@ -1310,7 +1311,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
         scales_f32 = s_t.to(_torch.float32).numpy()
         biases_f32 = b_t.to(_torch.float32).numpy()
         dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
-        arr = np.clip(dequant, -65504.0, 65504.0).astype(np.float16)
+        arr = np.clip(dequant, -_F16_MAX, _F16_MAX).astype(np.float16)
         local_key = base.removeprefix("language_model.") + ".weight"
         weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
 
@@ -1325,9 +1326,9 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                     continue
                 t = sf.get_tensor(key)
                 if t.dtype == _torch.bfloat16:
-                    arr = np.clip(t.to(_torch.float32).numpy(), -65504.0, 65504.0).astype(np.float16)
+                    arr = np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
                 elif t.dtype == _torch.float32:
-                    arr = np.clip(t.numpy(), -65504.0, 65504.0).astype(np.float16)
+                    arr = np.clip(t.numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
                 elif t.dtype == _torch.float16:
                     arr = t.numpy()
                 else:
