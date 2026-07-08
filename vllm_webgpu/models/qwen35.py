@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm_webgpu.models.llama import LlamaWebGPUModel, _gemv_wg
+from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -187,16 +188,30 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
 
         if self._is_moe:
             _moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
-            self._sc.update({
-                "moe_router_out":  mk(self._moe_num_experts * 2),  # [N_E] f16 router logits
-                "moe_topk_idx":    mk(self._moe_k * 4),             # [K] u32 expert indices
-                "moe_topk_w":      mk(self._moe_k * 4),             # [K] f32 softmax weights
-                "moe_expert_act":  mk(_moe_act_sz * 2),             # [max_inter] f16 gate_act output
-                "moe_expert_down": mk(H * 2),                       # [hidden] f16 down_proj output
-                "moe_w_buf":       mk(self._moe_k * 4),             # [K] f32 written before each encoder
-            })
+            self._moe_sc: dict[str, "WebGPUBuffer"] = {
+                "router_out":   mk(self._moe_num_experts * 2),  # [N_E] f16 router logits
+                "topk_idx":     mk(self._moe_k * 4),             # [K] u32 expert indices
+                "topk_w":       mk(self._moe_k * 4),             # [K] f32 softmax weights
+                "expert_gate":  mk(_moe_act_sz * 2),             # [max_inter] f16 gate proj
+                "expert_up":    mk(_moe_act_sz * 2),             # [max_inter] f16 up proj
+                "expert_act":   mk(_moe_act_sz * 2),             # [max_inter] f16 gate*up activated
+                "expert_out":   mk(H * 2),                       # [hidden] f16 accumulated output
+                "expert_tmp":   mk(H * 2),                       # [hidden] f16 per-expert temp
+                "moe_w_buf":    mk(self._moe_k * 4),             # [K] f32 written before each encoder
+                "dummy_scales": mk(8),                           # fallback scales binding
+            }
 
         self._hstate: int = 0
+
+    @property
+    def _num_experts(self) -> int:
+        """Alias expected by MixtralWebGPUModel._moe_ffn_layer."""
+        return self._moe_num_experts
+
+    @property
+    def _top_k(self) -> int:
+        """Alias expected by MixtralWebGPUModel._moe_ffn_layer."""
+        return self._moe_k
 
     def _postprocess_weights(self) -> None:
         """Post-load weight transformations for full-attn layers:
@@ -462,8 +477,8 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
 
             # 10. FFN (MoE or dense)
             if self._is_moe:
-                self._moe_ffn_dispatch(layer_idx, sc["ffn_normed"], sc["ffn_out"],
-                                       num_tokens)
+                self._moe_ffn_layer(sc["ffn_normed"], layer_idx)
+                ffn_out = self._moe_sc["expert_out"]
             else:
                 gw_k = f"{pp}.mlp.gate_proj.weight"
                 uw_k = f"{pp}.mlp.up_proj.weight"
@@ -478,172 +493,42 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                                 sc["dummy_scales"], sc["ffn_out"]],
                                {"K": inter, "N": hidden, "USE_QUANT": 0},
                                (hidden, 1, 1))
+                ffn_out = sc["ffn_out"]
 
             if layer_idx < self.num_layers - 1:
                 next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
                 self._dispatch("add_rms_norm",
-                               [residual, sc["ffn_out"], next_w, out, sc["normed"]],
+                               [residual, ffn_out, next_w, out, sc["normed"]],
                                _rms_h, (num_tokens, 1, 1))
             else:
-                self._dispatch("add", [residual, sc["ffn_out"], out],
+                self._dispatch("add", [residual, ffn_out, out],
                                {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
         return sc["normed"], out
 
-    def _moe_ffn_dispatch(
+    def _moe_ffn_layer(
         self,
-        layer_idx: int,
         normed_x: "WebGPUBuffer",
-        out_buf: "WebGPUBuffer",
-        num_tokens: int,
+        layer_idx: int,
     ) -> None:
-        """MoE FFN: router → top-K selection (with submit/sync) → expert dispatch.
+        """MoE FFN for Qwen35: delegates to MixtralWebGPUModel._moe_ffn_layer.
 
-        Two-phase approach required because expert selection is data-dependent:
-          Phase A: dispatch router + topk_sort into the current encoder, then flush
-                   and sync so the CPU can read the selected expert indices.
-          Phase B: create a fresh encoder, dispatch the shared expert and the K
-                   selected experts with weighted accumulation into out_buf.
-
-        Caller's self._active_encoder is replaced with the new Phase B encoder on
-        return. Subsequent dispatches in the same layer method (add_rms_norm for
-        the residual connection) land in that new encoder, which is correct.
+        Uses Qwen35 weight key conventions (gate_proj/up_proj/down_proj) and
+        dispatches the always-active shared expert. Result accumulates into
+        self._moe_sc["expert_out"].
         """
-        dev = self.wgpu_device.wgpu_device
-        sc = self._sc
-        p = f"model.layers.{layer_idx}.mlp"
-        hidden = self.hidden_size
-        moe_inter = self._moe_inter
-        shared_inter = self._moe_shared_inter
-        N_E = self._moe_num_experts
-        K = self._moe_k
-
-        # ── Phase A: router + top-K (into current encoder) ───────────────────
-        # Router: normed_x [hidden] → moe_router_out [N_E] logits
-        rw_k = f"{p}.gate.weight"
-        uq_r = self._uq_for_key(rw_k)
-        qi_r = self._quant_extra(f"{p}.gate", uq_r)
-        extra_r = self._split_k_extra(uq_r)
-        self._dispatch(
-            "matmul_quant",
-            [normed_x, self.weights[rw_k],
-             self._scales_buf(rw_k, uq_r, sc["dummy_scales"]), sc["moe_router_out"]],
-            {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **extra_r, **qi_r},
-            _gemv_wg(N_E, uq_r),
+        MixtralWebGPUModel._moe_ffn_layer(
+            self, normed_x, layer_idx,
+            bsm_prefix="mlp",
+            router_subkey="gate",
+            gate_key="gate_proj",
+            up_key="up_proj",
+            down_key="down_proj",
+            expert_inter=self._moe_inter,
+            shared_expert_prefix="shared_expert",
+            shared_expert_inter=self._moe_shared_inter,
         )
-        # top-K selection + softmax normalization (single workgroup, thread 0 only)
-        self._dispatch(
-            "topk_sort",
-            [sc["moe_router_out"], sc["moe_topk_idx"], sc["moe_topk_w"]],
-            {"N_EXPERTS": N_E, "K": K},
-            (1, 1, 1),
-        )
-
-        # Flush current encoder and wait for GPU to complete the router + topk.
-        dev.queue.submit([self._active_encoder.finish()])
-        dev.queue.on_submitted_work_done_sync()
-
-        # Read topk indices and weights from GPU storage buffers.
-        # .to_numpy() creates an internal staging buffer, submits a copy, and maps.
-        raw_idx = sc["moe_topk_idx"].to_numpy().view(np.uint32)
-        raw_w   = sc["moe_topk_w"].to_numpy().view(np.float32)
-        expert_indices = raw_idx[:K].tolist()
-        expert_weights = raw_w[:K].tolist()
-
-        logger.debug("L%02d MoE experts: %s  weights: %s",
-                     layer_idx, expert_indices,
-                     [f"{w:.3f}" for w in expert_weights])
-
-        # Write all K softmax weights into the combined weight buffer so the
-        # moe_accumulate shader can read w_buf[K_IDX] without per-dispatch overhead.
-        dev.queue.write_buffer(sc["moe_w_buf"].buf, 0,
-                               np.array(expert_weights, dtype=np.float32).tobytes())
-
-        # ── Phase B: expert dispatches (new encoder) ──────────────────────────
-        # Subsequent _dispatch() calls (including add_rms_norm after the FFN in
-        # the calling layer method) will land in this new encoder.
-        self._active_encoder = dev.create_command_encoder()
-
-        # Shared expert — always active, contributes with coefficient 1.0.
-        sp = f"{p}.shared_expert"
-        sgw_k = f"{sp}.gate_proj.weight"
-        if self.weights.get(sgw_k) is not None:
-            suw_k = f"{sp}.up_proj.weight"
-            sdw_k = f"{sp}.down_proj.weight"
-            self._dispatch(
-                "fused_gate_act",
-                [normed_x, self.weights[sgw_k], self.weights[suw_k],
-                 sc["moe_expert_act"]],
-                {"K": hidden, "N": shared_inter, "GELU": 0},
-                (shared_inter, 1, 1),
-            )
-            uq_sd = self._uq_for_key(sdw_k)
-            qi_sd = self._quant_extra(f"{sp}.down_proj", uq_sd)
-            extra_sd = self._split_k_extra(uq_sd)
-            self._dispatch(
-                "matmul_quant",
-                [sc["moe_expert_act"], self.weights[sdw_k],
-                 self._scales_buf(sdw_k, uq_sd, sc["dummy_scales"]), out_buf],
-                {"K": shared_inter, "N": hidden, "USE_QUANT": uq_sd,
-                 **extra_sd, **qi_sd},
-                _gemv_wg(hidden, uq_sd),
-            )
-        else:
-            # No shared expert weights loaded — zero-initialize out_buf so
-            # the first expert's accumulation starts from 0 (not garbage).
-            dev.queue.write_buffer(out_buf.buf, 0, b"\x00" * (hidden * 2))
-
-        # Selected experts — each contributes expert_weights[k_idx] * expert_out.
-        for k_idx, exp_idx in enumerate(expert_indices):
-            if expert_weights[k_idx] == 0.0:
-                continue
-            ep = f"{p}.experts.{exp_idx}"
-            egw_k = f"{ep}.gate_proj.weight"
-            if self.weights.get(egw_k) is None:
-                logger.debug("L%02d expert %d weights not loaded, skipping",
-                             layer_idx, exp_idx)
-                continue
-            euw_k = f"{ep}.up_proj.weight"
-            edw_k = f"{ep}.down_proj.weight"
-
-            # Gate + up projection with SiLU activation → moe_expert_act
-            self._dispatch(
-                "fused_gate_act",
-                [normed_x, self.weights[egw_k], self.weights[euw_k],
-                 sc["moe_expert_act"]],
-                {"K": hidden, "N": moe_inter, "GELU": 0},
-                (moe_inter, 1, 1),
-            )
-            # Down projection + weighted accumulate.
-            uq_ed = self._uq_for_key(edw_k)
-            if uq_ed == 0:
-                # f16: fuse GEMV and accumulate into a single dispatch.
-                self._dispatch(
-                    "moe_expert_down_accum",
-                    [sc["moe_expert_act"], self.weights[edw_k], out_buf, sc["moe_w_buf"]],
-                    {"K": moe_inter, "N": hidden, "K_IDX": k_idx},
-                    (hidden, 1, 1),
-                )
-            else:
-                # Quantized path: keep separate dispatches.
-                qi_ed = self._quant_extra(f"{ep}.down_proj", uq_ed)
-                extra_ed = self._split_k_extra(uq_ed)
-                self._dispatch(
-                    "matmul_quant",
-                    [sc["moe_expert_act"], self.weights[edw_k],
-                     self._scales_buf(edw_k, uq_ed, sc["dummy_scales"]),
-                     sc["moe_expert_down"]],
-                    {"K": moe_inter, "N": hidden, "USE_QUANT": uq_ed,
-                     **extra_ed, **qi_ed},
-                    _gemv_wg(hidden, uq_ed),
-                )
-                self._dispatch(
-                    "moe_accumulate",
-                    [out_buf, sc["moe_expert_down"], sc["moe_w_buf"]],
-                    {"N": hidden, "K_IDX": k_idx},
-                    ((hidden + 255) // 256, 1, 1),
-                )
 
     def _forward_moe(
         self,
@@ -658,7 +543,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         layer methods behave re-entrantly (their inner _batched_dispatch calls are
         no-ops when _active_encoder is already set).
 
-        _moe_ffn_dispatch() flushes and replaces _active_encoder mid-layer to
+        _moe_ffn_layer() flushes and replaces _active_encoder mid-layer to
         handle the CPU readback required for expert index selection.
         """
         dev = self.wgpu_device.wgpu_device
@@ -941,8 +826,8 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
     ) -> "WebGPUBuffer":
         """Route to MoE or dense FFN based on model config."""
         if self._is_moe:
-            self._moe_ffn_dispatch(layer_idx, normed_x, self._sc["ffn_out"], num_tokens)
-            return self._sc["ffn_out"]
+            self._moe_ffn_layer(normed_x, layer_idx)
+            return self._moe_sc["expert_out"]
         return super()._ffn_dispatch(normed_x, layer_idx, num_tokens)
 
     def _transformer_layer(

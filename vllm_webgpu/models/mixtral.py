@@ -179,13 +179,19 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         bsm_prefix: str = "block_sparse_moe",
         router_subkey: str = "gate",
         extra_gate_consts: dict | None = None,
+        gate_key: str = "w1",
+        up_key: str = "w3",
+        down_key: str = "w2",
+        expert_inter: int | None = None,
+        shared_expert_prefix: str | None = None,
+        shared_expert_inter: int | None = None,
     ) -> None:
-        """MoE FFN, parameterised over weight-key prefix and router key name.
+        """MoE FFN, parameterised over weight-key prefix, router key, and expert key names.
 
         Phase A: router + topk_sort dispatched into the current encoder, then
                  flushed and synced so the CPU can read selected expert indices.
-        Phase B: new encoder created; selected experts dispatched with
-                 weighted accumulation into _moe_sc["expert_out"].
+        Phase B: new encoder created; optional shared expert seeded into
+                 expert_out, then selected experts accumulated with weights.
 
         Caller's self._active_encoder is replaced with the Phase B encoder on
         return. Subsequent dispatches in the calling layer method (the residual
@@ -193,18 +199,31 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         Args:
             bsm_prefix: Weight-key namespace under model.layers.{i}, e.g.
-                        'block_sparse_moe' (Mixtral) or 'mlp' (GPT-OSS).
+                        'block_sparse_moe' (Mixtral) or 'mlp' (GPT-OSS/Qwen35).
             router_subkey: Sub-key for the router weight, e.g. 'gate'
-                           (Mixtral) or 'router' (GPT-OSS).
+                           (Mixtral/Qwen35) or 'router' (GPT-OSS).
             extra_gate_consts: Extra shader constants merged into fused_gate_act
                                dispatches, e.g. {'CLAMP_MAX': limit}.
+            gate_key: Expert weight sub-key for the gate projection, e.g.
+                      'w1' (Mixtral/GPT-OSS) or 'gate_proj' (Qwen35).
+            up_key: Expert weight sub-key for the up projection, e.g.
+                    'w3' (Mixtral/GPT-OSS) or 'up_proj' (Qwen35).
+            down_key: Expert weight sub-key for the down projection, e.g.
+                      'w2' (Mixtral/GPT-OSS) or 'down_proj' (Qwen35).
+            expert_inter: Intermediate size for each expert. Defaults to
+                          self.intermediate_size when None.
+            shared_expert_prefix: Sub-key under bsm_prefix for the always-active
+                                  shared expert (e.g. 'shared_expert' for Qwen35).
+                                  When None, expert_out is zero-initialized instead.
+            shared_expert_inter: Intermediate size for the shared expert. Defaults
+                                 to expert_inter when None.
         """
         if extra_gate_consts is None:
             extra_gate_consts = {}
         dev = self.wgpu_device.wgpu_device
         msc = self._moe_sc
         hidden = self.hidden_size
-        inter = self.intermediate_size
+        inter = expert_inter if expert_inter is not None else self.intermediate_size
         N_E = self._num_experts
         K = self._top_k
         p = f"model.layers.{layer_idx}.{bsm_prefix}"
@@ -248,21 +267,52 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # can read w_buf[K_IDX] without a per-dispatch CPU roundtrip.
         dev.queue.write_buffer(msc["moe_w_buf"].buf, 0,
                                np.array(expert_weights, dtype=np.float32).tobytes())
-        # Zero-initialize the accumulation buffer (no shared expert in Mixtral).
-        dev.queue.write_buffer(msc["expert_out"].buf, 0, b"\x00" * (hidden * 2))
+        # Without a shared expert, zero-initialize the accumulation buffer so
+        # the first expert's weighted output accumulates from zero.
+        if shared_expert_prefix is None:
+            dev.queue.write_buffer(msc["expert_out"].buf, 0, b"\x00" * (hidden * 2))
 
         # ── Phase B: expert dispatches (new encoder) ──────────────────────────
         # Subsequent _dispatch() calls (including the residual add in the calling
         # _transformer_layer) will land in this new encoder.
         self._active_encoder = dev.create_command_encoder()
 
+        if shared_expert_prefix is not None:
+            # Shared expert is always active with coefficient 1.0. Dispatch it
+            # first so its output seeds expert_out before the weighted expert loop.
+            _sinter = shared_expert_inter if shared_expert_inter is not None else inter
+            sp = f"{p}.{shared_expert_prefix}"
+            sgw_k = f"{sp}.{gate_key}.weight"
+            if self.weights.get(sgw_k) is not None:
+                suw_k = f"{sp}.{up_key}.weight"
+                sdw_k = f"{sp}.{down_key}.weight"
+                self._dispatch(
+                    "fused_gate_act",
+                    [normed_x, self.weights[sgw_k], self.weights[suw_k], msc["expert_act"]],
+                    {"K": hidden, "N": _sinter, "GELU": 0},
+                    (_sinter, 1, 1),
+                )
+                uq_sd = self._uq_for_key(sdw_k)
+                qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)
+                self._dispatch(
+                    "matmul_quant",
+                    [msc["expert_act"], self.weights[sdw_k],
+                     self._scales_buf(sdw_k, uq_sd, msc["dummy_scales"]), msc["expert_out"]],
+                    {"K": _sinter, "N": hidden, "USE_QUANT": uq_sd,
+                     **self._split_k_extra(uq_sd), **qi_sd},
+                    _gemv_wg(hidden, uq_sd),
+                )
+            else:
+                # Shared expert weights not loaded; fall back to zero-init.
+                dev.queue.write_buffer(msc["expert_out"].buf, 0, b"\x00" * (hidden * 2))
+
         for k_idx, exp_idx in enumerate(expert_indices):
             if expert_weights[k_idx] == 0.0:
                 continue
             ep = f"{p}.experts.{exp_idx}"
-            w1_key = f"{ep}.w1.weight"  # gate projection
-            w3_key = f"{ep}.w3.weight"  # up projection
-            w2_key = f"{ep}.w2.weight"  # down projection
+            w1_key = f"{ep}.{gate_key}.weight"
+            w3_key = f"{ep}.{up_key}.weight"
+            w2_key = f"{ep}.{down_key}.weight"
 
             if self.weights.get(w1_key) is None:
                 logger.debug("L%02d expert %d weights not loaded, skipping",
@@ -283,8 +333,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 )
             else:
                 # Quantized path: separate gate and up matmuls then SiLU.
-                qi_g = self._quant_extra(f"{ep}.w1", uq_g)
-                qi_u = self._quant_extra(f"{ep}.w3", uq_u)
+                qi_g = self._quant_extra(f"{ep}.{gate_key}", uq_g)
+                qi_u = self._quant_extra(f"{ep}.{up_key}", uq_u)
                 self._dispatch(
                     "matmul_quant",
                     [normed_x, self.weights[w1_key],
@@ -321,7 +371,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 )
             else:
                 # Quantized path: keep separate dispatches.
-                qi_d = self._quant_extra(f"{ep}.w2", uq_d)
+                qi_d = self._quant_extra(f"{ep}.{down_key}", uq_d)
                 self._dispatch(
                     "matmul_quant",
                     [msc["expert_act"], self.weights[w2_key],
