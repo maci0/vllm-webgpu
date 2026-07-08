@@ -297,11 +297,14 @@ class WebGPUModelRunner:
         log_probs = _log_softmax(arr)
 
         # Top-k indices sorted by descending log-prob.
-        if k < vocab_size:
+        if k == 0:
+            topk_idx = np.empty(0, dtype=np.int64)
+        elif k < vocab_size:
             topk_part = np.argpartition(log_probs, -k)[-k:]
+            topk_idx = topk_part[np.argsort(log_probs[topk_part])[::-1]]
         else:
             topk_part = np.arange(vocab_size)
-        topk_idx = topk_part[np.argsort(log_probs[topk_part])[::-1]]
+            topk_idx = topk_part[np.argsort(log_probs[topk_part])[::-1]]
         topk_lp = log_probs[topk_idx]
 
         # Rank of the sampled token (1-indexed: 1 = highest-prob token).
