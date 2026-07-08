@@ -228,13 +228,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         submitting the encoder and reading back the result.
         """
         hidden = self.hidden_size
+        uq = self._uq_for_key("lm_head.weight")
         self._dispatch(
             "matmul_quant",
             [norm_out,
              self._lm_head_weight,
-             self.weights.get("lm_head.scales", self._dummy_scales_buf),
+             self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
              logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+            {"K": hidden, "N": vocab, "USE_QUANT": uq, **self._split_k_extra(uq)},
             ((vocab + 255) // 256, 1, 1),
         )
         if greedy:
@@ -566,11 +567,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            rms_base, (1, 1, 1))
 
             # LM head (SPLIT_K=0: row-per-thread for large vocab)
+            uq = self._uq_for_key("lm_head.weight")
             self._dispatch("matmul_quant",
                            [b["last_norm"], self._lm_head_weight,
-                            self.weights.get("lm_head.scales", self._dummy_scales_buf),
+                            self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
                             b["logits"]],
-                           {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                           {"K": hidden, "N": vocab, "USE_QUANT": uq, **self._split_k_extra(uq)},
                            ((vocab + 255) // 256, 1, 1))
 
             if getattr(self, "_greedy_decode", True):
@@ -656,12 +658,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 [x_buf, self.weights["model.norm.weight"], pre["norm_out"]],
                 rms_base, (1, 1, 1),
             )
+            uq = self._uq_for_key("lm_head.weight")
             self._dispatch(
                 "matmul_quant",
                 [pre["norm_out"], self._lm_head_weight,
-                 self.weights.get("lm_head.scales", self._dummy_scales_buf),
+                 self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
                  pre["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                {"K": hidden, "N": vocab, "USE_QUANT": uq, **self._split_k_extra(uq)},
                 ((vocab + 255) // 256, 1, 1),
             )
             if getattr(self, "_greedy_decode", True):
