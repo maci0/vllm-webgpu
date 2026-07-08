@@ -75,10 +75,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.n_groups: int = model_config.n_groups
         self.ssm_state_size: int = model_config.ssm_state_size
         self.conv_kernel: int = model_config.conv_kernel
-        groups_state_size: int = self.n_groups * self.ssm_state_size
         # conv_dim: size of the vector passed through the causal conv
         # = x (mamba_int) + B (n_groups*state_size) + C (n_groups*state_size)
-        self.conv_dim: int = self.mamba_int + 2 * groups_state_size
+        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         self.in_proj_dim: int = (
             self.mamba_int + self.conv_dim + self.mamba_num_heads

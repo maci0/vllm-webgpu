@@ -182,23 +182,25 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            self._rms_consts,
                            (num_tokens, 1, 1))
 
-            lm_head_w = self.weights[self._lm_head_key()]
-            uq_lm = self._uq_for_key(self._lm_head_key())
-            sc_lm = self._scales_buf(self._lm_head_key(), uq_lm, norm_out)
+            _lm_key = self._lm_head_key()
+            _lm_base = _lm_key.removesuffix(".weight")
+            lm_head_w = self.weights[_lm_key]
+            uq_lm = self._uq_for_key(_lm_key)
+            sc_lm = self._scales_buf(_lm_key, uq_lm, norm_out)
             if num_tokens > 1:
                 # Batched path: matmul_quant_mr4 reads all M rows of norm_out.
                 # Dispatch (vocab, num_tokens, 1) so every token gets its logits.
                 self._dispatch("matmul_quant_mr4",
                                [norm_out, lm_head_w, sc_lm, logits_buf],
                                {"K": hidden, "N": vocab, "M": num_tokens, "USE_QUANT": uq_lm,
-                                **self._quant_extra(self._lm_head_key().removesuffix(".weight"), uq_lm)},
+                                **self._quant_extra(_lm_base, uq_lm)},
                                (vocab, num_tokens, 1))
             else:
                 # Single-token decode path.
                 self._dispatch("matmul_quant",
                                [norm_out, lm_head_w, sc_lm, logits_buf],
                                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
-                                **self._quant_extra(self._lm_head_key().removesuffix(".weight"), uq_lm)},
+                                **self._quant_extra(_lm_base, uq_lm)},
                                ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
@@ -316,7 +318,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     self._dispatch("fused_per_head_norm_rope",
                                    [src, nw, pos_buf, dst, _freq_buf],
                                    {**_dg_rope_base, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
-                                    "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM},
+                                    "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
+                                    "INPUT_OFFSET": 0},
                                    (n_heads, num_tokens, 1))
                 else:
                     # Binding 3 (inv_freq_buf): always provided.

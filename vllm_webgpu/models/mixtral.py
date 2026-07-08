@@ -47,6 +47,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         self._is_moe: bool = self._num_experts > 0 and self._top_k > 0
 
         if self._is_moe:
+            import wgpu as _wgpu_lib
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
             dev = self.wgpu_device.wgpu_device
@@ -71,6 +72,16 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 "expert_out":   mk(self.hidden_size * 2),    # [hidden] f16 accumulated
                 "expert_tmp":   mk(self.hidden_size * 2),    # [hidden] f16 per-expert
             }
+            # Pre-allocated MAP_READ staging buffers for topk readback.
+            # Copies are recorded into the Phase A encoder so no extra GPU submit
+            # is needed after on_submitted_work_done_sync().
+            _staging_sz = max(self._top_k * 4, 8)
+            self._topk_idx_staging = dev.create_buffer(
+                size=_staging_sz,
+                usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+            self._topk_w_staging = dev.create_buffer(
+                size=_staging_sz,
+                usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
 
     def _effective_ctx_len(self, ctx_len: int) -> int:
         """Cap ctx_len at the sliding window size when SWA is configured."""
@@ -245,13 +256,25 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             (1, 1, 1),
         )
 
+        # Copy topk results into pre-allocated staging buffers inside the Phase A
+        # encoder so no extra GPU submit is needed for the readback.
+        self._active_encoder.copy_buffer_to_buffer(
+            msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
+        self._active_encoder.copy_buffer_to_buffer(
+            msc["topk_w"].buf, 0, self._topk_w_staging, 0, K * 4)
+
         # Flush current encoder and wait for the router + topk to complete.
         dev.queue.submit([self._active_encoder.finish()])
         dev.queue.on_submitted_work_done_sync()
 
-        # Read back selected expert indices and softmax weights.
-        raw_idx = msc["topk_idx"].to_numpy().view(np.uint32)
-        raw_w   = msc["topk_w"].to_numpy().view(np.float32)
+        # Map the pre-allocated staging buffers — no extra GPU submit needed.
+        import wgpu as _wgpu_lib
+        self._topk_idx_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
+        raw_idx = np.frombuffer(bytes(self._topk_idx_staging.read_mapped()), dtype=np.uint32).copy()
+        self._topk_idx_staging.unmap()
+        self._topk_w_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
+        raw_w = np.frombuffer(bytes(self._topk_w_staging.read_mapped()), dtype=np.float32).copy()
+        self._topk_w_staging.unmap()
         expert_indices = raw_idx[:K].tolist()
         expert_weights = raw_w[:K].tolist()
 

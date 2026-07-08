@@ -2,13 +2,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 
 # AWQ nibble reorder: position i in int32 holds nibble at bit offset
 # [0, 16, 4, 20, 8, 24, 12, 28] = [0,4,1,5,2,6,3,7] * 4
+# Matches vllm.model_executor.layers.quantization.auto_awq._REVERSE_AWQ_PACK_ORDER * 4.
 _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 16, 4, 20, 8, 24, 12, 28], dtype=np.int32)
+# GPTQ nibble unpack: each int32 holds 8 nibbles at bit offsets [0, 4, 8, ..., 28].
+_GPTQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 4, 8, 12, 16, 20, 24, 28], dtype=np.int32)
 _F16_MAX: float = np.finfo(np.float16).max
 
 # When set, GDN projection weights with BF16 dtype are uploaded in their native
@@ -313,7 +317,7 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     sc = scales.astype(np.float32)  # (G, N)
 
     # Unpack 8 nibbles per int32 along K → (K, N) and zeros (G, N//8) → (G, N)
-    shifts = np.arange(8, dtype=np.int32) * 4  # [0, 4, 8, ..., 28]
+    shifts = _GPTQ_NIBBLE_SHIFTS
     w_int4 = ((qw[:, np.newaxis, :] >> shifts[:, np.newaxis]) & 0xF).reshape(K, N).astype(np.uint8)
     z_int4 = ((qz[:, :, np.newaxis] >> shifts) & 0xF).reshape(G, N).astype(np.uint8)
 
@@ -1260,10 +1264,13 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     group_size = 64
     config_path = p / "config.json"
     if config_path.exists():
-        with open(config_path) as f:
-            cfg = json.load(f)
-        qs = (cfg.get("quantization", {}).get("group_size")
-              or cfg.get("quantization_config", {}).get("group_size"))
+        # Try compressed_tensors-aware loader for quantization_config.group_size first,
+        # then fall back to the raw 'quantization' key used by some MLX formats.
+        qs = _load_quant_cfg(config_path).get("group_size")
+        if not qs:
+            with open(config_path) as f:
+                cfg_raw = json.load(f)
+            qs = cfg_raw.get("quantization", {}).get("group_size")
         if qs:
             group_size = int(qs)
 
@@ -1291,8 +1298,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
 
     # Group quantized triplets by the shard that holds the .weight key.
     # Opening a shard once per base avoids re-opening the same file for .scales and .biases.
-    from collections import defaultdict as _defaultdict
-    shard_to_quant_bases: dict[str, list[str]] = _defaultdict(list)
+    shard_to_quant_bases: dict[str, list[str]] = defaultdict(list)
     for base in quant_bases:
         shard_to_quant_bases[key_to_shard[base + ".weight"]].append(base)
 

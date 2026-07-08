@@ -121,6 +121,20 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._top_k = self._moe_k
         self._is_moe = self._moe_num_experts > 0 and self._moe_k > 0
 
+        if self._is_moe and not hasattr(self, "_topk_idx_staging"):
+            # MixtralWebGPUModel.__init__ only allocates staging buffers when it detects
+            # _is_moe as True. For Qwen35, Mixtral sees num_local_experts=0 (uses a
+            # different config key), so it skips the allocation. Allocate them now.
+            import wgpu as _wgpu_lib
+            dev = self.wgpu_device.wgpu_device
+            _staging_sz = max(self._top_k * 4, 8)
+            self._topk_idx_staging = dev.create_buffer(
+                size=_staging_sz,
+                usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+            self._topk_w_staging = dev.create_buffer(
+                size=_staging_sz,
+                usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
 
@@ -471,8 +485,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         dispatches the always-active shared expert. Result accumulates into
         self._moe_sc["expert_out"].
         """
-        MixtralWebGPUModel._moe_ffn_layer(
-            self, normed_x, layer_idx,
+        super()._moe_ffn_layer(
+            normed_x, layer_idx,
             bsm_prefix="mlp",
             router_subkey="gate",
             gate_key="gate_proj",
@@ -600,9 +614,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         attn_metadata: object,
     ) -> np.ndarray:
         if self._is_moe:
-            if len(input_ids) > 1:
-                raise NotImplementedError("Qwen35 MoE prefill not supported; only decode is implemented")
-            return self._moe_decode_forward(input_ids, positions, attn_metadata)
+            return super().forward(input_ids, positions, attn_metadata)
 
         num_tokens = len(input_ids)
         hidden = self.hidden_size

@@ -17,6 +17,7 @@ logger = init_logger(__name__)
 try:
     from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE_RT
     _CPU_ATTN_PATH = _ABE_RT.CPU_ATTN.get_path()
+    del _ABE_RT
 except Exception:
     _CPU_ATTN_PATH = ""
 

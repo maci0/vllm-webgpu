@@ -8,6 +8,8 @@ from vllm_webgpu.utils import OVERHEAD_BYTES
 if TYPE_CHECKING:
     from vllm_webgpu.v1.worker import WebGPUWorker
 
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
 logger = init_logger(__name__)
 
 # Layer type strings that carry KV state and require cache allocation.
@@ -16,12 +18,6 @@ logger = init_logger(__name__)
 KV_ATTN_TYPES: frozenset[str] = frozenset(
     {"attention", "full_attention", "sliding_attention"}
 )
-
-
-def _alloc_rw_buffer(dev, size: int):
-    """Allocate a STORAGE|COPY_SRC|COPY_DST WebGPU buffer of `size` bytes."""
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-    return WebGPUBuffer.empty(dev, size)
 
 
 def allocate_kv_pool_hybrid(
@@ -48,12 +44,12 @@ def allocate_kv_pool_hybrid(
     for i in range(num_layers):
         is_full = layer_types is None or layer_types[i] in KV_ATTN_TYPES
         if is_full:
-            k_buf = _alloc_rw_buffer(dev, bytes_per_layer)
-            v_buf = _alloc_rw_buffer(dev, bytes_per_layer)
+            k_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
+            v_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
             full_attn_count += 1
         else:
-            k_buf = _alloc_rw_buffer(dev, 16)
-            v_buf = _alloc_rw_buffer(dev, 16)
+            k_buf = WebGPUBuffer.empty(dev, 16)
+            v_buf = WebGPUBuffer.empty(dev, 16)
         model.kv_pool.append((k_buf, v_buf))
 
     if layer_types is None:
@@ -89,8 +85,8 @@ def allocate_kv_pool_per_layer(
     for lp in layer_params:
         kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2  # f16
         model.kv_pool.append((
-            _alloc_rw_buffer(dev, kv_bytes),
-            _alloc_rw_buffer(dev, kv_bytes),
+            WebGPUBuffer.empty(dev, kv_bytes),
+            WebGPUBuffer.empty(dev, kv_bytes),
         ))
 
 

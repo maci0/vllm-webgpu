@@ -303,8 +303,7 @@ class WebGPUModelRunner:
             topk_part = np.argpartition(log_probs, -k)[-k:]
             topk_idx = topk_part[np.argsort(log_probs[topk_part])[::-1]]
         else:
-            topk_part = np.arange(vocab_size)
-            topk_idx = topk_part[np.argsort(log_probs[topk_part])[::-1]]
+            topk_idx = np.argsort(log_probs)[::-1]
         topk_lp = log_probs[topk_idx]
 
         # Rank of the sampled token (1-indexed: 1 = highest-prob token).
@@ -370,12 +369,14 @@ class WebGPUModelRunner:
         # Top-k per position sorted by descending log-prob.
         if k == 0:
             topk_part = np.empty((num_positions, 0), dtype=np.int64)
+            row_order = np.argsort(log_probs[row_idx, topk_part], axis=-1)[:, ::-1]
+            topk_idx = topk_part[row_idx, row_order]   # [T-1, 0]
         elif k < vocab_size:
             topk_part = np.argpartition(log_probs, -k, axis=-1)[:, -k:]
+            row_order = np.argsort(log_probs[row_idx, topk_part], axis=-1)[:, ::-1]
+            topk_idx = topk_part[row_idx, row_order]   # [T-1, k]
         else:
-            topk_part = np.tile(np.arange(vocab_size), (num_positions, 1))
-        row_order = np.argsort(log_probs[row_idx, topk_part], axis=-1)[:, ::-1]
-        topk_idx = topk_part[row_idx, row_order]   # [T-1, k]
+            topk_idx = np.argsort(log_probs, axis=-1)[:, ::-1]  # [T-1, vocab]
         topk_lp = log_probs[row_idx, topk_idx]     # [T-1, k]
 
         # Target token (tok_ids[i+1]) logprob and 1-indexed rank per position.
