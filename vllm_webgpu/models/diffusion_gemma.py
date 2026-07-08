@@ -67,6 +67,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._topk_idx_buf     = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)  # [K] u32
             self._topk_weight_buf  = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)  # [K] f32
             self._router_logit_buf = _WB.empty(_dev, self.num_experts * 2, usage=_rw)     # [E] f16
+            self._moe_acc_buf      = _WB.empty(_dev, self.hidden_size * 2, usage=_rw)     # [H] f16 ping
+            self._moe_tmp_buf      = _WB.empty(_dev, self.hidden_size * 2, usage=_rw)     # [H] f16 pong
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 
@@ -448,10 +450,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             # GPU: run top-K expert FFNs
             gelu_n_moe = num_tokens * inter_moe
-            moe_ping = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
-            moe_pong = WebGPUBuffer.empty(dev, num_tokens * hidden * 2, usage=rw)
-            moe_acc = moe_ping
-            moe_tmp = moe_pong
+            moe_acc = self._moe_acc_buf
+            moe_tmp = self._moe_tmp_buf
 
             for idx, (eid, ew) in enumerate(zip(top_k_idx, rw_vals)):
                 ep = f"{p}.experts.{eid}"
