@@ -721,9 +721,12 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
 
             # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
+            uq = self._uq_for_key("lm_head.weight")
             self._dispatch("matmul_quant",
-                           [norm_out, self._lm_head_weight, norm_out, logits_buf],
-                           {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                           [norm_out, self._lm_head_weight,
+                            self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
+                            logits_buf],
+                           {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
             # GPU argmax inside the same encoder — 4-byte readback.
             if greedy:
