@@ -418,9 +418,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr, usage=rw)
         pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32), usage=rw)
         ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32), usage=rw)
-        bt_arr = self._bt_arr(attn_metadata)
-        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr, usage=rw)
-
         # Small dummy scales buffer for USE_QUANT=0 f16 path (binding 2 not read).
         _dummy = alloc(4)
 
