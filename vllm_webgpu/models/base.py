@@ -5,7 +5,6 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -63,9 +62,10 @@ def compute_yarn_freqs(
                 folded into the frequencies — cos(pos * freq * mscale) is wrong.
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
     )
 
     if rotary_dim is None:
@@ -78,19 +78,23 @@ def compute_yarn_freqs(
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    # Delegate to vLLM's authoritative implementation. A SimpleNamespace acts
-    # as `self` so we skip the full nn.Module init (no CUDA required; the
-    # method is pure CPU torch ops).
-    ns = SimpleNamespace(
-        base=rope_theta,
-        rotary_dim=rotary_dim,
-        beta_fast=beta_fast,
-        beta_slow=beta_slow,
-        extrapolation_factor=extrapolation_factor,
-        max_position_embeddings=orig_ctx,
-        truncate=truncate,
+    # Inline the 5-line math from YaRNScalingRotaryEmbedding._compute_inv_freq
+    # using only the stable public helpers, avoiding a private-method dependency
+    # that would break silently on any vLLM upgrade that renames internals.
+    pos_freqs = torch.tensor(rope_theta) ** (
+        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
-    scaled_inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(ns, factor).numpy().astype(np.float32)
+    inv_freq_interp = 1.0 / (factor * pos_freqs)
+    inv_freq_extrap = 1.0 / pos_freqs
+    low, high = yarn_find_correction_range(
+        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
+    )
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
+    ) * extrapolation_factor
+    scaled_inv_freq = (
+        inv_freq_interp * (1 - inv_freq_mask) + inv_freq_extrap * inv_freq_mask
+    ).numpy().astype(np.float32)
 
     # YaRN attention scale: mscale = (0.1 * ln(factor) + 1.0) * attn_factor.
     # attn_factor is an optional rope_scaling field (default 1.0), matching
