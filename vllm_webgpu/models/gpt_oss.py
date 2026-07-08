@@ -153,7 +153,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [sc["attn_out"], self.weights[w_key],
-             self._scales_buf(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
+             self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
             {"K": q_dim, "N": hidden, "USE_QUANT": uq,
              **self._split_k_extra(uq),
              **qi},
