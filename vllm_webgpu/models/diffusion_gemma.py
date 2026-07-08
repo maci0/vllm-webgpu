@@ -83,11 +83,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 
-    def _pk(self, layer_idx: int) -> str:
-        return f"model.decoder.layers.{layer_idx}"
-
     def _layer_key_prefix(self, layer_idx: int) -> str:
-        return self._pk(layer_idx)
+        return f"model.decoder.layers.{layer_idx}"
 
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
@@ -136,9 +133,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = np.array(
-            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32)
+        bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         ids_buf = pre["ids"]; pos_buf = pre["pos"]
@@ -206,7 +201,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         kv_dim = lp["kv_dim"]
         num_kv_heads = lp["num_kv_heads"]
         ln_rope = self._ln_rope_theta
-        p = self._pk(layer_idx)
+        p = self._layer_key_prefix(layer_idx)
 
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]

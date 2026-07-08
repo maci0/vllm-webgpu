@@ -50,7 +50,7 @@ class WebGPUPlatform(_Platform):
         try:
             info = adapter.info
             adapter_type = info.get("adapter_type", "")
-            if isinstance(adapter_type, str) and adapter_type.lower() in ("cpu", "software"):
+            if adapter_type.lower() in ("cpu", "software"):
                 logger.debug(
                     "WebGPU adapter is a CPU/software renderer (%s), not selecting WebGPU platform",
                     adapter_type,
@@ -77,10 +77,10 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
-        from vllm.utils.mem_utils import get_cpu_memory
+        import psutil
         adapter = _get_wgpu_adapter()
         limit = adapter.limits.get("max-buffer-size", 4 * 1024**3) if adapter else 4 * 1024**3
-        return min(get_cpu_memory(), limit)
+        return min(psutil.virtual_memory().total, limit)
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:

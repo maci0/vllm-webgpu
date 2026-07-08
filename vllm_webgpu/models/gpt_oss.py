@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from vllm_webgpu.models.mixtral import MixtralWebGPUModel, _gemv_wg
+from vllm_webgpu.models.mixtral import MixtralWebGPUModel
+from vllm_webgpu.models.llama import _gemv_wg
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer

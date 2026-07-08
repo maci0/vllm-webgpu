@@ -109,13 +109,13 @@ class WebGPUCachePlanner:
         """
         Available memory for KV cache = device total - model weights - overhead.
 
-        Uses psutil to query real system memory, which is correct for unified-memory
-        platforms (Apple Silicon) and avoids confusing wgpu's per-buffer maxBufferSize
-        limit with total device memory. On a 7B f16 model (~14 GB weights) with a
-        4 GB maxBufferSize, subtracting from maxBufferSize yields negative available
-        memory and clamps to 0 KV blocks. psutil returns the actual physical total.
+        Uses vLLM's get_cpu_memory to query real system memory, which is correct for
+        unified-memory platforms (Apple Silicon) and avoids confusing wgpu's per-buffer
+        maxBufferSize limit with total device memory. On a 7B f16 model (~14 GB weights)
+        with a 4 GB maxBufferSize, subtracting from maxBufferSize yields negative available
+        memory and clamps to 0 KV blocks.
 
-        Falls back to a model-ratio heuristic when psutil is unavailable.
+        Falls back to a model-ratio heuristic when get_cpu_memory is unavailable.
         """
         config = get_config()
         model_mem = self.get_model_memory_usage()

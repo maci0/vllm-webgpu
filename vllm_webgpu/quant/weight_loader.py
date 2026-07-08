@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 _GGUF_MAGIC = b"GGUF"
 
 
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
 
 def _is_mlx_quantized_dir(p: Path) -> bool:
@@ -111,11 +111,10 @@ def _apply_multimodal_remap(weights: dict) -> int:
 
 
 def detect_weight_format(path: str) -> str:
-    from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
     p = Path(path)
     if p.is_dir():
         _check_unsupported_quant(p)
-        if (p / SAFE_WEIGHTS_INDEX_NAME).exists():
+        if (p / _SAFE_WEIGHTS_INDEX_NAME).exists():
             if _is_mlx_quantized_dir(p):
                 return "mlx_int4"
             return "safetensors_sharded"
@@ -1208,7 +1207,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
     p = Path(model_dir)
-    index_path = p / "model.safetensors.index.json"
+    index_path = p / _SAFE_WEIGHTS_INDEX_NAME
     with open(index_path) as f:
         index = json.load(f)
 

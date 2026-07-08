@@ -82,11 +82,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Eliminates 17 GPU buffer allocations per layer per decode token.
         Decode path only (num_tokens=1). Sizes are fixed by model dimensions.
         """
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
         T = 1  # decode: num_tokens == 1
         H = self.hidden_size
         I = self.intermediate_size
@@ -140,7 +139,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
         """
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-        import wgpu as wgpu_lib
 
         rope_scaling = getattr(self.model_config, "rope_scaling", None) or {}
         rope_type = (rope_scaling.get("rope_type", "") or
@@ -150,9 +148,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return  # base-class dummy buffer is sufficient; _use_freq_buf stays False
 
         dev = self.wgpu_device.wgpu_device
-        rw = (wgpu_lib.BufferUsage.STORAGE
-              | wgpu_lib.BufferUsage.COPY_SRC
-              | wgpu_lib.BufferUsage.COPY_DST)
+        rw = self._rw_flags()
         freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs, usage=rw)
         self._yarn_mscale = mscale
@@ -172,10 +168,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Our fused_per_head_norm_rope shader indexes weight[head_idx * HEAD_DIM + i],
         expecting shape (num_heads * head_dim,). Tile if the loaded shape is just (head_dim,).
         """
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
 
         for i in range(self.num_layers):
             p = f"model.layers.{i}"
@@ -230,6 +225,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
         )
 
+    @property
+    def _lm_head_weight(self) -> "WebGPUBuffer":
+        return self.weights.get("lm_head.weight") or self.weights["model.embed_tokens.weight"]
+
     def _decode_teardown(
         self,
         norm_out: "WebGPUBuffer",
@@ -248,7 +247,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [norm_out,
-             self.weights.get("lm_head.weight", self.weights["model.embed_tokens.weight"]),
+             self._lm_head_weight,
              self.weights.get("lm_head.scales", norm_out),
              logits_buf],
             {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
@@ -294,12 +293,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 "block tables; call forward() once per decode request"
             )
 
-        ctx_len = int(attn_metadata.max_decode_seq_len
-                      if attn_metadata.max_decode_seq_len is not None
-                      else num_tokens)
-        if ctx_len <= 0:
-            ctx_len = num_tokens
-
         vocab = self.vocab_size
         _rms_base = self._rms_consts
         sc = self._sc
@@ -310,7 +303,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         if num_tokens > 1:
             return self._prefill_batch_forward(
                 input_ids, positions, attn_metadata,
-                num_tokens, hidden, ctx_len, vocab, _rms_base,
+                num_tokens, hidden, vocab, _rms_base,
             )
 
         # Decode path (num_tokens=1): use pre-allocated buffers for zero-alloc hot path.
@@ -364,7 +357,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         attn_metadata: object,
         T: int,
         hidden: int,
-        ctx_len: int,
         vocab: int,
         rms_base: dict,
     ) -> "np.ndarray":
@@ -375,11 +367,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Last-token prediction extracted via GPU copy_buffer_to_buffer.
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev  = self.wgpu_device.wgpu_device
-        rw   = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw   = self._rw_flags()
 
         def alloc(n_f16: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, max(n_f16 * 2, 8), usage=rw)
@@ -456,7 +447,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _rep_uq = self._uq_for_key(_rep_quant_key)
         if _rep_uq not in (0, 3):
             return self._prefill_sequential_fallback(
-                input_ids, positions, attn_metadata, T, hidden, ctx_len, vocab, rms_base,
+                input_ids, positions, attn_metadata, T, hidden, vocab, rms_base,
             )
 
         # _CHUNK layers per command encoder keeps each submit under Metal's GPU timeout.
@@ -598,10 +589,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            rms_base, (1, 1, 1))
 
             # LM head (SPLIT_K=0: row-per-thread for large vocab)
-            lm_head_w = (self.weights.get("lm_head.weight") or
-                         self.weights["model.embed_tokens.weight"])
             self._dispatch("matmul_quant",
-                           [b["last_norm"], lm_head_w,
+                           [b["last_norm"], self._lm_head_weight,
                             self.weights.get("lm_head.scales", _dummy),
                             b["logits"]],
                            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
@@ -626,7 +615,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         attn_metadata: object,
         T: int,
         hidden: int,
-        ctx_len: int,
         vocab: int,
         rms_base: dict,
     ) -> "np.ndarray":
@@ -691,11 +679,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 [x_buf, self.weights["model.norm.weight"], pre["norm_out"]],
                 rms_base, (1, 1, 1),
             )
-            lm_head_w = (self.weights.get("lm_head.weight") or
-                         self.weights["model.embed_tokens.weight"])
             self._dispatch(
                 "matmul_quant",
-                [pre["norm_out"], lm_head_w,
+                [pre["norm_out"], self._lm_head_weight,
                  self.weights.get("lm_head.scales", pre["norm_out"]),
                  pre["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},

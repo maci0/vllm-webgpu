@@ -98,12 +98,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             )
 
         # Pre-build O(1) lookup from layer_idx to MLP rank (its index among MLP layers).
+        # Only needed for heterogeneous configs where _intermediate_sizes varies per MLP layer.
         self._mlp_rank: dict[int, int] = {}
-        _mlp_count = 0
-        for _i, _lt in enumerate(self._layer_types):
-            if _lt == "mlp":
-                self._mlp_rank[_i] = _mlp_count
-                _mlp_count += 1
+        if self._intermediate_sizes is not None:
+            _mlp_count = 0
+            for _i, _lt in enumerate(self._layer_types):
+                if _lt == "mlp":
+                    self._mlp_rank[_i] = _mlp_count
+                    _mlp_count += 1
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).

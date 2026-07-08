@@ -29,12 +29,13 @@ if TYPE_CHECKING:
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
+    from vllm.v1.kv_cache_interface import KVCacheSpec
 
 logger = logging.getLogger(__name__)
 
 def _is_greedy(sp) -> bool:
     """Return True when sampling params request greedy (argmax) decoding."""
-    return sp is None or sp.sampling_type == SamplingType.GREEDY
+    return sp is None or (SamplingType is not None and sp.sampling_type == SamplingType.GREEDY)
 
 
 def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
@@ -154,7 +155,7 @@ class WebGPUModelRunner:
                 layer_types=layer_types if layer_types and any(t != "full_attention" for t in layer_types) else None,
             )
 
-    def get_kv_cache_spec(self) -> dict[str, Any]:
+    def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
         block_size = self.webgpu_config.block_size
         spec: dict[str, Any] = {}

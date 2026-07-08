@@ -48,13 +48,10 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         self._is_moe: bool = self._num_experts > 0 and self._top_k > 0
 
         if self._is_moe:
-            import wgpu as wgpu_lib
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
             dev = self.wgpu_device.wgpu_device
-            rw = (wgpu_lib.BufferUsage.STORAGE
-                  | wgpu_lib.BufferUsage.COPY_SRC
-                  | wgpu_lib.BufferUsage.COPY_DST)
+            rw = self._rw_flags()
 
             def mk(n: int) -> "WebGPUBuffer":
                 return WebGPUBuffer.empty(dev, max(n, 8), usage=rw)

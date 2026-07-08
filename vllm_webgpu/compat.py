@@ -16,13 +16,3 @@ def apply_compat_patches() -> None:
     logger.debug("vllm-webgpu compat patches applied (none active)")
 
 
-def reset_compat_patches() -> None:
-    """Reset the applied flag so apply_compat_patches() runs again.
-
-    Intended for test isolation only: pytest runs all tests in a single process,
-    so the module-level _APPLIED flag persists across tests. Call this in a
-    fixture or test teardown to ensure patches are re-applied in each test that
-    needs a clean slate.
-    """
-    global _APPLIED
-    _APPLIED = False

@@ -25,11 +25,6 @@ _LIN_V_DIM = 128
 _LIN_CONV_KERNEL = 4
 
 
-def _is_full_attn(layer_idx: int, layer_types: list | None = None) -> bool:
-    if layer_types is not None:
-        return layer_types[layer_idx] == "full_attention"
-    return (layer_idx + 1) % _FULL_ATTN_INTERVAL == 0
-
 
 class Qwen35WebGPUModel(LlamaWebGPUModel):
     """
@@ -125,7 +120,9 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # _batched_dispatch encoder management). Set profiling=False before forward().
 
     def _is_full_attn(self, i: int) -> bool:
-        return _is_full_attn(i, self._layer_types)
+        if self._layer_types is not None:
+            return self._layer_types[i] == "full_attention"
+        return (i + 1) % _FULL_ATTN_INTERVAL == 0
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         import wgpu as wgpu_lib
