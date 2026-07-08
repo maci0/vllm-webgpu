@@ -670,32 +670,12 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
             raise RuntimeError("multi-sequence batching not supported in this build")
 
-        ctx_len = int(attn_metadata.max_decode_seq_len
-                      if attn_metadata.max_decode_seq_len is not None
-                      else num_tokens)
-        if ctx_len <= 0:
-            ctx_len = num_tokens
-
         if num_tokens > 1:
             raise NotImplementedError(
                 "MoE prefill not supported; only decode is implemented")
 
-        pre = self._pre
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(
-            pre["slot_map"].buf, 0,
-            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = self._bt_arr(attn_metadata)
-        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
-
-        ids_buf    = pre["ids"]
-        pos_buf    = pre["pos"]
-        slot_map   = pre["slot_map"]
-        bt_buf     = pre["bt"]
-        x_buf      = pre["x"]
-        norm_out   = pre["norm_out"]
-        logits_buf = pre["logits"]
+        ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len = \
+            self._decode_setup(input_ids, positions, attn_metadata)
         vocab = self.vocab_size
 
         _rms_base = self._rms_consts
@@ -727,22 +707,12 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             [x_buf, self.weights["model.norm.weight"], norm_out],
             _rms_base, (num_tokens, 1, 1))
 
-        self._dispatch(
-            "matmul_quant",
-            [norm_out, self._lm_head_w, norm_out, logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
-            ((vocab + 255) // 256, 1, 1))
-        self._dispatch(
-            "argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
-            {"N": vocab}, (1, 1, 1))
-        self._copy_sample_to_staging()
+        self._decode_teardown(norm_out, logits_buf, vocab, greedy=True)
 
         # Submit the final encoder and release it.
         dev.queue.submit([self._active_encoder.finish()])
         self._active_encoder = None
 
-        self._last_logit_buf = logits_buf
-        self._last_vocab     = vocab
         tok = self._read_sample_tok()
         return np.array([[tok]], dtype=np.int32)
 
