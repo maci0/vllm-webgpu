@@ -256,6 +256,8 @@ class WebGPUModelRunner:
         """
         x = logits_1d.astype(np.float32); x -= x.max()
         log_probs = x - np.log(np.exp(x).sum())
+        if num_logprobs < 0:
+            num_logprobs = log_probs.size
         k = min(num_logprobs, log_probs.size)
         top_ids = np.argpartition(log_probs, -k)[-k:]
         order = np.argsort(log_probs[top_ids])[::-1]
