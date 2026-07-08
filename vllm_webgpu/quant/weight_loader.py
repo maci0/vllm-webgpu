@@ -937,7 +937,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                     w_f32 = _fp8_e4m3_to_f32(w_u8)
                     w_f16 = np.ascontiguousarray(
                         np.clip(w_f32 * block_scale_exp, -65504.0, 65504.0).astype(np.float16))
-                    _upload(w_f16, f"{base}.weight", weights)
+                    _upload_f16(w_f16, f"{base}.weight", weights)
                     logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
                 except Exception as exc:
                     logger.warning("Failed to process MXFP8 %s: %s", base, exc)
