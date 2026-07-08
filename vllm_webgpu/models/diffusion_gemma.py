@@ -72,6 +72,62 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._router_logit_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2, usage=_rw)  # [T, E] f16
             self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2, usage=_rw)  # [T, H] f16
 
+    # ── Scratch buffer sizing ────────────────────────────────────────────────
+
+    def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
+        """Override: size all T-dependent scratch buffers for the full canvas length.
+
+        The parent uses T=1 for single-token decode. DiffusionGemma operates on
+        up to canvas_length tokens at once during denoising, so all per-token
+        scratch buffers must fit the full canvas to prevent silent out-of-bounds
+        writes when num_tokens > 1.
+        """
+        super()._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
+
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+        T = getattr(self.model_config, "canvas_length", 256)
+        H = self.hidden_size
+        I_shared = self.intermediate_size
+        moe_inter = getattr(self.model_config, "moe_intermediate_size", I_shared)
+        I = max(I_shared, moe_inter)
+        V = self.vocab_size
+        dev = self.wgpu_device.wgpu_device
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+
+        def mk(n: int) -> "WebGPUBuffer":
+            return WebGPUBuffer.empty(dev, n, usage=rw)
+
+        # Resize _pre buffers for up to T tokens
+        self._pre["ids"]      = mk(T * 4)
+        self._pre["pos"]      = mk(T * 4)
+        self._pre["slot_map"] = mk(T * 4)
+        self._pre["x"]        = mk(T * H * 4)
+        self._pre["norm_out"] = mk(T * H * 2)
+        self._pre["logits"]   = mk(T * V * 2)
+        self._pre["capped"]   = mk(T * V * 2)
+
+        # Resize _sc buffers; parent allocated T=1 for all of these
+        self._sc["normed"]     = mk(T * H * 2)
+        self._sc["qkv_buf"]    = mk(T * (max_q_dim + 2 * max_kv_dim) * 2)
+        self._sc["q_buf"]      = mk(T * max_q_dim * 2)
+        self._sc["k_buf"]      = mk(T * max_kv_dim * 2)
+        self._sc["v_buf"]      = mk(T * max_kv_dim * 2)
+        self._sc["v_normed"]   = mk(T * max_kv_dim * 2)
+        self._sc["q_rope"]     = mk(T * max_q_dim * 2)
+        self._sc["k_rope"]     = mk(T * max_kv_dim * 2)
+        self._sc["attn_out"]   = mk(T * max_q_dim * 2)
+        self._sc["o_proj_out"] = mk(T * H * 2)
+        self._sc["ffn_normed"] = mk(T * H * 2)
+        self._sc["gate_buf"]   = mk(T * I * 2)
+        self._sc["up_buf"]     = mk(T * I * 2)
+        self._sc["ffn_act"]    = mk(T * I * 2)
+        self._sc["ffn_out"]    = mk(T * H * 2)
+        self._sc["h0"]         = mk(T * H * 4)
+        self._sc["h1"]         = mk(T * H * 4)
+        self._sc["h2"]         = mk(T * H * 4)
+
     # ── Weight key helpers ───────────────────────────────────────────────────
 
     def _pk(self, layer_idx: int) -> str:
@@ -168,7 +224,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             else:
                 result = logits_buf
 
-        return result.to_numpy().view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
+        return result.to_numpy().view(np.float16)[:num_tokens * vocab].reshape(num_tokens, vocab).astype(np.float32)
 
     # ── Decoder layer (intentionally different signature from parent _transformer_layer) ──
     # Parent Gemma4WebGPUModel._transformer_layer takes normed_x and returns (WebGPUBuffer, WebGPUBuffer).
