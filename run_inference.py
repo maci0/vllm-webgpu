@@ -5,14 +5,11 @@ __main__. The run() function itself only requires transformers and wgpu.
 """
 import math
 import os
-import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-
-sys.path.insert(0, str(Path(__file__).parent))
 
 
 
@@ -177,6 +174,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
 
 if __name__ == "__main__":
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model",       required=True)
