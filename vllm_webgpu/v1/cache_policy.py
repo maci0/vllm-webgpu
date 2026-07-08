@@ -117,35 +117,17 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     config = worker.webgpu_config
     model_mem = _get_model_memory_usage(worker)
 
-    try:
-        total: int | None = get_cpu_memory()
-    except Exception:
-        total = None
+    total: int = get_cpu_memory()
 
     if config.is_auto_memory:
-        if total is not None:
-            available = total - model_mem - OVERHEAD_BYTES
-            logger.info(
-                "WebGPU memory: total=%dMB model=%dMB available=%dMB",
-                total // 2**20, model_mem // 2**20, max(available, 0) // 2**20,
-            )
-        else:
-            # Heuristic: allocate KV budget equal to model weight size (1:1 ratio).
-            available = model_mem
-            logger.info(
-                "WebGPU memory: total=unknown model=%dMB available=%dMB (heuristic 1:1)",
-                model_mem // 2**20, available // 2**20,
-            )
+        available = total - model_mem - OVERHEAD_BYTES
+        logger.info(
+            "WebGPU memory: total=%dMB model=%dMB available=%dMB",
+            total // 2**20, model_mem // 2**20, max(available, 0) // 2**20,
+        )
         return max(available, 0)
 
     # Explicit fraction: user asked for `memory_fraction` of device total for KV.
-    if total is not None:
-        available = int(total * config.memory_fraction) - model_mem - OVERHEAD_BYTES
-    else:
-        # Derive KV budget from model size when device total is unknown.
-        # memory_fraction==1.0 means "all remaining memory", so guard against
-        # division by zero when the denominator is zero or negative.
-        denom = 1.0 - config.memory_fraction
-        available = int(model_mem) if denom <= 0 else int(model_mem * config.memory_fraction / denom)
+    available = int(total * config.memory_fraction) - model_mem - OVERHEAD_BYTES
     return max(available, 0)
 

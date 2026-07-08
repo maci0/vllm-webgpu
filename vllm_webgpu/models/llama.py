@@ -559,7 +559,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # no CPU roundtrip. Recorded into this encoder alongside norm and LM head.
         with self._batched_dispatch():
             last_token_byte_offset = (T - 1) * hidden * 2  # f16 bytes
-            assert self._active_encoder is not None
             self._active_encoder.copy_buffer_to_buffer(
                 x_res.buf, last_token_byte_offset,
                 b["last_tok"].buf, 0,
@@ -634,17 +633,18 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
             dev.queue.write_buffer(pre["bt"].buf,       0, bt_bytes)
 
-            self._dispatch(
-                "embedding_lookup",
-                [self.weights["model.embed_tokens.weight"], pre["ids"], pre["x"]],
-                {"HIDDEN_DIM": hidden}, (1, 1, 1),
-            )
-            self._dispatch(
-                "rms_norm",
-                [pre["x"], self.weights["model.layers.0.input_layernorm.weight"],
-                 sc["normed"]],
-                rms_base, (1, 1, 1),
-            )
+            with self._batched_dispatch():
+                self._dispatch(
+                    "embedding_lookup",
+                    [self.weights["model.embed_tokens.weight"], pre["ids"], pre["x"]],
+                    {"HIDDEN_DIM": hidden}, (1, 1, 1),
+                )
+                self._dispatch(
+                    "rms_norm",
+                    [pre["x"], self.weights["model.layers.0.input_layernorm.weight"],
+                     sc["normed"]],
+                    rms_base, (1, 1, 1),
+                )
 
             normed_x: "WebGPUBuffer" = sc["normed"]
             x_buf                    = pre["x"]

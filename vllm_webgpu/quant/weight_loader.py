@@ -238,7 +238,7 @@ def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
 
 
 def _awq_qzeros_symmetric(qzeros: np.ndarray) -> bool:
-    """Return True only when every AWQ qzero nibble decodes to 0 or 8.
+    """Return True only when every AWQ qzero nibble is exactly 8 (symmetric midpoint).
 
     AWQ packs zero-points with nibble order [0,4,1,5,2,6,3,7], i.e. bit
     offsets [0,16,4,20,8,24,12,28].  Symmetric checkpoints produced by

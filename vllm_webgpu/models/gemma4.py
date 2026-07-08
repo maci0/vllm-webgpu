@@ -114,10 +114,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                      self.hidden_size // self.num_q_heads)
 
         # Compute max dimensions across all layers for scratch buffer sizing
-        max_q_dim = max(lp["q_dim"] for lp in self._lp)
-        max_kv_dim = max(lp["kv_dim"] for lp in self._lp)
+        self._max_q_dim = max(lp["q_dim"] for lp in self._lp)
+        self._max_kv_dim = max(lp["kv_dim"] for lp in self._lp)
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
-        self._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
+        self._init_scratch_buffers(max_ctx, self._max_q_dim, self._max_kv_dim)
 
         _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
@@ -381,8 +381,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         hidden = self.hidden_size
         vocab  = self.vocab_size
         inter  = self.intermediate_size
-        max_q_dim  = max(lp["q_dim"]  for lp in self._lp)
-        max_kv_dim = max(lp["kv_dim"] for lp in self._lp)
+        max_q_dim  = self._max_q_dim
+        max_kv_dim = self._max_kv_dim
 
         def alloc(n_bytes: int) -> WebGPUBuffer:
             return WebGPUBuffer.empty(dev, max(n_bytes, 8))

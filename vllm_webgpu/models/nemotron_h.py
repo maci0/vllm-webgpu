@@ -647,7 +647,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         conv_w = f"{p}.conv1d.weight"
         conv_b = f"{p}.conv1d.bias"
         has_bias = int(conv_b in self.weights)
-        bias_buf = self.weights.get(conv_b, sc["mamba_conv_in"])  # dummy when absent
+        bias_buf = self.weights.get(conv_b, self._dummy_scales_buf)  # dummy when absent
         self._dispatch(
             "mamba2_causal_conv",
             [sc["mamba_conv_in"], self.weights[conv_w], bias_buf,

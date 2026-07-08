@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import torch
 
 try:
     from vllm.v1.kv_cache_interface import FullAttentionSpec
@@ -163,8 +164,7 @@ class WebGPUModelRunner:
         if FullAttentionSpec is None:
             return spec
 
-        import torch as _torch
-        _dtype = _torch.float16
+        _dtype = torch.float16
 
         def _make_spec(num_kv_heads: int, head_size: int) -> Any:
             return FullAttentionSpec(
@@ -265,7 +265,6 @@ class WebGPUModelRunner:
         by log probability (num_logprobs+1 columns total), matching the layout
         expected by LogprobsLists.
         """
-        import torch
         from vllm.v1.sample.sampler import Sampler
 
         vocab_size = logits_1d.shape[0]
@@ -305,18 +304,14 @@ class WebGPUModelRunner:
         T = len(tok_ids)
         if T < 2:
             return None
-        try:
-            import torch as _torch
-            from vllm.v1.sample.sampler import Sampler
-        except ImportError:
-            return None
+        from vllm.v1.sample.sampler import Sampler
 
         num_positions = T - 1
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
-        logits_t = _torch.from_numpy(full_logits[:num_positions].astype(np.float32))  # [T-1, vocab]
+        logits_t = torch.from_numpy(full_logits[:num_positions].astype(np.float32))  # [T-1, vocab]
         log_probs = Sampler.compute_logprobs(logits_t)  # [T-1, vocab]
-        token_ids_t = _torch.tensor(tok_ids[1:], dtype=_torch.int64)  # [T-1]
+        token_ids_t = torch.tensor(tok_ids[1:], dtype=torch.int64)  # [T-1]
         return Sampler.gather_logprobs(log_probs, k, token_ids_t)
 
     def _make_model_output(

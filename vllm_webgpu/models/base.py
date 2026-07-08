@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from transformers.utils import SAFE_WEIGHTS_NAME
+SAFE_WEIGHTS_NAME = "model.safetensors"
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:

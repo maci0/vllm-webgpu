@@ -116,6 +116,7 @@ class WebGPUWorker(WorkerBase):
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.model_config.max_model_len = max_model_len
+        logger.debug("Updated max_model_len to %d", max_model_len)
 
     def get_cache_block_size_bytes(self) -> int:
         return self.model_runner.get_cache_block_size_bytes()

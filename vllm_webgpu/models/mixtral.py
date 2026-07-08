@@ -264,10 +264,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # Guard: verify scratch buffers are large enough for both inter sizes.
         # _init_scratch_buffers (or __init__) must allocate with the maximum
         # possible intermediate size; assert here so buffer overruns fail fast.
-        _sinter_check = (
-            shared_expert_inter if shared_expert_inter is not None else inter
-        )
-        _max_inter = max(inter, _sinter_check if shared_expert_prefix is not None else 0)
+        _max_inter = max(inter, shared_expert_inter if shared_expert_inter is not None else inter) if shared_expert_prefix is not None else inter
         _buf_capacity = msc["expert_act"].nbytes // 2  # bytes -> f16 elements
         assert _max_inter <= _buf_capacity, (
             f"MoE scratch buffer too small: need {_max_inter} f16 elements "
