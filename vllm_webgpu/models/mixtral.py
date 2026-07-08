@@ -131,34 +131,35 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # and their _batched_dispatch calls become re-entrant no-ops, recording into
         # this encoder. _moe_ffn_layer replaces it after each Phase A flush.
         self._active_encoder = dev.create_command_encoder()
+        try:
+            self._dispatch(
+                "embedding_lookup",
+                [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
+                {"HIDDEN_DIM": hidden},
+                (num_tokens, 1, 1),
+            )
+            self._dispatch(
+                "rms_norm",
+                [x_buf, self.weights["model.layers.0.input_layernorm.weight"], sc["normed"]],
+                _rms_base, (num_tokens, 1, 1),
+            )
 
-        self._dispatch(
-            "embedding_lookup",
-            [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
-            {"HIDDEN_DIM": hidden},
-            (num_tokens, 1, 1),
-        )
-        self._dispatch(
-            "rms_norm",
-            [x_buf, self.weights["model.layers.0.input_layernorm.weight"], sc["normed"]],
-            _rms_base, (num_tokens, 1, 1),
-        )
+            normed_x = sc["normed"]
+            for i in range(self.num_layers):
+                normed_x, x_buf = self._transformer_layer(
+                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
-        normed_x = sc["normed"]
-        for i in range(self.num_layers):
-            normed_x, x_buf = self._transformer_layer(
-                i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+            self._dispatch(
+                "rms_norm",
+                [x_buf, self.weights["model.norm.weight"], norm_out],
+                _rms_base, (num_tokens, 1, 1),
+            )
 
-        self._dispatch(
-            "rms_norm",
-            [x_buf, self.weights["model.norm.weight"], norm_out],
-            _rms_base, (num_tokens, 1, 1),
-        )
+            self._decode_teardown(norm_out, logits_buf, vocab, greedy)
 
-        self._decode_teardown(norm_out, logits_buf, vocab, greedy)
-
-        dev.queue.submit([self._active_encoder.finish()])
-        self._active_encoder = None
+            dev.queue.submit([self._active_encoder.finish()])
+        finally:
+            self._active_encoder = None
 
         if greedy:
             tok = self._read_sample_tok()
