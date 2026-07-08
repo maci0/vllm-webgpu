@@ -1244,16 +1244,14 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
 
     shard_files = sorted(set(index["weight_map"].values()))
 
-    import safetensors.numpy as _sfn
+    import safetensors.torch as _sft
     raw_tensors: dict = {}
     for shard_file in shard_files:
         shard_path = str(p / shard_file)
         logger.info("Loading MLX shard %s", shard_file)
-        with _sfn.safe_open(shard_path, framework="numpy") as sf:
+        with _sft.safe_open(shard_path, framework="pt") as sf:
             for name in sf.keys():
-                arr = sf.get_tensor(name)
-                dtype_str = sf.get_slice(name).get_dtype()
-                raw_tensors[name] = (dtype_str, arr.shape, arr.tobytes())
+                raw_tensors[name] = sf.get_tensor(name)
 
     weights: dict = {}
     all_keys = set(raw_tensors.keys())
@@ -1262,19 +1260,19 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     for key in sorted(all_keys):
         if key in processed:
             continue
-        dtype_str, shape, raw = raw_tensors[key]
+        t = raw_tensors[key]
 
-        if key.endswith(".weight") and dtype_str == "U32":
+        if key.endswith(".weight") and t.dtype == _torch.uint32:
             base = key[:-len(".weight")]
             scales_key = base + ".scales"
             biases_key = base + ".biases"
             if scales_key in all_keys and biases_key in all_keys:
-                _, s_shape, s_raw = raw_tensors[scales_key]
-                _, b_shape, b_raw = raw_tensors[biases_key]
+                s_t = raw_tensors[scales_key]
+                b_t = raw_tensors[biases_key]
                 processed.update({key, scales_key, biases_key})
-                w_u32 = np.frombuffer(raw, dtype=np.uint32).reshape(shape)
-                scales_f32 = _torch.frombuffer(s_raw, dtype=_torch.bfloat16).to(_torch.float32).numpy().reshape(s_shape)
-                biases_f32 = _torch.frombuffer(b_raw, dtype=_torch.bfloat16).to(_torch.float32).numpy().reshape(b_shape)
+                w_u32 = t.numpy()
+                scales_f32 = s_t.to(_torch.float32).numpy()
+                biases_f32 = b_t.to(_torch.float32).numpy()
                 dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
                 arr = np.clip(dequant, -65504.0, 65504.0).astype(np.float16)
                 local_key = base.removeprefix("language_model.") + ".weight"
@@ -1285,18 +1283,17 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
 
         if key.endswith(".scales") or key.endswith(".biases"):
             base_w = key.rsplit(".", 1)[0] + ".weight"
-            if base_w in all_keys and raw_tensors[base_w][0] == "U32":
+            if base_w in all_keys and raw_tensors[base_w].dtype == _torch.uint32:
                 continue
 
-        if dtype_str == "BF16":
-            f32 = _torch.frombuffer(raw, dtype=_torch.bfloat16).to(_torch.float32).numpy().reshape(shape)
-            arr = np.clip(f32, -65504.0, 65504.0).astype(np.float16)
-        elif dtype_str == "F32":
-            arr = np.clip(np.frombuffer(raw, dtype=np.float32).reshape(shape), -65504.0, 65504.0).astype(np.float16)
-        elif dtype_str == "F16":
-            arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
+        if t.dtype == _torch.bfloat16:
+            arr = np.clip(t.to(_torch.float32).numpy(), -65504.0, 65504.0).astype(np.float16)
+        elif t.dtype == _torch.float32:
+            arr = np.clip(t.numpy(), -65504.0, 65504.0).astype(np.float16)
+        elif t.dtype == _torch.float16:
+            arr = t.numpy()
         else:
-            logger.warning("Unsupported dtype %s for tensor %s, skipping", dtype_str, key)
+            logger.warning("Unsupported dtype %s for tensor %s, skipping", t.dtype, key)
             continue
 
         local_key = key.removeprefix("language_model.")
