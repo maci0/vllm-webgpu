@@ -804,23 +804,26 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             return self._moe_sc["expert_out"]
         return super()._ffn_dispatch(normed_x, layer_idx, num_tokens)
 
-    def _transformer_layer(
+    def _attn_block(
         self,
         layer_idx: int,
         normed_x: "WebGPUBuffer",
-        x_buf: "WebGPUBuffer",
         pos_buf: "WebGPUBuffer",
         slot_map: "WebGPUBuffer",
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
-    ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
-        """Standard full-attention transformer layer. Receives pre-normed input.
+    ) -> "WebGPUBuffer":
+        """QKV projections, RoPE, KV-cache store, attention decode, and O projection.
 
-        Adds Qwen3.5-specific behaviour on top of the Llama scaffold:
+        Extends the parent with Qwen3.5-specific behaviour:
           - attn_output_gate: sigmoid-gated attention output before o_proj.
-          - GEMMA_NORM, ROTARY_DIM, INTERLEAVED passed to per-head norm+rope shaders.
-          - MoE FFN routed through _ffn_dispatch() override.
+          - GEMMA_NORM, ROTARY_DIM, INTERLEAVED added to per-head norm+rope shaders.
+
+        fused_qkv is skipped: attn_output_gate requires the gate matmul between QKV
+        projections and RoPE, which is incompatible with the parent's fused path.
+
+        Must be called inside an active _batched_dispatch context.
         """
         sc = self._sc
         hidden = self.hidden_size
@@ -828,154 +831,110 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
 
-        # Per-weight quantization detection: Q4_K (type 12) → GPU block decoder.
         _uq = self._uq_for_key
-
-        h_names = ["h0", "h1", "h2"]
-        residual = sc[h_names[(self._hstate + 1) % 3]]
-        out = sc[h_names[(self._hstate + 2) % 3]]
-        add_n = num_tokens * hidden
-
-        _rms_h = self._rms_consts
         k_cache, v_cache = self.kv_pool[layer_idx]
 
-        with self._batched_dispatch():
-            # normed_x is already the pre-normalized input from the caller.
-            for out_buf, proj, dim in [(sc["q_buf"], "q_proj", q_dim),
-                                       (sc["k_buf"], "k_proj", kv_dim),
-                                       (sc["v_buf"], "v_proj", kv_dim)]:
-                w_key = f"{p}.self_attn.{proj}.weight"
-                uq = _uq(w_key)
-                qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
-                self._dispatch("matmul_quant",
-                               [normed_x, self.weights[w_key],
-                                self._scales_buf(w_key, uq, normed_x), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": uq,
-                                **self._split_k_extra(uq), **qi},
-                               _gemv_wg(dim, uq))
-
-            # When attn_output_gate=True, q_proj.weight was split at load time.
-            # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].
-            # The gate is applied as sigmoid(gate)*attn_out before o_proj (step below).
-            if self._attn_output_gate:
-                gate_wk = f"{p}.self_attn.q_gate_proj.weight"
-                if self.weights.get(gate_wk) is not None:
-                    uq_gate = _uq(gate_wk)
-                    qi_gate = self._quant_extra(f"{p}.self_attn.q_gate_proj", uq_gate)
-                    self._dispatch("matmul_quant",
-                                   [normed_x, self.weights[gate_wk],
-                                    self._scales_buf(gate_wk, uq_gate, normed_x),
-                                    sc["q_gate_buf"]],
-                                   {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate,
-                                    **self._split_k_extra(uq_gate), **qi_gate},
-                                   _gemv_wg(q_dim, uq_gate))
-
-            # Fused per-head RMSNorm + RoPE for Q and K.
-            # When both norm weights exist, fuse into one dispatch using K_SEPARATE=1.
-            _q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
-            _k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
-            _freq_buf = self._rope_freq_buf
-            _rope_base = {"ROPE_BASE": float(self.rope_theta),
-                          "LN_ROPE_BASE": self._ln_rope_theta,
-                          "USE_FREQ_BUF": int(self._use_freq_buf),
-                          "ATTN_SCALE": self._yarn_mscale}
-            if _q_norm_w is not None and _k_norm_w is not None:
-                # Binding 7 (inv_freq_buf): always provided.
-                self._dispatch("fused_qk_norm_rope",
-                               [sc["q_buf"], _q_norm_w, _k_norm_w, pos_buf,
-                                sc["q_rope"], sc["k_rope"], sc["k_buf"], _freq_buf],
-                               {**_rope_base,
-                                "HEAD_DIM": self.head_dim,
-                                "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads,
-                                "HAS_WEIGHT": 1,
-                                "GEMMA_NORM": self._gemma_norm,
-                                "ROTARY_DIM": self._rotary_dim,
-                                "INTERLEAVED": self._rope_interleaved,
-                                "INPUT_OFFSET_K": 0,
-                                "K_SEPARATE": 1},
-                               (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
-            else:
-                for src, dst, n_heads, w_key in [
-                    (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
-                    (sc["k_buf"], sc["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
-                ]:
-                    norm_w = self.weights.get(w_key)
-                    if norm_w is not None:
-                        # Binding 4 (inv_freq_buf): always provided.
-                        self._dispatch("fused_per_head_norm_rope",
-                                       [src, norm_w, pos_buf, dst, _freq_buf],
-                                       {**_rope_base, "HEAD_DIM": self.head_dim,
-                                        "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
-                                        "GEMMA_NORM": self._gemma_norm,
-                                        "ROTARY_DIM": self._rotary_dim,
-                                        "INTERLEAVED": self._rope_interleaved},
-                                       (n_heads, num_tokens, 1))
-                    else:
-                        # Binding 3 (inv_freq_buf): always provided.
-                        self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                       {**_rope_base, "HEAD_DIM": self.head_dim,
-                                        "NUM_HEADS": n_heads},
-                                       (num_tokens, n_heads, 1))
-
-            # Fused K+V cache store
-            self._dispatch("kv_cache_store_both",
-                           [sc["k_rope"], k_cache, sc["v_buf"], v_cache, slot_map],
-                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                            "HEAD_DIM": self.head_dim},
-                           (num_tokens, self.num_kv_heads, 1))
-
-            # Always use flash_attn_decode for single-token decode.
-            # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
-            # loops internally and has no dispatch dimension limit.
-            self._dispatch("flash_attn_decode",
-                           [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                            "CTX_LEN": self._effective_ctx_len(ctx_len)},
-                           (self.num_q_heads, 1, 1))
-
-            # Apply attention output gate if enabled: gated = sigmoid(gate) * attn_out.
-            # q_buf is free at this point (written in q_proj, last read in RoPE), so
-            # reuse it as the output buffer for the gated result.
-            if self._attn_output_gate and self.weights.get(f"{p}.self_attn.q_gate_proj.weight") is not None:
-                gate_n = num_tokens * q_dim
-                self._dispatch("sigmoid_gate",
-                               [sc["q_gate_buf"], sc["attn_out"], sc["q_buf"]],
-                               {"N": gate_n}, ((gate_n // 4 + 255) // 256, 1, 1))
-                o_proj_in = sc["q_buf"]
-            else:
-                o_proj_in = sc["attn_out"]
-
-            w_key = f"{p}.self_attn.o_proj.weight"
+        # QKV projections (always separate; fused_qkv is incompatible with attn_output_gate).
+        for out_buf, proj, dim in [(sc["q_buf"], "q_proj", q_dim),
+                                   (sc["k_buf"], "k_proj", kv_dim),
+                                   (sc["v_buf"], "v_proj", kv_dim)]:
+            w_key = f"{p}.self_attn.{proj}.weight"
             uq = _uq(w_key)
-            qi_o = self._quant_extra(f"{p}.self_attn.o_proj", uq)
+            qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
             self._dispatch("matmul_quant",
-                           [o_proj_in, self.weights[w_key],
-                            self._scales_buf(w_key, uq, o_proj_in), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": uq,
-                            **self._split_k_extra(uq), **qi_o},
-                           _gemv_wg(hidden, uq))
+                           [normed_x, self.weights[w_key],
+                            self._scales_buf(w_key, uq, normed_x), out_buf],
+                           {"K": hidden, "N": dim, "USE_QUANT": uq,
+                            **self._split_k_extra(uq), **qi},
+                           _gemv_wg(dim, uq))
 
-            # Fused: add(x, attn_out, residual) + rms_norm(residual, post_attn_w) → ffn_normed
-            self._dispatch("add_rms_norm",
-                           [x_buf, sc["o_proj_out"],
-                            self.weights[f"{p}.post_attention_layernorm.weight"],
-                            residual, sc["ffn_normed"]],
-                           _rms_h, (num_tokens, 1, 1))
+        # When attn_output_gate=True, q_proj.weight was split at load time.
+        # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].
+        # The gate is applied as sigmoid(gate)*attn_out before o_proj (step below).
+        if self._attn_output_gate:
+            gate_wk = f"{p}.self_attn.q_gate_proj.weight"
+            if self.weights.get(gate_wk) is not None:
+                uq_gate = _uq(gate_wk)
+                qi_gate = self._quant_extra(f"{p}.self_attn.q_gate_proj", uq_gate)
+                self._dispatch("matmul_quant",
+                               [normed_x, self.weights[gate_wk],
+                                self._scales_buf(gate_wk, uq_gate, normed_x),
+                                sc["q_gate_buf"]],
+                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate,
+                                **self._split_k_extra(uq_gate), **qi_gate},
+                               _gemv_wg(q_dim, uq_gate))
 
-            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx, num_tokens)
+        # Per-head RMSNorm + RoPE with Qwen3.5-specific constants.
+        _q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
+        _k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
+        _freq_buf = self._rope_freq_buf
+        _rope_base = {**self._rope_consts,
+                      "GEMMA_NORM": self._gemma_norm,
+                      "ROTARY_DIM": self._rotary_dim,
+                      "INTERLEAVED": self._rope_interleaved}
+        if _q_norm_w is not None and _k_norm_w is not None:
+            # fused_qk_norm_rope with K_SEPARATE=1: Q in q_buf, K in k_buf (separate buffers).
+            self._dispatch("fused_qk_norm_rope",
+                           [sc["q_buf"], _q_norm_w, _k_norm_w, pos_buf,
+                            sc["q_rope"], sc["k_rope"], sc["k_buf"], _freq_buf],
+                           {**_rope_base,
+                            "NUM_Q_HEADS": self.num_q_heads,
+                            "NUM_KV_HEADS": self.num_kv_heads,
+                            "HAS_WEIGHT": 1,
+                            "INPUT_OFFSET_K": 0,
+                            "K_SEPARATE": 1},
+                           (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
+        else:
+            for src, dst, n_heads, norm_w in [
+                (sc["q_buf"], sc["q_rope"], self.num_q_heads, _q_norm_w),
+                (sc["k_buf"], sc["k_rope"], self.num_kv_heads, _k_norm_w),
+            ]:
+                if norm_w is not None:
+                    self._dispatch("fused_per_head_norm_rope",
+                                   [src, norm_w, pos_buf, dst, _freq_buf],
+                                   {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 1},
+                                   (n_heads, num_tokens, 1))
+                else:
+                    self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
+                                   {**_rope_base, "NUM_HEADS": n_heads},
+                                   (num_tokens, n_heads, 1))
 
-            if layer_idx < self.num_layers - 1:
-                next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
-                self._dispatch("add_rms_norm",
-                               [residual, ffn_out, next_w, out, sc["normed"]],
-                               _rms_h, (num_tokens, 1, 1))
-            else:
-                self._dispatch("add", [residual, ffn_out, out],
-                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+        # Fused K+V cache store. V always lives in its own sc["v_buf"] (no offset needed).
+        self._dispatch("kv_cache_store_both",
+                       [sc["k_rope"], k_cache, sc["v_buf"], v_cache, slot_map],
+                       {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
+                        "HEAD_DIM": self.head_dim, "V_IN_OFFSET": 0},
+                       (num_tokens, self.num_kv_heads, 1))
 
-        self._hstate = (self._hstate + 2) % 3
-        return sc["normed"], out
+        self._dispatch("flash_attn_decode",
+                       [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                       {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                        "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
+                        "CTX_LEN": self._effective_ctx_len(ctx_len)},
+                       (self.num_q_heads, 1, 1))
+
+        # Apply attention output gate: gated = sigmoid(gate) * attn_out.
+        # q_buf is free at this point (last read in RoPE), reused as the gated output.
+        if self._attn_output_gate and self.weights.get(f"{p}.self_attn.q_gate_proj.weight") is not None:
+            gate_n = num_tokens * q_dim
+            self._dispatch("sigmoid_gate",
+                           [sc["q_gate_buf"], sc["attn_out"], sc["q_buf"]],
+                           {"N": gate_n}, ((gate_n // 4 + 255) // 256, 1, 1))
+            o_proj_in = sc["q_buf"]
+        else:
+            o_proj_in = sc["attn_out"]
+
+        # Output projection.
+        w_key = f"{p}.self_attn.o_proj.weight"
+        uq = _uq(w_key)
+        qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
+        self._dispatch("matmul_quant",
+                       [o_proj_in, self.weights[w_key],
+                        self._scales_buf(w_key, uq, o_proj_in), sc["o_proj_out"]],
+                       {"K": q_dim, "N": hidden, "USE_QUANT": uq,
+                        **self._split_k_extra(uq), **qi},
+                       _gemv_wg(hidden, uq))
+
+        return sc["o_proj_out"]
 
 
