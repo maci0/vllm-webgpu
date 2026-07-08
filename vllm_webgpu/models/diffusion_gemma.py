@@ -140,7 +140,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         slot_map = pre["slot_map"]; bt_buf = pre["bt"]
         x_buf = pre["x"]; norm_out = pre["norm_out"]; logits_buf = pre["logits"]
 
-        with self._batched_dispatch():
+        # Manage the command encoder manually so that _decoder_layer can flush
+        # and sync mid-layer before reading back MoE router indices. An outer
+        # _batched_dispatch() context would make every inner context re-entrant,
+        # preventing the mid-layer flush that topk readback requires.
+        self._active_encoder = dev.create_command_encoder()
+        try:
             self._dispatch("embedding_lookup_f32",
                            [self.weights[self._embed_key()], ids_buf, x_buf],
                            {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
@@ -182,6 +187,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 result = capped
             else:
                 result = logits_buf
+
+            dev.queue.submit([self._active_encoder.finish()])
+        finally:
+            self._active_encoder = None
 
         return result.to_numpy().view(np.float16)[:num_tokens * vocab].reshape(num_tokens, vocab).astype(np.float32)
 
@@ -446,12 +455,25 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                {"N_EXPERTS": self.num_experts, "K": self.top_k_experts},
                                (num_tokens, 1, 1))
 
+            # Flush the router + topk dispatches and wait for GPU completion
+            # before reading back expert indices. The dispatches recorded into
+            # _active_encoder (re-entrant inside the L{i}R block above) are not
+            # yet submitted; to_numpy() creates its own copy encoder and would
+            # read stale pre-topk_sort data without this explicit flush.
+            dev.queue.submit([self._active_encoder.finish()])
+            dev.queue.on_submitted_work_done_sync()
+
             # Read back per-token routing: [T, K] arrays of expert indices and softmax weights.
             n_tk = num_tokens * self.top_k_experts
             top_k_idx = (self._topk_idx_buf.to_numpy().view(np.uint32)[:n_tk]
                          .reshape(num_tokens, self.top_k_experts))
             rw_vals   = (self._topk_weight_buf.to_numpy().view(np.float32)[:n_tk]
                          .reshape(num_tokens, self.top_k_experts))
+
+            # Fresh encoder for the zero-init write, expert FFN dispatches, and
+            # post-MoE norm. All subsequent _batched_dispatch calls in this layer
+            # are re-entrant and record into this encoder.
+            self._active_encoder = dev.create_command_encoder()
 
             # Apply per-expert learned scale (vLLM gemma4_routing_function_torch:
             # topk_weights *= per_expert_scale[topk_ids]).  The HF checkpoint key is
