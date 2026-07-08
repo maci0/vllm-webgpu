@@ -7,6 +7,7 @@ Usage:
 """
 import argparse
 import time
+from types import SimpleNamespace
 import numpy as np
 
 parser = argparse.ArgumentParser()
@@ -119,11 +120,8 @@ t0 = time.perf_counter()
 for i, token_id in enumerate(tok_ids):
     slot = blk_ids[i // block_size] * block_size + (i % block_size)
 
-    class _PM:
-        _s = slot; _b = bt; _c = i + 1
-        slot_mapping = [_s]; block_tables = [_b]; max_decode_seq_len = _c
-
-    logits = model.forward(np.array([token_id], dtype=np.uint32), np.array([i], dtype=np.uint32), _PM())
+    _pm = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=i + 1)
+    logits = model.forward(np.array([token_id], dtype=np.uint32), np.array([i], dtype=np.uint32), _pm)
 
 _has_gpu_argmax = getattr(model, 'logit_returns_token_id', False)
 
@@ -143,12 +141,9 @@ prod_times = []
 for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra for production timing
     slot = blk_ids[pos // block_size] * block_size + (pos % block_size)
 
-    class _DM:
-        _s = [slot]; _b = [bt]; _c = pos + 1
-        slot_mapping = _s; block_tables = _b; max_decode_seq_len = _c
-
+    _dm = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=pos + 1)
     t0 = time.perf_counter()
-    logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _DM())
+    logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _dm)
     elapsed_ms = (time.perf_counter() - t0) * 1000
     decode_tok = _top1(logits)
     pos += 1
@@ -167,12 +162,9 @@ decode_times = []
 for step in range(args.decode_steps):
     slot = blk_ids[pos // block_size] * block_size + (pos % block_size)
 
-    class _DM2:
-        _s = [slot]; _b = [bt]; _c = pos + 1
-        slot_mapping = _s; block_tables = _b; max_decode_seq_len = _c
-
+    _dm2 = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=pos + 1)
     t0 = time.perf_counter()
-    logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _DM2())
+    logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _dm2)
     decode_tok = _top1(logits)
     decode_times.append((time.perf_counter() - t0) * 1000.0)
     pos += 1

@@ -4,6 +4,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -36,9 +37,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     try:
         result = tok.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True)
-        # transformers may return a BatchEncoding (dict-like) or a plain list.
-        input_ids_list = (result["input_ids"] if hasattr(result, "__getitem__")
-                          and not isinstance(result, list) else result)
+        # transformers may return a BatchEncoding (dict subclass) or a plain list.
+        input_ids_list = result["input_ids"] if isinstance(result, dict) else result
     except Exception:
         input_ids_list = tok.encode(prompt)
     eos_id = tok.eos_token_id
@@ -127,15 +127,11 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         block_table[bi] = bi
         slots.append(bi * block_size + (i % block_size))
 
-    class BatchMeta:
-        slot_mapping      = slots
-        block_tables      = [block_table.copy()]
-        max_decode_seq_len = T
-
+    batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table.copy()], max_decode_seq_len=T)
     logits = model.forward(
         np.array(input_ids_list, dtype=np.uint32),
         np.arange(T, dtype=np.uint32),
-        BatchMeta(),
+        batch_meta,
     )
 
     has_gpu_argmax = getattr(model, "logit_returns_token_id", False)
@@ -151,12 +147,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # Decode
     print(f"\nDecoding (max {max_tokens} tokens)...")
-
-    class Meta:
-        def __init__(self, slot, blk_table, ctx):
-            self.slot_mapping      = [slot]
-            self.block_tables      = [blk_table]
-            self.max_decode_seq_len = ctx
 
     generated = []
     t_start = time.perf_counter()
@@ -175,7 +165,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             break
         block_table[bi] = bi
 
-        meta   = Meta(slot, block_table.copy(), len(input_ids_list) + step + 1)
+        meta   = SimpleNamespace(slot_mapping=[slot], block_tables=[block_table.copy()], max_decode_seq_len=len(input_ids_list) + step + 1)
         logits = model.forward(
             np.array([last_token], dtype=np.uint32),
             np.array([slot], dtype=np.uint32),

@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
 from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -50,7 +49,8 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     # space, matching YaRNScalingRotaryEmbedding._compute_inv_freq exactly.
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
     low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx)
-    ramp_mask = yarn_linear_ramp_mask(low, high, head_dim // 2, torch.float64).numpy()
+    import torch as _torch
+    ramp_mask = yarn_linear_ramp_mask(low, high, head_dim // 2, _torch.float64).numpy()
     inv_freq_mask = (1.0 - ramp_mask) * extrapolation_factor
     scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
@@ -107,6 +107,12 @@ class BaseWebGPUModel(ABC):
             wgpu_device.wgpu_device, 4, usage=_rw)  # 1-element f32 placeholder
         self._use_freq_buf: bool = False
         self._yarn_mscale: float = 1.0  # set to mscale when rope_type='yarn'
+
+    @staticmethod
+    def _rw_flags() -> int:
+        """Return the standard STORAGE|COPY_SRC|COPY_DST buffer usage flags."""
+        import wgpu as _wgpu
+        return _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):
@@ -296,11 +302,6 @@ class BaseWebGPUModel(ABC):
 
     def _uq_for_key(self, key: str) -> int:
         """Return USE_QUANT for a weight key (closure-free helper)."""
-        quant_types = self.weights.get("__quant_types__", {})
-        _qt = quant_types if isinstance(quant_types, dict) else {}
-        tt = _qt.get(key, 0)
-        if tt == 12:
-            return 2
         w = self.weights.get(key)
         if w is not None:
             dtype = getattr(w, "dtype", "f16")

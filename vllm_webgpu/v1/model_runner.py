@@ -6,11 +6,10 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 try:
-    from vllm.v1.kv_cache_interface import FullAttentionSpec, KVQuantMode
+    from vllm.v1.kv_cache_interface import FullAttentionSpec
     from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors
 except ImportError:
     FullAttentionSpec = None  # type: ignore[assignment,misc]
-    KVQuantMode = None  # type: ignore[assignment,misc]
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
     LogprobsLists = None  # type: ignore[assignment,misc]
     LogprobsTensors = None  # type: ignore[assignment,misc]
@@ -22,7 +21,7 @@ except ImportError:
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, WebGPUCachePlanner
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, WebGPUCachePlanner, _alloc_rw_buffer, allocate_kv_pool_hybrid
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 if TYPE_CHECKING:
@@ -40,13 +39,13 @@ def _is_greedy(sp) -> bool:
 
 def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
     """Sample one token from a 1-D float32 logit vector using SamplingParams."""
-    if sp is None or _is_greedy(sp):
+    if _is_greedy(sp):
         return int(np.argmax(logits_1d))
     return _sample_token(
         logits_1d,
         temperature=float(sp.temperature),
-        top_p=float(getattr(sp, "top_p", 1.0) or 1.0),
-        top_k=int(getattr(sp, "top_k", -1) or -1),
+        top_p=float(sp.top_p),
+        top_k=int(sp.top_k),
     )
 
 
@@ -132,25 +131,21 @@ class WebGPUModelRunner:
         )
 
         if lp_list:
-            import wgpu as wgpu_lib
-            from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-            rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
             dev = self.wgpu_device.wgpu_device
             pool = []
             for lp in lp_list:
                 kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2
-                k_buf = WebGPUBuffer.empty(dev, kv_bytes, usage=rw)
-                v_buf = WebGPUBuffer.empty(dev, kv_bytes, usage=rw)
-                pool.append((k_buf, v_buf))
+                pool.append((_alloc_rw_buffer(dev, kv_bytes), _alloc_rw_buffer(dev, kv_bytes)))
             if self.model is not None:
                 self.model.kv_pool = pool
             logger.info("Per-layer KV pool: %d layers with mixed dims", len(pool))
         else:
             num_kv_heads = hf.num_key_value_heads
             head_dim = getattr(hf, "head_dim", hf.hidden_size // hf.num_attention_heads)
-            planner = WebGPUCachePlanner.from_runner(self.wgpu_device, self)
             layer_types = getattr(hf, "layer_types", None) or getattr(hf, "layers_block_type", None)
-            planner.allocate_kv_pool_hybrid(
+            allocate_kv_pool_hybrid(
+                self.wgpu_device.wgpu_device,
+                self.model,
                 num_blocks=num_blocks,
                 num_layers=hf.num_hidden_layers,
                 block_size=block_size,
@@ -173,7 +168,6 @@ class WebGPUModelRunner:
             kw: dict[str, Any] = dict(
                 block_size=block_size, num_kv_heads=num_kv_heads,
                 head_size=head_size, dtype=_dtype,
-                kv_quant_mode=KVQuantMode.NONE,
             )
             return FullAttentionSpec(**kw)
 
@@ -267,7 +261,7 @@ class WebGPUModelRunner:
         """
         lp = logits_1d.astype(np.float32)
         shifted = lp - lp.max()
-        log_probs = shifted - np.log(np.exp(shifted).sum())
+        log_probs = shifted - np.logaddexp.reduce(shifted)
         k = min(num_logprobs, log_probs.size)
         top_ids = np.argpartition(log_probs, -k)[-k:]
         order = np.argsort(log_probs[top_ids])[::-1]

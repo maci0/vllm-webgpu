@@ -29,6 +29,12 @@ except ImportError:
         def __init__(self, **kwargs: Any) -> None:
             for k, v in kwargs.items():
                 setattr(self, k, v)
+            # Unpack vllm_config sub-attributes to match the real WorkerBase contract.
+            vc = kwargs.get("vllm_config")
+            if vc is not None:
+                self.cache_config = getattr(vc, "cache_config", None)
+                self.model_config = getattr(vc, "model_config", None)
+                self.parallel_config = getattr(vc, "parallel_config", None)
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.v1.cache_policy import WebGPUCachePlanner
@@ -42,6 +48,7 @@ except ImportError:
 
 if TYPE_CHECKING:
     from vllm.tasks import SupportedTask
+    from vllm.v1.kv_cache_interface import KVCacheSpec
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
 
 logger = logging.getLogger(__name__)
@@ -100,11 +107,12 @@ class WebGPUWorker(WorkerBase):
     def determine_available_memory(self) -> int:
         return WebGPUCachePlanner(self).determine_available_memory()
 
-    def get_kv_cache_spec(self) -> dict:
+    def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         return self.model_runner.get_kv_cache_spec()
 
     def initialize_from_config(self, kv_cache_config: Any) -> None:
-        self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
+        if hasattr(self, "cache_config") and self.cache_config is not None:
+            self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def compile_or_warm_up_model(self) -> CompilationTimes:

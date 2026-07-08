@@ -38,22 +38,16 @@ def _is_mlx_quantized_dir(p: Path) -> bool:
 
 _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
-# Module-level caches to avoid re-reading the same JSON files during a model load.
-# Both dicts are keyed by the absolute file path string.
-_config_json_cache: dict[str, dict] = {}
-_index_json_cache: dict[str, dict] = {}
 
-
-def _read_json_cached(path: Path, cache: dict) -> dict:
-    """Read and parse a JSON file, returning a cached result on subsequent calls."""
-    key = str(path)
-    if key not in cache:
-        try:
-            with open(path) as f:
-                cache[key] = json.load(f)
-        except Exception:
-            cache[key] = {}
-    return cache[key]
+def _collect_mx_bases(header: dict) -> list:
+    """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
+    return sorted(set(
+        k[:-len(".weight")] for k in header
+        if k.endswith(".weight")
+        and header[k].get("dtype") == "U8"
+        and k[:-len(".weight")] + ".weight_scale" in header
+        and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
+    ))
 
 
 def _read_quant_cfg_from_json(config_path: Path) -> dict:
@@ -932,13 +926,7 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
             # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
             # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
             # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-            mxfp4_bases = sorted(set(
-                k[:-len(".weight")] for k in header
-                if k.endswith(".weight")
-                and header[k].get("dtype") == "U8"
-                and k[:-len(".weight")] + ".weight_scale" in header
-                and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
-            ))
+            mxfp4_bases = _collect_mx_bases(header)
             mx4_set: set = set()
             for base in mxfp4_bases:
                 mx4_set.add(f"{base}.weight")
@@ -974,13 +962,7 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
             # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
             # CPU dequant: avoids shader changes for per-block FP8.
             # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
-            mxfp8_bases = sorted(set(
-                k[:-len(".weight")] for k in header
-                if k.endswith(".weight")
-                and header[k].get("dtype") == "U8"
-                and k[:-len(".weight")] + ".weight_scale" in header
-                and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
-            ))
+            mxfp8_bases = _collect_mx_bases(header)
             mx8_set: set = set()
             for base in mxfp8_bases:
                 mx8_set.add(f"{base}.weight")

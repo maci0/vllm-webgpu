@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
-from vllm.model_executor.models.utils import WeightsMapper
 from vllm_webgpu.models.base import BaseWebGPUModel
 from vllm_webgpu.models.llama import _gemv_wg
 
@@ -98,6 +97,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 f"!= num_hidden_layers {self.num_layers}"
             )
 
+        # Pre-build O(1) lookup from layer_idx to MLP rank (its index among MLP layers).
+        self._mlp_rank: dict[int, int] = {}
+        _mlp_count = 0
+        for _i, _lt in enumerate(self._layer_types):
+            if _lt == "mlp":
+                self._mlp_rank[_i] = _mlp_count
+                _mlp_count += 1
+
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
         self._conv_states: dict[int, "WebGPUBuffer"] = {}
@@ -113,15 +120,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     # ── Scratch buffer allocation ─────────────────────────────────────────────
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = (
-            wgpu_lib.BufferUsage.STORAGE
-            | wgpu_lib.BufferUsage.COPY_SRC
-            | wgpu_lib.BufferUsage.COPY_DST
-        )
+        rw = self._rw_flags()
 
         H   = self.hidden_size
         MI  = self.mamba_int
@@ -186,15 +188,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def _init_mamba_states(self) -> None:
         """Allocate zero-initialized GPU buffers for each Mamba layer's state."""
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = (
-            wgpu_lib.BufferUsage.STORAGE
-            | wgpu_lib.BufferUsage.COPY_SRC
-            | wgpu_lib.BufferUsage.COPY_DST
-        )
+        rw = self._rw_flags()
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -249,15 +246,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         along axis 0 (i.e., their flat byte arrays are concatenated in order
         Q, K, V).  The originals are deleted after packing.
         """
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = (
-            wgpu_lib.BufferUsage.STORAGE
-            | wgpu_lib.BufferUsage.COPY_SRC
-            | wgpu_lib.BufferUsage.COPY_DST
-        )
+        rw = self._rw_flags()
 
         for i, lt in enumerate(self._layer_types):
             if lt != "attention":
@@ -283,20 +275,19 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             # Also pack per-weight scales (GPU quant formats store them
             # alongside the weight at w_key + ".scales").
-            for suffix in (".scales",):
-                q_s = f"{q_key}{suffix}"
-                k_s = f"{k_key}{suffix}"
-                v_s = f"{v_key}{suffix}"
-                if q_s in self.weights and k_s in self.weights and v_s in self.weights:
-                    packed = np.concatenate([
-                        self.weights[q_s].to_numpy(),
-                        self.weights[k_s].to_numpy(),
-                        self.weights[v_s].to_numpy(),
-                    ])
-                    self.weights[f"{qkv_key}{suffix}"] = WebGPUBuffer.from_numpy(
-                        dev, np.ascontiguousarray(packed), usage=rw
-                    )
-                    del self.weights[q_s], self.weights[k_s], self.weights[v_s]
+            q_s = f"{q_key}.scales"
+            k_s = f"{k_key}.scales"
+            v_s = f"{v_key}.scales"
+            if q_s in self.weights and k_s in self.weights and v_s in self.weights:
+                packed = np.concatenate([
+                    self.weights[q_s].to_numpy(),
+                    self.weights[k_s].to_numpy(),
+                    self.weights[v_s].to_numpy(),
+                ])
+                self.weights[f"{qkv_key}.scales"] = WebGPUBuffer.from_numpy(
+                    dev, np.ascontiguousarray(packed), usage=rw
+                )
+                del self.weights[q_s], self.weights[k_s], self.weights[v_s]
 
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 
@@ -308,15 +299,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         The conv1d.weight may have an extra dim [conv_dim, 1, kernel] which
         we flatten to [conv_dim, kernel].
         """
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = (
-            wgpu_lib.BufferUsage.STORAGE
-            | wgpu_lib.BufferUsage.COPY_SRC
-            | wgpu_lib.BufferUsage.COPY_DST
-        )
+        rw = self._rw_flags()
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -763,7 +749,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         p   = f"model.layers.{layer_idx}.mixer"
         H   = self.hidden_size
         if self._intermediate_sizes is not None:
-            mlp_idx = sum(1 for j in range(layer_idx) if self._layer_types[j] == "mlp")
+            mlp_idx = self._mlp_rank[layer_idx]
             I = self._intermediate_sizes[0] if len(self._intermediate_sizes) == 1 else self._intermediate_sizes[mlp_idx]
         else:
             I = self.intermediate_size

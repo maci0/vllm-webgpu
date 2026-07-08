@@ -360,7 +360,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         sc = self._sc
         lp = self._lp[layer_idx]
         hidden = self.hidden_size
-        p = f"model.layers.{layer_idx}"
+        p = self._layer_key_prefix(layer_idx)
         q_dim = lp["q_dim"]
         kv_dim = lp["kv_dim"]
         head_dim = lp["head_dim"]
@@ -625,7 +625,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # fuse into rms_norm_add_f32_rms_norm to keep the intermediate in registers.
             post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
             if layer_idx < self.num_layers - 1:
-                next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
+                next_w = self.weights[f"{self._layer_key_prefix(layer_idx + 1)}.input_layernorm.weight"]
                 if post_ffw_w is not None:
                     # Fused: rms_norm(ffn_out, post_ffw_w) + residual_add + rms_norm(residual, next_w)
                     # SCALE=1.0 (default): layer_scalar applied separately below via f32_scale_inplace.

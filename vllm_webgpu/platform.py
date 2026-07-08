@@ -33,11 +33,9 @@ except ImportError:
 
 
 class WebGPUPlatform(_Platform):
-    _enum = _PlatformEnum.OOT if hasattr(_PlatformEnum, 'OOT') else None
+    _enum = _PlatformEnum.OOT
     device_name: str = "cpu"
     device_type: str = "cpu"
-    dispatch_key: str = "CPU"
-
     @classmethod
     def is_available(cls) -> bool:
         adapter = _get_wgpu_adapter()
@@ -73,8 +71,8 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
-        import psutil
-        return psutil.virtual_memory().total
+        from vllm.utils.mem_utils import get_cpu_memory
+        return get_cpu_memory()
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
@@ -137,12 +135,6 @@ class WebGPUPlatform(_Platform):
     @classmethod
     def get_device_uuid(cls, device_id: int = 0) -> str:
         return f"webgpu:{device_id}"
-
-    @classmethod
-    def get_all_gpu_pci_bus_ids(cls) -> dict[int, str]:
-        raise NotImplementedError(
-            "VLLM_GPU_NIC_PCIE_MAPPING is not supported on the WebGPU platform."
-        )
 
     @classmethod
     def manual_seed_all(cls, seed: int) -> None:

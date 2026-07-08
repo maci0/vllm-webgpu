@@ -122,9 +122,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # then calls self._init_scratch_buffers() and self._init_rope_freq_buf().
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
-        # _vpt is stored for _postprocess_weights, which rebuilds _rms_consts with GEMMA_NORM.
-        # Formula matches LlamaWebGPUModel (wg_size=256, cap=16).
-        self._vpt: int = min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0
         self._lm_head_w = None  # resolved in load_weights after weights are available
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
@@ -254,11 +251,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                     gate_key = f"{p}.self_attn.q_gate_proj.weight"
                     self.weights[gate_key] = WebGPUBuffer.from_numpy(dev, gate_arr, usage=rw)
 
-        self._rms_consts = {
-            "HIDDEN_DIM": self.hidden_size,
-            "VALS_PER_THREAD": self._vpt,
-            "GEMMA_NORM": self._gemma_norm,
-        }
+        self._rms_consts["GEMMA_NORM"] = self._gemma_norm
         self._lm_head_w = (
             self.weights.get("lm_head.weight")
             or self.weights.get("model.lm_head.weight")
@@ -625,28 +618,35 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                 {"K": hidden, "N": moe_inter, "GELU": 0},
                 (moe_inter, 1, 1),
             )
-            # Down projection → moe_expert_down
+            # Down projection + weighted accumulate.
             uq_ed = self._uq_for_key(edw_k)
-            qi_ed = self._quant_extra(f"{ep}.down_proj", uq_ed)
-            extra_ed = self._split_k_extra(uq_ed)
-            self._dispatch(
-                "matmul_quant",
-                [sc["moe_expert_act"], self.weights[edw_k],
-                 self._scales_buf(edw_k, uq_ed, sc["dummy_scales"]),
-                 sc["moe_expert_down"]],
-                {"K": moe_inter, "N": hidden, "USE_QUANT": uq_ed,
-                 **extra_ed, **qi_ed},
-                _gemv_wg(hidden, uq_ed),
-            )
-            # Weighted in-place accumulate: out_buf[i] += w_buf[k_idx] * expert_down[i]
-            # K_IDX selects the correct weight from moe_w_buf without a runtime buffer
-            # read per dispatch — 8 unique pipelines compiled once and cached forever.
-            self._dispatch(
-                "moe_accumulate",
-                [out_buf, sc["moe_expert_down"], sc["moe_w_buf"]],
-                {"N": hidden, "K_IDX": k_idx},
-                ((hidden + 255) // 256, 1, 1),
-            )
+            if uq_ed == 0:
+                # f16: fuse GEMV and accumulate into a single dispatch.
+                self._dispatch(
+                    "moe_expert_down_accum",
+                    [sc["moe_expert_act"], self.weights[edw_k], out_buf, sc["moe_w_buf"]],
+                    {"K": moe_inter, "N": hidden, "K_IDX": k_idx},
+                    (hidden, 1, 1),
+                )
+            else:
+                # Quantized path: keep separate dispatches.
+                qi_ed = self._quant_extra(f"{ep}.down_proj", uq_ed)
+                extra_ed = self._split_k_extra(uq_ed)
+                self._dispatch(
+                    "matmul_quant",
+                    [sc["moe_expert_act"], self.weights[edw_k],
+                     self._scales_buf(edw_k, uq_ed, sc["dummy_scales"]),
+                     sc["moe_expert_down"]],
+                    {"K": moe_inter, "N": hidden, "USE_QUANT": uq_ed,
+                     **extra_ed, **qi_ed},
+                    _gemv_wg(hidden, uq_ed),
+                )
+                self._dispatch(
+                    "moe_accumulate",
+                    [out_buf, sc["moe_expert_down"], sc["moe_w_buf"]],
+                    {"N": hidden, "K_IDX": k_idx},
+                    ((hidden + 255) // 256, 1, 1),
+                )
 
     def _forward_moe(
         self,
@@ -689,10 +689,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = np.array(
-            attn_metadata.block_tables[0]
-            if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32)
+        bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         ids_buf    = pre["ids"]
@@ -790,9 +787,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # Allocate one small buffer set per token for ids/pos/slot_map.
         # Shared scratch (sc["normed"], sc["h0/h1/h2"]) is safe to reuse because
         # the GPU executes dispatches within each encoder in submission order.
-        bt_arr = np.array(
-            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32)
+        bt_arr = self._bt_arr(attn_metadata)
         bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr, usage=rw)
 
         tok_ids_bufs: list = []
@@ -912,9 +907,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = np.array(
-            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32)
+        bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         ids_buf    = pre["ids"]
