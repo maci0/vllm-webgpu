@@ -211,10 +211,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         else:
             from vllm_webgpu.utils import sample_token
             full = model.logit_readback() if has_gpu_argmax else logits
-            last_token = sample_token(
-                full[0], temperature=temperature, top_p=top_p,
-                generated_ids=generated[-64:], repetition_penalty=1.3,
-            )
+            last_token = sample_token(full[0], temperature=temperature, top_p=top_p)
 
         if (step + 1) % 5 == 0:
             print(f"  [{step+1} tokens]: {repr(tok.decode(generated)[-60:])}", flush=True)
