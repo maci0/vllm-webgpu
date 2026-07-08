@@ -70,25 +70,17 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print(f"  Loaded {len(model.weights)} tensors in {time.perf_counter() - t0:.1f}s")
 
     # KV cache
-    import wgpu as wgpu_lib
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.config import get_config
-    from vllm_webgpu.v1.cache_policy import allocate_kv_pool_hybrid
+    from vllm_webgpu.v1.cache_policy import allocate_kv_pool_hybrid, allocate_kv_pool_per_layer
 
     block_size = get_config().block_size
     max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
     num_blocks = min(math.ceil(max_ctx / block_size) + 4, 4096)
-    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
     layer_params = getattr(model, "_lp", None)
     if layer_params:
         print(f"\nAllocating per-layer KV cache ({cfg.num_hidden_layers} layers, mixed dims)")
-        for lp in layer_params:
-            kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2
-            model.kv_pool.append((
-                WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
-                WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
-            ))
+        allocate_kv_pool_per_layer(device.wgpu_device, model, num_blocks=num_blocks, block_size=block_size, layer_params=layer_params)
     else:
         kv_h = cfg.num_key_value_heads
         hd   = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)

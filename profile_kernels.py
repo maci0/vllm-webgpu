@@ -45,7 +45,7 @@ else:
 print(f"Architecture: {arch}")
 
 from vllm_webgpu.v1.model_runner import ARCH_MAP, _build_model
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES
+from vllm_webgpu.v1.cache_policy import allocate_kv_pool_hybrid, allocate_kv_pool_per_layer
 if arch not in ARCH_MAP:
     raise ValueError(f"Architecture {arch!r} not supported. Supported: {sorted(ARCH_MAP)}")
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache)
@@ -66,10 +66,6 @@ except Exception as e:
     tok_ids = list(range(1, 33))
 
 # ── Setup fake KV pool ────────────────────────────────────────────────────────
-import wgpu as wgpu_lib
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
-rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 dev = wgpu_dev.wgpu_device
 block_size = 16
 num_blocks = 512  # enough for profiling
@@ -78,39 +74,19 @@ num_layers = hf_cfg.num_hidden_layers
 layer_params = getattr(model, "_lp", None)
 num_kv_heads = hf_cfg.num_key_value_heads
 head_dim = getattr(hf_cfg, "head_dim", hf_cfg.hidden_size // hf_cfg.num_attention_heads)
-model.kv_pool = []
 if layer_params:
     print(f"Allocating per-layer KV cache ({num_layers} layers, mixed dims)")
-    for lp in layer_params:
-        kv_block_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2  # f16
-        model.kv_pool.append((
-            WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
-            WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
-        ))
+    allocate_kv_pool_per_layer(dev, model, num_blocks=num_blocks, block_size=block_size, layer_params=layer_params)
 else:
-    num_kv_heads = hf_cfg.num_key_value_heads
-    head_dim = getattr(hf_cfg, "head_dim", hf_cfg.hidden_size // hf_cfg.num_attention_heads)
-    kv_block_bytes = num_blocks * block_size * num_kv_heads * head_dim * 2  # f16
-    layer_types = getattr(model, "_layer_types", None)
-    if layer_types:
-        _dummy = (
-            WebGPUBuffer.empty(dev, 16, usage=rw),
-            WebGPUBuffer.empty(dev, 16, usage=rw),
-        )
-        for i in range(num_layers):
-            if layer_types[i] in KV_ATTN_TYPES:
-                model.kv_pool.append((
-                    WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
-                    WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
-                ))
-            else:
-                model.kv_pool.append(_dummy)
-    else:
-        model.kv_pool = [
-            (WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
-             WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw))
-            for _ in range(num_layers)
-        ]
+    allocate_kv_pool_hybrid(
+        dev, model,
+        num_blocks=num_blocks,
+        num_layers=num_layers,
+        block_size=block_size,
+        num_kv_heads=num_kv_heads,
+        head_dim=head_dim,
+        layer_types=getattr(model, "_layer_types", None),
+    )
 
 # ── Run prefill ───────────────────────────────────────────────────────────────
 # Allocate enough blocks for prompt + warmup + profiling steps

@@ -72,6 +72,28 @@ def allocate_kv_pool_hybrid(
         )
 
 
+def allocate_kv_pool_per_layer(
+    dev,
+    model,
+    num_blocks: int,
+    block_size: int,
+    layer_params: list,
+) -> None:
+    """Allocate KV pool for models with per-layer KV dims (e.g. Nemotron-H).
+
+    layer_params is a list of dicts (one per layer) each with keys:
+      num_kv_heads, head_dim
+    """
+    model.kv_pool.clear()
+    logger.info("KV cache (per-layer): %d layers, mixed dims", len(layer_params))
+    for lp in layer_params:
+        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2  # f16
+        model.kv_pool.append((
+            _alloc_rw_buffer(dev, kv_bytes),
+            _alloc_rw_buffer(dev, kv_bytes),
+        ))
+
+
 class WebGPUCachePlanner:
     def __init__(self, worker: "WebGPUWorker") -> None:
         self._worker = worker
