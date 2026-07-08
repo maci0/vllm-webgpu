@@ -577,6 +577,12 @@ class WebGPUModelRunner:
                     flat_new = self._flat_block_ids(cur_new_bids)
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
+                        # Realign pos with the scheduler's authoritative view.
+                        # After preemption num_computed_tokens is often 0 (full
+                        # recompute); using the stale _req_state pos would write
+                        # into the wrong block-table slot and skip uninitialized
+                        # KV slots 0..old_pos-1 in the freshly allocated blocks.
+                        pos = cached.num_computed_tokens[i]
                     else:
                         blk_ids.extend(flat_new)
 
