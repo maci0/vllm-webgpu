@@ -875,24 +875,24 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                         tok_ctx, 1, rms_base,
                     )
 
-                self._dispatch(
-                    "rms_norm",
-                    [x_buf, self.weights["model.norm_f.weight"], pre["norm_out"]],
-                    rms_base,
-                    (1, 1, 1),
-                )
-                lm_head_w = self.weights.get(
-                    "lm_head.weight", self.weights["model.embed_tokens.weight"]
-                )
-                self._dispatch(
-                    "matmul_quant",
-                    [pre["norm_out"], lm_head_w,
-                     self.weights.get("lm_head.scales", pre["norm_out"]),
-                     pre["logits"]],
-                    {"K": self.hidden_size, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
-                    ((vocab + 255) // 256, 1, 1),
-                )
                 if getattr(self, "_greedy_decode", True) and t == T - 1:
+                    self._dispatch(
+                        "rms_norm",
+                        [x_buf, self.weights["model.norm_f.weight"], pre["norm_out"]],
+                        rms_base,
+                        (1, 1, 1),
+                    )
+                    lm_head_w = self.weights.get(
+                        "lm_head.weight", self.weights["model.embed_tokens.weight"]
+                    )
+                    self._dispatch(
+                        "matmul_quant",
+                        [pre["norm_out"], lm_head_w,
+                         self.weights.get("lm_head.scales", pre["norm_out"]),
+                         pre["logits"]],
+                        {"K": self.hidden_size, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                        ((vocab + 255) // 256, 1, 1),
+                    )
                     self._dispatch(
                         "argmax_f16",
                         [pre["logits"], self._ensure_sample_buf(vocab)],
