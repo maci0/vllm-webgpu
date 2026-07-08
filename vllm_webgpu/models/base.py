@@ -50,25 +50,27 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies — cos(pos * freq * mscale) is wrong.
     """
-    import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask)
-    factor    = float(rope_scaling.get("factor", 1.0))
-    beta_fast = float(rope_scaling.get("beta_fast", 32.0))
-    beta_slow = float(rope_scaling.get("beta_slow", 1.0))
-    orig_ctx  = int(rope_scaling.get("original_max_position_embeddings", 4096))
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding)
 
-    pos_freqs = rope_theta ** (np.arange(0, head_dim, 2, dtype=np.float64) / head_dim)
-    inv_freq_extrapolation = 1.0 / pos_freqs          # high-freq dims: no scaling
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)  # low-freq dims: divide by factor
-
-    # Use vLLM's correction-range helper to get the transition band in dimension-index
-    # space, matching YaRNScalingRotaryEmbedding._compute_inv_freq exactly.
+    factor               = float(rope_scaling.get("factor", 1.0))
+    beta_fast            = float(rope_scaling.get("beta_fast", 32.0))
+    beta_slow            = float(rope_scaling.get("beta_slow", 1.0))
+    orig_ctx             = int(rope_scaling.get("original_max_position_embeddings", 4096))
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx)
-    ramp_mask = yarn_linear_ramp_mask(low, high, head_dim // 2, dtype=torch.float32).numpy()
-    inv_freq_mask = (1.0 - ramp_mask) * extrapolation_factor
-    scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
+
+    # Delegate frequency blending to vLLM's own implementation so the values
+    # stay numerically identical to what the CUDA path uses.
+    obj = YaRNScalingRotaryEmbedding.__new__(YaRNScalingRotaryEmbedding)
+    obj.base = rope_theta
+    obj.rotary_dim = head_dim
+    obj.max_position_embeddings = orig_ctx
+    obj.beta_fast = beta_fast
+    obj.beta_slow = beta_slow
+    obj.extrapolation_factor = extrapolation_factor
+    obj.truncate = True
+    scaled_inv_freq = obj._compute_inv_freq(factor).detach().numpy().astype(np.float32)
 
     # YaRN attention scale: mscale = (0.1 * ln(factor) + 1.0) * attn_factor.
     # attn_factor is an optional rope_scaling field (default 1.0), matching
@@ -77,7 +79,7 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     # not folded into inv_freq (which would compute cos(pos * freq * mscale) instead).
     attn_factor = float(rope_scaling.get("attn_factor", 1.0))
     mscale = yarn_get_mscale(factor) * attn_factor
-    return scaled_inv_freq.astype(np.float32), float(mscale)
+    return scaled_inv_freq, float(mscale)
 
 
 
