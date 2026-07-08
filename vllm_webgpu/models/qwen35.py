@@ -1058,7 +1058,8 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             _freq_buf = self._rope_freq_buf
             _rope_base = {"ROPE_BASE": float(self.rope_theta),
                           "LN_ROPE_BASE": self._ln_rope_theta,
-                          "USE_FREQ_BUF": int(self._use_freq_buf)}
+                          "USE_FREQ_BUF": int(self._use_freq_buf),
+                          "ATTN_SCALE": self._yarn_mscale}
             if _q_norm_w is not None and _k_norm_w is not None:
                 # Binding 7 (inv_freq_buf): always provided.
                 self._dispatch("fused_qk_norm_rope",
