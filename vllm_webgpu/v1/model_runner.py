@@ -18,7 +18,7 @@ except ImportError:
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import WebGPUCachePlanner
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, WebGPUCachePlanner
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 if TYPE_CHECKING:
@@ -190,14 +190,13 @@ class WebGPUModelRunner:
         if not lp_list:
             layer_types = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
             if layer_types and len(layer_types) == mc.num_hidden_layers:
-                ATTN_TYPES = {"attention", "full_attention", "local_attention", "sliding_attention"}
                 default_hd = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
                 default_kv = getattr(mc, "num_key_value_heads", 1)
                 global_hd = getattr(mc, "global_head_dim", default_hd)
                 global_kv = getattr(mc, "global_kv_heads",
                                     getattr(mc, "num_global_key_value_heads", 1))
                 for i, lt in enumerate(layer_types):
-                    if lt not in ATTN_TYPES:
+                    if lt not in KV_ATTN_TYPES:
                         continue
                     if lt == "full_attention":
                         spec[f"model.layers.{i}.self_attn"] = _make_spec(global_kv, global_hd)

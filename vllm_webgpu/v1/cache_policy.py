@@ -11,6 +11,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Layer type strings that carry KV state and require cache allocation.
+# Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
+# this constant and uses it as the authoritative set.
+KV_ATTN_TYPES: frozenset[str] = frozenset(
+    {"attention", "full_attention", "local_attention", "sliding_attention"}
+)
+
 
 class WebGPUCachePlanner:
     def __init__(self, worker: "WebGPUWorker") -> None:
@@ -78,10 +85,9 @@ class WebGPUCachePlanner:
         model = self._worker.model_runner.model
         model.kv_pool.clear()
 
-        FULL_ATTN_TYPES = {"attention", "full_attention"}
         full_attn_count = 0
         for i in range(num_layers):
-            is_full = layer_types is None or layer_types[i] in FULL_ATTN_TYPES
+            is_full = layer_types is None or layer_types[i] in KV_ATTN_TYPES
             if is_full:
                 k_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
                 v_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
