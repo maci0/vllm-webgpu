@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import torch
+from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
 
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
@@ -30,37 +32,9 @@ def sample_token(
     if temperature <= 1e-5:
         return int(np.argmax(logits_1d))
 
-    raw = logits_1d.astype(np.float32)
-
-    # Temperature scaling with numerically stable softmax.
-    raw -= raw.max()
-    probs = np.exp(raw / temperature).astype(np.float32)
-    probs /= probs.sum()
-
-    # Top-k: keep exactly k tokens.
-    top_k_idx = None
-    if top_k > 0:
-        k = min(top_k, len(probs))
-        top_k_idx = np.argpartition(probs, -k)[-k:]
-        out = np.zeros_like(probs)
-        out[top_k_idx] = probs[top_k_idx]
-        s = out.sum()
-        probs = out / s if s > 0 else out
-
-    # Top-p (nucleus): keep the smallest set whose cumulative probability exceeds top_p.
-    if 0.0 < top_p < 1.0:
-        if top_k_idx is not None:
-            # Only sort the non-zero top-k elements rather than the full vocab array.
-            order = np.argsort(probs[top_k_idx])[::-1]
-            sorted_idx = top_k_idx[order]
-        else:
-            sorted_idx = np.argsort(probs)[::-1]
-        cumsum = np.cumsum(probs[sorted_idx])
-        cutoff = max(1, int(np.searchsorted(cumsum, top_p, side="left")) + 1)
-        keep = sorted_idx[:cutoff]
-        out = np.zeros_like(probs)
-        out[keep] = probs[keep]
-        s = out.sum()
-        probs = out / s if s > 0 else out
-
-    return int(np.random.choice(len(probs), p=probs))
+    logits_t = torch.from_numpy(logits_1d.astype(np.float32)).unsqueeze(0)
+    logits_t = logits_t / temperature
+    k_t = torch.tensor([top_k]) if top_k > 0 else None
+    p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None
+    filtered = apply_top_k_top_p(logits_t, k_t, p_t)
+    return int(random_sample(filtered.softmax(dim=-1, dtype=torch.float32), {}).item())
