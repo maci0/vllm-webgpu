@@ -1,6 +1,5 @@
 from __future__ import annotations
 import logging
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -56,8 +55,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.head_dim: int = getattr(
             model_config, "head_dim", self.hidden_size // self.num_q_heads
         )
-        self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
-
         # MLP parameters (used in '-' layers).
         # intermediate_size may be a list for heterogeneous (puzzle) configs;
         # store the per-layer list and use the max for scratch buffer sizing.
@@ -118,12 +115,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._rms_base: dict = {
             "HIDDEN_DIM": self.hidden_size,
             "VALS_PER_THREAD": self._vals_per_thread(self.hidden_size),
-        }
-        self._rope_consts: dict = {
-            "HEAD_DIM":     self.head_dim,
-            "ROPE_BASE":    float(self.rope_theta),
-            "LN_ROPE_BASE": math.log(self.rope_theta),
-            "USE_FREQ_BUF": 0,
         }
         self._init_scratch_buffers()
         self._hstate: int = 0
