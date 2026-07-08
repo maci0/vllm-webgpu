@@ -3,8 +3,6 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-import numpy as np
-
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel, _gemv_wg
 
 if TYPE_CHECKING:
@@ -319,148 +317,19 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         normed_x: "WebGPUBuffer",
         layer_idx: int,
     ) -> None:
-        """GPT-OSS MoE FFN using mlp.router and mlp.experts weight keys.
+        """GPT-OSS MoE FFN: delegates to parent with mlp prefix and swiglu clamp.
 
-        Same Phase A/B pattern as Mixtral but with different key prefix:
-        - Router:  model.layers.{i}.mlp.router.weight
-        - Gate:    model.layers.{i}.mlp.experts.{j}.w1.weight
-        - Up:      model.layers.{i}.mlp.experts.{j}.w3.weight
-        - Down:    model.layers.{i}.mlp.experts.{j}.w2.weight
-
-        swiglu_limit is passed as CLAMP_MAX to fused_gate_act when > 0.
+        Weight keys under model.layers.{i}.mlp:
+          router:  mlp.router.weight
+          experts: mlp.experts.{j}.w1/w3/w2.weight
         """
-        dev = self.wgpu_device.wgpu_device
-        msc = self._moe_sc
-        hidden = self.hidden_size
-        inter = self.intermediate_size
-        N_E = self._num_experts
-        K = self._top_k
-        mlp_p = f"model.layers.{layer_idx}.mlp"
-
-        # Phase A: router + top-K dispatched into current encoder.
-        rw_k = f"{mlp_p}.router.weight"
-        uq_r = self._uq_for_key(rw_k)
-        qi_r = self._quant_extra(f"{mlp_p}.router", uq_r)
-        self._dispatch(
-            "matmul_quant",
-            [normed_x, self.weights[rw_k],
-             self._scales_buf(rw_k, uq_r, msc["dummy_scales"]),
-             msc["router_out"]],
-            {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **self._split_k_extra(uq_r), **qi_r},
-            _gemv_wg(N_E, uq_r),
-        )
-        self._dispatch(
-            "topk_sort",
-            [msc["router_out"], msc["topk_idx"], msc["topk_w"]],
-            {"N_EXPERTS": N_E, "K": K},
-            (1, 1, 1),
-        )
-
-        # Flush and wait for Phase A results.
-        dev.queue.submit([self._active_encoder.finish()])
-        dev.queue.on_submitted_work_done_sync()
-
-        raw_idx = msc["topk_idx"].to_numpy().view(np.uint32)
-        raw_w   = msc["topk_w"].to_numpy().view(np.float32)
-        expert_indices = [int(raw_idx[k]) for k in range(K)]
-        expert_weights = [float(raw_w[k]) for k in range(K)]
-
-        logger.debug(
-            "L%02d GPT-OSS experts: %s  weights: %s",
-            layer_idx, expert_indices,
-            [f"{w:.3f}" for w in expert_weights],
-        )
-
-        dev.queue.write_buffer(
-            msc["moe_w_buf"].buf, 0,
-            np.array(expert_weights, dtype=np.float32).tobytes(),
-        )
-        dev.queue.write_buffer(msc["expert_out"].buf, 0, b"\x00" * (hidden * 2))
-
-        # Phase B: per-expert dispatches in a new encoder.
-        self._active_encoder = dev.create_command_encoder()
-
         clamp_extra: dict = (
             {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
         )
-
-        for k_idx, exp_idx in enumerate(expert_indices):
-            if expert_weights[k_idx] == 0.0:
-                continue
-            ep = f"{mlp_p}.experts.{exp_idx}"
-            w1_key = f"{ep}.w1.weight"
-            w3_key = f"{ep}.w3.weight"
-            w2_key = f"{ep}.w2.weight"
-
-            if self.weights.get(w1_key) is None:
-                logger.debug(
-                    "L%02d expert %d weights not loaded, skipping",
-                    layer_idx, exp_idx,
-                )
-                continue
-
-            uq_g = self._uq_for_key(w1_key)
-            uq_u = self._uq_for_key(w3_key)
-
-            if uq_g == 0 and uq_u == 0:
-                self._dispatch(
-                    "fused_gate_act",
-                    [normed_x, self.weights[w1_key], self.weights[w3_key],
-                     msc["expert_act"]],
-                    {"K": hidden, "N": inter, "GELU": 0, **clamp_extra},
-                    (inter, 1, 1),
-                )
-            else:
-                qi_g = self._quant_extra(f"{ep}.w1", uq_g)
-                qi_u = self._quant_extra(f"{ep}.w3", uq_u)
-                self._dispatch(
-                    "matmul_quant",
-                    [normed_x, self.weights[w1_key],
-                     self._scales_buf(w1_key, uq_g, msc["dummy_scales"]),
-                     msc["expert_gate"]],
-                    {"K": hidden, "N": inter, "USE_QUANT": uq_g, **self._split_k_extra(uq_g), **qi_g},
-                    _gemv_wg(inter, uq_g),
-                )
-                self._dispatch(
-                    "matmul_quant",
-                    [normed_x, self.weights[w3_key],
-                     self._scales_buf(w3_key, uq_u, msc["dummy_scales"]),
-                     msc["expert_up"]],
-                    {"K": hidden, "N": inter, "USE_QUANT": uq_u, **self._split_k_extra(uq_u), **qi_u},
-                    _gemv_wg(inter, uq_u),
-                )
-                self._dispatch(
-                    "gelu_mul",
-                    [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
-                    {"N": inter},
-                    ((inter // 4 + 255) // 256, 1, 1),
-                )
-
-            # Down projection + weighted accumulate.
-            uq_d = self._uq_for_key(w2_key)
-            if uq_d == 0:
-                # f16: fuse GEMV and accumulate into a single dispatch.
-                self._dispatch(
-                    "moe_expert_down_accum",
-                    [msc["expert_act"], self.weights[w2_key],
-                     msc["expert_out"], msc["moe_w_buf"]],
-                    {"K": inter, "N": hidden, "K_IDX": k_idx},
-                    (hidden, 1, 1),
-                )
-            else:
-                # Quantized path: keep separate dispatches.
-                qi_d = self._quant_extra(f"{ep}.w2", uq_d)
-                self._dispatch(
-                    "matmul_quant",
-                    [msc["expert_act"], self.weights[w2_key],
-                     self._scales_buf(w2_key, uq_d, msc["dummy_scales"]),
-                     msc["expert_tmp"]],
-                    {"K": inter, "N": hidden, "USE_QUANT": uq_d, **self._split_k_extra(uq_d), **qi_d},
-                    _gemv_wg(hidden, uq_d),
-                )
-                self._dispatch(
-                    "moe_accumulate",
-                    [msc["expert_out"], msc["expert_tmp"], msc["moe_w_buf"]],
-                    {"N": hidden, "K_IDX": k_idx},
-                    ((hidden + 255) // 256, 1, 1),
-                )
+        super()._moe_ffn_layer(
+            normed_x,
+            layer_idx,
+            bsm_prefix="mlp",
+            router_subkey="router",
+            extra_gate_consts=clamp_extra,
+        )

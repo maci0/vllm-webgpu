@@ -211,8 +211,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         self,
         normed_x: "WebGPUBuffer",
         layer_idx: int,
+        bsm_prefix: str = "block_sparse_moe",
+        router_subkey: str = "gate",
+        extra_gate_consts: dict | None = None,
     ) -> None:
-        """MoE FFN using Mixtral block_sparse_moe weight naming (w1/w3/w2).
+        """MoE FFN, parameterised over weight-key prefix and router key name.
 
         Phase A: router + topk_sort dispatched into the current encoder, then
                  flushed and synced so the CPU can read selected expert indices.
@@ -222,19 +225,29 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         Caller's self._active_encoder is replaced with the Phase B encoder on
         return. Subsequent dispatches in the calling layer method (the residual
         add_rms_norm or add) land in the Phase B encoder, which is correct.
+
+        Args:
+            bsm_prefix: Weight-key namespace under model.layers.{i}, e.g.
+                        'block_sparse_moe' (Mixtral) or 'mlp' (GPT-OSS).
+            router_subkey: Sub-key for the router weight, e.g. 'gate'
+                           (Mixtral) or 'router' (GPT-OSS).
+            extra_gate_consts: Extra shader constants merged into fused_gate_act
+                               dispatches, e.g. {'CLAMP_MAX': limit}.
         """
+        if extra_gate_consts is None:
+            extra_gate_consts = {}
         dev = self.wgpu_device.wgpu_device
         msc = self._moe_sc
         hidden = self.hidden_size
         inter = self.intermediate_size
         N_E = self._num_experts
         K = self._top_k
-        p = f"model.layers.{layer_idx}.block_sparse_moe"
+        p = f"model.layers.{layer_idx}.{bsm_prefix}"
 
         # ── Phase A: router + top-K (into current encoder) ───────────────────
-        rw_k = f"{p}.gate.weight"
+        rw_k = f"{p}.{router_subkey}.weight"
         uq_r = self._uq_for_key(rw_k)
-        qi_r = self._quant_extra(f"{p}.gate", uq_r)
+        qi_r = self._quant_extra(f"{p}.{router_subkey}", uq_r)
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[rw_k],
@@ -300,7 +313,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     "fused_gate_act",
                     [normed_x, self.weights[w1_key], self.weights[w3_key],
                      msc["expert_act"]],
-                    {"K": hidden, "N": inter, "GELU": 0},
+                    {"K": hidden, "N": inter, "GELU": 0, **extra_gate_consts},
                     (inter, 1, 1),
                 )
             else:
