@@ -345,13 +345,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         tok = self._read_sample_tok()
         return np.array([[tok]], dtype=np.int32)
 
-    def logit_readback(self) -> "np.ndarray":
-        return self._last_logit_buf.to_numpy().view(np.float16).reshape(1, self._last_vocab).astype(np.float32)
-
-    def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
-        self._ensure_gpu_sampler(vocab)
-        return self._gpu_sample_tok
-
     def _transformer_layer(
         self,
         layer_idx: int,

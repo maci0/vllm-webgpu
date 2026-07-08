@@ -692,15 +692,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
 
-    def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
-        self._ensure_gpu_sampler(vocab)
-        return self._gpu_sample_tok
-
-    def logit_readback(self) -> "np.ndarray":
-        """Full vocab logits GPU->CPU (only for temperature sampling or analysis)."""
-        vocab = self._last_vocab
-        return self._last_logit_buf.to_numpy().view(np.float16).reshape(1, vocab).astype(np.float32)
-
     def _transformer_layer(
         self,
         layer_idx: int,

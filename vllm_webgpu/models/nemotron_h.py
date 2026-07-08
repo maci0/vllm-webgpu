@@ -944,17 +944,3 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
 
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
-        self._ensure_gpu_sampler(vocab)
-        return self._gpu_sample_tok  # type: ignore[return-value]
-
-    def logit_readback(self) -> np.ndarray:
-        """Return full float32 logits for CPU-side sampling."""
-        return (
-            self._last_logit_buf.to_numpy()
-            .view(np.float16)
-            .reshape(1, self._last_vocab)
-            .astype(np.float32)
-        )

@@ -86,6 +86,9 @@ class BaseWebGPUModel(ABC):
         self._gpu_sample_tok: "WebGPUBuffer | None" = None    # [1] u32 next token (STORAGE)
         self._gpu_sample_vocab: int = 0
         self._gpu_sample_staging = None   # MAP_READ staging buffer for zero-sync readback
+        # Logit readback: set by subclasses before returning from forward().
+        self._last_logit_buf: "WebGPUBuffer | None" = None
+        self._last_vocab: int = 0
         self._prof_stats: dict[str, list[float]] = defaultdict(list)  # shader -> [ms, ...]
         self._prof_current_label: str = ""  # set per _batched_dispatch block
         # Dummy bias buffer for matmul_quant binding 4 (allocated on first use).
@@ -240,6 +243,20 @@ class BaseWebGPUModel(ABC):
         val = int(np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32)[0])
         self._gpu_sample_staging.unmap()
         return val
+
+    def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
+        """Lazily allocate GPU sampler and return the token output buffer."""
+        self._ensure_gpu_sampler(vocab)
+        return self._gpu_sample_tok  # type: ignore[return-value]
+
+    def logit_readback(self) -> "np.ndarray":
+        """Full vocab logits GPU->CPU (only for temperature sampling or analysis)."""
+        return (
+            self._last_logit_buf.to_numpy()  # type: ignore[union-attr]
+            .view(np.float16)
+            .reshape(1, self._last_vocab)
+            .astype(np.float32)
+        )
 
     def _scales_buf(self, w_key: str, uq: int, fallback: "object") -> "object":
         """Return the GPU scales buffer for any quant format.
