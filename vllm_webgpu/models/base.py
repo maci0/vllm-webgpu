@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:
@@ -40,24 +40,22 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     beta_slow = float(rope_scaling.get("beta_slow", 1.0))
     orig_ctx  = int(rope_scaling.get("original_max_position_embeddings", 4096))
 
-    inv_freq = 1.0 / (rope_theta ** (np.arange(0, head_dim, 2, dtype=np.float64) / head_dim))
+    pos_freqs = rope_theta ** (np.arange(0, head_dim, 2, dtype=np.float64) / head_dim)
+    inv_freq_extrapolation = 1.0 / pos_freqs          # high-freq dims: no scaling
+    inv_freq_interpolation = 1.0 / (factor * pos_freqs)  # low-freq dims: divide by factor
 
-    low_freq_len  = orig_ctx / beta_slow
-    high_freq_len = orig_ctx / beta_fast
-    wavelengths   = 2.0 * np.pi / inv_freq
-
-    # Three regions by wavelength:
-    #   short (< high_freq_len): high-frequency dimensions, no scaling
-    #   long  (> low_freq_len):  low-frequency dimensions, scale by factor
-    #   middle: smooth linear interpolation between the two extremes
-    interp_scale = (orig_ctx / wavelengths - beta_fast) / (beta_slow - beta_fast)
-    blended = inv_freq * (1.0 - interp_scale * (1.0 - 1.0 / factor))
-
-    scaled_inv_freq = np.where(
-        wavelengths < high_freq_len,
-        inv_freq,
-        np.where(wavelengths > low_freq_len, inv_freq / factor, blended),
+    # Use vLLM's correction-range helper to get the transition band in dimension-index
+    # space, matching YaRNScalingRotaryEmbedding._compute_inv_freq exactly.
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx)
+    # numpy equivalent of yarn_linear_ramp_mask
+    if low == high:
+        high += 0.001  # prevent division by zero (matches vLLM's singularity guard)
+    ramp_mask = np.clip(
+        (np.arange(head_dim // 2, dtype=np.float64) - low) / (high - low), 0.0, 1.0
     )
+    # mask=1 at low indices (extrapolation, no scale); mask=0 at high indices (interpolation)
+    inv_freq_mask = 1.0 - ramp_mask
+    scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
     # YaRN attention scale: mscale = 0.1 * ln(factor) + 1.0, clamped to 1.0 for factor <= 1.
     # Must be applied AFTER cos/sin in the shader (mscale * cos(pos * freq)),
