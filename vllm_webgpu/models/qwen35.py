@@ -594,7 +594,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                    [x_buf, self.weights["model.norm.weight"],
                                     pre["norm_out"]],
                                    _rms_base, (1, 1, 1))
-                    self._decode_teardown(pre["norm_out"], pre["logits"], vocab, greedy)
+                    self._decode_teardown(pre["norm_out"], pre["logits"], vocab, greedy, split_k=0)
 
             # Submit all dispatches for this chunk.
             dev.queue.submit([self._active_encoder.finish()])

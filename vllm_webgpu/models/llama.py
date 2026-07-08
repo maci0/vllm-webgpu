@@ -220,6 +220,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         logits_buf: "WebGPUBuffer",
         vocab: int,
         greedy: bool,
+        split_k: int = 1,
     ) -> None:
         """Dispatch the LM-head and optionally the GPU argmax + copy-to-staging.
 
@@ -227,6 +228,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         or a manually managed encoder in MixtralWebGPUModel._moe_decode_forward).
         Sets _last_logit_buf and _last_vocab. The caller is responsible for
         submitting the encoder and reading back the result.
+
+        split_k controls the SPLIT_K shader override:
+          1 (default): one workgroup per output row — requires (vocab, 1, 1) WGs,
+                       only usable when vocab <= 65535.
+          0: row-per-thread — requires ceil(vocab/256, 1, 1) WGs, works for any
+             vocab size and must be used when vocab > 65535.
         """
         hidden = self.hidden_size
         uq = self._uq_for_key("lm_head.weight")
@@ -236,7 +243,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
              self._lm_head_weight,
              self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
              logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": uq},
+            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": split_k},
             ((vocab + 255) // 256, 1, 1),
         )
         if greedy:
