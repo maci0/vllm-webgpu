@@ -157,11 +157,23 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             lm_head_w = self.weights.get(self._lm_head_key(),
                                          self.weights[self._embed_key()])
-            self._dispatch("matmul_quant",
-                           [norm_out, lm_head_w, self.weights.get("lm_head.scales", norm_out),
-                            logits_buf],
-                           {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
-                           ((vocab + 255) // 256, 1, 1))
+            if num_tokens > 1:
+                # Batched path: matmul_quant_mr4 reads all M rows of norm_out.
+                # Dispatch (vocab, num_tokens, 1) so every token gets its logits.
+                self._dispatch("matmul_quant_mr4",
+                               [norm_out, lm_head_w,
+                                self.weights.get("lm_head.scales", norm_out),
+                                logits_buf],
+                               {"K": hidden, "N": vocab, "M": num_tokens, "USE_QUANT": 0},
+                               (vocab, num_tokens, 1))
+            else:
+                # Single-token decode path.
+                self._dispatch("matmul_quant",
+                               [norm_out, lm_head_w,
+                                self.weights.get("lm_head.scales", norm_out),
+                                logits_buf],
+                               {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                               ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
                 capped = self._pre["capped"]
