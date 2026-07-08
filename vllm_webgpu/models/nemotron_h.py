@@ -572,7 +572,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             [normed_x, self.weights[in_w],
              self._scales_buf(in_w, uq, normed_x), sc["mamba_inproj"]],
             {"K": H, "N": self.in_proj_dim, "USE_QUANT": uq,
-             **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
+             **self._split_k_extra(uq),
              **self._quant_extra(f"{p}.in_proj", uq)},
             _gemv_wg(self.in_proj_dim, uq),
         )
@@ -643,7 +643,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             [sc["mamba_norm_out"], self.weights[out_w],
              self._scales_buf(out_w, uq2, sc["mamba_norm_out"]), sc["mixer_out"]],
             {"K": MI, "N": H, "USE_QUANT": uq2,
-             **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
+             **self._split_k_extra(uq2),
              **self._quant_extra(f"{p}.out_proj", uq2)},
             _gemv_wg(H, uq2),
         )
@@ -679,7 +679,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             [normed_x, self.weights[qkv_w],
              self._scales_buf(qkv_w, uq, normed_x), sc["qkv_buf"]],
             {"K": H, "N": total_qkv, "USE_QUANT": uq,
-             **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
+             **self._split_k_extra(uq),
              **self._quant_extra(f"{p}.qkv_proj", uq)},
             _gemv_wg(total_qkv, uq),
         )
@@ -743,7 +743,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             [sc["attn_out"], self.weights[ow],
              self._scales_buf(ow, uq2, sc["attn_out"]), sc["mixer_out"]],
             {"K": q_dim, "N": H, "USE_QUANT": uq2,
-             **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
+             **self._split_k_extra(uq2),
              **self._quant_extra(f"{p}.o_proj", uq2)},
             _gemv_wg(H, uq2),
         )
@@ -776,7 +776,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             [normed_x, self.weights[uw],
              self._scales_buf(uw, uq, normed_x), sc["up_buf"]],
             {"K": H, "N": I, "USE_QUANT": uq,
-             **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
+             **self._split_k_extra(uq),
              **self._quant_extra(f"{p}.up_proj", uq)},
             _gemv_wg(I, uq),
         )
@@ -798,7 +798,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             [sc["ffn_act"], self.weights[dw],
              self._scales_buf(dw, uq2, sc["ffn_act"]), sc["mixer_out"]],
             {"K": I, "N": H, "USE_QUANT": uq2,
-             **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
+             **self._split_k_extra(uq2),
              **self._quant_extra(f"{p}.down_proj", uq2)},
             _gemv_wg(H, uq2),
         )
