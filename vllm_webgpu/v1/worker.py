@@ -103,6 +103,16 @@ class WebGPUWorker(WorkerBase):
     def get_model(self) -> Any:
         return self.model_runner.model
 
+    def apply_model(self, fn: Any) -> Any:
+        raise NotImplementedError(
+            "apply_model() requires nn.Module but WebGPU models are not "
+            "nn.Module instances; use get_model() directly."
+        )
+
+    def get_model_inspection(self) -> str:
+        model = self.model_runner.model
+        return repr(model)
+
     def update_max_model_len(self, max_model_len: int) -> None:
         self.model_config.max_model_len = max_model_len
         if hasattr(self.model_runner, "update_max_model_len"):
