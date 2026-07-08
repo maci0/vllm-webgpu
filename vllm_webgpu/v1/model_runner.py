@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
+from scipy.special import log_softmax as _log_softmax
 
 try:
     from vllm.v1.kv_cache_interface import FullAttentionSpec
@@ -32,11 +33,6 @@ def _slot(blk_ids, pos: int, block_size: int) -> int:
     """Compute the flat KV cache slot index for absolute token position `pos`."""
     return int(blk_ids[pos // block_size]) * block_size + pos % block_size
 
-
-def _log_softmax(arr: "np.ndarray") -> "np.ndarray":
-    """Numerically stable log-softmax, fully on CPU via numpy."""
-    shifted = arr - arr.max(axis=-1, keepdims=True)
-    return shifted - np.log(np.sum(np.exp(shifted), axis=-1, keepdims=True))
 
 
 if TYPE_CHECKING:
@@ -294,7 +290,7 @@ class WebGPUModelRunner:
         # Numerically stable log-softmax, fully on CPU via numpy.
         # Avoids torch.compile / TorchInductor on the hot logprob path.
         arr = logits_1d.astype(np.float32)
-        log_probs = _log_softmax(arr)
+        log_probs = _log_softmax(arr, axis=-1)
 
         # Top-k indices sorted by descending log-prob.
         if k == 0:
@@ -361,7 +357,7 @@ class WebGPUModelRunner:
 
         # Numerically stable log-softmax over [T-1, vocab], fully on CPU via numpy.
         arr = full_logits[:num_positions].astype(np.float32)  # [T-1, vocab]
-        log_probs = _log_softmax(arr)  # [T-1, vocab]
+        log_probs = _log_softmax(arr, axis=-1)  # [T-1, vocab]
 
         vocab_size = arr.shape[-1]
         row_idx = np.arange(num_positions)[:, None]
