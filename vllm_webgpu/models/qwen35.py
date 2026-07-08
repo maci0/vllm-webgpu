@@ -547,14 +547,17 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             [x_buf, self.weights["model.norm.weight"], norm_out],
             _rms_base, (num_tokens, 1, 1))
 
-        self._decode_teardown(norm_out, logits_buf, vocab, greedy=True)
+        greedy = getattr(self, "_greedy_decode", True)
+        self._decode_teardown(norm_out, logits_buf, vocab, greedy)
 
         # Submit the final encoder and release it.
         dev.queue.submit([self._active_encoder.finish()])
         self._active_encoder = None
 
-        tok = self._read_sample_tok()
-        return np.array([[tok]], dtype=np.int32)
+        if greedy:
+            tok = self._read_sample_tok()
+            return np.array([[tok]], dtype=np.int32)
+        return self.logit_readback()
 
     def _prefill_chunked_forward(
         self,
@@ -608,6 +611,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                 dev, np.array([attn_metadata.slot_mapping[tc]], dtype=np.uint32),
                 usage=rw))
 
+        greedy = getattr(self, "_greedy_decode", True)
         self._ensure_sample_buf(vocab)
 
         for chunk_start in range(0, num_tokens, _CHUNK):
@@ -662,10 +666,11 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                                    {"K": hidden, "N": vocab,
                                     "USE_QUANT": 0, "SPLIT_K": 0},
                                    ((vocab + 255) // 256, 1, 1))
-                    self._dispatch("argmax_f16",
-                                   [pre["logits"], self._gpu_sample_tok],
-                                   {"N": vocab}, (1, 1, 1))
-                    self._copy_sample_to_staging()
+                    if greedy:
+                        self._dispatch("argmax_f16",
+                                       [pre["logits"], self._gpu_sample_tok],
+                                       {"N": vocab}, (1, 1, 1))
+                        self._copy_sample_to_staging()
 
             # Submit all dispatches for this chunk.
             dev.queue.submit([self._active_encoder.finish()])
@@ -673,8 +678,10 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
 
         self._last_logit_buf = pre["logits"]
         self._last_vocab = vocab
-        tok = self._read_sample_tok()
-        return np.array([[tok]], dtype=np.int32)
+        if greedy:
+            tok = self._read_sample_tok()
+            return np.array([[tok]], dtype=np.int32)
+        return self.logit_readback()
 
     def forward(
         self,
@@ -709,6 +716,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, _ = \
             self._decode_setup(input_ids, positions, attn_metadata)
         vocab = self.vocab_size
+        greedy = getattr(self, "_greedy_decode", True)
 
         # Single outer encoder for the entire forward pass — one queue.submit().
         # Inner _batched_dispatch() calls in layer methods are re-entrant no-ops
@@ -748,14 +756,17 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
             # GPU argmax inside the same encoder — 4-byte readback.
-            self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
-                           {"N": vocab}, (1, 1, 1))
-            self._copy_sample_to_staging()
+            if greedy:
+                self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
+                               {"N": vocab}, (1, 1, 1))
+                self._copy_sample_to_staging()
 
         self._last_logit_buf = logits_buf
         self._last_vocab     = vocab
-        tok = self._read_sample_tok()
-        return np.array([[tok]], dtype=np.int32)
+        if greedy:
+            tok = self._read_sample_tok()
+            return np.array([[tok]], dtype=np.int32)
+        return self.logit_readback()
 
     def _ffn_dispatch(
         self,
