@@ -436,11 +436,17 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                {"K": K_in, "N": N_out, "M": T,
                                 "USE_QUANT": 3, "GROUP_K": group_k},
                                (N_out, T, 1))
-            else:
+            elif uq == 0:
                 self._dispatch("matmul_quant_mr4",
                                [x_b, self.weights[w_key], _dummy, out_b],
                                {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
                                (N_out, T, 1))
+            else:
+                raise RuntimeError(
+                    f"Batch prefill does not support USE_QUANT={uq} for weight {w_key}. "
+                    f"Only f16 (USE_QUANT=0) and GPTQ int4 (USE_QUANT=3) are handled by "
+                    f"matmul_quant_mr4. Other quant types must use the sequential path."
+                )
 
         _CHUNK   = 4
         _hstate  = 0

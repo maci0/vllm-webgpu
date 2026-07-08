@@ -83,8 +83,7 @@ class WebGPUWorker(WorkerBase):
         return self.model_runner.get_kv_cache_spec()
 
     def initialize_from_config(self, kv_cache_config: Any) -> None:
-        if self.cache_config is not None:
-            self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
+        self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def compile_or_warm_up_model(self) -> CompilationTimes:

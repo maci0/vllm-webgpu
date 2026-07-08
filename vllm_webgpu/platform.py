@@ -16,7 +16,7 @@ logger = init_logger(__name__)
 try:
     from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE_RT
     _CPU_ATTN_PATH = _ABE_RT.CPU_ATTN.get_path()
-except ImportError:
+except Exception:
     _CPU_ATTN_PATH = ""
 
 
@@ -78,6 +78,19 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
+        import sys
+        # On Apple Silicon (darwin) all memory is unified: system RAM is the GPU budget.
+        # On other platforms (Windows/Linux with discrete GPU) report the GPU's
+        # max_buffer_size as a proxy for usable VRAM. This avoids inflated
+        # batch-size defaults when a machine has, say, 64 GB RAM but 8 GB VRAM.
+        if sys.platform != "darwin":
+            try:
+                adapter = _get_wgpu_adapter()
+                if adapter is not None:
+                    dev = adapter.request_device_sync()
+                    return int(dev.limits["max_buffer_size"])
+            except Exception:
+                pass
         return get_cpu_memory()
 
     @classmethod
@@ -94,7 +107,7 @@ class WebGPUPlatform(_Platform):
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = "vllm_webgpu.v1.worker.WebGPUWorker"
         existing_backend = parallel_config.distributed_executor_backend
-        if existing_backend not in (None, "auto", "uni"):
+        if existing_backend not in (None, "uni"):
             logger.warning(
                 "WebGPU platform only supports the 'uni' executor backend, "
                 "but distributed_executor_backend was explicitly set to %r. "

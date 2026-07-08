@@ -103,6 +103,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
         k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
         _rope_consts = self._rope_consts
+        _freq_buf = self._rope_freq_buf
 
         for src, dst, n_heads, norm_w, in_off in [
             (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
@@ -111,7 +112,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             if norm_w is not None:
                 self._dispatch(
                     "fused_per_head_norm_rope",
-                    [src, norm_w, pos_buf, dst],
+                    [src, norm_w, pos_buf, dst, _freq_buf],
                     {**_rope_consts, "NUM_HEADS": n_heads,
                      "HAS_WEIGHT": 1, "INPUT_OFFSET": in_off},
                     (n_heads, num_tokens, 1),
@@ -119,7 +120,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             else:
                 self._dispatch(
                     "rope",
-                    [src, pos_buf, dst],
+                    [src, pos_buf, dst, _freq_buf],
                     {**_rope_consts, "NUM_HEADS": n_heads},
                     (num_tokens, n_heads, 1),
                 )

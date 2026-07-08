@@ -7,6 +7,7 @@ import numpy as np
 
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg
+from vllm_webgpu.models.llama import _H_NAMES
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -14,8 +15,6 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 logger = logging.getLogger(__name__)
-
-_H_NAMES = ("h0", "h1", "h2")
 
 
 class NemotronHWebGPUModel(BaseWebGPUModel):
@@ -96,16 +95,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Length invariant is enforced by NemotronHConfig.__init__ asserting
         # len(hybrid_override_pattern) == num_hidden_layers.
 
-        # Pre-build O(1) lookup from layer_idx to MLP rank (its index among MLP layers).
-        # Only needed for heterogeneous configs where _intermediate_sizes varies per MLP layer.
-        self._mlp_rank: dict[int, int] = {}
-        if self._intermediate_sizes is not None:
-            _mlp_count = 0
-            for _i, _lt in enumerate(self._layer_types):
-                if _lt == "mlp":
-                    self._mlp_rank[_i] = _mlp_count
-                    _mlp_count += 1
-
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
         self._conv_states: dict[int, "WebGPUBuffer"] = {}
@@ -185,6 +174,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "up_buf":  mk(I * 2),
             "ffn_act": mk(I * 2),
         }
+        # Small dummy buffer for binding slot 2 (scales) on USE_QUANT=0 dispatches.
+        # Prevents a live computation buffer from aliasing the scales slot (read-read,
+        # but architecturally wrong). Matches the pattern in LlamaWebGPUModel.
+        self._dummy_scales_buf: "WebGPUBuffer" = mk(4)
         self._hstate = 0
 
     # ── Mamba state management ────────────────────────────────────────────────
@@ -481,7 +474,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [pre["norm_out"], lm_head_w,
-                 self.weights.get("lm_head.scales", pre["norm_out"]),
+                 self.weights.get("lm_head.scales", self._dummy_scales_buf),
                  pre["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1),
@@ -599,7 +592,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[in_w],
-             self._scales_buf(in_w, uq, normed_x), sc["mamba_inproj"]],
+             self._scales_buf(in_w, uq, self._dummy_scales_buf), sc["mamba_inproj"]],
             {"K": H, "N": self.in_proj_dim, "USE_QUANT": uq,
              **self._split_k_extra(uq),
              **self._quant_extra(f"{p}.in_proj", uq)},
@@ -670,7 +663,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [sc["mamba_norm_out"], self.weights[out_w],
-             self._scales_buf(out_w, uq2, sc["mamba_norm_out"]), sc["mixer_out"]],
+             self._scales_buf(out_w, uq2, self._dummy_scales_buf), sc["mixer_out"]],
             {"K": MI, "N": H, "USE_QUANT": uq2,
              **self._split_k_extra(uq2),
              **self._quant_extra(f"{p}.out_proj", uq2)},
@@ -706,7 +699,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[qkv_w],
-             self._scales_buf(qkv_w, uq, normed_x), sc["qkv_buf"]],
+             self._scales_buf(qkv_w, uq, self._dummy_scales_buf), sc["qkv_buf"]],
             {"K": H, "N": total_qkv, "USE_QUANT": uq,
              **self._split_k_extra(uq),
              **self._quant_extra(f"{p}.qkv_proj", uq)},
@@ -770,7 +763,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [sc["attn_out"], self.weights[ow],
-             self._scales_buf(ow, uq2, sc["attn_out"]), sc["mixer_out"]],
+             self._scales_buf(ow, uq2, self._dummy_scales_buf), sc["mixer_out"]],
             {"K": q_dim, "N": H, "USE_QUANT": uq2,
              **self._split_k_extra(uq2),
              **self._quant_extra(f"{p}.o_proj", uq2)},
@@ -792,7 +785,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         p   = f"model.layers.{layer_idx}.mixer"
         H   = self.hidden_size
         if self._intermediate_sizes is not None:
-            mlp_idx = self._mlp_rank[layer_idx]
+            mlp_idx = self._layer_types[:layer_idx + 1].count("mlp") - 1
             I = self._intermediate_sizes[0] if len(self._intermediate_sizes) == 1 else self._intermediate_sizes[mlp_idx]
         else:
             I = self.intermediate_size
@@ -803,7 +796,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[uw],
-             self._scales_buf(uw, uq, normed_x), sc["up_buf"]],
+             self._scales_buf(uw, uq, self._dummy_scales_buf), sc["up_buf"]],
             {"K": H, "N": I, "USE_QUANT": uq,
              **self._split_k_extra(uq),
              **self._quant_extra(f"{p}.up_proj", uq)},
@@ -825,7 +818,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [sc["ffn_act"], self.weights[dw],
-             self._scales_buf(dw, uq2, sc["ffn_act"]), sc["mixer_out"]],
+             self._scales_buf(dw, uq2, self._dummy_scales_buf), sc["mixer_out"]],
             {"K": I, "N": H, "USE_QUANT": uq2,
              **self._split_k_extra(uq2),
              **self._quant_extra(f"{p}.down_proj", uq2)},
@@ -906,7 +899,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     self._dispatch(
                         "matmul_quant",
                         [pre["norm_out"], lm_head_w,
-                         self.weights.get("lm_head.scales", pre["norm_out"]),
+                         self.weights.get("lm_head.scales", self._dummy_scales_buf),
                          pre["logits"]],
                         {"K": self.hidden_size, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                         ((vocab + 255) // 256, 1, 1),

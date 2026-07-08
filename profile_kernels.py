@@ -95,7 +95,7 @@ bt = np.arange(num_blocks, dtype=np.uint32)
 
 print("Running prefill...")
 t0 = time.perf_counter()
-slots = [i for i in range(len(tok_ids))]
+slots = list(range(len(tok_ids)))
 _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
 logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 

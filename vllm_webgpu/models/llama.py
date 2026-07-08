@@ -1,6 +1,5 @@
 from __future__ import annotations
 import logging
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -60,7 +59,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         # Precompute constants that are used every forward pass.
-        self._ln_rope_theta: float = math.log(self.rope_theta)
         _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts: dict = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt}
         self._init_scratch_buffers(max_ctx)
@@ -68,7 +66,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
             "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": self._ln_rope_theta,
+            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
@@ -198,8 +196,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         pre = self._pre
         dev = self.wgpu_device.wgpu_device
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
@@ -389,8 +387,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         slot_map_arr = np.array(attn_metadata.slot_mapping, dtype=np.uint32)
         slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr)
-        pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
-        ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
+        pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
+        ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32, copy=False))
         def gemm_batch(x_buf: "WebGPUBuffer", w_key: str, out_buf: "WebGPUBuffer",
                        K_in: int, N_out: int) -> None:
             """Batch GEMM: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T.
@@ -441,7 +439,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         normed_x = b["normed"]
         x_res    = b["x"]
 
-        chunks = [list(range(i, min(i + _CHUNK, self.num_layers))) for i in range(0, self.num_layers, _CHUNK)]
+        chunks = [range(i, min(i + _CHUNK, self.num_layers)) for i in range(0, self.num_layers, _CHUNK)]
 
         for chunk_idx, chunk_layers in enumerate(chunks):
             with self._batched_dispatch():
@@ -623,8 +621,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             pos_t  = positions[t : t + 1]
             slot_t = np.array(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32)
 
-            dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32).tobytes())
-            dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32).tobytes())
+            dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32, copy=False).tobytes())
+            dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
             dev.queue.write_buffer(pre["bt"].buf,       0, bt_arr.tobytes())
 

@@ -122,7 +122,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
 
     try:
         total: int | None = get_cpu_memory()
-    except (OSError, Exception):
+    except Exception:
         total = None
 
     if config.is_auto_memory:

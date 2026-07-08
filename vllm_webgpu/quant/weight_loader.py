@@ -620,6 +620,10 @@ def load_safetensors_weights(
 
         weights: dict = {}
 
+        # Keys that _upload_plain consumed as I8 companion scales. These are
+        # re-encountered in the outer iteration but should not be re-uploaded.
+        _i8_companion_skip: set = set()
+
         # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
         def _upload_plain(name: str, weights: dict) -> bool:  # noqa: E501
             nonlocal _pending_bytes
@@ -706,6 +710,7 @@ def load_safetensors_weights(
                             logger.debug("Int8 per-channel: %s scale n=%d", base_key, sc_arr.size)
                         except Exception as exc:
                             logger.warning("Int8 scale load failed for %s: %s", base_key, exc)
+                        _i8_companion_skip.add(sc_key)
                         break
                 return True
             else:
@@ -732,7 +737,7 @@ def load_safetensors_weights(
                         quant_set.add(f"{base}{suf}")
 
             for name in header:
-                if name == "__metadata__" or name in quant_set:
+                if name == "__metadata__" or name in quant_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -806,7 +811,7 @@ def load_safetensors_weights(
                         nvfp4_set.add(f"{base}{suf}")
 
             for name in header:
-                if name == "__metadata__" or name in nvfp4_set:
+                if name == "__metadata__" or name in nvfp4_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -849,7 +854,7 @@ def load_safetensors_weights(
                         dnvfp4_set.add(f"{base}{suf}")
 
             for name in header:
-                if name == "__metadata__" or name in dnvfp4_set:
+                if name == "__metadata__" or name in dnvfp4_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -888,7 +893,7 @@ def load_safetensors_weights(
             fp8_set = fp8_names | fp8_scale_names
 
             for name in header:
-                if name == "__metadata__" or name in fp8_set:
+                if name == "__metadata__" or name in fp8_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -939,7 +944,7 @@ def load_safetensors_weights(
                 mx4_set.add(f"{base}.weight_scale")
 
             for name in header:
-                if name == "__metadata__" or name in mx4_set:
+                if name == "__metadata__" or name in mx4_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -975,7 +980,7 @@ def load_safetensors_weights(
                 mx8_set.add(f"{base}.weight_scale")
 
             for name in header:
-                if name == "__metadata__" or name in mx8_set:
+                if name == "__metadata__" or name in mx8_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -1054,7 +1059,7 @@ def load_safetensors_weights(
 
             # Upload all non-BnB tensors normally.
             for name in header:
-                if name == "__metadata__" or name in bnb_set:
+                if name == "__metadata__" or name in bnb_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -1142,7 +1147,7 @@ def load_safetensors_weights(
                 ct_reserved.add(f"{_b}.weight_scale")
 
             for name in header:
-                if name == "__metadata__" or name in ct_reserved:
+                if name == "__metadata__" or name in ct_reserved or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     logger.warning("Skipping %s (dtype=%s)", name, header[name].get("dtype", "?"))
@@ -1175,7 +1180,7 @@ def load_safetensors_weights(
         else:
             # Plain BF16/F16/F32
             for name, meta in header.items():
-                if name == "__metadata__":
+                if name == "__metadata__" or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     logger.warning("Unsupported dtype %s for %s, skipping",
@@ -1262,9 +1267,6 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                 arr = sf.get_tensor(name)
                 dtype_str = _DTYPE_MAP.get(arr.dtype.name, arr.dtype.name.upper())
                 raw_tensors[name] = (dtype_str, arr.shape, arr.tobytes())
-
-    import torch as _torch
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
     weights: dict = {}
     all_keys = set(raw_tensors.keys())

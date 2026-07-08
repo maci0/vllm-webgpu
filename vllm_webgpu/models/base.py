@@ -10,7 +10,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale
+from transformers.utils import SAFE_WEIGHTS_NAME
+from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 
@@ -60,12 +61,9 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     # Use vLLM's correction-range helper to get the transition band in dimension-index
     # space, matching YaRNScalingRotaryEmbedding._compute_inv_freq exactly.
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
+    import torch as _torch
     low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx)
-    if low == high:
-        high += 0.001
-    ramp_mask = np.clip(
-        (np.arange(head_dim // 2, dtype=np.float32) - low) / (high - low), 0.0, 1.0
-    )
+    ramp_mask = yarn_linear_ramp_mask(low, high, head_dim // 2, dtype=_torch.float32).numpy()
     inv_freq_mask = (1.0 - ramp_mask) * extrapolation_factor
     scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
@@ -213,7 +211,7 @@ class BaseWebGPUModel(ABC):
         fmt = detect_weight_format(path)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
-            actual = str(Path(path) / "model.safetensors") if Path(path).is_dir() else path
+            actual = str(Path(path) / SAFE_WEIGHTS_NAME) if Path(path).is_dir() else path
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys)
         elif fmt == "safetensors_sharded":

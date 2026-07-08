@@ -287,6 +287,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    (num_tokens, n_heads, 1))
 
             v_to_cache = v_src
+            # Write all T tokens' KV to cache before the attention loop.
+            # Each query token then attends to the full ctx_len cache (all T tokens),
+            # which is non-causal (bidirectional). For the diffusion denoising use-case
+            # this is intentional: the denoising process allows each token to attend
+            # to all other tokens in the canvas. If causal attention is ever needed
+            # (e.g., for an encoder-only pass), store and attend one token at a time
+            # (like _prefill_sequential_fallback) or port flash_attn_prefill here.
             self._dispatch("kv_cache_store_both",
                            [sc["k_rope"], k_cache, v_to_cache, v_cache, slot_map],
                            {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
@@ -405,7 +412,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    _rms, (num_tokens, 1, 1))
                     moe_in = sc["normed"]
                 else:
-                    moe_in = residual
+                    raise ValueError(
+                        f"Layer {layer_idx} missing pre_feedforward_layernorm_2.weight. "
+                        "The f32 residual cannot be passed directly to f16 MoE projections: "
+                        "the shader would silently misinterpret f32 bytes as f16 values. "
+                        "A correctly loaded DiffusionGemma checkpoint always has this weight."
+                    )
 
                 # Gemma4Router preprocessing (vLLM Gemma4Router.forward, line 292-296):
                 #   x = norm(x)          — no-weight RMSNorm on the raw residual

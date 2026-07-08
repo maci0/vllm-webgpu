@@ -189,13 +189,16 @@ class WebGPUModelRunner:
                 default_kv = getattr(mc, "num_key_value_heads", 1)
                 global_hd = getattr(mc, "global_head_dim", default_hd)
                 global_kv = getattr(mc, "num_global_key_value_heads", 1)
+                # NemotronH attention layers live under .mixer, not .self_attn.
+                _archs = getattr(mc, "architectures", None) or []
+                _attn_suffix = ".mixer" if "NemotronHForCausalLM" in _archs else ".self_attn"
                 for i, lt in enumerate(layer_types):
                     if lt not in KV_ATTN_TYPES:
                         continue
                     if lt == "full_attention":
-                        spec[f"model.layers.{i}.self_attn"] = _make_spec(global_kv, global_hd)
+                        spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(global_kv, global_hd)
                     else:
-                        spec[f"model.layers.{i}.self_attn"] = _make_spec(default_kv, default_hd)
+                        spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
                 return spec
 
         if lp_list and len(lp_list) == mc.num_hidden_layers:
@@ -256,7 +259,7 @@ class WebGPUModelRunner:
         have length num_logprobs + 1.
         """
         x = logits_1d.astype(np.float32); x -= x.max()
-        log_probs = x - np.log(np.exp(x).sum())
+        log_probs = x - np.logaddexp.reduce(x)
         if num_logprobs < 0:
             num_logprobs = log_probs.size
         k = min(num_logprobs, log_probs.size)
@@ -409,7 +412,7 @@ class WebGPUModelRunner:
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> Any:
         """vLLM >= 0.24 SchedulerOutput format."""
-        if ModelRunnerOutput is None or self.model is None:
+        if ModelRunnerOutput is None:
             return None
 
         # Prune state for requests that completed in the previous step.
