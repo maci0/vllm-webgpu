@@ -15,7 +15,6 @@ class WebGPUConfig:
     memory_fraction: float
     power_preference: str
     block_size: int
-    debug: bool
 
     def __post_init__(self) -> None:
         if not self.is_auto_memory and not (0 < self.memory_fraction <= 1):
@@ -49,7 +48,6 @@ class WebGPUConfig:
             memory_fraction=memory_fraction,
             power_preference=envs.VLLM_WEBGPU_POWER_PREFERENCE,
             block_size=envs.VLLM_WEBGPU_BLOCK_SIZE,
-            debug=envs.VLLM_WEBGPU_DEBUG,
         )
 
 
