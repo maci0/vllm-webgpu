@@ -119,10 +119,9 @@ class WebGPUModelRunner:
 
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
         mc = self.vllm_config.model_config
-        cc = self.vllm_config.cache_config
         hf = mc.hf_config
         block_size = self.webgpu_config.block_size
-        num_blocks = cc.num_gpu_blocks
+        num_blocks = kv_cache_config.num_blocks
 
         # Per-layer KV pool: Gemma4 has heterogeneous head_dim/num_kv_heads per layer.
         # Prefer model._lp (populated at load time) over hf._layer_attention_params, which
