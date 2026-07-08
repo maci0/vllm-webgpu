@@ -219,8 +219,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
            _moe_ffn_layer flushes and replaces _active_encoder (Phase A/B pattern).
            The subsequent residual-add dispatch lands in the new Phase B encoder.
         """
-        import math
-
         eff = self._effective_ctx(ctx_len)
 
         sc = self._sc
@@ -229,7 +227,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
         inter = self.intermediate_size
-        ln_rope = math.log(self.rope_theta)
+        ln_rope = self._ln_rope_theta
 
         _wg_size = 256
         _vpt = min((hidden + _wg_size - 1) // _wg_size, 16) if hidden <= _wg_size * 16 else 0
