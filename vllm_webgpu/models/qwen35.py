@@ -612,7 +612,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             self._active_encoder = dev.create_command_encoder()
 
             for tc in range(chunk_start, chunk_end):
-                ctx_t = int(attn_metadata.slot_mapping[tc]) + 1
+                ctx_t = int(positions[tc]) + 1
                 ids_buf  = tok_ids_bufs[tc]
                 pos_buf  = tok_pos_bufs[tc]
                 slot_map = tok_slot_bufs[tc]
