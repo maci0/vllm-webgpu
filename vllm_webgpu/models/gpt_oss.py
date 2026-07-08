@@ -182,10 +182,15 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         clamp_extra: dict = (
             {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
         )
+        expert_inter = (
+            getattr(self.model_config, "moe_intermediate_size", None)
+            or self.intermediate_size
+        )
         super()._moe_ffn_layer(
             normed_x,
             layer_idx,
             bsm_prefix="mlp",
             router_subkey="router",
             extra_gate_consts=clamp_extra,
+            expert_inter=expert_inter,
         )
