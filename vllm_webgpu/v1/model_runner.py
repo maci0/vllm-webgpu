@@ -232,7 +232,7 @@ class WebGPUModelRunner:
 
     def execute_model(self, scheduler_output: "SchedulerOutput") -> Any:
         if self.model is None:
-            return None
+            return EMPTY_MODEL_RUNNER_OUTPUT
         try:
             return self._execute_model_v2(scheduler_output)
         except Exception as e:
