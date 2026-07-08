@@ -873,7 +873,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
         self._dispatch("matmul_quant",
                        [o_proj_in, self.weights[w_key],
-                        self._scales_buf(w_key, uq, o_proj_in), sc["o_proj_out"]],
+                        self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
                        {"K": q_dim, "N": hidden, "USE_QUANT": uq,
                         **self._split_k_extra(uq), **qi},
                        _gemv_wg(hidden, uq))
