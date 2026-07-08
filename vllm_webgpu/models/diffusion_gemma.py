@@ -369,7 +369,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     root_size = hidden ** -0.5
                     self._dispatch("router_norm_f32in",
                                    [residual, router_scale_w, router_in],
-                                   {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt,
+                                   {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": self._rms_consts["VALS_PER_THREAD"],
                                     "ROOT_SIZE": root_size},
                                    (num_tokens, 1, 1))
                 else:
