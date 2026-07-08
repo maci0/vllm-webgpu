@@ -163,7 +163,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
-                capped = self._pre.get("capped", logits_buf)
+                capped = self._pre["capped"]
                 self._dispatch("logit_softcap", [logits_buf, capped],
                                {"N": num_tokens * vocab, "CAP": float(self.softcap)},
                                ((num_tokens * vocab + 255) // 256, 1, 1),
@@ -267,12 +267,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    (num_tokens, n_heads, 1))
 
             v_to_cache = v_src
-            self._dispatch("kv_cache_store", [sc["k_rope"], k_cache, slot_map],
+            self._dispatch("kv_cache_store_both",
+                           [sc["k_rope"], k_cache, v_to_cache, v_cache, slot_map],
                            {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
-                            "HEAD_DIM": head_dim}, (num_tokens, num_kv_heads, 1))
-            self._dispatch("kv_cache_store", [v_to_cache, v_cache, slot_map],
-                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
-                            "HEAD_DIM": head_dim}, (num_tokens, num_kv_heads, 1))
+                            "HEAD_DIM": head_dim, "V_IN_OFFSET": 0},
+                           (num_tokens, num_kv_heads, 1))
             self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,

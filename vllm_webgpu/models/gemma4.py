@@ -63,8 +63,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Gemma4 safetensors: derive per-layer params from layer_types + global_head_dim.
         layer_types = getattr(model_config, "layer_types", None)
         global_hd   = getattr(model_config, "global_head_dim", default_hd)
-        global_kv   = getattr(model_config, "global_kv_heads",
-                              getattr(model_config, "num_global_key_value_heads", 1))
+        global_kv   = getattr(model_config, "num_global_key_value_heads", 1)
 
         if raw_lp and len(raw_lp) == self.num_layers:
             self._lp: list[dict] = raw_lp
@@ -244,8 +243,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self._layer_scales: list[float] = []
         for i in range(self.num_layers):
             p = self._layer_key_prefix(i)
-            ls_buf = (self.weights.get(f"{p}.self_attn.layer_scale") or
-                      self.weights.get(f"{p}.layer_scalar"))
+            ls_buf = self.weights.get(f"{p}.layer_scalar")
             if ls_buf is not None:
                 self._layer_scales.append(float(ls_buf.to_numpy().view(np.float16)[0]))
             else:

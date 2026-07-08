@@ -365,12 +365,12 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
 
     compressed-tensors models embed a quantization_config with config_groups that
     describes the actual format. Returns a dict with key '__global__' mapped to
-    {use_quant, fmt, group_size} when detected, otherwise empty dict.
+    {fmt, group_size} when detected, otherwise empty dict.
 
     Routing:
-      8-bit int  + channel        -> USE_QUANT=7, fmt='int8_gpu'
-      8-bit float + tensor/channel -> USE_QUANT=5, fmt='fp8_gpu'
-      4-bit int  + group          -> USE_QUANT=3, fmt='gptq_gpu'
+      8-bit int  + channel        -> fmt='int8_gpu'
+      8-bit float + tensor/channel -> fmt='fp8_gpu'
+      4-bit int  + group          -> fmt='gptq_gpu'
       other                       -> empty dict with a logged warning
     """
     p = Path(config_path)
@@ -388,12 +388,12 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
     wtype = str(weights_desc.get("type", "int")).lower()
     strategy = str(weights_desc.get("strategy", "channel")).lower()
     if num_bits == 8 and wtype == "int" and strategy == "channel":
-        return {"__global__": {"use_quant": 7, "fmt": "int8_gpu", "group_size": None}}
+        return {"__global__": {"fmt": "int8_gpu", "group_size": None}}
     if num_bits == 8 and wtype in ("float", "fp8") and strategy in ("tensor", "channel"):
-        return {"__global__": {"use_quant": 5, "fmt": "fp8_gpu", "group_size": None}}
+        return {"__global__": {"fmt": "fp8_gpu", "group_size": None}}
     if num_bits == 4 and wtype == "int" and strategy == "group":
         group_size = int(weights_desc.get("group_size", 128))
-        return {"__global__": {"use_quant": 3, "fmt": "gptq_gpu", "group_size": group_size}}
+        return {"__global__": {"fmt": "gptq_gpu", "group_size": group_size}}
     logger.warning(
         "compressed-tensors: unsupported format (num_bits=%d, type=%s, strategy=%s), "
         "no quant_meta applied", num_bits, wtype, strategy)
@@ -1170,13 +1170,9 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
 
 
 def _bf16_raw_to_f32(raw: bytes, shape: tuple) -> "np.ndarray":
-    """Convert raw BF16 bytes to float32 numpy array.
-
-    BF16 bit layout is the upper 16 bits of IEEE float32, so shifting left
-    by 16 and reinterpreting as float32 gives the correct value.
-    """
-    arr = np.frombuffer(raw, dtype=np.uint16).astype(np.uint32) << 16
-    return arr.view(np.float32).reshape(shape)
+    """Convert raw BF16 bytes to float32 numpy array."""
+    import torch as _torch_bf
+    return _torch_bf.frombuffer(raw, dtype=_torch_bf.bfloat16).to(_torch_bf.float32).numpy().reshape(shape)
 
 
 def _dequant_mlx_int4(
@@ -1191,6 +1187,11 @@ def _dequant_mlx_int4(
     scales_f32: [out_rows, in_cols/group_size]
     biases_f32: [out_rows, in_cols/group_size]
     Returns float32 [out_rows, in_cols].
+
+    mlx.core.dequantize() covers the same operation, but mlx is not required
+    at inference time (MLX-format checkpoints can be loaded without mlx installed,
+    as long as the weights are dequantized to f16 before upload). The numpy path
+    keeps mlx optional and avoids the Metal-device init that mlx triggers on import.
     """
     out_rows, packed_cols = weight_u32.shape
     in_cols = packed_cols * 8
@@ -1221,9 +1222,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
         if qs:
             group_size = int(qs)
 
-    shard_to_keys: dict = {}
-    for key, shard_file in index["weight_map"].items():
-        shard_to_keys.setdefault(shard_file, []).append(key)
+    shard_files = sorted(set(index["weight_map"].values()))
 
     import safetensors.numpy as _sfn
     _DTYPE_MAP = {
@@ -1233,7 +1232,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
         "uint32": "U32",
     }
     raw_tensors: dict = {}
-    for shard_file in sorted(shard_to_keys.keys()):
+    for shard_file in shard_files:
         shard_path = str(p / shard_file)
         logger.info("Loading MLX shard %s", shard_file)
         with _sfn.safe_open(shard_path, framework="numpy") as sf:

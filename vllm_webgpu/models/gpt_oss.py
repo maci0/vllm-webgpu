@@ -1,6 +1,5 @@
 """GptOssForCausalLM — OpenAI GPT-OSS hybrid SWA+MoE with attention biases."""
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
@@ -10,8 +9,6 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-
-logger = logging.getLogger(__name__)
 
 
 class GptOssWebGPUModel(MixtralWebGPUModel):

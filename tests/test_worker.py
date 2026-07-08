@@ -183,7 +183,7 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
     hf_config.num_key_value_heads = default_kv
     hf_config.head_dim = default_hd
     hf_config.global_head_dim = global_hd
-    hf_config.global_kv_heads = global_kv
+    hf_config.num_global_key_value_heads = global_kv
     hf_config.layer_types = layer_types
     # Simulate safetensors: no _layer_attention_params on hf_config
     del hf_config._layer_attention_params

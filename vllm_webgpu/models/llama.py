@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -70,11 +71,18 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         # Precompute constants that are used every forward pass.
-        self._ln_rope_theta: float = float(np.log(self.rope_theta))
+        self._ln_rope_theta: float = math.log(self.rope_theta)
         _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts: dict = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt}
         self._init_scratch_buffers(max_ctx)
         self._init_rope_freq_buf()
+        self._rope_consts: dict = {
+            "HEAD_DIM": self.head_dim,
+            "ROPE_BASE": float(self.rope_theta),
+            "LN_ROPE_BASE": self._ln_rope_theta,
+            "USE_FREQ_BUF": int(self._use_freq_buf),
+            "ATTN_SCALE": self._yarn_mscale,
+        }
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Pre-allocate all intermediate scratch buffers used in _transformer_layer.
@@ -490,11 +498,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     gemm_batch(normed_x, v_wk, b["v_buf"],    hidden, kv_dim)
 
                     # ── Per-head RMSNorm + RoPE for all T tokens ──────────────────
-                    _pfill_rope_base = {"HEAD_DIM": self.head_dim,
-                                        "ROPE_BASE": float(self.rope_theta),
-                                        "LN_ROPE_BASE": ln_rope,
-                                        "USE_FREQ_BUF": int(self._use_freq_buf),
-                                        "ATTN_SCALE": self._yarn_mscale}
+                    _pfill_rope_base = self._rope_consts
                     _freq_buf = self._rope_freq_buf
                     for src, dst, n_h, wk in [
                         (b["q_buf"],  b["q_rope"], self.num_q_heads,  f"{p}.self_attn.q_norm.weight"),
@@ -766,11 +770,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
         k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
         _freq_buf = self._rope_freq_buf
-        _rope_consts = {"HEAD_DIM": self.head_dim,
-                        "ROPE_BASE": float(self.rope_theta),
-                        "LN_ROPE_BASE": ln_rope,
-                        "USE_FREQ_BUF": int(self._use_freq_buf),
-                        "ATTN_SCALE": self._yarn_mscale}
+        _rope_consts = self._rope_consts
 
         if _use_fused_qkv and k_norm_w is not None:
             # fused_qk_norm_rope: Q+K norm+rope in one dispatch.
@@ -890,7 +890,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             else:
                 self._dispatch("add", [residual, ffn_out, out],
                                {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
-                normed_out = sc["normed"]  # stale; unused after last layer
+                # Callers ignore the first return element after the last layer;
+                # yield out as a harmless placeholder to satisfy the return tuple.
+                normed_out = out
 
         self._hstate = (self._hstate + 2) % 3
         return normed_out, out

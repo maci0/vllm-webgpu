@@ -204,10 +204,9 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
            q_proj.weight [q_dim, hidden] (Q part) and q_gate_proj.weight [q_dim, hidden]
            (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
         """
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
 
         # Tile q_norm/k_norm weights via the parent implementation. Linear-attn layers
         # have no norm keys, so the parent loop skips them gracefully.
@@ -257,11 +256,10 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         conv1d weight from MLX has shape [8192, 4, 1]; reshape the last dim
         so the shader reads [CONV_DIM, KERNEL] = [8192, 4] correctly.
         """
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
 
         ssm_bytes  = self._lin_v_heads * self._lin_k_dim * self._lin_v_dim * 4   # f32
         conv_bytes = (self._lin_conv_kernel - 1) * self._lin_conv_dim * 2        # f16
@@ -596,11 +594,10 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         write_buffer calls do not race with encoder dispatches that reference the
         same buffer from a prior token.
         """
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
 
         hidden = self.hidden_size
         vocab = self.vocab_size

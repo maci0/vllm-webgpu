@@ -57,6 +57,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             model_config, "head_dim", self.hidden_size // self.num_q_heads
         )
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
+        self._ln_rope_theta: float = math.log(self.rope_theta)
 
         # MLP parameters (used in '-' layers).
         # intermediate_size may be a list for heterogeneous (puzzle) configs;
@@ -91,11 +92,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.block_size: int = get_config().block_size
 
         self._layer_types: list[str] = list(model_config.layers_block_type)
-        if len(self._layer_types) != self.num_layers:
-            raise ValueError(
-                f"layers_block_type length {len(self._layer_types)} "
-                f"!= num_hidden_layers {self.num_layers}"
-            )
+        # Length invariant is enforced by NemotronHConfig.__init__ asserting
+        # len(hybrid_override_pattern) == num_hidden_layers.
 
         # Pre-build O(1) lookup from layer_idx to MLP rank (its index among MLP layers).
         # Only needed for heterogeneous configs where _intermediate_sizes varies per MLP layer.
@@ -362,9 +360,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 raw_bytes = self.weights[cw_key].to_numpy()  # u8
                 expected = self.conv_dim * self.conv_kernel
                 arr = raw_bytes.view(np.float16).ravel()
-                assert len(arr) == expected, (
-                    f"conv1d.weight layer {i}: got {len(arr)} elements, expected {expected}"
-                )
+                if len(arr) != expected:
+                    raise ValueError(
+                        f"conv1d.weight layer {i}: got {len(arr)} elements, expected {expected}"
+                    )
                 self.weights[cw_key] = WebGPUBuffer.from_numpy(
                     dev, np.ascontiguousarray(arr), usage=rw
                 )
@@ -679,7 +678,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         H     = self.hidden_size
         q_dim = self.num_q_heads * self.head_dim
         k_dim = self.num_kv_heads * self.head_dim
-        ln_rope = math.log(self.rope_theta)
+        ln_rope = self._ln_rope_theta
 
         # Fused QKV projection.
         qkv_w    = f"{p}.qkv_proj.weight"

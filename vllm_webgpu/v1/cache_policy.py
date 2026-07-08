@@ -96,62 +96,59 @@ def allocate_kv_pool_per_layer(
         ))
 
 
-class WebGPUCachePlanner:
-    def __init__(self, worker: "WebGPUWorker") -> None:
-        self._worker = worker
+def _get_model_memory_usage(worker: "WebGPUWorker") -> int:
+    """Sum of all weight buffer sizes in bytes."""
+    model = getattr(worker.model_runner, "model", None)
+    if model is None:
+        return 0
+    return sum(buf.nbytes for buf in model.weights.values() if hasattr(buf, "nbytes"))
 
-    def get_model_memory_usage(self) -> int:
-        """Sum of all weight buffer sizes in bytes."""
-        model = getattr(self._worker.model_runner, "model", None)
-        if model is None:
-            return 0
-        return sum(buf.nbytes for buf in model.weights.values() if hasattr(buf, "nbytes"))
 
-    def determine_available_memory(self) -> int:
-        """
-        Available memory for KV cache = device total - model weights - overhead.
+def determine_available_memory(worker: "WebGPUWorker") -> int:
+    """
+    Available memory for KV cache = device total - model weights - overhead.
 
-        Uses vLLM's get_cpu_memory to query real system memory, which is correct for
-        unified-memory platforms (Apple Silicon) and avoids confusing wgpu's per-buffer
-        maxBufferSize limit with total device memory. On a 7B f16 model (~14 GB weights)
-        with a 4 GB maxBufferSize, subtracting from maxBufferSize yields negative available
-        memory and clamps to 0 KV blocks.
+    Uses vLLM's get_cpu_memory to query real system memory, which is correct for
+    unified-memory platforms (Apple Silicon) and avoids confusing wgpu's per-buffer
+    maxBufferSize limit with total device memory. On a 7B f16 model (~14 GB weights)
+    with a 4 GB maxBufferSize, subtracting from maxBufferSize yields negative available
+    memory and clamps to 0 KV blocks.
 
-        Falls back to a model-ratio heuristic when get_cpu_memory is unavailable.
-        """
-        config = get_config()
-        model_mem = self.get_model_memory_usage()
+    Falls back to a model-ratio heuristic when get_cpu_memory is unavailable.
+    """
+    config = get_config()
+    model_mem = _get_model_memory_usage(worker)
 
-        try:
-            from vllm.utils.mem_utils import get_cpu_memory
-            total: int | None = get_cpu_memory()
-        except Exception:
-            total = None
+    try:
+        from vllm.utils.mem_utils import get_cpu_memory
+        total: int | None = get_cpu_memory()
+    except Exception:
+        total = None
 
-        if config.is_auto_memory:
-            if total is not None:
-                available = total - model_mem - _OVERHEAD_BYTES
-                logger.info(
-                    "WebGPU memory: total=%dMB model=%dMB available=%dMB",
-                    total // 2**20, model_mem // 2**20, max(available, 0) // 2**20,
-                )
-            else:
-                # Heuristic: allocate KV budget equal to model weight size (1:1 ratio).
-                available = model_mem
-                logger.info(
-                    "WebGPU memory: total=unknown model=%dMB available=%dMB (heuristic 1:1)",
-                    model_mem // 2**20, available // 2**20,
-                )
-            return max(available, 0)
-
-        # Explicit fraction: user asked for `memory_fraction` of device total for KV.
+    if config.is_auto_memory:
         if total is not None:
-            available = int(total * config.memory_fraction) - model_mem - _OVERHEAD_BYTES
+            available = total - model_mem - _OVERHEAD_BYTES
+            logger.info(
+                "WebGPU memory: total=%dMB model=%dMB available=%dMB",
+                total // 2**20, model_mem // 2**20, max(available, 0) // 2**20,
+            )
         else:
-            # Derive KV budget from model size when device total is unknown.
-            # memory_fraction==1.0 means "all remaining memory", so guard against
-            # division by zero when the denominator is zero or negative.
-            denom = 1.0 - config.memory_fraction
-            available = int(model_mem) if denom <= 0 else int(model_mem * config.memory_fraction / denom)
+            # Heuristic: allocate KV budget equal to model weight size (1:1 ratio).
+            available = model_mem
+            logger.info(
+                "WebGPU memory: total=unknown model=%dMB available=%dMB (heuristic 1:1)",
+                model_mem // 2**20, available // 2**20,
+            )
         return max(available, 0)
+
+    # Explicit fraction: user asked for `memory_fraction` of device total for KV.
+    if total is not None:
+        available = int(total * config.memory_fraction) - model_mem - _OVERHEAD_BYTES
+    else:
+        # Derive KV budget from model size when device total is unknown.
+        # memory_fraction==1.0 means "all remaining memory", so guard against
+        # division by zero when the denominator is zero or negative.
+        denom = 1.0 - config.memory_fraction
+        available = int(model_mem) if denom <= 0 else int(model_mem * config.memory_fraction / denom)
+    return max(available, 0)
 

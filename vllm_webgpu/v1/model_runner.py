@@ -1,4 +1,5 @@
 from __future__ import annotations
+import itertools
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -188,8 +189,7 @@ class WebGPUModelRunner:
                 default_hd = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
                 default_kv = getattr(mc, "num_key_value_heads", 1)
                 global_hd = getattr(mc, "global_head_dim", default_hd)
-                global_kv = getattr(mc, "global_kv_heads",
-                                    getattr(mc, "num_global_key_value_heads", 1))
+                global_kv = getattr(mc, "num_global_key_value_heads", 1)
                 for i, lt in enumerate(layer_types):
                     if lt not in KV_ATTN_TYPES:
                         continue
@@ -255,9 +255,8 @@ class WebGPUModelRunner:
         top-k at all; in that case it is prepended and the returned arrays
         have length num_logprobs + 1.
         """
-        lp = logits_1d.astype(np.float32)
-        shifted = lp - lp.max()
-        log_probs = shifted - np.logaddexp.reduce(shifted)
+        import torch as _torch_lsm
+        log_probs = _torch_lsm.from_numpy(logits_1d.astype(np.float32)).log_softmax(-1).numpy()
         k = min(num_logprobs, log_probs.size)
         top_ids = np.argpartition(log_probs, -k)[-k:]
         order = np.argsort(log_probs[top_ids])[::-1]
@@ -332,7 +331,7 @@ class WebGPUModelRunner:
     @staticmethod
     def _flat_block_ids(ids) -> list[int]:
         """Flatten block IDs from vLLM's block_ids: tuple[list[int], ...] format."""
-        return [b for sub in ids for b in sub] if ids else []
+        return list(itertools.chain.from_iterable(ids)) if ids else []
 
     def _make_model_output(
         self,

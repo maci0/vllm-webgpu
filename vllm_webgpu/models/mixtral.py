@@ -65,7 +65,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 "expert_act":   mk(self.intermediate_size * 2),  # [inter] f16 activated
                 "expert_out":   mk(self.hidden_size * 2),        # [hidden] f16 accumulated
                 "expert_tmp":   mk(self.hidden_size * 2),        # [hidden] f16 per-expert
-                "moe_w_buf":    mk(self._top_k * 4),             # [K] f32 weights for accumulate
                 "dummy_scales": mk(8),                           # fallback scales binding
             }
 
@@ -260,10 +259,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             [f"{w:.3f}" for w in expert_weights],
         )
 
-        # Write softmax weights into the combined weight buffer so moe_accumulate
-        # can read w_buf[K_IDX] without a per-dispatch CPU roundtrip.
-        dev.queue.write_buffer(msc["moe_w_buf"].buf, 0,
-                               np.array(expert_weights, dtype=np.float32).tobytes())
         # Without a shared expert, zero-initialize the accumulation buffer so
         # the first expert's weighted output accumulates from zero.
         if shared_expert_prefix is None:
@@ -362,7 +357,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 self._dispatch(
                     "moe_expert_down_accum",
                     [msc["expert_act"], self.weights[w2_key],
-                     msc["expert_out"], msc["moe_w_buf"]],
+                     msc["expert_out"], msc["topk_w"]],
                     {"K": inter, "N": hidden, "K_IDX": k_idx},
                     (hidden, 1, 1),
                 )
@@ -379,7 +374,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 )
                 self._dispatch(
                     "moe_accumulate",
-                    [msc["expert_out"], msc["expert_tmp"], msc["moe_w_buf"]],
+                    [msc["expert_out"], msc["expert_tmp"], msc["topk_w"]],
                     {"N": hidden, "K_IDX": k_idx},
                     ((hidden + 255) // 256, 1, 1),
                 )
