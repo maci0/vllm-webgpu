@@ -1324,5 +1324,6 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
         local_key = key.removeprefix("language_model.")
         weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
 
+    _apply_multimodal_remap(weights)
     logger.info("Loaded %d tensors from MLX int4 dir %s", len(weights), model_dir)
     return weights
