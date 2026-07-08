@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
 from vllm.model_executor.models.utils import WeightsMapper
 from vllm_webgpu.models.base import BaseWebGPUModel
 from vllm_webgpu.models.llama import _gemv_wg
@@ -221,10 +222,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     # ── Weight loading ────────────────────────────────────────────────────────
 
-    _hf_to_vllm_mapper = WeightsMapper(
-        orig_to_new_prefix={"backbone": "model"},
-        orig_to_new_substr={"A_log": "A", "embeddings": "embed_tokens"},
-    )
+    _hf_to_vllm_mapper = NemotronHForCausalLM.hf_to_vllm_mapper
 
     def load_weights(self, path: str) -> None:
         """Load weights with key remapping and Mamba-specific postprocessing."""
