@@ -405,7 +405,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                (N_out, T, 1))
             else:
                 # f16 path (uq == 0)
-                assert uq == 0, f"gemm_batch: unexpected uq={uq} for {w_key}"
+                if uq != 0:
+                    raise RuntimeError(
+                        f"gemm_batch: unsupported quant format uq={uq} for {w_key}; "
+                        "this key should have been caught by the _rep_keys guard above"
+                    )
                 self._dispatch("matmul_quant_mr4",
                                [x_buf, self.weights[w_key], self._dummy_scales_buf, out_buf],
                                {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
@@ -415,18 +419,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4) are both supported in the batch path.
         # All other quant types (AWQ, FP8, NF4, Q4_K, ...) fall through to _transformer_layer
         # which dispatches matmul_quant with the correct USE_QUANT per key.
-        # Check ALL representative weight keys — attn and FFN — to guard against mixed-quant
-        # models where q_proj is f16 but FFN weights are in an unsupported format.
-        _last = self.num_layers - 1
+        # Test every loaded weight key so mixed-quant models (e.g. f16 attn + INT8 FFN) and
+        # intermediate layers that were not in the old representative sample are all covered.
         _rep_keys = [
-            "model.layers.0.self_attn.q_proj.weight",
-            "model.layers.0.mlp.gate_proj.weight",
-            "model.layers.0.mlp.up_proj.weight",
-            "model.layers.0.mlp.down_proj.weight",
-            f"model.layers.{_last}.self_attn.q_proj.weight",
-            f"model.layers.{_last}.mlp.gate_proj.weight",
+            k for k in self.weights
+            if k.endswith(".weight") and "model.layers." in k
         ]
-        if any(self._uq_for_key(k) not in (0, 3) for k in _rep_keys if k in self.weights):
+        if any(self._uq_for_key(k) not in (0, 3) for k in _rep_keys):
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T, hidden, vocab, rms_base,
             )
