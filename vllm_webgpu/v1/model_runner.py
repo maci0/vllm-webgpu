@@ -1,5 +1,4 @@
 from __future__ import annotations
-import itertools
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -16,12 +15,18 @@ except ImportError:
     LogprobsLists = None  # type: ignore[assignment,misc]
     LogprobsTensors = None  # type: ignore[assignment,misc]
 
+try:
+    from vllm.sampling_params import SamplingType
+except ImportError:
+    SamplingType = None  # type: ignore[assignment,misc]
+
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
 from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, WebGPUCachePlanner
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 if TYPE_CHECKING:
+    from vllm.tasks import SupportedTask
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
@@ -30,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 def _is_greedy(sp) -> bool:
     """Return True when sampling params request greedy (argmax) decoding."""
-    return sp is None or sp.temperature < 1e-5
+    return sp is None or sp.sampling_type == SamplingType.GREEDY
 
 
 def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
@@ -337,7 +342,7 @@ class WebGPUModelRunner:
     @staticmethod
     def _flat_block_ids(ids) -> list[int]:
         """Flatten block IDs from vLLM's block_ids: tuple[list[int], ...] format."""
-        return list(itertools.chain.from_iterable(ids)) if ids else []
+        return [b for sub in ids for b in sub] if ids else []
 
     def _make_model_output(
         self,
@@ -379,6 +384,38 @@ class WebGPUModelRunner:
         )
         self._last_model_output = out
         return out
+
+    def _extract_logprob_data(
+        self,
+        logits: "np.ndarray",
+        row_idx: int,
+        tok: int,
+        num_logprobs: "int | None",
+        rid: str,
+    ) -> "tuple | None":
+        """Extract logprob data for one request from a logits array.
+
+        Args:
+            logits: The full logit array returned by forward().
+            row_idx: Which row to use (-1 for last token, 0 for single-token decode).
+            tok: The sampled token id.
+            num_logprobs: Number of top logprobs requested, or None to skip.
+            rid: Request id (used only for the warning message).
+
+        Returns a (top_ids, top_lp, rank) tuple or None when logprobs cannot be computed.
+        """
+        if num_logprobs is None:
+            return None
+        if logits.shape[-1] == 1 and getattr(self.model, "logit_returns_token_id", False):
+            full = self.model.logit_readback()
+        elif logits.shape[-1] > 1:
+            full = logits
+        else:
+            full = None
+            logger.warning("req %s: logprobs requested but model does not support logit readback", rid)
+        if full is None:
+            return None
+        return self._compute_request_logprobs(full[row_idx], tok, num_logprobs)
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> Any:
         """vLLM >= 0.24 SchedulerOutput format."""
@@ -474,17 +511,7 @@ class WebGPUModelRunner:
                 first_decode_tok = int(last_logits[0, 0])
 
             # Compute logprobs for this prefill token if the request asked for them.
-            lp_data = None
-            if num_logprobs is not None:
-                if last_logits.shape[-1] == 1 and getattr(self.model, "logit_returns_token_id", False):
-                    full = self.model.logit_readback()
-                elif last_logits.shape[-1] > 1:
-                    full = last_logits
-                else:
-                    full = None
-                    logger.warning("req %s: logprobs requested but model does not support logit readback", rid)
-                if full is not None:
-                    lp_data = self._compute_request_logprobs(full[-1], first_decode_tok, num_logprobs)
+            lp_data = self._extract_logprob_data(last_logits, -1, first_decode_tok, num_logprobs, rid)
 
             # Compute prompt logprobs for each prompt position when full logits
             # are available.  Position i uses logits[i] to evaluate tok_ids[i+1],
@@ -610,19 +637,7 @@ class WebGPUModelRunner:
                     else:
                         stok = int(logits[0, 0])
 
-                    lp_data = None
-                    if num_logprobs is not None:
-                        if logits.shape[-1] == 1 and getattr(self.model, "logit_returns_token_id", False):
-                            full = self.model.logit_readback()
-                        elif logits.shape[-1] > 1:
-                            full = logits
-                        else:
-                            full = None
-                            logger.warning(
-                                "req %s: logprobs requested but model does not support logit readback", rid
-                            )
-                        if full is not None:
-                            lp_data = self._compute_request_logprobs(full[-1], stok, num_logprobs)
+                    lp_data = self._extract_logprob_data(logits, -1, stok, num_logprobs, rid)
 
                     self._req_state[rid] = {
                         "pos": chunk_end, "block_ids": blk_ids,
@@ -665,17 +680,7 @@ class WebGPUModelRunner:
                     stok = _sample_logits(logits[0], sp)
 
                 # Compute logprobs if requested for this request.
-                lp_data = None
-                if num_logprobs is not None:
-                    if logits.shape[-1] == 1 and getattr(self.model, "logit_returns_token_id", False):
-                        full = self.model.logit_readback()
-                    elif logits.shape[-1] > 1:
-                        full = logits
-                    else:
-                        full = None
-                        logger.warning("req %s: logprobs requested but model does not support logit readback", rid)
-                    if full is not None:
-                        lp_data = self._compute_request_logprobs(full[0], stok, num_logprobs)
+                lp_data = self._extract_logprob_data(logits, 0, stok, num_logprobs, rid)
 
                 # Commit state after a successful forward — don't mutate on failure.
                 self._req_state[rid] = {
@@ -711,7 +716,7 @@ class WebGPUModelRunner:
             )
         return self._last_model_output
 
-    def get_supported_tasks(self) -> tuple[str, ...]:
+    def get_supported_tasks(self) -> "tuple[SupportedTask, ...]":
         return ("generate",)
 
     def reset_mm_cache(self) -> None:
