@@ -100,30 +100,22 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                                {"N": kv_dim}, ((kv_dim // 4 + 255) // 256, 1, 1))
                 _v_src = sc["ffn_act"]
 
-        q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
-        k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
         _rope_consts = self._rope_consts
         _freq_buf = self._rope_freq_buf
 
-        for src, dst, n_heads, norm_w in [
-            (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w),
-            (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w),
-        ]:
-            if norm_w is not None:
-                self._dispatch(
-                    "fused_per_head_norm_rope",
-                    [src, norm_w, pos_buf, dst, _freq_buf],
-                    {**_rope_consts, "NUM_HEADS": n_heads,
-                     "HAS_WEIGHT": 1, "INPUT_OFFSET": 0},
-                    (n_heads, num_tokens, 1),
-                )
-            else:
-                self._dispatch(
-                    "rope",
-                    [src, pos_buf, dst, _freq_buf],
-                    {**_rope_consts, "NUM_HEADS": n_heads},
-                    (num_tokens, n_heads, 1),
-                )
+        # GPT-OSS has no q_norm/k_norm weights; dispatch rope directly.
+        self._dispatch(
+            "rope",
+            [_q_src, pos_buf, sc["q_rope"], _freq_buf],
+            {**_rope_consts, "NUM_HEADS": self.num_q_heads},
+            (num_tokens, self.num_q_heads, 1),
+        )
+        self._dispatch(
+            "rope",
+            [_k_src, pos_buf, sc["k_rope"], _freq_buf],
+            {**_rope_consts, "NUM_HEADS": self.num_kv_heads},
+            (num_tokens, self.num_kv_heads, 1),
+        )
 
         self._dispatch(
             "kv_cache_store_both",
