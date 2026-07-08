@@ -679,6 +679,10 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         if ctx_len <= 0:
             ctx_len = num_tokens
 
+        if num_tokens > 1:
+            raise NotImplementedError(
+                "MoE prefill not supported; only decode is implemented")
+
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
         dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
