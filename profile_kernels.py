@@ -43,23 +43,10 @@ else:
 
 print(f"Architecture: {arch}")
 
-ARCH_MAP = {
-    "LlamaForCausalLM": "llama",
-    "MistralForCausalLM": "llama",
-    "Qwen2ForCausalLM": "llama",
-    "Qwen3ForCausalLM": "llama",
-    "Gemma3ForCausalLM": "gemma4",
-}
-family = ARCH_MAP.get(arch, "llama")
-
-if family == "llama":
-    from vllm_webgpu.models.llama import LlamaWebGPUModel
-    model = LlamaWebGPUModel(hf_cfg, wgpu_dev, pipeline_cache)
-elif family == "gemma4":
-    from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
-    model = Gemma4WebGPUModel(hf_cfg, wgpu_dev, pipeline_cache)
-else:
-    raise ValueError(f"Unknown family {family}")
+from vllm_webgpu.v1.model_runner import ARCH_MAP, _build_model
+if arch not in ARCH_MAP:
+    raise ValueError(f"Architecture {arch!r} not supported. Supported: {sorted(ARCH_MAP)}")
+model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache)
 
 print("Loading weights...")
 t0 = time.perf_counter()
