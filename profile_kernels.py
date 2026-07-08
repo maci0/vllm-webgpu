@@ -75,6 +75,8 @@ num_blocks = 512  # enough for profiling
 num_layers = hf_cfg.num_hidden_layers
 
 layer_params = getattr(model, "_lp", None)
+num_kv_heads = hf_cfg.num_key_value_heads
+head_dim = getattr(hf_cfg, "head_dim", hf_cfg.hidden_size // hf_cfg.num_attention_heads)
 model.kv_pool = []
 if layer_params:
     print(f"Allocating per-layer KV cache ({num_layers} layers, mixed dims)")
