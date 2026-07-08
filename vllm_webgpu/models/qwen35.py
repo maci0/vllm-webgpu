@@ -767,9 +767,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                    {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 1},
                                    (n_heads, num_tokens, 1))
                 else:
-                    self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                   {**self._rope_consts, "NUM_HEADS": n_heads},
-                                   (num_tokens, n_heads, 1))
+                    self._dispatch("fused_per_head_norm_rope",
+                                   [src, self._dummy_scales_buf, pos_buf, dst, _freq_buf],
+                                   {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 0},
+                                   (n_heads, num_tokens, 1))
 
         # Fused K+V cache store. V always lives in its own sc["v_buf"] (no offset needed).
         self._dispatch("kv_cache_store_both",
