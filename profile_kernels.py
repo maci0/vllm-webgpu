@@ -182,7 +182,6 @@ if stats:
     if hasattr(hf_cfg, 'num_attention_heads'):
         raw_inter_sz = hf_cfg.intermediate_size
         inter_sz = max(raw_inter_sz) if isinstance(raw_inter_sz, list) else raw_inter_sz
-        # Estimate weight bytes per layer (Llama/Qwen/Mixtral style)
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
         attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
         # FFN weight bytes: SwiGLU uses gate+up+down (3 matrices); plain MLP uses up+down (2 matrices).
@@ -195,7 +194,54 @@ if stats:
         has_gate_proj = any(k in weights_registry for k in gate_proj_prefixes)
         ffn_matrices = 3 if has_gate_proj else 2
         ffn_w = 2 * (hid * inter_sz * ffn_matrices)
-        total_w_mb = (attn_w + ffn_w) * num_layers / 1e6
+
+        # For hybrid architectures (e.g. NemotronH), layer types differ per layer.
+        # Use per-layer type weights rather than applying (attn_w + ffn_w) uniformly.
+        layer_types = getattr(model, '_layer_types', None)
+        if layer_types is None:
+            layer_types = getattr(hf_cfg, 'layers_block_type', None)
+
+        if layer_types is not None and len(layer_types) == num_layers:
+            # Mamba-2 SSM layer weight bytes (f16 unless noted):
+            #   in_proj:    hid * in_proj_dim * 2
+            #   conv1d:     conv_dim * conv_kernel * 2
+            #   A_log (f32): mamba_num_heads * 4
+            #   D (f32):     mamba_num_heads * 4
+            #   dt_bias (f32): mamba_num_heads * 4
+            #   out_proj:   mamba_int * hid * 2
+            mnh  = getattr(hf_cfg, 'mamba_num_heads', 0)
+            mhd  = getattr(hf_cfg, 'mamba_head_dim', 0)
+            ng   = getattr(hf_cfg, 'n_groups', 0)
+            ss   = getattr(hf_cfg, 'ssm_state_size', 0)
+            ck   = getattr(hf_cfg, 'conv_kernel', 0)
+            mi   = mnh * mhd                           # mamba_int
+            cd   = mi + 2 * ng * ss                   # conv_dim
+            ipd  = mi + cd + mnh                      # in_proj_dim
+            ssm_w = (
+                2 * hid * ipd       # in_proj (f16)
+                + 2 * cd * ck       # conv1d  (f16)
+                + 4 * mnh * 3       # A_log + D + dt_bias (f32 each)
+                + 2 * mi * hid      # out_proj (f16)
+            ) if (mnh and mhd) else 0
+
+            raw_inter = hf_cfg.intermediate_size
+            inter_list = raw_inter if isinstance(raw_inter, list) else None
+
+            total_w_bytes = 0
+            for idx, lt in enumerate(layer_types):
+                if lt == 'attention':
+                    total_w_bytes += attn_w
+                elif lt in ('mlp', 'ffn'):
+                    layer_inter = inter_list[idx] if inter_list else inter_sz
+                    total_w_bytes += 2 * (hid * layer_inter * ffn_matrices)
+                elif lt == 'mamba':
+                    total_w_bytes += ssm_w
+                # 'moe' and unknown types are skipped (no reliable generic formula)
+        else:
+            # Uniform architecture: every layer has both attention and FFN.
+            total_w_bytes = (attn_w + ffn_w) * num_layers
+
+        total_w_mb = total_w_bytes / 1e6
         bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
         print(f"  Weight data moved: {total_w_mb:.0f} MB")
         print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (M3 Peak: ~200-400 GB/s)")
