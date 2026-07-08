@@ -488,8 +488,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     moe_out = moe_acc
                 layer_scalar = self._layer_scales[layer_idx]
                 self._dispatch("add_f32", [shared_residual, moe_out, out],
-                               {"N": add_n, "SCALE": layer_scalar},
+                               {"N": add_n},
                                ((add_n // 4 + 255) // 256, 1, 1))
+                self._dispatch("f32_scale_inplace", [out],
+                               {"N": add_n, "SCALE": layer_scalar},
+                               ((add_n + 255) // 256, 1, 1))
         else:
             # No MoE: out = shared_residual
             out = shared_residual
