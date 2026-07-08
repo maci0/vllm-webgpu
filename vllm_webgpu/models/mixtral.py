@@ -278,12 +278,42 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             if self.weights.get(sgw_k) is not None:
                 suw_k = f"{sp}.{up_key}.weight"
                 sdw_k = f"{sp}.{down_key}.weight"
-                self._dispatch(
-                    "fused_gate_act",
-                    [normed_x, self.weights[sgw_k], self.weights[suw_k], msc["expert_act"]],
-                    {"K": hidden, "N": _sinter, "GELU": 0},
-                    (_sinter, 1, 1),
-                )
+                uq_sg = self._uq_for_key(sgw_k)
+                uq_su = self._uq_for_key(suw_k)
+                if uq_sg == 0 and uq_su == 0:
+                    self._dispatch(
+                        "fused_gate_act",
+                        [normed_x, self.weights[sgw_k], self.weights[suw_k], msc["expert_act"]],
+                        {"K": hidden, "N": _sinter, "GELU": 0},
+                        (_sinter, 1, 1),
+                    )
+                else:
+                    qi_sg = self._quant_extra(f"{sp}.{gate_key}", uq_sg)
+                    qi_su = self._quant_extra(f"{sp}.{up_key}", uq_su)
+                    self._dispatch(
+                        "matmul_quant",
+                        [normed_x, self.weights[sgw_k],
+                         self._scales_buf(sgw_k, uq_sg, msc["dummy_scales"]),
+                         msc["expert_gate"]],
+                        {"K": hidden, "N": _sinter, "USE_QUANT": uq_sg,
+                         **self._split_k_extra(uq_sg), **qi_sg},
+                        _gemv_wg(_sinter, uq_sg),
+                    )
+                    self._dispatch(
+                        "matmul_quant",
+                        [normed_x, self.weights[suw_k],
+                         self._scales_buf(suw_k, uq_su, msc["dummy_scales"]),
+                         msc["expert_up"]],
+                        {"K": hidden, "N": _sinter, "USE_QUANT": uq_su,
+                         **self._split_k_extra(uq_su), **qi_su},
+                        _gemv_wg(_sinter, uq_su),
+                    )
+                    self._dispatch(
+                        "gelu_mul",
+                        [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
+                        {"N": _sinter},
+                        ((_sinter // 4 + 255) // 256, 1, 1),
+                    )
                 uq_sd = self._uq_for_key(sdw_k)
                 qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)
                 self._dispatch(
