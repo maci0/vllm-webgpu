@@ -21,10 +21,8 @@ KV_ATTN_TYPES: frozenset[str] = frozenset(
 
 def _alloc_rw_buffer(dev, size: int):
     """Allocate a STORAGE|COPY_SRC|COPY_DST WebGPU buffer of `size` bytes."""
-    import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
-    return WebGPUBuffer.empty(dev, size, usage=rw)
+    return WebGPUBuffer.empty(dev, size)
 
 
 def allocate_kv_pool_hybrid(

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm_webgpu.config import get_config
-from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg
+from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
@@ -13,8 +13,6 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 logger = logging.getLogger(__name__)
-
-_H_NAMES = ("h0", "h1", "h2")
 
 
 class LlamaWebGPUModel(BaseWebGPUModel):
@@ -402,7 +400,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 self._dispatch("matmul_quant_mr4",
                                [x_buf, self.weights[w_key], sc_buf, out_buf],
                                {"K": K_in, "N": N_out, "M": T,
-                                "USE_QUANT": uq, **self._quant_extra(w_key[:-7], uq)},
+                                "USE_QUANT": uq, **self._quant_extra(w_key.removesuffix('.weight'), uq)},
                                (N_out, T, 1))
             else:
                 # f16 path (uq == 0)

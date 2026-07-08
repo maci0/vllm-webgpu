@@ -65,7 +65,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 "expert_act":   mk(self.intermediate_size * 2),  # [inter] f16 activated
                 "expert_out":   mk(self.hidden_size * 2),        # [hidden] f16 accumulated
                 "expert_tmp":   mk(self.hidden_size * 2),        # [hidden] f16 per-expert
-                "dummy_scales": mk(8),                           # fallback scales binding
             }
 
     def _effective_ctx_len(self, ctx_len: int) -> int:
@@ -229,7 +228,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[rw_k],
-             self._scales_buf(rw_k, uq_r, msc["dummy_scales"]),
+             self._scales_buf(rw_k, uq_r, self._dummy_scales_buf),
              msc["router_out"]],
             {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **self._split_k_extra(uq_r), **qi_r},
             _gemv_wg(N_E, uq_r),
@@ -291,7 +290,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     self._dispatch(
                         "matmul_quant",
                         [normed_x, self.weights[sgw_k],
-                         self._scales_buf(sgw_k, uq_sg, msc["dummy_scales"]),
+                         self._scales_buf(sgw_k, uq_sg, self._dummy_scales_buf),
                          msc["expert_gate"]],
                         {"K": hidden, "N": _sinter, "USE_QUANT": uq_sg,
                          **self._split_k_extra(uq_sg), **qi_sg},
@@ -300,7 +299,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     self._dispatch(
                         "matmul_quant",
                         [normed_x, self.weights[suw_k],
-                         self._scales_buf(suw_k, uq_su, msc["dummy_scales"]),
+                         self._scales_buf(suw_k, uq_su, self._dummy_scales_buf),
                          msc["expert_up"]],
                         {"K": hidden, "N": _sinter, "USE_QUANT": uq_su,
                          **self._split_k_extra(uq_su), **qi_su},
@@ -317,7 +316,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 self._dispatch(
                     "matmul_quant",
                     [msc["expert_act"], self.weights[sdw_k],
-                     self._scales_buf(sdw_k, uq_sd, msc["dummy_scales"]), msc["expert_out"]],
+                     self._scales_buf(sdw_k, uq_sd, self._dummy_scales_buf), msc["expert_out"]],
                     {"K": _sinter, "N": hidden, "USE_QUANT": uq_sd,
                      **self._split_k_extra(uq_sd), **qi_sd},
                     _gemv_wg(hidden, uq_sd),
@@ -358,7 +357,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 self._dispatch(
                     "matmul_quant",
                     [normed_x, self.weights[w1_key],
-                     self._scales_buf(w1_key, uq_g, msc["dummy_scales"]),
+                     self._scales_buf(w1_key, uq_g, self._dummy_scales_buf),
                      msc["expert_gate"]],
                     {"K": hidden, "N": inter, "USE_QUANT": uq_g, **self._split_k_extra(uq_g), **qi_g},
                     _gemv_wg(inter, uq_g),
@@ -366,7 +365,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 self._dispatch(
                     "matmul_quant",
                     [normed_x, self.weights[w3_key],
-                     self._scales_buf(w3_key, uq_u, msc["dummy_scales"]),
+                     self._scales_buf(w3_key, uq_u, self._dummy_scales_buf),
                      msc["expert_up"]],
                     {"K": hidden, "N": inter, "USE_QUANT": uq_u, **self._split_k_extra(uq_u), **qi_u},
                     _gemv_wg(inter, uq_u),
@@ -395,7 +394,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 self._dispatch(
                     "matmul_quant",
                     [msc["expert_act"], self.weights[w2_key],
-                     self._scales_buf(w2_key, uq_d, msc["dummy_scales"]),
+                     self._scales_buf(w2_key, uq_d, self._dummy_scales_buf),
                      msc["expert_tmp"]],
                     {"K": inter, "N": hidden, "USE_QUANT": uq_d, **self._split_k_extra(uq_d), **qi_d},
                     _gemv_wg(hidden, uq_d),

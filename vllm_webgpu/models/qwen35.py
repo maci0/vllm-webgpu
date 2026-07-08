@@ -5,8 +5,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import _gemv_wg
-from vllm_webgpu.models.llama import LlamaWebGPUModel, _H_NAMES
+from vllm_webgpu.models.base import _gemv_wg, _H_NAMES
+from vllm_webgpu.models.llama import LlamaWebGPUModel
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 
 if TYPE_CHECKING:
@@ -348,7 +348,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # GDN linear attention has no KV cache — state is in ssm_gpu/conv_gpu buffers.
         # Offsets into flat QKV buffer (f16 elements)
         q_base = 0                                  # Q: [NUM_K_HEADS × K_DIM]
-        k_base = self._lin_k_heads * self._lin_k_dim  # K starts after Q
+        k_base = self._lin_key_dim                    # K starts after Q
         v_base = self._lin_key_dim * 2                # V starts after Q+K
 
         _rms_h = self._rms_consts
@@ -783,7 +783,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}"
         q_dim = self.num_q_heads * self.head_dim
-        kv_dim = self.num_kv_heads * self.head_dim
 
         _uq = self._uq_for_key
         k_cache, v_cache = self.kv_pool[layer_idx]

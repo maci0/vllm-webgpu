@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import _gemv_wg
+from vllm_webgpu.models.base import _gemv_wg, _H_NAMES
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
 
 if TYPE_CHECKING:
@@ -107,6 +107,25 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             if k in self.weights:
                 return k
         return self._embed_key()  # tied weights fallback
+
+    # ── Weight loading ───────────────────────────────────────────────────────
+
+    def load_weights(self, path: str) -> None:
+        """Load weights and cache per_expert_scale arrays to avoid per-step GPU readbacks."""
+        super().load_weights(path)
+        # Cache per_expert_scale for each MoE layer. Each to_numpy() is a blocking
+        # GPU-CPU sync (~100 µs); caching once at load time avoids N syncs per step.
+        self._pes_cache: list[np.ndarray | None] = []
+        if self.is_moe:
+            for i in range(self.num_layers):
+                p = self._layer_key_prefix(i)
+                pes_w = self.weights.get(f"{p}.router.per_expert_scale")
+                if pes_w is not None:
+                    self._pes_cache.append(pes_w.to_numpy().astype(np.float32))
+                else:
+                    self._pes_cache.append(None)
+        else:
+            self._pes_cache = [None] * self.num_layers
 
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 
@@ -223,9 +242,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         ln_rope = self._ln_rope_theta
         p = self._layer_key_prefix(layer_idx)
 
-        h_names = ["h0", "h1", "h2"]
-        residual = sc[h_names[(self._hstate + 1) % 3]]
-        out      = sc[h_names[(self._hstate + 2) % 3]]
+        residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
+        out      = sc[_H_NAMES[(self._hstate + 2) % 3]]
         add_n    = num_tokens * hidden
         _rms = self._rms_consts
 
@@ -546,9 +564,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Apply per-expert learned scale (vLLM gemma4_routing_function_torch:
             # topk_weights *= per_expert_scale[topk_ids]).  The HF checkpoint key is
             # {layer}.router.per_expert_scale; shape [num_experts], dtype bfloat16/float32.
-            pes_w = self.weights.get(f"{p}.router.per_expert_scale")
-            if pes_w is not None:
-                pes = pes_w.to_numpy().astype(np.float32)
+            # Use the cached numpy array (populated at load time) to avoid a
+            # blocking GPU-CPU sync per inference step per MoE layer.
+            pes = getattr(self, "_pes_cache", [None] * self.num_layers)[layer_idx]
+            if pes is not None:
                 rw_vals = rw_vals * pes[top_k_idx]  # [T, K] broadcast via advanced indexing
 
             # Build unique-expert -> per-token-weight mapping.

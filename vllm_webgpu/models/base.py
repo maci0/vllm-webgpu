@@ -9,10 +9,13 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 
-from transformers.utils import SAFE_WEIGHTS_NAME
 from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask
 from vllm_webgpu.webgpu.pipeline import PipelineKey
+
+# Scratch buffer rotation names shared across models.
+_H_NAMES: tuple[str, str, str] = ("h0", "h1", "h2")
 
 
 def _gemv_wg(N: int, uq: int) -> tuple:
@@ -61,9 +64,8 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     # Use vLLM's correction-range helper to get the transition band in dimension-index
     # space, matching YaRNScalingRotaryEmbedding._compute_inv_freq exactly.
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
-    import torch as _torch
     low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx)
-    ramp_mask = yarn_linear_ramp_mask(low, high, head_dim // 2, dtype=_torch.float32).numpy()
+    ramp_mask = yarn_linear_ramp_mask(low, high, head_dim // 2, dtype=torch.float32).numpy()
     inv_freq_mask = (1.0 - ramp_mask) * extrapolation_factor
     scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
@@ -202,6 +204,7 @@ class BaseWebGPUModel(ABC):
             f32_keys: Optional set of checkpoint key names that must be uploaded as float32
                       instead of the default float16. Passed through to the safetensors loader.
         """
+        from transformers.utils import SAFE_WEIGHTS_NAME
         from vllm.transformers_utils.repo_utils import get_model_path
         from vllm_webgpu.quant.weight_loader import (
             detect_weight_format, load_safetensors_weights,

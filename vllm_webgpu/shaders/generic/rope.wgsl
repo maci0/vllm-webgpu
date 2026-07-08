@@ -13,6 +13,11 @@ override ATTN_SCALE: f32    = 1.0;
 // INPUT_OFFSET: element offset into the input buffer. Set to Q_DIM when reading K
 // from a fused QKV buffer, 0 for standalone Q or K buffers.
 override INPUT_OFFSET: u32  = 0u;
+// OUTPUT_OFFSET: element offset into the output buffer. Defaults to 0 so that
+// output is always written at the start of the destination buffer regardless of
+// INPUT_OFFSET. Set equal to INPUT_OFFSET only when input and output share the
+// same buffer layout.
+override OUTPUT_OFFSET: u32 = 0u;
 
 @group(0) @binding(0) var<storage, read>       input        : array<f16>;
 @group(0) @binding(1) var<storage, read>       positions    : array<u32>;
@@ -30,7 +35,8 @@ fn main(
     let half     = HEAD_DIM / 2u;
     let tid      = lid.x;   // iterates over [0, half)
 
-    let base = INPUT_OFFSET + (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
+    let in_base  = INPUT_OFFSET  + (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
+    let out_base = OUTPUT_OFFSET + (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
     let pos  = f32(positions[seq_idx]);
 
     // Loop so HEAD_DIM > 2*WG_SIZE is handled correctly (e.g. HEAD_DIM=256 with WG_SIZE=64).
@@ -47,11 +53,11 @@ fn main(
         let cos_v   = ATTN_SCALE * cos(angle);
         let sin_v   = ATTN_SCALE * sin(angle);
 
-        let x1 = f32(input[base + i]);
-        let x2 = f32(input[base + half + i]);
+        let x1 = f32(input[in_base + i]);
+        let x2 = f32(input[in_base + half + i]);
 
-        output[base + i]        = f16(x1 * cos_v - x2 * sin_v);
-        output[base + half + i] = f16(x2 * cos_v + x1 * sin_v);
+        output[out_base + i]        = f16(x1 * cos_v - x2 * sin_v);
+        output[out_base + half + i] = f16(x2 * cos_v + x1 * sin_v);
         i += 64u;
     }
 }

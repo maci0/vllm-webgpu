@@ -110,7 +110,11 @@ class WebGPUWorker(WorkerBase):
 
     def get_model_inspection(self) -> str:
         model = self.get_model()
-        return repr(model)
+        try:
+            from vllm.model_inspection import format_model_inspection
+            return format_model_inspection(model)
+        except Exception:
+            return repr(model)
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.model_config.max_model_len = max_model_len

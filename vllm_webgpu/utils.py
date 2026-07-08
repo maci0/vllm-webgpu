@@ -13,7 +13,7 @@ def sample_token(
     logits_1d: "np.ndarray",
     temperature: float,
     top_p: float = 1.0,
-    top_k: int = -1,
+    top_k: int = 0,
 ) -> int:
     """Sample one token from a 1-D float32 logit vector.
 
@@ -25,7 +25,7 @@ def sample_token(
         logits_1d: 1-D float32 logit vector of length vocab_size.
         temperature: Softmax temperature. Values <= 1e-5 produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
-        top_k: Keep at most top_k tokens. <= 0 disables.
+        top_k: Keep at most top_k tokens. 0 disables.
     """
     if temperature <= 1e-5:
         return int(np.argmax(logits_1d))

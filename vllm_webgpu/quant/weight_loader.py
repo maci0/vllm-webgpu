@@ -53,13 +53,12 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
-    return sorted(set(
-        base
+    return sorted(
+        k.removesuffix(".weight")
         for k in header
         if k.endswith(".weight") and header[k].get("dtype") == "U8"
-        for base in [k.removesuffix(".weight")]
-        if header.get(base + ".weight_scale", {}).get("dtype") == "U8"
-    ))
+        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+    )
 
 
 def _load_quant_cfg(config_path: Path) -> dict:

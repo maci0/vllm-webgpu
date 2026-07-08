@@ -1,13 +1,11 @@
 from __future__ import annotations
 import logging
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
-from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg
-from vllm_webgpu.models.llama import _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _H_NAMES
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -57,7 +55,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             model_config, "head_dim", self.hidden_size // self.num_q_heads
         )
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
-        self._ln_rope_theta: float = math.log(self.rope_theta)
+        self._ln_rope_theta: float = float(np.log(float(self.rope_theta)))
 
         # MLP parameters (used in '-' layers).
         # intermediate_size may be a list for heterogeneous (puzzle) configs;
@@ -95,6 +93,25 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Length invariant is enforced by NemotronHConfig.__init__ asserting
         # len(hybrid_override_pattern) == num_hidden_layers.
 
+        # Precomputed per-layer intermediate size for heterogeneous MLP configs.
+        # Index by layer_idx; 0 for non-MLP layers. Avoids O(num_layers) slice-
+        # and-count inside _mlp_layer on every forward pass.
+        if isinstance(_raw_int, list):
+            _sizes = _raw_int if len(_raw_int) > 1 else _raw_int * self.num_layers
+            _mlp_counter = 0
+            self._layer_int_size: list[int] = []
+            for lt in self._layer_types:
+                if lt == "mlp":
+                    self._layer_int_size.append(_sizes[_mlp_counter])
+                    _mlp_counter += 1
+                else:
+                    self._layer_int_size.append(0)
+        else:
+            self._layer_int_size = [
+                _raw_int if lt == "mlp" else 0
+                for lt in self._layer_types
+            ]
+
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
         self._conv_states: dict[int, "WebGPUBuffer"] = {}
@@ -103,6 +120,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._rms_base: dict = {
             "HIDDEN_DIM": self.hidden_size,
             "VALS_PER_THREAD": self._vals_per_thread(self.hidden_size),
+        }
+        self._rope_consts: dict = {
+            "HEAD_DIM":     self.head_dim,
+            "ROPE_BASE":    float(self.rope_theta),
+            "LN_ROPE_BASE": self._ln_rope_theta,
+            "USE_FREQ_BUF": 0,
         }
         self._init_scratch_buffers()
 
@@ -321,9 +344,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # Pack per-layer scales for the simple Q4 (USE_QUANT=1) format.
             # That format stores scales at {proj}.scales rather than at
             # {proj}.weight.scales, so the block above misses them.
-            q_s2 = f"{q_key[:-7]}.scales"
-            k_s2 = f"{k_key[:-7]}.scales"
-            v_s2 = f"{v_key[:-7]}.scales"
+            q_s2 = f"{q_key.removesuffix('.weight')}.scales"
+            k_s2 = f"{k_key.removesuffix('.weight')}.scales"
+            v_s2 = f"{v_key.removesuffix('.weight')}.scales"
             if q_s2 in self.weights and k_s2 in self.weights and v_s2 in self.weights:
                 scales_dtype2 = self.weights[q_s2].dtype
                 packed_scales2 = np.concatenate([
@@ -334,7 +357,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 scales_buf2 = WebGPUBuffer.from_numpy(
                     dev, np.ascontiguousarray(packed_scales2)                )
                 scales_buf2.dtype = scales_dtype2
-                self.weights[f"{qkv_key[:-7]}.scales"] = scales_buf2
+                self.weights[f"{qkv_key.removesuffix('.weight')}.scales"] = scales_buf2
                 del self.weights[q_s2], self.weights[k_s2], self.weights[v_s2]
 
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
@@ -690,7 +713,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         H     = self.hidden_size
         q_dim = self.num_q_heads * self.head_dim
         k_dim = self.num_kv_heads * self.head_dim
-        ln_rope = self._ln_rope_theta
 
         # Fused QKV projection.
         qkv_w    = f"{p}.qkv_proj.weight"
@@ -718,12 +740,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 sc["v_buf"].buf, 0, k_dim * 2)
 
         # RoPE for Q and K. NemotronH has no per-head RMSNorm on Q/K.
-        _rope_c = {
-            "HEAD_DIM":    self.head_dim,
-            "ROPE_BASE":   float(self.rope_theta),
-            "LN_ROPE_BASE": ln_rope,
-            "USE_FREQ_BUF": 0,
-        }
+        _rope_c = self._rope_consts
         self._dispatch(
             "rope",
             [sc["q_buf"], pos_buf, sc["q_rope"], self._rope_freq_buf],
@@ -784,11 +801,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         sc  = self._sc
         p   = f"model.layers.{layer_idx}.mixer"
         H   = self.hidden_size
-        if self._intermediate_sizes is not None:
-            mlp_idx = self._layer_types[:layer_idx + 1].count("mlp") - 1
-            I = self._intermediate_sizes[0] if len(self._intermediate_sizes) == 1 else self._intermediate_sizes[mlp_idx]
-        else:
-            I = self.intermediate_size
+        I   = self._layer_int_size[layer_idx] or self.intermediate_size
 
         # up_proj: hidden -> intermediate
         uw  = f"{p}.up_proj.weight"

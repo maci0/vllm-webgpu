@@ -161,11 +161,12 @@ class WebGPUModelRunner:
         _dtype = _torch.float16
 
         def _make_spec(num_kv_heads: int, head_size: int) -> Any:
-            kw: dict[str, Any] = dict(
-                block_size=block_size, num_kv_heads=num_kv_heads,
-                head_size=head_size, dtype=_dtype,
+            return FullAttentionSpec(
+                block_size=block_size,
+                num_kv_heads=num_kv_heads,
+                head_size=head_size,
+                dtype=_dtype,
             )
-            return FullAttentionSpec(**kw)
 
         # Use per-layer params if available (Gemma4 heterogeneous layers).
         # Prefer the model object's _lp list (populated from layer_types config)
@@ -262,7 +263,7 @@ class WebGPUModelRunner:
         have length num_logprobs + 1.
         """
         x = logits_1d.astype(np.float32); x -= x.max()
-        log_probs = x - np.logaddexp.reduce(x)
+        log_probs = x - np.log(np.exp(x).sum())
         if num_logprobs < 0:
             num_logprobs = log_probs.size
         k = min(num_logprobs, log_probs.size)
