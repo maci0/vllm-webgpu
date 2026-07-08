@@ -450,24 +450,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                            _rms_h, (num_tokens, 1, 1))
 
             # 10. FFN (MoE or dense)
-            if self._is_moe:
-                self._moe_ffn_layer(sc["ffn_normed"], layer_idx)
-                ffn_out = self._moe_sc["expert_out"]
-            else:
-                gw_k = f"{pp}.mlp.gate_proj.weight"
-                uw_k = f"{pp}.mlp.up_proj.weight"
-                self._dispatch("fused_gate_act",
-                               [sc["ffn_normed"], self.weights[gw_k], self.weights[uw_k],
-                                sc["ffn_act"]],
-                               {"K": hidden, "N": inter, "GELU": 0}, (inter, 1, 1))
-
-                w_k = f"{pp}.mlp.down_proj.weight"
-                self._dispatch("matmul_quant",
-                               [sc["ffn_act"], self.weights[w_k],
-                                sc["dummy_scales"], sc["ffn_out"]],
-                               {"K": inter, "N": hidden, "USE_QUANT": 0},
-                               (hidden, 1, 1))
-                ffn_out = sc["ffn_out"]
+            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx, num_tokens)
 
             if layer_idx < self.num_layers - 1:
                 next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
