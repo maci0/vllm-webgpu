@@ -138,12 +138,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, max(n, 8))
 
+        max_ctx = getattr(self.model_config, 'max_position_embeddings', 4096)
+        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
+
         # Fixed pre-allocated decode buffers (zero-alloc hot path for T=1).
         self._pre: dict[str, "WebGPUBuffer"] = {
-            "ids":      mk(4),           # [1] u32
-            "pos":      mk(4),           # [1] u32
-            "slot_map": mk(4),           # [1] u32
-            "bt":       mk(4096 * 4),    # block table, up to 4096 blocks
+            "ids":      mk(4),                # [1] u32
+            "pos":      mk(4),                # [1] u32
+            "slot_map": mk(4),                # [1] u32
+            "bt":       mk(max_bt_blocks * 4),  # block table
             "x":        mk(H * 2),       # [H] f16 embedding output
             "norm_out": mk(H * 2),       # [H] f16 final norm output
             "logits":   mk(V * 2),       # [V] f16 LM head output
