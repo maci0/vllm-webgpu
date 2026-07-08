@@ -51,9 +51,9 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies — cos(pos * freq * mscale) is wrong.
     """
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding)
+    import torch
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask)
 
     factor               = float(rope_scaling.get("factor", 1.0))
     beta_fast            = float(rope_scaling.get("beta_fast", 32.0))
@@ -61,17 +61,12 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     orig_ctx             = int(rope_scaling.get("original_max_position_embeddings", 4096))
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
 
-    # Delegate frequency blending to vLLM's own implementation so the values
-    # stay numerically identical to what the CUDA path uses.
-    obj = YaRNScalingRotaryEmbedding.__new__(YaRNScalingRotaryEmbedding)
-    obj.base = rope_theta
-    obj.rotary_dim = head_dim
-    obj.max_position_embeddings = orig_ctx
-    obj.beta_fast = beta_fast
-    obj.beta_slow = beta_slow
-    obj.extrapolation_factor = extrapolation_factor
-    obj.truncate = True
-    scaled_inv_freq = obj._compute_inv_freq(factor).detach().numpy().astype(np.float32)
+    pos_freqs = rope_theta ** (torch.arange(0, head_dim, 2, dtype=torch.float) / head_dim)
+    inv_freq_extrap = 1.0 / pos_freqs
+    inv_freq_interp = 1.0 / (factor * pos_freqs)
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx, True)
+    mask = (1 - yarn_linear_ramp_mask(low, high, head_dim // 2, dtype=torch.float)) * extrapolation_factor
+    scaled_inv_freq = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).numpy().astype(np.float32)
 
     # YaRN attention scale: mscale = (0.1 * ln(factor) + 1.0) * attn_factor.
     # attn_factor is an optional rope_scaling field (default 1.0), matching
