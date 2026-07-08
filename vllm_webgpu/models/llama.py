@@ -739,7 +739,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         residual = sc[h_names[(self._hstate + 1) % 3]]
         out = sc[h_names[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
-        gelu_n = num_tokens * inter
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
@@ -842,7 +841,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": self.num_kv_heads,
                             "HEAD_DIM": self.head_dim,
-                            "CTX_LEN": ctx_len},
+                            "CTX_LEN": self._effective_ctx_len(ctx_len)},
                            (self.num_q_heads, 1, 1))
 
             # Output projection
@@ -863,51 +862,78 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             residual, sc["ffn_normed"]],
                            _rms_c, (num_tokens, 1, 1))
 
-            # FFN: fused_gate_act (f16) or separate matmul_quant (quantized).
-            gw_k = f"{p}.mlp.gate_proj.weight"
-            uw_k = f"{p}.mlp.up_proj.weight"
-            uq_g = self._uq_for_key(gw_k); uq_u = self._uq_for_key(uw_k)
-            if uq_g == 0 and uq_u == 0:
-                # Single dispatch: GEMV for gate+up with inline SiLU -> ffn_act.
-                self._dispatch("fused_gate_act",
-                               [sc["ffn_normed"], self.weights[gw_k], self.weights[uw_k],
-                                sc["ffn_act"]],
-                               {"K": hidden, "N": inter, "GELU": 0}, (inter, 1, 1))
-            else:
-                for out_b, w_k, uq2, mlp_proj in [
-                        (sc["gate_buf"], gw_k, uq_g, "gate_proj"),
-                        (sc["up_buf"],  uw_k, uq_u, "up_proj")]:
-                    qi2 = self._quant_extra(f"{p}.mlp.{mlp_proj}", uq2)
-                    self._dispatch("matmul_quant", [sc["ffn_normed"], self.weights[w_k],
-                                                    self._scales_buf(w_k, uq2, sc["ffn_normed"]), out_b],
-                                   {"K": hidden, "N": inter, "USE_QUANT": uq2,
-                                    **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi2},
-                                   _gemv_wg(inter, uq2))
-                self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                               {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
-
-            # Down projection
-            w_k = f"{p}.mlp.down_proj.weight"
-            uq = self._uq_for_key(w_k)
-            qi3 = self._quant_extra(f"{p}.mlp.down_proj", uq)
-            self._dispatch("matmul_quant", [sc["ffn_act"], self.weights[w_k],
-                                            self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter, "N": hidden, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi3},
-                           _gemv_wg(hidden, uq))
+            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx, num_tokens)
 
             # Final residual add: fuse with next layer's pre-norm when possible.
             # Last layer: plain add; intermediate layers: add_rms_norm saves 1 dispatch.
             if layer_idx < self.num_layers - 1:
                 next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
                 self._dispatch("add_rms_norm",
-                               [residual, sc["ffn_out"], next_w, out, sc["normed"]],
+                               [residual, ffn_out, next_w, out, sc["normed"]],
                                _rms_c, (num_tokens, 1, 1))
                 normed_out = sc["normed"]
             else:
-                self._dispatch("add", [residual, sc["ffn_out"], out],
+                self._dispatch("add", [residual, ffn_out, out],
                                {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
                 normed_out = sc["normed"]  # stale; unused after last layer
 
         self._hstate = (self._hstate + 2) % 3
         return normed_out, out
+
+    def _effective_ctx_len(self, ctx_len: int) -> int:
+        """Effective context length for flash_attn_decode. Subclasses may cap (e.g. SWA)."""
+        return ctx_len
+
+    def _ffn_dispatch(
+        self,
+        normed_x: "WebGPUBuffer",
+        layer_idx: int,
+        num_tokens: int,
+    ) -> "WebGPUBuffer":
+        """Dense SiLU FFN (gate_proj + up_proj + SiLU + down_proj).
+
+        Returns sc["ffn_out"]. Subclasses may override to replace with MoE or
+        another FFN variant without duplicating the surrounding transformer scaffolding.
+        """
+        sc = self._sc
+        p = f"model.layers.{layer_idx}"
+        hidden = self.hidden_size
+        inter = self.intermediate_size
+        gelu_n = num_tokens * inter
+
+        gw_k = f"{p}.mlp.gate_proj.weight"
+        uw_k = f"{p}.mlp.up_proj.weight"
+        uq_g = self._uq_for_key(gw_k)
+        uq_u = self._uq_for_key(uw_k)
+        if uq_g == 0 and uq_u == 0:
+            # Single dispatch: GEMV for gate+up with inline SiLU -> ffn_act.
+            self._dispatch("fused_gate_act",
+                           [normed_x, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
+                           {"K": hidden, "N": inter, "GELU": 0}, (inter, 1, 1))
+        else:
+            for out_b, w_k, uq2, mlp_proj in [
+                    (sc["gate_buf"], gw_k, uq_g, "gate_proj"),
+                    (sc["up_buf"],  uw_k, uq_u, "up_proj")]:
+                qi2 = self._quant_extra(f"{p}.mlp.{mlp_proj}", uq2)
+                self._dispatch("matmul_quant",
+                               [normed_x, self.weights[w_k],
+                                self._scales_buf(w_k, uq2, normed_x), out_b],
+                               {"K": hidden, "N": inter, "USE_QUANT": uq2,
+                                **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
+                                **qi2},
+                               _gemv_wg(inter, uq2))
+            self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+
+        # Down projection
+        w_k = f"{p}.mlp.down_proj.weight"
+        uq = self._uq_for_key(w_k)
+        qi3 = self._quant_extra(f"{p}.mlp.down_proj", uq)
+        self._dispatch("matmul_quant",
+                       [sc["ffn_act"], self.weights[w_k],
+                        self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
+                       {"K": inter, "N": hidden, "USE_QUANT": uq,
+                        **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
+                        **qi3},
+                       _gemv_wg(hidden, uq))
+        return sc["ffn_out"]

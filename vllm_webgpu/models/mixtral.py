@@ -78,6 +78,21 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             return self._sw
         return ctx_len
 
+    def _effective_ctx_len(self, ctx_len: int) -> int:
+        return self._effective_ctx(ctx_len)
+
+    def _ffn_dispatch(
+        self,
+        normed_x: "WebGPUBuffer",
+        layer_idx: int,
+        num_tokens: int,
+    ) -> "WebGPUBuffer":
+        """MoE FFN for Mixtral; falls back to dense FFN for non-MoE (Mistral) models."""
+        if self._is_moe:
+            self._moe_ffn_layer(normed_x, layer_idx)
+            return self._moe_sc["expert_out"]
+        return super()._ffn_dispatch(normed_x, layer_idx, num_tokens)
+
     def forward(
         self,
         input_ids: np.ndarray,
@@ -196,234 +211,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
-
-    def _transformer_layer(  # noqa: C901
-        self,
-        layer_idx: int,
-        normed_x: "WebGPUBuffer",
-        x_buf: "WebGPUBuffer",
-        pos_buf: "WebGPUBuffer",
-        slot_map: "WebGPUBuffer",
-        bt_buf: "WebGPUBuffer",
-        ctx_len: int,
-        num_tokens: int,
-    ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
-        """Overrides LlamaWebGPUModel._transformer_layer with two targeted changes:
-
-        1. SWA: eff = _effective_ctx(ctx_len) caps attention dispatch parameters
-           (attn_score MAX_SEQ_LEN, softmax SEQ_LEN, attn_output CTX_LEN,
-           flash_attn_decode CTX_LEN). Weight key names are not affected.
-
-        2. MoE FFN: when _is_moe, calls _moe_ffn_layer instead of gate+up+down.
-           _moe_ffn_layer flushes and replaces _active_encoder (Phase A/B pattern).
-           The subsequent residual-add dispatch lands in the new Phase B encoder.
-        """
-        eff = self._effective_ctx(ctx_len)
-
-        sc = self._sc
-        hidden = self.hidden_size
-        p = f"model.layers.{layer_idx}"
-        q_dim = self.num_q_heads * self.head_dim
-        kv_dim = self.num_kv_heads * self.head_dim
-        inter = self.intermediate_size
-        ln_rope = self._ln_rope_theta
-
-        _rms_c = self._rms_consts
-
-        h_names = ["h0", "h1", "h2"]
-        residual = sc[h_names[(self._hstate + 1) % 3]]
-        out = sc[h_names[(self._hstate + 2) % 3]]
-        add_n = num_tokens * hidden
-
-        k_cache, v_cache = self.kv_pool[layer_idx]
-
-        with self._batched_dispatch(label=f"L{layer_idx:02d}"):
-            # normed_x is already the pre-normed input (no rms_norm dispatch here).
-
-            # QKV projections
-            q_wk = f"{p}.self_attn.q_proj.weight"
-            k_wk = f"{p}.self_attn.k_proj.weight"
-            v_wk = f"{p}.self_attn.v_proj.weight"
-            uq_q, uq_k, uq_v = self._uq_for_key(q_wk), self._uq_for_key(k_wk), self._uq_for_key(v_wk)
-            _has_qnorm = self.weights.get(f"{p}.self_attn.q_norm.weight") is not None
-
-            _use_fused_qkv = uq_q == 0 and uq_k == 0 and uq_v == 0 and _has_qnorm
-
-            if _use_fused_qkv:
-                self._dispatch("fused_qkv",
-                               [normed_x, self.weights[q_wk], self.weights[k_wk],
-                                self.weights[v_wk], sc["qkv_buf"]],
-                               {"K": hidden, "Q_DIM": q_dim, "KV_DIM": kv_dim},
-                               (q_dim + 2 * kv_dim, 1, 1))
-                _q_src = sc["qkv_buf"]
-                _k_src = sc["qkv_buf"]
-                _v_src = sc["qkv_buf"]
-                _v_offset = q_dim + kv_dim
-            else:
-                for out_buf_qkv, proj, dim, uq in [
-                    (sc["q_buf"], "q_proj", q_dim, uq_q),
-                    (sc["k_buf"], "k_proj", kv_dim, uq_k),
-                    (sc["v_buf"], "v_proj", kv_dim, uq_v),
-                ]:
-                    w_key = f"{p}.self_attn.{proj}.weight"
-                    qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
-                    self._dispatch(
-                        "matmul_quant",
-                        [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, normed_x),
-                         out_buf_qkv],
-                        {"K": hidden, "N": dim, "USE_QUANT": uq,
-                         **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                         **qi},
-                        _gemv_wg(dim, uq),
-                    )
-                _q_src = sc["q_buf"]
-                _k_src = sc["k_buf"]
-                _v_src = sc["v_buf"]
-                _v_offset = 0
-
-            q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
-            k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
-            _freq_buf = self._rope_freq_buf
-            _rope_consts = {
-                "HEAD_DIM": self.head_dim,
-                "ROPE_BASE": float(self.rope_theta),
-                "LN_ROPE_BASE": ln_rope,
-                "USE_FREQ_BUF": int(self._use_freq_buf),
-                "ATTN_SCALE": self._yarn_mscale,
-            }
-
-            if _use_fused_qkv and q_norm_w is not None:
-                # Binding 6 (k_input): dummy (K_SEPARATE=0). Binding 7: inv_freq_buf.
-                self._dispatch("fused_qk_norm_rope",
-                               [sc["qkv_buf"], q_norm_w, k_norm_w, pos_buf,
-                                sc["q_rope"], sc["k_rope"], sc["qkv_buf"], _freq_buf],
-                               {**_rope_consts,
-                                "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads,
-                                "HAS_WEIGHT": 1,
-                                "INPUT_OFFSET_K": q_dim},
-                               (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
-            else:
-                for src, dst, n_heads, norm_w, in_off in [
-                    (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
-                    (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w,
-                     q_dim if _use_fused_qkv else 0),
-                ]:
-                    if norm_w is not None:
-                        self._dispatch("fused_per_head_norm_rope",
-                                       [src, norm_w, pos_buf, dst, _freq_buf],
-                                       {**_rope_consts, "NUM_HEADS": n_heads,
-                                        "HAS_WEIGHT": 1, "INPUT_OFFSET": in_off},
-                                       (n_heads, num_tokens, 1))
-                    else:
-                        self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                       {**_rope_consts, "NUM_HEADS": n_heads},
-                                       (num_tokens, n_heads, 1))
-
-            self._dispatch("kv_cache_store_both",
-                           [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
-                           {"BLOCK_SIZE": self.block_size,
-                            "NUM_KV_HEADS": self.num_kv_heads,
-                            "HEAD_DIM": self.head_dim,
-                            "V_IN_OFFSET": _v_offset},
-                           (num_tokens, self.num_kv_heads, 1))
-
-            # Always use flash_attn_decode for single-token decode.
-            # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
-            # loops internally and has no dispatch dimension limit.
-            self._dispatch("flash_attn_decode",
-                           [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
-                           {"BLOCK_SIZE": self.block_size,
-                            "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": self.num_kv_heads,
-                            "HEAD_DIM": self.head_dim,
-                            "CTX_LEN": eff},
-                           (self.num_q_heads, 1, 1))
-
-            # Output projection
-            w_key = f"{p}.self_attn.o_proj.weight"
-            uq = self._uq_for_key(w_key)
-            qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
-            self._dispatch("matmul_quant",
-                           [sc["attn_out"], self.weights[w_key],
-                            self._scales_buf(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                            **qi},
-                           _gemv_wg(hidden, uq))
-
-            # Fused post-attn residual-add + FFN pre-norm
-            self._dispatch("add_rms_norm",
-                           [x_buf, sc["o_proj_out"],
-                            self.weights[f"{p}.post_attention_layernorm.weight"],
-                            residual, sc["ffn_normed"]],
-                           _rms_c, (num_tokens, 1, 1))
-
-            # FFN: MoE or standard dense
-            if self._is_moe:
-                # _moe_ffn_layer flushes and replaces _active_encoder.
-                # Subsequent dispatches (residual add below) land in the new encoder.
-                self._moe_ffn_layer(sc["ffn_normed"], layer_idx)
-                ffn_out = self._moe_sc["expert_out"]
-            else:
-                gelu_n = num_tokens * inter
-                gw_k = f"{p}.mlp.gate_proj.weight"
-                uw_k = f"{p}.mlp.up_proj.weight"
-                uq_g = self._uq_for_key(gw_k)
-                uq_u = self._uq_for_key(uw_k)
-                if uq_g == 0 and uq_u == 0:
-                    self._dispatch("fused_gate_act",
-                                   [sc["ffn_normed"], self.weights[gw_k], self.weights[uw_k],
-                                    sc["ffn_act"]],
-                                   {"K": hidden, "N": inter, "GELU": 0}, (inter, 1, 1))
-                else:
-                    for out_b, w_k, uq2, mlp_proj in [
-                        (sc["gate_buf"], gw_k, uq_g, "gate_proj"),
-                        (sc["up_buf"],  uw_k, uq_u, "up_proj"),
-                    ]:
-                        qi2 = self._quant_extra(f"{p}.mlp.{mlp_proj}", uq2)
-                        self._dispatch(
-                            "matmul_quant",
-                            [sc["ffn_normed"], self.weights[w_k],
-                             self._scales_buf(w_k, uq2, sc["ffn_normed"]), out_b],
-                            {"K": hidden, "N": inter, "USE_QUANT": uq2,
-                             **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                             **qi2},
-                            _gemv_wg(inter, uq2),
-                        )
-                    self._dispatch("gelu_mul",
-                                   [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                                   {"N": gelu_n},
-                                   ((gelu_n // 4 + 255) // 256, 1, 1))
-
-                w_k = f"{p}.mlp.down_proj.weight"
-                uq = self._uq_for_key(w_k)
-                qi3 = self._quant_extra(f"{p}.mlp.down_proj", uq)
-                self._dispatch(
-                    "matmul_quant",
-                    [sc["ffn_act"], self.weights[w_k],
-                     self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
-                    {"K": inter, "N": hidden, "USE_QUANT": uq,
-                     **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                     **qi3},
-                    _gemv_wg(hidden, uq),
-                )
-                ffn_out = sc["ffn_out"]
-
-            # Final residual add: fuse with next layer's pre-norm when possible.
-            if layer_idx < self.num_layers - 1:
-                next_w = self.weights[f"model.layers.{layer_idx + 1}.input_layernorm.weight"]
-                self._dispatch("add_rms_norm",
-                               [residual, ffn_out, next_w, out, sc["normed"]],
-                               _rms_c, (num_tokens, 1, 1))
-                normed_out = sc["normed"]
-            else:
-                self._dispatch("add", [residual, ffn_out, out],
-                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
-                normed_out = sc["normed"]  # stale; unused after last layer
-
-        self._hstate = (self._hstate + 2) % 3
-        return normed_out, out
 
     def _moe_ffn_layer(
         self,
