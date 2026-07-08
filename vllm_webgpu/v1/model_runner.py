@@ -303,7 +303,7 @@ class WebGPUModelRunner:
         order = np.argsort(log_probs[top_ids])[::-1]
         top_ids = top_ids[order].astype(np.int32)
         top_lp = log_probs[top_ids].astype(np.float32)
-        rank = int((log_probs > log_probs[sampled_tok]).sum())
+        rank = int((log_probs >= log_probs[sampled_tok]).sum())
         return top_ids, top_lp, rank
 
     @staticmethod

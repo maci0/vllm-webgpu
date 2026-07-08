@@ -26,7 +26,7 @@ def test_compute_request_logprobs():
 
     vocab = 32
     logits = np.zeros(vocab, dtype=np.float32)
-    logits[5] = 10.0   # highest logit — should be rank 0
+    logits[5] = 10.0   # highest logit — should be rank 1 (1-based, vLLM convention)
     logits[3] = 5.0    # second highest
     logits[7] = 2.0    # third
 
@@ -38,7 +38,7 @@ def test_compute_request_logprobs():
     assert top_ids[1] == 3
     assert top_ids[2] == 7
     assert (top_lp <= 0).all(), "log-probs must be non-positive"
-    assert rank == 0, "sampled token 5 has the highest logit so rank should be 0"
+    assert rank == 1, "sampled token 5 has the highest logit so rank should be 1 (1-based)"
 
 
 def test_make_model_output_with_logprobs():
@@ -64,7 +64,7 @@ def test_make_model_output_with_logprobs():
     assert out.logprobs is not None, "logprobs should be populated, not None"
     assert out.logprobs.logprob_token_ids.shape == (1, 2)
     assert out.logprobs.logprob_token_ids[0, 0] == 2
-    assert out.logprobs.sampled_token_ranks[0] == 0
+    assert out.logprobs.sampled_token_ranks[0] == 1
 
 
 def test_make_model_output_no_logprobs():
@@ -106,8 +106,8 @@ def test_compute_prompt_logprobs():
     assert result.logprob_token_ids.shape == (T - 1, num_prompt_logprobs + 1)
     assert result.logprobs.shape == (T - 1, num_prompt_logprobs + 1)
     assert result.selected_token_ranks.shape == (T - 1,)
-    # Each position predicts tok_ids[i+1] correctly, so rank should be 0
-    assert (result.selected_token_ranks == 0).all()
+    # Each position predicts tok_ids[i+1] correctly, so rank should be 1 (1-based, vLLM convention)
+    assert (result.selected_token_ranks == 1).all()
     # Log-probs must be non-positive
     assert (result.logprobs <= 0).all()
 
