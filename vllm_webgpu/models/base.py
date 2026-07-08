@@ -163,11 +163,12 @@ class BaseWebGPUModel(ABC):
         lines = ["Kernel timing (ms per call, averaged):"]
         rows = [(lbl, sum(t) / len(t), len(t)) for lbl, t in self._prof_stats.items()]
         rows.sort(key=lambda r: -(r[1] * r[2]))
-        total = sum(r[1] for r in rows)
+        total = sum(r[1] * r[2] for r in rows)
         for label, avg, n in rows:
-            pct = 100.0 * avg / total if total else 0
-            lines.append(f"  {label:<40s} {avg:7.3f} ms  {pct:5.1f}%  (n={n})")
-        lines.append(f"  {'TOTAL':<40s} {total:7.3f} ms")
+            label_total = avg * n
+            pct = 100.0 * label_total / total if total else 0
+            lines.append(f"  {label:<40s} {avg:7.3f} ms  x{n:4d}  {label_total:8.3f} ms  {pct:5.1f}%")
+        lines.append(f"  {'TOTAL':<40s} {'':7s}       {'':6s}  {total:8.3f} ms")
         return "\n".join(lines)
 
     def profile_reset(self) -> None:
