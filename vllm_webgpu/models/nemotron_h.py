@@ -738,26 +738,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 sc["qkv_buf"].buf, (q_dim + k_dim) * 2,
                 sc["v_buf"].buf, 0, k_dim * 2)
 
-        # RoPE for Q and K. NemotronH has no per-head RMSNorm on Q/K.
-        _rope_c = self._rope_consts
-        self._dispatch(
-            "rope",
-            [sc["q_buf"], pos_buf, sc["q_rope"], self._rope_freq_buf],
-            {**_rope_c, "NUM_HEADS": self.num_q_heads},
-            (num_tokens, self.num_q_heads, 1),
-        )
-        self._dispatch(
-            "rope",
-            [sc["k_buf"], pos_buf, sc["k_rope"], self._rope_freq_buf],
-            {**_rope_c, "NUM_HEADS": self.num_kv_heads},
-            (num_tokens, self.num_kv_heads, 1),
-        )
+        # No RoPE: NemotronH uses no rotary position embeddings.
 
         # Fused KV cache store.
         k_cache, v_cache = self.kv_pool[layer_idx]
         self._dispatch(
             "kv_cache_store_both",
-            [sc["k_rope"], k_cache, sc["v_buf"], v_cache, slot_map],
+            [sc["k_buf"], k_cache, sc["v_buf"], v_cache, slot_map],
             {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
              "HEAD_DIM": self.head_dim, "V_IN_OFFSET": 0},
             (num_tokens, self.num_kv_heads, 1),
@@ -766,7 +753,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Flash attention decode.
         self._dispatch(
             "flash_attn_decode",
-            [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+            [sc["q_buf"], k_cache, v_cache, bt_buf, sc["attn_out"]],
             {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
              "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
              "CTX_LEN": ctx_len},
