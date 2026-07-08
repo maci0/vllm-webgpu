@@ -307,6 +307,12 @@ class WebGPUModelRunner:
         from vllm.v1.sample.sampler import Sampler
 
         num_positions = T - 1
+        if num_prompt_logprobs < 0:
+            logger.warning(
+                "num_prompt_logprobs=%d will return full-vocab logprobs; this is very slow on CPU",
+                num_prompt_logprobs,
+            )
+            num_prompt_logprobs = full_logits.shape[-1]
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
         logits_t = torch.from_numpy(full_logits[:num_positions].astype(np.float32))  # [T-1, vocab]
