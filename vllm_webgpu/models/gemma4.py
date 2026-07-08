@@ -159,8 +159,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "x":        mk(T * H * 4),     # [1, H] f32 residual
             "norm_out": mk(T * H * 2),     # [1, H] f16 final norm
             "logits":   mk(T * V * 2),     # [1, V] f16 logits
-            "capped":   mk(T * V * 2),     # [1, V] f16 softcapped logits (Gemma4)
         }
+        if self.softcap is not None and self.softcap > 0:
+            self._pre["capped"] = mk(T * V * 2)  # [1, V] f16 softcapped logits (Gemma4)
 
         self._sc: dict[str, "WebGPUBuffer"] = {
             "normed":     mk(T * H * 2),                              # f16
@@ -302,7 +303,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         x_buf      = pre["x"]
         norm_out   = pre["norm_out"]
         logits_buf = pre["logits"]
-        capped_buf = pre["capped"]
 
         _rms_base = self._rms_consts
         sc = self._sc
@@ -341,6 +341,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
+                capped_buf = pre["capped"]
                 self._dispatch("logit_softcap", [logits_buf, capped_buf],
                                {"N": num_tokens * vocab, "CAP": float(self.softcap)},
                                ((num_tokens * vocab + 255) // 256, 1, 1),
@@ -417,8 +418,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "last_f32":  alloc(hidden * 4),            # f32 last-token residual copy
             "last_norm": alloc(hidden * 2),            # f16 last-token after final norm
             "logits":    alloc(vocab * 2),             # f16 LM head output
-            "capped":    alloc(vocab * 2),             # f16 softcapped logits (Gemma4)
         }
+        if self.softcap is not None and self.softcap > 0:
+            b["capped"] = alloc(vocab * 2)             # f16 softcapped logits (Gemma4)
         _dummy = alloc(8)
 
         slot_map_buf = WebGPUBuffer.from_numpy(
