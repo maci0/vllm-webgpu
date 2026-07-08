@@ -430,9 +430,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         positions: np.ndarray,
         attn_metadata: object,
     ) -> np.ndarray:
-        dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
-        hidden = self.hidden_size
         self._hstate = 0
 
         if (
@@ -444,14 +442,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 f"{len(attn_metadata.block_tables)} block tables"
             )
 
-        ctx_len = int(
-            attn_metadata.max_decode_seq_len
-            if getattr(attn_metadata, "max_decode_seq_len", None) is not None
-            else int(positions[-1]) + 1
-        )
-        if ctx_len <= 0:
-            ctx_len = int(positions[-1]) + 1
-
         vocab = self.vocab_size
 
         if num_tokens > 1:
@@ -461,6 +451,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             )
 
         # Decode path (T=1): zero-alloc hot path via pre-allocated buffers.
+        dev = self.wgpu_device.wgpu_device
+        hidden = self.hidden_size
+        ctx_len = int(
+            attn_metadata.max_decode_seq_len
+            if getattr(attn_metadata, "max_decode_seq_len", None) is not None
+            else int(positions[-1]) + 1
+        )
+        if ctx_len <= 0:
+            ctx_len = int(positions[-1]) + 1
+
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
         dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
@@ -493,6 +493,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             normed_x = self._sc["normed"]
             x_buf    = pre["x"]  # initial residual = embedding
 
+            # normed_x is stale (points to sc["normed"] from the last iteration,
+            # which _layer_dispatch marks as unused for the final layer). Only
+            # x_buf is used after the loop.
             for i in range(self.num_layers):
                 normed_x, x_buf = self._layer_dispatch(
                     i, normed_x, x_buf,
@@ -867,6 +870,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 normed_x = sc["normed"]
                 x_buf    = pre["x"]
 
+                # normed_x is stale on the final iteration (see _layer_dispatch);
+                # only x_buf is used after the loop.
                 for i in range(self.num_layers):
                     normed_x, x_buf = self._layer_dispatch(
                         i, normed_x, x_buf,

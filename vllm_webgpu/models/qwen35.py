@@ -581,13 +581,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 normed_x = sc["normed"]
 
                 for i in range(self.num_layers):
-                    if self._is_full_attn(i):
-                        normed_x, x_buf = self._transformer_layer(
-                            i, normed_x, x_buf, pos_buf, slot_map, bt_buf,
-                            ctx_t, 1)
-                    else:
-                        normed_x, x_buf = self._gdn_layer_gpu(
-                            i, normed_x, x_buf, 1)
+                    normed_x, x_buf = self._transformer_layer(
+                        i, normed_x, x_buf, pos_buf, slot_map, bt_buf,
+                        ctx_t, 1)
 
                 # For the last token: final norm, LM head, argmax, staging copy.
                 if tc == num_tokens - 1:
@@ -655,12 +651,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
             normed_x = sc["normed"]
             for i in range(self.num_layers):
-                if self._is_full_attn(i):
-                    normed_x, x_buf = self._transformer_layer(
-                        i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
-                else:
-                    normed_x, x_buf = self._gdn_layer_gpu(
-                        i, normed_x, x_buf, num_tokens)
+                normed_x, x_buf = self._transformer_layer(
+                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
             self._dispatch("rms_norm",
                            [x_buf, self.weights["model.norm.weight"], norm_out],

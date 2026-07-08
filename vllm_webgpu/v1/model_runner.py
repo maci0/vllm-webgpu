@@ -269,9 +269,10 @@ class WebGPUModelRunner:
         k = min(num_logprobs, vocab_size)
 
         # Numerically stable log-softmax, fully on CPU via numpy.
-        # Avoids torch.compile / TorchInductor on the hot logprob path.
+        # Avoids the torch dispatcher and any torch.compile / TorchInductor tracing.
         arr = logits_1d.astype(np.float32)
-        log_probs = torch.nn.functional.log_softmax(torch.from_numpy(arr), dim=-1).numpy()
+        _shift = arr.max()
+        log_probs = arr - _shift - np.log(np.sum(np.exp(arr - _shift)))
 
         # Top-k indices sorted by descending log-prob.
         if k == 0:
@@ -337,8 +338,11 @@ class WebGPUModelRunner:
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
         # Numerically stable log-softmax over [T-1, vocab], fully on CPU via numpy.
+        # Avoids the torch dispatcher and any torch.compile / TorchInductor tracing.
         arr = full_logits[:num_positions].astype(np.float32)  # [T-1, vocab]
-        log_probs = torch.nn.functional.log_softmax(torch.from_numpy(arr), dim=-1).numpy()  # [T-1, vocab]
+        _shift = arr.max(axis=-1, keepdims=True)
+        _exp = np.exp(arr - _shift)
+        log_probs = (arr - _shift) - np.log(_exp.sum(axis=-1, keepdims=True))  # [T-1, vocab]
 
         vocab_size = arr.shape[-1]
         row_idx = np.arange(num_positions)[:, None]

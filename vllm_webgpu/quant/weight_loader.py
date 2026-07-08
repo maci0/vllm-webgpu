@@ -1342,7 +1342,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                     # Not actually an int4 weight; upload as plain float.
                     processed.discard(sk)
                     processed.discard(bk)
-                    arr = t.to(_torch.float16).numpy() if t.dtype == _torch.float16 else np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
+                    arr = t.numpy() if t.dtype == _torch.float16 else np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
                     local_key = wk.removeprefix("language_model.")
                     weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
                     continue

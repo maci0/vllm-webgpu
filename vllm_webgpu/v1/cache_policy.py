@@ -133,6 +133,11 @@ def allocate_kv_from_hf_config(
         num_kv_heads = model_config.get_total_num_kv_heads()
         head_dim = model_config.get_head_size()
     else:
+        # Fallback for standalone scripts (run_inference.py, profile_kernels.py)
+        # that call allocate_kv_from_hf_config without a vLLM ModelConfig.
+        # hf_config.num_key_value_heads may diverge from what ModelConfig
+        # reports for architectures with TP-remapped or MLA-style heads.
+        # Pass model_config when possible to get the canonical values.
         num_kv_heads = hf_config.num_key_value_heads
         head_dim = getattr(
             hf_config, "head_dim",

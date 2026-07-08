@@ -4,11 +4,12 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from vllm.utils.mem_constants import MiB_bytes
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
 
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
-OVERHEAD_BYTES = 512 * 1024 * 1024  # 512MB buffer for driver overhead + activations
+OVERHEAD_BYTES = 512 * MiB_bytes  # 512 MiB buffer for driver overhead + activations
 
 
 def sample_token(

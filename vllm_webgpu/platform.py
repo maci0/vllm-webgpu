@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import functools
+import os
+import sys
 from typing import TYPE_CHECKING
 
 from vllm.logger import init_logger
@@ -93,8 +95,6 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
-        import os
-        import sys
         # macOS (Darwin): wgpu-native uses Metal, which is not fork-safe.
         # The parent process probes the wgpu adapter during is_available(),
         # and after fork the child cannot call request_device_sync() on Metal.

@@ -577,14 +577,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            {"K": hidden, "N": vocab, "USE_QUANT": uq},
                            ((vocab + 255) // 256, 1, 1))
 
-            if getattr(self, "_greedy_decode", True):
+            greedy = getattr(self, "_greedy_decode", True)
+            if greedy:
                 self._dispatch("argmax_f16", [b["logits"], self._ensure_sample_buf(vocab)],
                                {"N": vocab}, (1, 1, 1))
                 self._copy_sample_to_staging()
 
         self._last_logit_buf = b["logits"]
         self._last_vocab     = vocab
-        if getattr(self, "_greedy_decode", True):
+        if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()  # shape (1, vocab) for non-greedy
@@ -670,14 +671,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 {"K": hidden, "N": vocab, "USE_QUANT": uq},
                 ((vocab + 255) // 256, 1, 1),
             )
-            if getattr(self, "_greedy_decode", True):
+            greedy = getattr(self, "_greedy_decode", True)
+            if greedy:
                 self._dispatch("argmax_f16", [pre["logits"], self._ensure_sample_buf(vocab)],
                                {"N": vocab}, (1, 1, 1))
                 self._copy_sample_to_staging()
 
         self._last_logit_buf = pre["logits"]
         self._last_vocab     = vocab
-        if getattr(self, "_greedy_decode", True):
+        if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()

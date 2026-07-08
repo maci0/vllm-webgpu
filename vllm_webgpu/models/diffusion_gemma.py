@@ -461,14 +461,15 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # MoE layers use post_feedforward_layernorm_1 for the shared MLP stream;
             # non-MoE layers only have the no-suffix key.
             _pfn1_key_1 = f"{p}.post_feedforward_layernorm_1.weight"
-            pfn1_w = (self.weights.get(_pfn1_key_1) or
-                      self.weights.get(f"{p}.post_feedforward_layernorm.weight"))
             if _pfn1_key_1 in self.weights:
+                pfn1_w = self.weights[_pfn1_key_1]
                 self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
                                (num_tokens, 1, 1))
                 hidden_states_1 = self._shared_res_buf
             else:
                 hidden_states_1 = sc["ffn_out"]
+
+        layer_scalar = self._layer_scales[layer_idx]
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe and f"{p}.router.proj.weight" in self.weights:
@@ -698,14 +699,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 else:
                     combined_normed = sc["normed"]
 
-                layer_scalar = self._layer_scales[layer_idx]
                 self._dispatch("add_f32", [residual, combined_normed, out],
                                {"N": add_n},
                                ((add_n // 4 + 255) // 256, 1, 1))
         else:
             # Apply post_feedforward_layernorm before residual add, matching vLLM's
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
-            layer_scalar = self._layer_scales[layer_idx]
             pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
             if pfn_w is not None:
                 self._dispatch("rms_norm", [hidden_states_1, pfn_w, sc["normed"]], _rms,

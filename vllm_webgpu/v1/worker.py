@@ -25,6 +25,7 @@ except ImportError:
     WebGPUDevice = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
+    from vllm.lora.request import LoRARequest
     from vllm.tasks import SupportedTask
     from vllm.v1.kv_cache_interface import KVCacheSpec
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
@@ -124,7 +125,7 @@ class WebGPUWorker(WorkerBase):
     def get_supported_tasks(self) -> "tuple[SupportedTask, ...]":
         return self.model_runner.get_supported_tasks()
 
-    def add_lora(self, lora_request: Any) -> bool:
+    def add_lora(self, lora_request: "LoRARequest") -> bool:
         logger.warning("LoRA not supported on WebGPU")
         return False
 
