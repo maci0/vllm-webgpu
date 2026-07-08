@@ -145,9 +145,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = np.array(
-            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32)
+        bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         ids_buf    = pre["ids"]
@@ -261,8 +259,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # Read back selected expert indices and softmax weights.
         raw_idx = msc["topk_idx"].to_numpy().view(np.uint32)
         raw_w   = msc["topk_w"].to_numpy().view(np.float32)
-        expert_indices = [int(raw_idx[k]) for k in range(K)]
-        expert_weights = [float(raw_w[k]) for k in range(K)]
+        expert_indices = raw_idx[:K].tolist()
+        expert_weights = raw_w[:K].tolist()
 
         logger.debug(
             "L%02d MoE experts: %s  weights: %s",

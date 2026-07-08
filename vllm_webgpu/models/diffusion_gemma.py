@@ -1,6 +1,5 @@
 from __future__ import annotations
 import logging
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -137,8 +136,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         slot_map = pre["slot_map"]; bt_buf = pre["bt"]
         x_buf = pre["x"]; norm_out = pre["norm_out"]; logits_buf = pre["logits"]
 
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-
         with self._batched_dispatch():
             self._dispatch("embedding_lookup_f32",
                            [self.weights[self._embed_key()], ids_buf, x_buf],
@@ -150,8 +147,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             self._dispatch("rms_norm_f32in",
                            [x_buf, self.weights[self._norm_key()], norm_out],
-                           {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt,
-                            "GEMMA_NORM": self._gemma_norm_const},
+                           self._rms_consts,
                            (num_tokens, 1, 1))
 
             lm_head_w = self.weights.get(self._lm_head_key(),
@@ -207,9 +203,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         residual = sc[h_names[(self._hstate + 1) % 3]]
         out      = sc[h_names[(self._hstate + 2) % 3]]
         add_n    = num_tokens * hidden
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt,
-                "GEMMA_NORM": self._gemma_norm_const}
+        _rms = self._rms_consts
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
@@ -300,10 +294,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._dispatch("rms_norm", [sc["o_proj_out"], pan_w, sc["ffn_normed"]], _rms,
                                (num_tokens, 1, 1))
                 self._dispatch("add_f32", [x_buf, sc["ffn_normed"], residual],
-                               {"N": add_n, "SCALE": 1.0}, ((add_n // 4 + 255) // 256, 1, 1))
+                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
             else:
                 self._dispatch("add_f32", [x_buf, sc["o_proj_out"], residual],
-                               {"N": add_n, "SCALE": 1.0}, ((add_n // 4 + 255) // 256, 1, 1))
+                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
 
             # ── Shared expert FFN ─────────────────────────────────────────────
             gelu_n_shared = num_tokens * inter_shared
@@ -348,7 +342,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             # Accumulate shared expert into dedicated shared_res_buf (avoids h-rotation conflicts).
             self._dispatch("add_f32", [residual, shared_out, self._shared_res_buf],
-                           {"N": add_n, "SCALE": 1.0}, ((add_n // 4 + 255) // 256, 1, 1))
+                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
             shared_residual = self._shared_res_buf
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───

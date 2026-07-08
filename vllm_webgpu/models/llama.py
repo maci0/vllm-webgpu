@@ -258,9 +258,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = np.array(
-            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32)
+        bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         ids_buf   = pre["ids"]
@@ -391,9 +389,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr, usage=rw)
         pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32), usage=rw)
         ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32), usage=rw)
-        bt_arr       = np.array(
-            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32)
+        bt_arr = self._bt_arr(attn_metadata)
         bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr, usage=rw)
 
         # Small dummy scales buffer for USE_QUANT=0 f16 path (binding 2 not read).
@@ -619,9 +615,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         pre = self._pre
         sc  = self._sc
 
-        bt_arr = np.array(
-            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32)
+        bt_arr = self._bt_arr(attn_metadata)
 
         x_buf: "WebGPUBuffer" = pre["x"]
 
@@ -794,7 +788,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             else:
                 for src, dst, n_heads, norm_w, in_off in [
                     (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
-                    (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, q_dim if _use_fused_qkv else 0),
+                    (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, 0),
                 ]:
                     if norm_w is not None:
                         # Binding 4 (inv_freq_buf): always provided.

@@ -89,7 +89,6 @@ class BaseWebGPUModel(ABC):
         self._last_logit_buf: "WebGPUBuffer | None" = None
         self._last_vocab: int = 0
         self._prof_stats: dict[str, list[float]] = defaultdict(list)  # shader -> [ms, ...]
-        self._prof_current_label: str = ""  # set per _batched_dispatch block
         # Dummy bias buffer for matmul_quant binding 4 (allocated on first use).
         # The shader always declares binding 4; callers that don't use HAS_BIAS
         # must still provide a buffer so the bind group layout matches.
@@ -127,7 +126,6 @@ class BaseWebGPUModel(ABC):
         encoder = dev.create_command_encoder()
         saved_encoder = self._active_encoder
         self._active_encoder = encoder
-        self._prof_current_label = label
         try:
             yield
             t0 = time.perf_counter() if (self.profiling and label) else 0.0
@@ -137,7 +135,6 @@ class BaseWebGPUModel(ABC):
                 self._prof_stats[label].append((time.perf_counter() - t0) * 1000.0)
         finally:
             self._active_encoder = saved_encoder
-            self._prof_current_label = ""
 
     def profile_report(self) -> str:
         """Return a formatted profiling report. Call after forward() with profiling=True."""
@@ -156,11 +153,15 @@ class BaseWebGPUModel(ABC):
     def profile_reset(self) -> None:
         self._prof_stats.clear()
 
-    @staticmethod
-    def _resolve_model_path(path: str) -> str:
-        """Resolve a HuggingFace model ID or local path to an actual directory."""
-        from vllm.transformers_utils.repo_utils import get_model_path
-        return str(get_model_path(path))
+    def _bt_arr(self, attn_metadata: object) -> "np.ndarray":
+        """Return the block-table as a uint32 numpy array.
+
+        Uses block_tables[0] when present, falling back to a single-element [0]
+        placeholder for warmup or metadata objects that lack a block table.
+        """
+        return np.array(
+            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
+            dtype=np.uint32)
 
     def load_weights(self, path: str) -> None:
         """Load model weights from a HuggingFace safetensors directory.
@@ -169,11 +170,12 @@ class BaseWebGPUModel(ABC):
         safetensors formats. GGUF loading not supported — use the vllm-gguf plugin.
         MLX affine-int4 (Qwen3.5-9B MLX community format) is supported as a special case.
         """
+        from vllm.transformers_utils.repo_utils import get_model_path
         from vllm_webgpu.quant.weight_loader import (
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded, load_mlx_weights,
         )
-        path = self._resolve_model_path(path)
+        path = str(get_model_path(path))
         fmt = detect_weight_format(path)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.

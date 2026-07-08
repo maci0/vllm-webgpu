@@ -560,8 +560,7 @@ class WebGPUModelRunner:
 
                 # Detect chunked-prefill continuation: request is still in the
                 # context (prefill) phase and has remaining prompt tokens stored.
-                is_ctx = (callable(getattr(cached, "is_context_phase", None))
-                          and cached.is_context_phase(rid))
+                is_ctx = cached.is_context_phase(rid)
                 is_context = all_prompt is not None and pos < len(all_prompt) and is_ctx
 
                 if is_context:

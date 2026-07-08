@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 import logging
 import os
 from pathlib import Path
@@ -26,7 +27,6 @@ _GGUF_MAGIC = b"GGUF"
 
 def _is_mlx_quantized_dir(p: Path) -> bool:
     """Return True if directory contains MLX affine int4 weights (has .biases keys)."""
-    import json
     index_path = p / "model.safetensors.index.json"
     try:
         with open(index_path) as f:
@@ -57,7 +57,6 @@ def _check_unsupported_quant(model_dir: Path) -> None:
         qcfg = _get_ct_config(str(config_json)) or {}
     except (ImportError, Exception):
         try:
-            import json
             with open(config_json) as f:
                 qcfg = json.load(f).get("quantization_config") or {}
         except Exception:
@@ -102,7 +101,6 @@ def detect_weight_format(path: str) -> str:
 
 def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
     """Load multi-shard safetensors from a directory with model.safetensors.index.json."""
-    import json
     index_path = Path(model_dir) / "model.safetensors.index.json"
     with open(index_path) as f:
         index = json.load(f)
@@ -133,7 +131,7 @@ def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
     for shard in shard_files:
         shard_path = str(Path(model_dir) / shard)
         logger.info("Loading shard %s", shard)
-        shard_weights = load_safetensors_weights(shard_path, wgpu_device)
+        shard_weights = load_safetensors_weights(shard_path, wgpu_device, ct_meta=ct_meta)
 
         # Commit all pending write_buffer operations by submitting a dummy command encoder.
         # queue.write_buffer() is only committed before the NEXT queue.submit(), not by
@@ -291,7 +289,6 @@ def _detect_mx_quant(model_dir: Path) -> str:
     Checks hf_quant_config.json (Nvidia/ModelOpt format) first, then
     config.json quantization_config.quant_type. Returns 'mxfp4', 'mxfp8', or ''.
     """
-    import json
     hf_quant = model_dir / "hf_quant_config.json"
     if hf_quant.exists():
         try:
@@ -340,9 +337,8 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
         quant_cfg = _get_ct_config(str(p)) or {}
     except (ImportError, Exception):
         try:
-            import json as _json
             with open(p) as _f:
-                quant_cfg = _json.load(_f).get("quantization_config") or {}
+                quant_cfg = json.load(_f).get("quantization_config") or {}
         except Exception:
             return {}
     config_groups = quant_cfg.get("config_groups")
@@ -368,7 +364,7 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
     return {}
 
 
-def load_safetensors_weights(path: str, wgpu_device) -> dict:
+def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None) -> dict:
     """Load safetensors weights and upload to GPU as F16.
 
     Handles the following quantization formats (all dequantized on CPU):
@@ -379,13 +375,18 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
     - NVFP4: weight_packed (U8 = 2 FP4/byte) + F8_E4M3 block scale + F32 global scale
 
     Uses queue.write_buffer (not mapped_at_creation) for reliable uploads.
+
+    Args:
+        ct_meta: Pre-computed compressed-tensors metadata from detect_compressed_tensors_fmt().
+                 When None, config.json is read from the parent directory of path.
+                 Pass this from load_safetensors_weights_sharded to avoid re-parsing per shard.
     """
-    import safetensors.numpy as sfn
+    import safetensors.torch as sft
     import torch
     import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
-    with sfn.safe_open(path, framework="pt") as sf:
+    with sft.safe_open(path, framework="pt") as sf:
         # Build header for format detection from safetensors metadata.
         # get_slice() reads only the file header bytes — no tensor data is loaded yet.
         header = {}
@@ -400,7 +401,9 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
 
         # Detect compressed-tensors config from the model directory (needed for
         # pack-quantized INT4 format where weight dtype alone is insufficient).
-        ct_meta = detect_compressed_tensors_fmt(Path(path).parent / "config.json")
+        # Use the caller-supplied ct_meta when available to avoid re-parsing per shard.
+        if ct_meta is None:
+            ct_meta = detect_compressed_tensors_fmt(Path(path).parent / "config.json")
 
         # Detect quantization format from header
         has_qweight   = any(k.endswith(".qweight")      for k in header)
@@ -537,7 +540,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             r = len(arr_flat) % 4
             if r:
                 arr_flat = np.concatenate([arr_flat, np.zeros(4 - r, dtype=np.uint8)])
-            data = _pad4(arr_flat.tobytes())
+            data = arr_flat.tobytes()
             buf = wgpu_device.create_buffer(size=len(data), usage=usage)
             wgpu_device.queue.write_buffer(buf, 0, data)
             _pending_bytes[0] += len(data)
@@ -1179,17 +1182,8 @@ def _dequant_mlx_int4(
     return scales_bc * nibbles + biases_bc
 
 
-def _mlx_strip_prefix(key: str) -> str:
-    """Strip 'language_model.' wrapper from MLX weight key."""
-    prefix = "language_model."
-    if key.startswith(prefix):
-        return key[len(prefix):]
-    return key
-
-
 def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     """Load MLX affine int4 safetensors weights, dequantize to f16, upload to GPU."""
-    import json
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
     p = Path(model_dir)
@@ -1250,7 +1244,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                 biases_f32 = _bf16_raw_to_f32(b_raw, b_shape)
                 dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
                 arr = np.clip(dequant, -65504.0, 65504.0).astype(np.float16)
-                local_key = _mlx_strip_prefix(base) + ".weight"
+                local_key = base.removeprefix("language_model.") + ".weight"
                 weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
                 continue
 
@@ -1272,7 +1266,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
             logger.warning("Unsupported dtype %s for tensor %s, skipping", dtype_str, key)
             continue
 
-        local_key = _mlx_strip_prefix(key)
+        local_key = key.removeprefix("language_model.")
         weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
 
     logger.info("Loaded %d tensors from MLX int4 dir %s", len(weights), model_dir)

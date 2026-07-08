@@ -117,7 +117,7 @@ class WebGPUPlatform(_Platform):
             from vllm.v1.attention.backends.registry import AttentionBackendEnum
             return AttentionBackendEnum.CPU_ATTN.get_path()
         except Exception:
-            return "cpu_attn"
+            return ""
 
     @classmethod
     def is_pin_memory_available(cls) -> bool:

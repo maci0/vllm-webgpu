@@ -1,7 +1,6 @@
 """Utility helpers for vllm-webgpu."""
 from __future__ import annotations
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 
@@ -15,33 +14,23 @@ def sample_token(
     temperature: float,
     top_p: float = 1.0,
     top_k: int = -1,
-    generated_ids: "Sequence[int] | None" = None,
-    repetition_penalty: float = 1.0,
 ) -> int:
     """Sample one token from a 1-D float32 logit vector.
 
-    Applies (in order): repetition penalty, temperature scaling, top-k
-    filtering, top-p nucleus filtering, then draws from the resulting
-    categorical distribution.  Returns argmax when temperature <= 1e-5.
+    Applies (in order): temperature scaling, top-k filtering, top-p nucleus
+    filtering, then draws from the resulting categorical distribution.
+    Returns argmax when temperature <= 1e-5.
 
     Args:
         logits_1d: 1-D float32 logit vector of length vocab_size.
         temperature: Softmax temperature. Values <= 1e-5 produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
         top_k: Keep at most top_k tokens. <= 0 disables.
-        generated_ids: Previously generated token IDs for repetition penalty.
-        repetition_penalty: Multiplicative penalty for repeated tokens. 1.0 disables.
     """
     if temperature <= 1e-5:
         return int(np.argmax(logits_1d))
 
     raw = logits_1d.astype(np.float64)
-
-    # Repetition penalty: divide positive logits, multiply negative ones.
-    if repetition_penalty != 1.0 and generated_ids:
-        for tid in set(generated_ids):
-            if 0 <= tid < len(raw):
-                raw[tid] = raw[tid] / repetition_penalty if raw[tid] > 0 else raw[tid] * repetition_penalty
 
     # Temperature scaling with numerically stable softmax.
     raw -= raw.max()
@@ -52,7 +41,6 @@ def sample_token(
     if top_k > 0:
         k = min(top_k, len(probs))
         top_k_idx = np.argpartition(probs, -k)[-k:]
-        top_k_idx = top_k_idx[np.argsort(probs[top_k_idx])[::-1]]
         mask = np.zeros_like(probs)
         mask[top_k_idx] = 1.0
         probs = probs * mask

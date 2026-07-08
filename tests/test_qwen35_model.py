@@ -56,7 +56,7 @@ def _make_gdn_gpu_weights(wgpu_device, hidden: int = 4096) -> dict:
         arr = (rng.standard_normal(shape) * 0.01).astype(np.float16)
         return WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(arr), usage=rw)
 
-    from vllm_webgpu.models.qwen35 import _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM, _LIN_CONV_DIM
+    from vllm_webgpu.models.qwen35 import _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM
 
     weights = {
         "model.layers.0.linear_attn.in_proj_qkv.weight": r_f16(8192, hidden),
@@ -66,7 +66,7 @@ def _make_gdn_gpu_weights(wgpu_device, hidden: int = 4096) -> dict:
         "model.layers.0.linear_attn.conv1d.weight":
             WebGPUBuffer.from_numpy(dev,
                 np.ascontiguousarray(
-                    (rng.standard_normal((_LIN_CONV_DIM, 4)) * 0.01).astype(np.float16)),
+                    (rng.standard_normal((8192, 4)) * 0.01).astype(np.float16)),
                 usage=rw),
         "model.layers.0.linear_attn.A_log":
             WebGPUBuffer.from_numpy(dev,
@@ -146,7 +146,7 @@ def _setup_gdn_model(wgpu_device):
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.models.qwen35 import (
-        Qwen35WebGPUModel, _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM, _LIN_CONV_DIM
+        Qwen35WebGPUModel, _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM
     )
     from vllm_webgpu.utils import SHADERS_DIR
 
@@ -185,7 +185,7 @@ def _setup_gdn_model(wgpu_device):
     model._ssm_gpu = [None] * model.num_layers
     model._conv_gpu = [None] * model.num_layers
     ssm_bytes  = _LIN_V_HEADS * _LIN_K_DIM * _LIN_V_DIM * 4
-    conv_bytes = 3 * _LIN_CONV_DIM * 2  # (KERNEL-1) * DIM * f16
+    conv_bytes = 3 * model._lin_conv_dim * 2  # (KERNEL-1) * DIM * f16
     model._ssm_gpu[0]  = WebGPUBuffer.empty(dev, ssm_bytes,  usage=rw)
     model._conv_gpu[0] = WebGPUBuffer.empty(dev, conv_bytes, usage=rw)
 

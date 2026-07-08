@@ -21,9 +21,6 @@ _LIN_K_HEADS = 16
 _LIN_V_HEADS = 32
 _LIN_K_DIM = 128
 _LIN_V_DIM = 128
-_LIN_KEY_DIM = _LIN_K_HEADS * _LIN_K_DIM    # 2048
-_LIN_VAL_DIM = _LIN_V_HEADS * _LIN_V_DIM    # 4096
-_LIN_CONV_DIM = _LIN_KEY_DIM + _LIN_KEY_DIM + _LIN_VAL_DIM  # 8192 (QKV packed)
 _LIN_CONV_KERNEL = 4
 
 
@@ -211,7 +208,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         """Post-load weight transformations for full-attn layers:
 
         0. Detect GEMMA_NORM format: deviation (safetensors, mean≈0) vs absolute (MLX, mean≈1).
-        1. Tile q_norm/k_norm from (head_dim,) to (num_heads * head_dim,).
+        1. Tile q_norm/k_norm via super()._postprocess_weights() (handles all layers gracefully).
         2. When attn_output_gate=True: split q_proj.weight [2*q_dim, hidden] into
            q_proj.weight [q_dim, hidden] (Q part) and q_gate_proj.weight [q_dim, hidden]
            (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
@@ -220,6 +217,10 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
         rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+
+        # Tile q_norm/k_norm weights via the parent implementation. Linear-attn layers
+        # have no norm keys, so the parent loop skips them gracefully.
+        super()._postprocess_weights()
 
         # Detect norm weight format from the first input_layernorm weight.
         for ln_i in range(min(self.num_layers, 4)):
@@ -233,25 +234,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             if not self._is_full_attn(i):
                 continue
             p = f"model.layers.{i}"
-            for norm_key, num_heads in [
-                (f"{p}.self_attn.q_norm.weight", self.num_q_heads),
-                (f"{p}.self_attn.k_norm.weight", self.num_kv_heads),
-            ]:
-                buf = self.weights.get(norm_key)
-                if buf is None:
-                    continue
-                expected = (num_heads * self.head_dim,)
-                if buf.shape == expected:
-                    continue
-                if buf.shape == (self.head_dim,):
-                    w_np = buf.to_numpy().view(np.float16)
-                    tiled = np.tile(w_np, num_heads)
-                    self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled, usage=rw)
-                else:
-                    raise ValueError(
-                        f"{norm_key}: unexpected shape {buf.shape}, "
-                        f"expected {expected} or ({self.head_dim},)"
-                    )
 
             # Split fused Q+gate weight when attn_output_gate=True.
             # HF: q_proj(h).view(batch, seq, num_heads, head_dim*2) → chunk(2, dim=-1)
