@@ -108,11 +108,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             if val % 4 != 0:
                 raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
 
-        # Expose a representative num_kv_heads/head_dim for compatibility (uses config defaults).
-        self.num_kv_heads: int = getattr(model_config, "num_key_value_heads", 1)
-        self.head_dim: int = getattr(model_config, "head_dim",
-                                     self.hidden_size // self.num_q_heads)
-
         # Compute max dimensions across all layers for scratch buffer sizing
         self._max_q_dim = max(lp["q_dim"] for lp in self._lp)
         self._max_kv_dim = max(lp["kv_dim"] for lp in self._lp)
@@ -122,6 +117,16 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
         self._ln_rope_theta: float = math.log(float(self.rope_theta))
+
+    @property
+    def num_kv_heads(self) -> int:
+        """KV head count from the first layer params (representative value)."""
+        return self._lp[0]["num_kv_heads"]
+
+    @property
+    def head_dim(self) -> int:
+        """Head dimension from the first layer params (representative value)."""
+        return self._lp[0]["head_dim"]
 
     def _scratch_token_count(self) -> int:
         """Number of tokens to size T-dependent scratch buffers for. Override in subclasses."""
