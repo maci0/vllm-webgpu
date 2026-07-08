@@ -627,8 +627,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                {"N": add_n},
                                ((add_n // 4 + 255) // 256, 1, 1))
         else:
-            # No MoE: hidden_states_1 has post_feedforward_layernorm applied (via fallback key).
+            # Apply post_feedforward_layernorm before residual add, matching vLLM's
+            # unconditional application in Gemma4DecoderLayer.forward for all layers.
             layer_scalar = self._layer_scales[layer_idx]
+            pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
+            if pfn_w is not None:
+                self._dispatch("rms_norm", [hidden_states_1, pfn_w, sc["normed"]], _rms,
+                               (num_tokens, 1, 1))
+                hidden_states_1 = sc["normed"]
             self._dispatch("add_f32", [residual, hidden_states_1, out],
                            {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
 
