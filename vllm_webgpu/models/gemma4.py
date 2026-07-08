@@ -16,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 
 class Gemma4WebGPUModel(BaseWebGPUModel):
-    _GEMMA_NORM: int = 1  # all Gemma models use (1+w) RMSNorm
     """
     Gemma 4 transformer with heterogeneous per-layer attention.
 
@@ -27,6 +26,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     Every 6th layer (indices 5, 11, 17, ...) is a global attention layer.
     Scratch buffers are allocated at maximum dimensions to handle both types.
     """
+    _GEMMA_NORM: int = 1  # all Gemma models use (1+w) RMSNorm
 
     # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
     logit_returns_token_id: bool = True

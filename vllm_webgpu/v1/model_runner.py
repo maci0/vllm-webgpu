@@ -6,9 +6,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-def _log_softmax(arr, axis=-1):
-    x = arr - arr.max(axis=axis, keepdims=True)
-    return x - np.log(np.exp(x).sum(axis=axis, keepdims=True))
 
 try:
     from vllm.v1.kv_cache_interface import FullAttentionSpec
@@ -27,7 +24,7 @@ except ImportError:
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_hf_config, allocate_kv_pool_hybrid, allocate_kv_pool_per_layer
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_hf_config
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
@@ -274,7 +271,7 @@ class WebGPUModelRunner:
         # Numerically stable log-softmax, fully on CPU via numpy.
         # Avoids torch.compile / TorchInductor on the hot logprob path.
         arr = logits_1d.astype(np.float32)
-        log_probs = _log_softmax(arr, axis=-1)
+        log_probs = torch.nn.functional.log_softmax(torch.from_numpy(arr), dim=-1).numpy()
 
         # Top-k indices sorted by descending log-prob.
         if k == 0:
@@ -341,7 +338,7 @@ class WebGPUModelRunner:
 
         # Numerically stable log-softmax over [T-1, vocab], fully on CPU via numpy.
         arr = full_logits[:num_positions].astype(np.float32)  # [T-1, vocab]
-        log_probs = _log_softmax(arr, axis=-1)  # [T-1, vocab]
+        log_probs = torch.nn.functional.log_softmax(torch.from_numpy(arr), dim=-1).numpy()  # [T-1, vocab]
 
         vocab_size = arr.shape[-1]
         row_idx = np.arange(num_positions)[:, None]

@@ -289,8 +289,9 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) ->
     z_int4 = ((qz[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(G, N).astype(np.uint8)
 
     # Expand scales/zeros to (K, N) shape
-    sc_exp = sc[np.arange(K) // group_size]   # (K, N)
-    z_exp  = z_int4[np.arange(K) // group_size].astype(np.float32)  # (K, N)
+    row_groups = np.arange(K) // group_size
+    sc_exp = sc[row_groups]   # (K, N)
+    z_exp  = z_int4[row_groups].astype(np.float32)  # (K, N)
 
     # Dequantize: weight(K, N) then transpose to (N, K) for our shader
     w_f32 = sc_exp * (w_int4.astype(np.float32) - z_exp)  # (K, N)
@@ -444,7 +445,7 @@ def load_safetensors_weights(
         for _n in sf.keys():
             _t = sf.get_slice(_n)
             header[_n] = {
-                "dtype": str(_t.get_dtype()).upper(),
+                "dtype": _t.get_dtype(),
                 "shape": list(_t.get_shape()),
             }
 
@@ -469,28 +470,28 @@ def load_safetensors_weights(
             header[k].get("dtype") == "U8" and k.endswith(".weight")
             and k[:-len(".weight")] + ".weight_scale" in header
             and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "F8_E4M3"
-            for k in header if k != "__metadata__"
+            for k in header
         )
         has_fp8_weight = any(
             header[k].get("dtype") == "F8_E4M3" and k.endswith(".weight")
-            for k in header if k != "__metadata__"
+            for k in header
         )
         # MXFP4/MXFP8: *.weight U8 + *.weight_scale U8 (exponent bytes, not F8_E4M3 like diffusion_nvfp4)
         has_mx_u8_pair = any(
             header[k].get("dtype") == "U8" and k.endswith(".weight")
             and k[:-len(".weight")] + ".weight_scale" in header
             and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
-            for k in header if k != "__metadata__"
+            for k in header
         )
         # BnB NF4: companion keys {base}.weight_quantized_stats (older BnB) or
         # {base}.weight.absmax (newer bitsandbytes >= 0.41) alongside U8 weights.
         has_bnb_nf4 = (
             any(k.endswith(".weight_quantized_stats") for k in header)
-            or any("quant_state.bitsandbytes__nf4" in k for k in header if k != "__metadata__")
+            or any("quant_state.bitsandbytes__nf4" in k for k in header)
             or any(
                 k.endswith(".weight.absmax")
                 and header.get(k[:-len(".absmax")], {}).get("dtype") == "U8"
-                for k in header if k != "__metadata__"
+                for k in header
             )
         )
         # compressed-tensors pack-quantized INT4: .weight I32 + .weight_scale F16/BF16/F32
@@ -507,7 +508,7 @@ def load_safetensors_weights(
                     (k.endswith(".weight") and k[:-len(".weight")] + ".weight_scale" in header)
                     or (k.endswith(".weight_packed") and k[:-len(".weight_packed")] + ".weight_scale" in header)
                 )
-                for k in header if k != "__metadata__"
+                for k in header
             )
         )
 
@@ -765,7 +766,7 @@ def load_safetensors_weights(
                         quant_set.add(f"{base}{suf}")
 
             for name in header:
-                if name == "__metadata__" or name in quant_set or name in _i8_companion_skip:
+                if name in quant_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -843,7 +844,7 @@ def load_safetensors_weights(
                         nvfp4_set.add(f"{base}{suf}")
 
             for name in header:
-                if name == "__metadata__" or name in nvfp4_set or name in _i8_companion_skip:
+                if name in nvfp4_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -886,7 +887,7 @@ def load_safetensors_weights(
                         dnvfp4_set.add(f"{base}{suf}")
 
             for name in header:
-                if name == "__metadata__" or name in dnvfp4_set or name in _i8_companion_skip:
+                if name in dnvfp4_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -914,8 +915,7 @@ def load_safetensors_weights(
             # Plain FP8 E4M3: weight stored as F8_E4M3, scale as F32 in *.weight_scale
             fp8_names = {
                 k for k in header
-                if k != "__metadata__"
-                and k.endswith(".weight")
+                if k.endswith(".weight")
                 and header[k].get("dtype") == "F8_E4M3"
             }
             fp8_scale_names = {
@@ -925,7 +925,7 @@ def load_safetensors_weights(
             fp8_set = fp8_names | fp8_scale_names
 
             for name in header:
-                if name == "__metadata__" or name in fp8_set or name in _i8_companion_skip:
+                if name in fp8_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -976,7 +976,7 @@ def load_safetensors_weights(
                 mx4_set.add(f"{base}.weight_scale")
 
             for name in header:
-                if name == "__metadata__" or name in mx4_set or name in _i8_companion_skip:
+                if name in mx4_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -1012,7 +1012,7 @@ def load_safetensors_weights(
                 mx8_set.add(f"{base}.weight_scale")
 
             for name in header:
-                if name == "__metadata__" or name in mx8_set or name in _i8_companion_skip:
+                if name in mx8_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -1060,8 +1060,6 @@ def load_safetensors_weights(
             bnb_set: set = set()
 
             for k in header:
-                if k == "__metadata__":
-                    continue
                 if k.endswith(".weight_quantized_stats"):
                     base = k[:-len(".weight_quantized_stats")]
                     bnb_bases.add(base)
@@ -1091,7 +1089,7 @@ def load_safetensors_weights(
 
             # Upload all non-BnB tensors normally.
             for name in header:
-                if name == "__metadata__" or name in bnb_set or name in _i8_companion_skip:
+                if name in bnb_set or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     dt = header[name].get("dtype", "?")
@@ -1171,8 +1169,6 @@ def load_safetensors_weights(
             # Canonical compressed-tensors saves as .weight_packed; some checkpoints use .weight.
             _ct_base_map = {}  # base -> weight_key
             for _k in header:
-                if _k == "__metadata__":
-                    continue
                 if header[_k].get("dtype") != "I32":
                     continue
                 if _k.endswith(".weight_packed"):
@@ -1190,7 +1186,7 @@ def load_safetensors_weights(
                 ct_reserved.add(f"{_b}.weight_scale")
 
             for name in header:
-                if name == "__metadata__" or name in ct_reserved or name in _i8_companion_skip:
+                if name in ct_reserved or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
                     logger.warning("Skipping %s (dtype=%s)", name, header[name].get("dtype", "?"))

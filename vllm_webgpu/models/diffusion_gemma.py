@@ -463,7 +463,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             _pfn1_key_1 = f"{p}.post_feedforward_layernorm_1.weight"
             pfn1_w = (self.weights.get(_pfn1_key_1) or
                       self.weights.get(f"{p}.post_feedforward_layernorm.weight"))
-            if f"{_pfn1_key_1}" in self.weights:
+            if _pfn1_key_1 in self.weights:
                 self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
                                (num_tokens, 1, 1))
                 hidden_states_1 = self._shared_res_buf

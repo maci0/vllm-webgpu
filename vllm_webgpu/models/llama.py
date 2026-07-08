@@ -405,12 +405,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                 "USE_QUANT": uq, **self._quant_extra(w_key.removesuffix('.weight'), uq)},
                                (N_out, T, 1))
             else:
-                # f16 path (uq == 0)
-                if uq != 0:
-                    raise RuntimeError(
-                        f"gemm_batch: unsupported quant format uq={uq} for {w_key}; "
-                        "this key should have been caught by the _rep_keys guard above"
-                    )
+                # f16 path (uq == 0); _rep_keys guard above ensures no other value reaches here
+                assert uq == 0
                 self._dispatch("matmul_quant_mr4",
                                [x_buf, self.weights[w_key], self._dummy_scales_buf, out_buf],
                                {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},

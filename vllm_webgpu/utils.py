@@ -21,15 +21,15 @@ def sample_token(
 
     Applies (in order): temperature scaling, top-k filtering, top-p nucleus
     filtering, then draws from the resulting categorical distribution.
-    Returns argmax when temperature <= 1e-5.
+    Returns argmax when temperature < 1e-5.
 
     Args:
         logits_1d: 1-D float32 logit vector of length vocab_size.
-        temperature: Softmax temperature. Values <= 1e-5 produce greedy argmax.
+        temperature: Softmax temperature. Values < 1e-5 produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
         top_k: Keep at most top_k tokens. 0 disables.
     """
-    if temperature <= 1e-5:
+    if temperature < 1e-5:
         return int(np.argmax(logits_1d))
 
     logits_t = torch.from_numpy(logits_1d.astype(np.float32, copy=False)).unsqueeze(0)
