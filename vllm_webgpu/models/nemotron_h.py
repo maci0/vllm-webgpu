@@ -622,22 +622,22 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # x_B_C:  bytes [MI*2      .. (MI+CD)*2)   -> sc["mamba_conv_in"]
         # dt:     bytes [(MI+CD)*2 .. (MI+CD+MNH)*2) -> sc["mamba_dt"]
         enc = self._active_encoder
-        if enc is not None:
-            enc.copy_buffer_to_buffer(
-                sc["mamba_inproj"].buf, 0,
-                sc["mamba_gate"].buf,   0,
-                MI * 2,
-            )
-            enc.copy_buffer_to_buffer(
-                sc["mamba_inproj"].buf, MI * 2,
-                sc["mamba_conv_in"].buf, 0,
-                CD * 2,
-            )
-            enc.copy_buffer_to_buffer(
-                sc["mamba_inproj"].buf, (MI + CD) * 2,
-                sc["mamba_dt"].buf,      0,
-                MNH * 2,
-            )
+        assert enc is not None, "_mamba_layer/_attn_layer must be called inside _batched_dispatch"
+        enc.copy_buffer_to_buffer(
+            sc["mamba_inproj"].buf, 0,
+            sc["mamba_gate"].buf,   0,
+            MI * 2,
+        )
+        enc.copy_buffer_to_buffer(
+            sc["mamba_inproj"].buf, MI * 2,
+            sc["mamba_conv_in"].buf, 0,
+            CD * 2,
+        )
+        enc.copy_buffer_to_buffer(
+            sc["mamba_inproj"].buf, (MI + CD) * 2,
+            sc["mamba_dt"].buf,      0,
+            MNH * 2,
+        )
 
         # Step 2: Causal conv1d on x_B_C with SiLU activation.
         conv_w = f"{p}.conv1d.weight"
@@ -723,14 +723,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         # GPU-side extraction: split QKV buffer into Q, K, V.
         enc = self._active_encoder
-        if enc is not None:
-            enc.copy_buffer_to_buffer(
-                sc["qkv_buf"].buf, 0,           sc["q_buf"].buf, 0, q_dim * 2)
-            enc.copy_buffer_to_buffer(
-                sc["qkv_buf"].buf, q_dim * 2,   sc["k_buf"].buf, 0, k_dim * 2)
-            enc.copy_buffer_to_buffer(
-                sc["qkv_buf"].buf, (q_dim + k_dim) * 2,
-                sc["v_buf"].buf, 0, k_dim * 2)
+        assert enc is not None, "_mamba_layer/_attn_layer must be called inside _batched_dispatch"
+        enc.copy_buffer_to_buffer(
+            sc["qkv_buf"].buf, 0,           sc["q_buf"].buf, 0, q_dim * 2)
+        enc.copy_buffer_to_buffer(
+            sc["qkv_buf"].buf, q_dim * 2,   sc["k_buf"].buf, 0, k_dim * 2)
+        enc.copy_buffer_to_buffer(
+            sc["qkv_buf"].buf, (q_dim + k_dim) * 2,
+            sc["v_buf"].buf, 0, k_dim * 2)
 
         # No RoPE: NemotronH uses no rotary position embeddings.
 
