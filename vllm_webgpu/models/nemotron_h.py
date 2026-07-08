@@ -325,6 +325,26 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 self.weights[f"{qkv_key}.scales"] = scales_buf
                 del self.weights[q_s], self.weights[k_s], self.weights[v_s]
 
+            # Pack per-layer scales for the simple Q4 (USE_QUANT=1) format.
+            # That format stores scales at {proj}.scales rather than at
+            # {proj}.weight.scales, so the block above misses them.
+            q_s2 = f"{q_key[:-7]}.scales"
+            k_s2 = f"{k_key[:-7]}.scales"
+            v_s2 = f"{v_key[:-7]}.scales"
+            if q_s2 in self.weights and k_s2 in self.weights and v_s2 in self.weights:
+                scales_dtype2 = self.weights[q_s2].dtype
+                packed_scales2 = np.concatenate([
+                    self.weights[q_s2].to_numpy(),
+                    self.weights[k_s2].to_numpy(),
+                    self.weights[v_s2].to_numpy(),
+                ])
+                scales_buf2 = WebGPUBuffer.from_numpy(
+                    dev, np.ascontiguousarray(packed_scales2), usage=rw
+                )
+                scales_buf2.dtype = scales_dtype2
+                self.weights[f"{qkv_key[:-7]}.scales"] = scales_buf2
+                del self.weights[q_s2], self.weights[k_s2], self.weights[v_s2]
+
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 
     def _postprocess_mamba_weights(self) -> None:
