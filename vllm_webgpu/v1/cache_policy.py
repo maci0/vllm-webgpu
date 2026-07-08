@@ -36,6 +36,8 @@ def allocate_kv_pool_hybrid(
     gets a full KV cache buffer.  When layer_types is provided, non-full-attention
     layers get 16-byte placeholder buffers (never accessed during inference).
     """
+    if model is None:
+        raise RuntimeError("model must not be None during KV cache allocation")
     bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2
 
     model.kv_pool.clear()

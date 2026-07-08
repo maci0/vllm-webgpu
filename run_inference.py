@@ -47,7 +47,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nInitializing WebGPU device...")
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.utils import SHADERS_DIR
+    from vllm_webgpu.utils import SHADERS_DIR, sample_token
 
     device = WebGPUDevice.initialize("high-performance")
     print(f"  Adapter: f16={device.supports_f16}")
@@ -128,7 +128,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         if temperature == 0.0:
             last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
         else:
-            from vllm_webgpu.utils import sample_token
             full = model.logit_readback() if has_gpu_argmax else logits
             last_token = sample_token(full[0], temperature=temperature, top_p=top_p)
 

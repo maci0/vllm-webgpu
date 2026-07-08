@@ -386,7 +386,6 @@ class WebGPUModelRunner:
             return None
 
         if not req_ids:
-            self._last_model_output = EMPTY_MODEL_RUNNER_OUTPUT
             return EMPTY_MODEL_RUNNER_OUTPUT
 
         # Build LogprobsLists when at least one request supplied logprob tuples.
@@ -417,7 +416,6 @@ class WebGPUModelRunner:
             logprobs=built_logprobs,
             prompt_logprobs_dict=prompt_logprobs_dict or {},
         )
-        self._last_model_output = out
         return out
 
     def _extract_logprob_data(
@@ -767,8 +765,10 @@ class WebGPUModelRunner:
                 self._req_state[rid] = {
                     "pos": pos + 1, "block_ids": blk_ids,
                     "last_tok": stok, "num_logprobs": num_logprobs,
+                    "num_prompt_logprobs": num_prompt_logprobs,
                     "sampling_params": state.get("sampling_params"),
                     "all_prompt_tokens": None,
+                    "in_progress_prompt_logprobs": None,
                 }
                 all_req_ids.append(rid)
                 all_sampled.append(stok)

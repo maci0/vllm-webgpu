@@ -100,7 +100,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 "kv_dim": nkv * hd,
                 "has_v_proj": True,
             }
-            self._lp = [dict(uniform_lp) for _ in range(self.num_layers)]
+            self._lp = [uniform_lp.copy() for _ in range(self.num_layers)]
 
         # Validate even dimensions required by WGSL shaders
         for name, val in [("hidden_size", self.hidden_size),

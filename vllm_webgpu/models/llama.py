@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from itertools import batched
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -448,7 +449,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         normed_x = b["normed"]
         x_res    = b["x"]
 
-        chunks = [range(i, min(i + _CHUNK, self.num_layers)) for i in range(0, self.num_layers, _CHUNK)]
+        chunks = list(batched(range(self.num_layers), _CHUNK))
 
         for chunk_idx, chunk_layers in enumerate(chunks):
             with self._batched_dispatch():

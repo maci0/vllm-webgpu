@@ -149,7 +149,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, max(n, 8))
 
-        max_ctx = getattr(self.model_config, 'max_position_embeddings', 4096)
+        max_ctx = self.model_config.max_position_embeddings
         max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
 
         # Fixed pre-allocated decode buffers (zero-alloc hot path for T=1).
@@ -348,7 +348,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 
     def _postprocess_mamba_weights(self) -> None:
-        """Convert A_log -> A and normalize conv1d.weight shape.
+        """Convert A_log -> A and validate conv1d.weight element count.
 
         HF checkpoints store A as A_log (raw log values). Apply -exp() here to
         match what vLLM's composed_weight_loader does in the CUDA path
@@ -358,8 +358,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         D and dt_bias are uploaded as F32 directly by load_weights() — no
         conversion is needed here.
 
-        The conv1d.weight may have an extra dim [conv_dim, 1, kernel] which
-        we flatten to [conv_dim, kernel].
+        The conv1d.weight may arrive as [conv_dim, 1, kernel] or [conv_dim, kernel].
+        No reshape is performed: both shapes are row-major identical in memory, so
+        the GPU shader reads the same byte sequence either way (see comment below).
         """
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -392,6 +393,45 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     )
 
     # ── Forward pass ──────────────────────────────────────────────────────────
+
+    def _run_final_norm_and_lm_head(
+        self, x_buf: "WebGPUBuffer", vocab: int, num_tokens: int
+    ) -> None:
+        """Dispatch final RMS norm, LM head matmul, and optional on-GPU argmax.
+
+        Must be called inside a _batched_dispatch() context. num_tokens controls
+        the rms_norm workgroup count (1 for decode and per-token prefill steps).
+        """
+        pre = self._pre
+        hidden = self.hidden_size
+        self._dispatch(
+            "rms_norm",
+            [x_buf, self.weights["model.norm_f.weight"], pre["norm_out"]],
+            self._rms_base,
+            (num_tokens, 1, 1),
+        )
+        lm_head_w = self.weights.get(
+            "lm_head.weight", self.weights["model.embed_tokens.weight"]
+        )
+        uq = self._uq_for_key("lm_head.weight")
+        self._dispatch(
+            "matmul_quant",
+            [pre["norm_out"], lm_head_w,
+             self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
+             pre["logits"]],
+            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0,
+             **self._quant_extra("lm_head", uq)},
+            ((vocab + 255) // 256, 1, 1),
+        )
+        greedy = getattr(self, "_greedy_decode", True)
+        if greedy:
+            self._dispatch(
+                "argmax_f16",
+                [pre["logits"], self._ensure_sample_buf(vocab)],
+                {"N": vocab},
+                (1, 1, 1),
+            )
+            self._copy_sample_to_staging()
 
     def forward(
         self,
@@ -469,39 +509,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     ctx_len, num_tokens, self._rms_base,
                 )
 
-            # Final norm: x_buf holds the fully accumulated residual after all layers.
-            self._dispatch(
-                "rms_norm",
-                [x_buf, self.weights["model.norm_f.weight"], pre["norm_out"]],
-                self._rms_base,
-                (num_tokens, 1, 1),
-            )
-
-            lm_head_w = self.weights.get(
-                "lm_head.weight", self.weights["model.embed_tokens.weight"]
-            )
-            uq = self._uq_for_key("lm_head.weight")
-            self._dispatch(
-                "matmul_quant",
-                [pre["norm_out"], lm_head_w,
-                 self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
-                 pre["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0,
-                 **self._quant_extra("lm_head", uq)},
-                ((vocab + 255) // 256, 1, 1),
-            )
-            if getattr(self, "_greedy_decode", True):
-                self._dispatch(
-                    "argmax_f16",
-                    [pre["logits"], self._ensure_sample_buf(vocab)],
-                    {"N": vocab},
-                    (1, 1, 1),
-                )
-                self._copy_sample_to_staging()
+            # Final norm, LM head, and optional argmax.
+            self._run_final_norm_and_lm_head(x_buf, vocab, num_tokens)
 
         self._last_logit_buf = pre["logits"]
         self._last_vocab = vocab
-        if getattr(self, "_greedy_decode", True):
+        greedy = getattr(self, "_greedy_decode", True)
+        if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
@@ -841,6 +855,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         pre = self._pre
         sc  = self._sc
         bt_arr = self._bt_arr(attn_metadata)
+        bt_bytes = bt_arr.tobytes()
 
         for t in range(T):
             self._hstate = 0
@@ -853,7 +868,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             dev.queue.write_buffer(
                 pre["slot_map"].buf, 0,
                 np.array(attn_metadata.slot_mapping[t:t+1], dtype=np.uint32).tobytes())
-            dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+            dev.queue.write_buffer(pre["bt"].buf, 0, bt_bytes)
 
             with self._batched_dispatch():
                 self._dispatch(
@@ -882,37 +897,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     )
 
                 if t == T - 1:
-                    self._dispatch(
-                        "rms_norm",
-                        [x_buf, self.weights["model.norm_f.weight"], pre["norm_out"]],
-                        rms_base,
-                        (1, 1, 1),
-                    )
-                    lm_head_w = self.weights.get(
-                        "lm_head.weight", self.weights["model.embed_tokens.weight"]
-                    )
-                    uq = self._uq_for_key("lm_head.weight")
-                    self._dispatch(
-                        "matmul_quant",
-                        [pre["norm_out"], lm_head_w,
-                         self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
-                         pre["logits"]],
-                        {"K": self.hidden_size, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0,
-                         **self._quant_extra("lm_head", uq)},
-                        ((vocab + 255) // 256, 1, 1),
-                    )
-                    if getattr(self, "_greedy_decode", True):
-                        self._dispatch(
-                            "argmax_f16",
-                            [pre["logits"], self._ensure_sample_buf(vocab)],
-                            {"N": vocab},
-                            (1, 1, 1),
-                        )
-                        self._copy_sample_to_staging()
+                    self._run_final_norm_and_lm_head(x_buf, vocab, 1)
 
         self._last_logit_buf = pre["logits"]
         self._last_vocab     = vocab
-        if getattr(self, "_greedy_decode", True):
+        greedy = getattr(self, "_greedy_decode", True)
+        if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()

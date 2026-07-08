@@ -41,6 +41,14 @@ class WebGPUPlatform(_Platform):
     _enum = _PlatformEnum.OOT
     device_name: str = "cpu"
     device_type: str = "cpu"
+
+    @classmethod
+    def import_kernels(cls) -> None:
+        # No CUDA or C extensions exist for WebGPU. This override suppresses
+        # the base-class attempt to import vllm._C, which is CUDA-only and
+        # produces a spurious warning on every process start.
+        pass
+
     @classmethod
     def is_available(cls) -> bool:
         adapter = _get_wgpu_adapter()
@@ -74,19 +82,13 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
-        import sys
-        # On Apple Silicon (darwin) all memory is unified: system RAM is the GPU budget.
-        # On other platforms (Windows/Linux with discrete GPU) report the GPU's
-        # max_buffer_size as a proxy for usable VRAM. This avoids inflated
-        # batch-size defaults when a machine has, say, 64 GB RAM but 8 GB VRAM.
-        if sys.platform != "darwin":
-            try:
-                adapter = _get_wgpu_adapter()
-                if adapter is not None:
-                    dev = adapter.request_device_sync()
-                    return int(dev.limits["max_buffer_size"])
-            except Exception:
-                pass
+        # System RAM is the correct budget on all supported platforms.
+        # On Apple Silicon, all memory is unified so this is exact.
+        # On discrete-GPU Linux/Windows, the actual KV-cache budget is determined
+        # by determine_available_memory() in cache_policy.py, which already calls
+        # get_cpu_memory() directly; this value only affects vLLM scheduling
+        # heuristics. max_buffer_size (the per-buffer driver limit, often ≤4 GB)
+        # is not VRAM and must not be used here.
         return get_cpu_memory()
 
     @classmethod

@@ -12,7 +12,7 @@ from vllm.model_executor.layers.quantization.auto_awq import _REVERSE_AWQ_PACK_O
 # Derived from vllm's _REVERSE_AWQ_PACK_ORDER so it stays in sync if upstream changes.
 _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array(_REVERSE_AWQ_PACK_ORDER, dtype=np.int32) * 4
 # GPTQ nibble unpack: each int32 holds 8 nibbles at bit offsets [0, 4, 8, ..., 28].
-_GPTQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 4, 8, 12, 16, 20, 24, 28], dtype=np.int32)
+_GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 
 # When set, GDN projection weights with BF16 dtype are uploaded in their native
@@ -456,7 +456,12 @@ def load_safetensors_weights(
         if ct_meta is None:
             ct_meta = detect_compressed_tensors_fmt(Path(path).parent / "config.json")
 
-        # Detect quantization format from header
+        # Detect quantization format from header.
+        # NOTE: detection is file-level, not per-layer. A checkpoint that mixes
+        # two formats (e.g. diffusion_nvfp4 layers alongside plain fp8 layers)
+        # will be classified by whichever format is checked first in the priority
+        # order below, which may shadow the intended format for the other layers.
+        # All currently supported checkpoints are single-format, so this is safe.
         has_qweight   = any(k.endswith(".qweight")      for k in header)
         has_wp        = any(k.endswith(".weight_packed") for k in header)   # standard NVFP4
         # DiffusionGemma NVFP4: *.weight is U8 AND *.weight_scale is F8_E4M3 (ModelOpt format)
@@ -705,7 +710,7 @@ def load_safetensors_weights(
                 # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
                 # Upload raw bytes; shader does sign extension via int8_to_f32().
                 # dtype="u8" so _uq_weight() detects it via fmt="int8_gpu".
-                arr_u8 = sf.get_tensor(name).numpy().view(np.uint8).reshape(shape)
+                arr_u8 = sf.get_tensor(name).numpy().view(np.uint8)
                 _upload_u8(arr_u8, name, weights)
                 # Record int8 format in quant_meta for _uq() detection.
                 qmeta = weights.setdefault("__quant_meta__", {})
@@ -1259,6 +1264,9 @@ def _dequant_mlx_int4(
     at inference time (MLX-format checkpoints can be loaded without mlx installed,
     as long as the weights are dequantized to f16 before upload). The numpy path
     keeps mlx optional and avoids the Metal-device init that mlx triggers on import.
+
+    # ponytail: replace with mlx.core.dequantize(w_u32, scales_f32, biases_f32,
+    #           bits=4, group_size=group_size) when mlx becomes an optional dep.
     """
     out_rows, packed_cols = weight_u32.shape
     in_cols = packed_cols * 8

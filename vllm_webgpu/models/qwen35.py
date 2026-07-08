@@ -80,7 +80,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Total QKV packed dimension: K + K + V heads (Q_heads = K_heads for GDN)
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
         self._lin_key_dim: int  = self._lin_k_heads * self._lin_k_dim   # total key dim (= Q dim)
-        self._lin_conv_dim: int = self._lin_key_dim + self._lin_key_dim + self._lin_val_dim  # QKV
+        self._lin_conv_dim: int = 2 * self._lin_key_dim + self._lin_val_dim  # QKV (Q_dim == K_dim)
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
@@ -276,8 +276,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             conv_w_key = f"{p}.conv1d.weight"
             w = self.weights.get(conv_w_key)
             if w is not None and len(w.shape) == 3 and w.shape[1] == 1:
-                # [CONV_DIM, 1, KERNEL] → [CONV_DIM, KERNEL]: drop the middle 1.
-                arr = w.to_numpy().view(np.float16).reshape(w.shape[0], w.shape[2])
+                # [CONV_DIM, 1, KERNEL] → [CONV_DIM, KERNEL]: squeeze the groups dim.
+                arr = np.squeeze(w.to_numpy().view(np.float16), axis=1)
                 self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr)
 
             # Upgrade SSM parameter precision: A_log and dt_bias are small per-head
@@ -341,7 +341,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         """
         sc = self._sc
         hidden = self.hidden_size
-        inter = self.intermediate_size
         p = f"model.layers.{layer_idx}.linear_attn"
         pp = f"model.layers.{layer_idx}"
         add_n = num_tokens * hidden

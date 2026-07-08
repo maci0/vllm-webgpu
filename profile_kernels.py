@@ -24,7 +24,6 @@ args = parser.parse_args()
 from vllm_webgpu.webgpu.device import WebGPUDevice
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 from vllm_webgpu.utils import SHADERS_DIR
-from vllm_webgpu.quant.weight_loader import detect_weight_format
 from vllm.transformers_utils.repo_utils import get_model_path
 
 wgpu_dev = WebGPUDevice.initialize()
@@ -32,16 +31,11 @@ pipeline_cache = PipelineCache(wgpu_dev.wgpu_device, SHADERS_DIR)
 
 # ── Load model ────────────────────────────────────────────────────────────────
 model_path = str(get_model_path(args.model))
-fmt = detect_weight_format(model_path)
 print(f"Model: {model_path}")
-print(f"Format: {fmt}")
 
-if fmt == "gguf":
-    raise RuntimeError("GGUF profiling not supported in this build (use safetensors models).")
-else:
-    from transformers import AutoConfig
-    hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
-    arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
+from transformers import AutoConfig
+hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
 
 print(f"Architecture: {arch}")
 
