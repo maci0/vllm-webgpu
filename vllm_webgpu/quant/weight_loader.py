@@ -171,26 +171,20 @@ def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
 
 
 def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
-    """Convert FP8 E4M3 (NVidia/OCP format, exponent bias=7) to float32.
+    """Convert FP8 E4M3 (OCP float8_e4m3fn) to float32.
 
-    Format: bit7=sign, bits[6:3]=exponent(bias=7), bits[2:0]=mantissa/8
-    Normal: (-1)^s * 2^(exp-7) * (1 + mant/8)  for exp in 1..14
-    Denorm: (-1)^s * 2^-6 * (mant/8)             for exp == 0
-    NaN:    exp == 15 (no Inf in E4M3)
+    Only bytes 0x7F and 0xFF are NaN; exp=15 with mant<7 (0x78-0x7E, 0xF8-0xFE)
+    are valid normals (256-448 and their negatives). Use torch's native conversion
+    to get the correct result for all 256 byte values.
     """
-    # Build 256-entry lookup table once
-    LUT = np.zeros(256, dtype=np.float32)
-    for i in range(256):
-        sign = -1.0 if (i >> 7) else 1.0
-        exp = (i >> 3) & 0xF
-        mant = i & 0x7
-        if exp == 0:
-            LUT[i] = sign * (2.0 ** -6) * (mant / 8.0)
-        elif exp == 15:
-            LUT[i] = float('nan')
-        else:
-            LUT[i] = sign * (2.0 ** (exp - 7)) * (1.0 + mant / 8.0)
-    return LUT[data.ravel().view(np.uint8)].reshape(data.shape)
+    import torch
+    return (
+        torch.from_numpy(data.ravel().view(np.uint8))
+        .view(torch.float8_e4m3fn)
+        .to(torch.float32)
+        .numpy()
+        .reshape(data.shape)
+    )
 
 
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
