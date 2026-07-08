@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask
+from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:
@@ -50,8 +50,9 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
     low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx)
     n = head_dim // 2
-    import torch
-    ramp_mask = yarn_linear_ramp_mask(low, high, n, dtype=torch.float32).numpy()
+    if low == high:
+        high += 0.001
+    ramp_mask = np.clip((np.arange(n, dtype=np.float32) - low) / (high - low), 0, 1)
     inv_freq_mask = (1.0 - ramp_mask) * extrapolation_factor
     scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
@@ -315,9 +316,6 @@ class BaseWebGPUModel(ABC):
                 # Per-channel FP8: GROUP_K=1 signals the shader to read scales[row].
                 d["GROUP_K"] = 1
             return d
-        if uq == 7:
-            # Int8 per-channel: no group size, no global scale — just USE_QUANT=7.
-            return {}
         if uq == 8:
             # NF4: GROUP_K = absmax block size (BnB default 64).
             return {"GROUP_K": self._quant_info(base_key).get("group_size", 64)}

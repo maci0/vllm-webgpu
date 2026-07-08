@@ -287,7 +287,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Returns:
             logits: [num_tokens, vocab_size]  float32
         """
-        dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
         hidden = self.hidden_size
         self._hstate = 0
@@ -386,7 +385,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         q_dim  = self.num_q_heads  * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
         inter  = self.intermediate_size
-        ln_rope = self._ln_rope_theta
 
         # Temporary batch buffers (T × size). Allocated once per prefill call;
         # overhead is negligible vs the GEMM savings.
@@ -700,6 +698,37 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
 
+    def _qkv_proj(
+        self,
+        normed_x: "WebGPUBuffer",
+        layer_idx: int,
+    ) -> "tuple[WebGPUBuffer, WebGPUBuffer, WebGPUBuffer]":
+        """Dispatch separate Q/K/V matmul projections into pre-allocated scratch buffers.
+
+        Returns (q_buf, k_buf, v_buf) from self._sc. Used by the non-fused attention
+        path in LlamaWebGPUModel and GptOssWebGPUModel.
+        """
+        sc = self._sc
+        hidden = self.hidden_size
+        p = f"model.layers.{layer_idx}"
+        q_dim = self.num_q_heads * self.head_dim
+        kv_dim = self.num_kv_heads * self.head_dim
+        for out_buf, proj, dim in [
+            (sc["q_buf"], "q_proj", q_dim),
+            (sc["k_buf"], "k_proj", kv_dim),
+            (sc["v_buf"], "v_proj", kv_dim),
+        ]:
+            w_key = f"{p}.self_attn.{proj}.weight"
+            uq = self._uq_for_key(w_key)
+            qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
+            self._dispatch(
+                "matmul_quant",
+                [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, normed_x), out_buf],
+                {"K": hidden, "N": dim, "USE_QUANT": uq, **self._split_k_extra(uq), **qi},
+                _gemv_wg(dim, uq),
+            )
+        return sc["q_buf"], sc["k_buf"], sc["v_buf"]
+
     def _attn_block(
         self,
         layer_idx: int,
@@ -721,7 +750,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         p = f"model.layers.{layer_idx}"
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
-        ln_rope = self._ln_rope_theta
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
@@ -746,19 +774,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             _v_src = sc["qkv_buf"]
             _v_offset = q_dim + kv_dim  # f16 elements before V section
         else:
-            for out_buf, proj, dim, uq in [(sc["q_buf"], "q_proj", q_dim, uq_q),
-                                           (sc["k_buf"], "k_proj", kv_dim, uq_k),
-                                           (sc["v_buf"], "v_proj", kv_dim, uq_v)]:
-                w_key = f"{p}.self_attn.{proj}.weight"
-                qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
-                self._dispatch("matmul_quant",
-                               [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, normed_x), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": uq,
-                                **self._split_k_extra(uq), **qi},
-                               _gemv_wg(dim, uq))
-            _q_src = sc["q_buf"]
-            _k_src = sc["k_buf"]
-            _v_src = sc["v_buf"]
+            _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx)
             _v_offset = 0
 
         # Per-head norm + RoPE for Q and K.

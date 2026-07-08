@@ -45,11 +45,11 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
     return sorted(set(
-        k[:-len(".weight")] for k in header
-        if k.endswith(".weight")
-        and header[k].get("dtype") == "U8"
-        and k[:-len(".weight")] + ".weight_scale" in header
-        and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
+        base
+        for k in header
+        if k.endswith(".weight") and header[k].get("dtype") == "U8"
+        for base in [k.removesuffix(".weight")]
+        if header.get(base + ".weight_scale", {}).get("dtype") == "U8"
     ))
 
 
@@ -382,29 +382,26 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
     if not p.exists():
         return {}
     quant_cfg = _load_quant_cfg(p)
-    config_groups = quant_cfg.get("config_groups")
-    if not config_groups:
+    if not quant_cfg.get("config_groups"):
         return {}
-    weights_desc = next(
-        (g["weights"] for g in config_groups.values()
-         if isinstance(g, dict) and g.get("weights")),
-        {},
-    )
-    if not weights_desc:
+    try:
+        from compressed_tensors import QuantizationConfig
+        from compressed_tensors.quantization import QuantizationType, QuantizationStrategy
+        cfg = QuantizationConfig.model_validate(quant_cfg)
+        w_args = next((s.weights for s in cfg.config_groups.values() if s.weights), None)
+    except Exception:
         return {}
-    num_bits = int(weights_desc.get("num_bits", 8))
-    wtype = str(weights_desc.get("type", "int")).lower()
-    strategy = str(weights_desc.get("strategy", "channel")).lower()
-    if num_bits == 8 and wtype == "int" and strategy == "channel":
+    if w_args is None:
+        return {}
+    if w_args.num_bits == 8 and w_args.type == QuantizationType.INT and w_args.strategy == QuantizationStrategy.CHANNEL:
         return {"__global__": {"fmt": "int8_gpu", "group_size": None}}
-    if num_bits == 8 and wtype in ("float", "fp8") and strategy in ("tensor", "channel"):
+    if w_args.num_bits == 8 and w_args.type == QuantizationType.FLOAT and w_args.strategy in (QuantizationStrategy.TENSOR, QuantizationStrategy.CHANNEL):
         return {"__global__": {"fmt": "fp8_gpu", "group_size": None}}
-    if num_bits == 4 and wtype == "int" and strategy == "group":
-        group_size = int(weights_desc.get("group_size", 128))
-        return {"__global__": {"fmt": "gptq_gpu", "group_size": group_size}}
+    if w_args.num_bits == 4 and w_args.type == QuantizationType.INT and w_args.strategy == QuantizationStrategy.GROUP:
+        return {"__global__": {"fmt": "gptq_gpu", "group_size": w_args.group_size or 128}}
     logger.warning(
         "compressed-tensors: unsupported format (num_bits=%d, type=%s, strategy=%s), "
-        "no quant_meta applied", num_bits, wtype, strategy)
+        "no quant_meta applied", w_args.num_bits, w_args.type, w_args.strategy)
     return {}
 
 

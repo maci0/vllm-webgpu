@@ -181,7 +181,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                 "expert_act":   mk(_moe_act_sz * 2),            # [max_inter] f16 gate*up activated
                 "expert_out":   mk(H * 2),                      # [hidden] f16 accumulated output
                 "expert_tmp":   mk(H * 2),                      # [hidden] f16 per-expert temp
-                "moe_w_buf":    mk(self._moe_k * 4),            # [K] f32 written before each encoder
                 "dummy_scales": mk(8),                          # fallback scales binding
             }
 
@@ -705,7 +704,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         if self._is_moe:
             return self._forward_moe(input_ids, positions, attn_metadata)
 
-        dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
         hidden = self.hidden_size
         self._hstate = 0
@@ -727,22 +725,8 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             return self._prefill_chunked_forward(
                 input_ids, positions, attn_metadata, num_tokens)
 
-        pre = self._pre
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(
-            pre["slot_map"].buf, 0,
-            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = self._bt_arr(attn_metadata)
-        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
-
-        ids_buf    = pre["ids"]
-        pos_buf    = pre["pos"]
-        slot_map   = pre["slot_map"]
-        bt_buf     = pre["bt"]
-        x_buf      = pre["x"]
-        norm_out   = pre["norm_out"]
-        logits_buf = pre["logits"]
+        ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, _ = \
+            self._decode_setup(input_ids, positions, attn_metadata)
         vocab = self.vocab_size
 
         # Single outer encoder for the entire forward pass — one queue.submit().

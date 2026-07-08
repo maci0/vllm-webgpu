@@ -90,7 +90,7 @@ else:
 
 # ── Run prefill ───────────────────────────────────────────────────────────────
 # Allocate enough blocks for prompt + warmup + profiling steps
-total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps + args.decode_steps
+total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
 blk_ids = list(range((total_toks + block_size - 1) // block_size))
 bt = np.array(blk_ids, dtype=np.uint32)
 

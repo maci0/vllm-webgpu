@@ -76,7 +76,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # mamba_int: the Mamba "intermediate size" = num_heads * head_dim
         self.mamba_int: int = self.mamba_num_heads * self.mamba_head_dim
         self.n_groups: int = model_config.n_groups
-        self.ssm_state_size: int = getattr(model_config, "ssm_state_size", 128)
+        self.ssm_state_size: int = model_config.ssm_state_size
         self.conv_kernel: int = model_config.conv_kernel
         self.groups_state_size: int = self.n_groups * self.ssm_state_size
         # conv_dim: size of the vector passed through the causal conv
@@ -91,7 +91,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         self.block_size: int = get_config().block_size
 
-        self._layer_types: list[str] = list(model_config.layers_block_type)
+        self._layer_types: list[str] = model_config.layers_block_type
         # Length invariant is enforced by NemotronHConfig.__init__ asserting
         # len(hybrid_override_pattern) == num_hidden_layers.
 
@@ -213,9 +213,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Zero all Mamba conv and SSM states. Call before each new request."""
         dev = self.wgpu_device.wgpu_device
         for buf in self._conv_states.values():
-            dev.queue.write_buffer(buf.buf, 0, bytes(buf.buf.size))
+            dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
         for buf in self._ssm_states.values():
-            dev.queue.write_buffer(buf.buf, 0, bytes(buf.buf.size))
+            dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
 
     # ── Weight loading ────────────────────────────────────────────────────────
 
@@ -300,7 +300,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # and _quant_extra find the correct fmt / group_size / global_scale.
             qmeta = self.weights.get("__quant_meta__")
             if qmeta is not None:
-                q_base = q_key[:-7]        # strip ".weight" -> "{p}.q_proj"
+                q_base = q_key.removesuffix(".weight")
                 qkv_base = f"{p}.qkv_proj"
                 if q_base in qmeta:
                     qmeta[qkv_base] = dict(qmeta[q_base])

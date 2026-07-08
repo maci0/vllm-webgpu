@@ -26,7 +26,8 @@ def _get_wgpu_adapter():
     """
     try:
         import wgpu
-        return wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+        from vllm_webgpu.config import get_config
+        return wgpu.gpu.request_adapter_sync(power_preference=get_config().power_preference)
     except Exception:
         return None
 

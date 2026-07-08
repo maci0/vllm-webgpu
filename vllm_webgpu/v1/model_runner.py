@@ -254,8 +254,8 @@ class WebGPUModelRunner:
         top-k at all; in that case it is prepended and the returned arrays
         have length num_logprobs + 1.
         """
-        import torch as _torch_lsm
-        log_probs = _torch_lsm.from_numpy(logits_1d.astype(np.float32)).log_softmax(-1).numpy()
+        x = logits_1d.astype(np.float32); x -= x.max()
+        log_probs = x - np.log(np.exp(x).sum())
         k = min(num_logprobs, log_probs.size)
         top_ids = np.argpartition(log_probs, -k)[-k:]
         order = np.argsort(log_probs[top_ids])[::-1]

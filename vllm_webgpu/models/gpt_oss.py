@@ -76,36 +76,13 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         # QKV projections (always separate; GPT-OSS has no q_norm/k_norm).
-        q_wk = f"{p}.self_attn.q_proj.weight"
-        k_wk = f"{p}.self_attn.k_proj.weight"
-        v_wk = f"{p}.self_attn.v_proj.weight"
-        uq_q, uq_k, uq_v = self._uq_for_key(q_wk), self._uq_for_key(k_wk), self._uq_for_key(v_wk)
-
-        for out_buf_qkv, proj, dim, uq in [
-            (sc["q_buf"], "q_proj", q_dim, uq_q),
-            (sc["k_buf"], "k_proj", kv_dim, uq_k),
-            (sc["v_buf"], "v_proj", kv_dim, uq_v),
-        ]:
-            w_key = f"{p}.self_attn.{proj}.weight"
-            qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
-            self._dispatch(
-                "matmul_quant",
-                [normed_x, self.weights[w_key],
-                 self._scales_buf(w_key, uq, normed_x), out_buf_qkv],
-                {"K": hidden, "N": dim, "USE_QUANT": uq,
-                 **self._split_k_extra(uq),
-                 **qi},
-                _gemv_wg(dim, uq),
-            )
+        _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx)
 
         # Bias addition before RoPE: WebGPU forbids a buffer appearing as both
         # STORAGE_READ (binding 0) and STORAGE_READ_WRITE (binding 2) in the
         # same dispatch. Use free scratch buffers as add destinations instead:
         #   Q bias: q_buf -> gate_buf    K bias: k_buf -> up_buf
         #   V bias: v_buf -> ffn_act     (these are unused until the FFN phase)
-        _q_src = sc["q_buf"]
-        _k_src = sc["k_buf"]
-        _v_src = sc["v_buf"]
 
         if self._attn_bias:
             q_bias = self.weights.get(f"{p}.self_attn.q_proj.bias")
