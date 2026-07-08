@@ -332,7 +332,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch("matmul_quant",
                            [norm_out, lm_head_w,
                             self._scales_buf("lm_head.weight", uq_lm, norm_out), logits_buf],
-                           {"K": hidden, "N": vocab, "USE_QUANT": uq_lm},
+                           {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
@@ -714,7 +714,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 "matmul_quant",
                 [b["last_norm"], lm_head_w,
                  self._scales_buf("lm_head.weight", uq_lm, _dummy), b["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm},
+                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
@@ -805,7 +805,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 "matmul_quant",
                 [pre["norm_out"], lm_head_w,
                  self._scales_buf("lm_head.weight", uq_lm, pre["norm_out"]), pre["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm},
+                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
