@@ -208,9 +208,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             if self.softcap is not None and self.softcap > 0:
                 capped = self._pre["capped"]
+                # Dispatch as 2D: x covers vocab elements, y covers tokens.
+                # This keeps the x-dimension within the 65535 workgroup-per-dimension
+                # limit even when num_tokens * vocab would exceed 65535 * 256.
                 self._dispatch("logit_softcap", [logits_buf, capped],
-                               {"N": num_tokens * vocab, "CAP": float(self.softcap)},
-                               ((num_tokens * vocab + 255) // 256, 1, 1),
+                               {"VOCAB": vocab, "CAP": float(self.softcap)},
+                               ((vocab + 255) // 256, num_tokens, 1),
                                shader_subdir="gemma")
                 result = capped
             else:

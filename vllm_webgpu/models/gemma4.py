@@ -343,8 +343,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             if self.softcap is not None and self.softcap > 0:
                 capped_buf = pre["capped"]
                 self._dispatch("logit_softcap", [logits_buf, capped_buf],
-                               {"N": num_tokens * vocab, "CAP": float(self.softcap)},
-                               ((num_tokens * vocab + 255) // 256, 1, 1),
+                               {"VOCAB": vocab, "CAP": float(self.softcap)},
+                               ((vocab + 255) // 256, num_tokens, 1),
                                shader_subdir="gemma")
                 result_buf = capped_buf
             else:
@@ -722,7 +722,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             if self.softcap is not None and self.softcap > 0:
                 self._dispatch(
                     "logit_softcap", [b["logits"], b["capped"]],
-                    {"N": vocab, "CAP": float(self.softcap)},
+                    {"VOCAB": vocab, "CAP": float(self.softcap)},
                     ((vocab + 255) // 256, 1, 1),
                     shader_subdir="gemma")
                 result_buf = b["capped"]
@@ -814,7 +814,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             if self.softcap is not None and self.softcap > 0:
                 self._dispatch(
                     "logit_softcap", [pre["logits"], pre["capped"]],
-                    {"N": vocab, "CAP": float(self.softcap)},
+                    {"VOCAB": vocab, "CAP": float(self.softcap)},
                     ((vocab + 255) // 256, 1, 1),
                     shader_subdir="gemma")
                 result_buf = pre["capped"]

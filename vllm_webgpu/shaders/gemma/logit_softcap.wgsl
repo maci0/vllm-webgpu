@@ -1,6 +1,10 @@
 enable f16;
 
-override N: u32   = 256256u;
+// VOCAB: number of logits per token (vocab size).
+// Dispatch as ((VOCAB + 255) / 256, num_tokens, 1) — x covers vocab elements,
+// y covers tokens. This keeps the x-dimension within the 65535 workgroup limit
+// even for large vocab sizes and many simultaneous tokens (diffusion prefill).
+override VOCAB: u32   = 256256u;
 override CAP: f32 = 30.0;
 
 @group(0) @binding(0) var<storage, read>       input  : array<f16>;
@@ -8,8 +12,8 @@ override CAP: f32 = 30.0;
 
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = gid.x;
-    if (i >= N) { return; }
+    if (gid.x >= VOCAB) { return; }
+    let i = gid.y * VOCAB + gid.x;
     let inv_cap: f32 = 1.0 / CAP;
     let v = f32(input[i]) * inv_cap;
     // Numerically stable tanh: branch on |v| to avoid exp overflow.
