@@ -71,16 +71,42 @@ rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.Buf
 dev = wgpu_dev.wgpu_device
 block_size = 16
 num_blocks = 512  # enough for profiling
-num_kv_heads = hf_cfg.num_key_value_heads
-head_dim = getattr(hf_cfg, "head_dim", hf_cfg.hidden_size // hf_cfg.num_attention_heads)
 num_layers = hf_cfg.num_hidden_layers
 
-kv_block_bytes = num_blocks * block_size * num_kv_heads * head_dim * 2  # f16
-model.kv_pool = [
-    (WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
-     WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw))
-    for _ in range(num_layers)
-]
+layer_params = getattr(model, "_lp", None)
+model.kv_pool = []
+if layer_params:
+    print(f"Allocating per-layer KV cache ({num_layers} layers, mixed dims)")
+    for lp in layer_params:
+        kv_block_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2  # f16
+        model.kv_pool.append((
+            WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
+            WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
+        ))
+else:
+    num_kv_heads = hf_cfg.num_key_value_heads
+    head_dim = getattr(hf_cfg, "head_dim", hf_cfg.hidden_size // hf_cfg.num_attention_heads)
+    kv_block_bytes = num_blocks * block_size * num_kv_heads * head_dim * 2  # f16
+    layer_types = getattr(model, "_layer_types", None)
+    if layer_types:
+        _dummy = (
+            WebGPUBuffer.empty(dev, 16, usage=rw),
+            WebGPUBuffer.empty(dev, 16, usage=rw),
+        )
+        for i in range(num_layers):
+            if layer_types[i] == "attention":
+                model.kv_pool.append((
+                    WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
+                    WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
+                ))
+            else:
+                model.kv_pool.append(_dummy)
+    else:
+        model.kv_pool = [
+            (WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
+             WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw))
+            for _ in range(num_layers)
+        ]
 
 # ── Run prefill ───────────────────────────────────────────────────────────────
 # Allocate enough blocks for prompt + warmup + profiling steps
