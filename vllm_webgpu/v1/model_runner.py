@@ -6,7 +6,9 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-from scipy.special import log_softmax as _log_softmax
+def _log_softmax(arr, axis=-1):
+    x = arr - arr.max(axis=axis, keepdims=True)
+    return x - np.log(np.exp(x).sum(axis=axis, keepdims=True))
 
 try:
     from vllm.v1.kv_cache_interface import FullAttentionSpec
