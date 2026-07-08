@@ -138,7 +138,11 @@ def detect_weight_format(path: str) -> str:
     return "safetensors"
 
 
-def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
+def load_safetensors_weights_sharded(
+    model_dir: str,
+    wgpu_device,
+    f32_keys: "frozenset[str] | None" = None,
+) -> dict:
     """Load multi-shard safetensors from a directory with model.safetensors.index.json."""
     index_path = Path(model_dir) / _SAFE_WEIGHTS_INDEX_NAME
     with open(index_path) as f:
@@ -170,7 +174,8 @@ def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
     for shard in shard_files:
         shard_path = str(Path(model_dir) / shard)
         logger.info("Loading shard %s", shard)
-        shard_weights = load_safetensors_weights(shard_path, wgpu_device, ct_meta=ct_meta)
+        shard_weights = load_safetensors_weights(
+            shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys)
 
         # Commit all pending write_buffer operations by submitting a dummy command encoder.
         # queue.write_buffer() is only committed before the NEXT queue.submit(), not by
@@ -403,7 +408,12 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
     return {}
 
 
-def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None) -> dict:
+def load_safetensors_weights(
+    path: str,
+    wgpu_device,
+    ct_meta: dict | None = None,
+    f32_keys: "frozenset[str] | None" = None,
+) -> dict:
     """Load safetensors weights and upload to GPU as F16.
 
     Handles the following quantization formats (all dequantized on CPU):
@@ -419,6 +429,10 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
         ct_meta: Pre-computed compressed-tensors metadata from detect_compressed_tensors_fmt().
                  When None, config.json is read from the parent directory of path.
                  Pass this from load_safetensors_weights_sharded to avoid re-parsing per shard.
+        f32_keys: Optional set of weight key names that must be uploaded as float32 instead
+                  of the default float16. Intended for scalar/vector parameters (e.g. Mamba D
+                  and dt_bias) where the checkpoint stores F32 and the shader reads f32 — the
+                  default F16 downcast would silently lose 13 mantissa bits.
     """
     import safetensors.torch as sft
     import torch
@@ -623,6 +637,28 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
                 return False
             dtype_str = meta["dtype"]
             shape = tuple(meta["shape"])
+
+            # Keep native F32 precision for explicitly requested keys (e.g. Mamba D
+            # and dt_bias). The default path casts every F32/BF16 checkpoint value to
+            # F16, silently discarding 13 mantissa bits. Shaders that declare these
+            # bindings as array<f32> need the full-precision values.
+            if f32_keys and name in f32_keys and dtype_str in ("F32", "BF16", "F16"):
+                if dtype_str == "BF16":
+                    arr_f32 = np.ascontiguousarray(
+                        sf.get_tensor(name).to(torch.float32).numpy())
+                else:
+                    arr_f32 = np.ascontiguousarray(
+                        sf.get_tensor(name).numpy().astype(np.float32))
+                data = _pad4(arr_f32.tobytes())
+                buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+                wgpu_device.queue.write_buffer(buf, 0, data)
+                _pending_bytes += len(data)
+                _maybe_flush()
+                weights[name] = WebGPUBuffer(
+                    buf=buf, device=wgpu_device,
+                    shape=tuple(arr_f32.shape), dtype="f32")
+                return True
+
             if dtype_str == "F16":
                 arr = sf.get_tensor(name).numpy()    # torch.float16 → np.float16
             elif dtype_str == "BF16":

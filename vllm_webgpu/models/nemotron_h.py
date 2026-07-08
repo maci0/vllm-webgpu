@@ -223,7 +223,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def load_weights(self, path: str) -> None:
         """Load weights with key remapping and Mamba-specific postprocessing."""
-        super().load_weights(path)
+        # D and dt_bias are F32 in the checkpoint and are read as array<f32> by the
+        # SSM shader. The base loader would downcast them to F16, losing 13 mantissa
+        # bits. Pass their HF-side key names so they are uploaded as F32 directly.
+        # HF prefix is 'backbone.' (mapper swaps it to 'model.').
+        f32_keys = frozenset(
+            f"backbone.layers.{i}.mixer.{wk}"
+            for i, lt in enumerate(self._layer_types)
+            if lt == "mamba"
+            for wk in ("D", "dt_bias")
+        )
+        super().load_weights(path, f32_keys=f32_keys)
         self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
         qmeta = self.weights.get("__quant_meta__")
         if qmeta:
@@ -317,13 +327,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 
     def _postprocess_mamba_weights(self) -> None:
-        """Convert A_log -> A and ensure D / dt_bias are stored as f32.
+        """Convert A_log -> A and normalize conv1d.weight shape.
 
         HF checkpoints store A as A_log (raw log values). Apply -exp() here to
         match what vLLM's composed_weight_loader does in the CUDA path
         (mamba_mixer2.py line 461). The WebGPU loader does not run PyTorch
         weight-loaders, so this transformation must be applied manually.
-        D and dt_bias need f32 for numerical precision in the SSM shader.
+
+        D and dt_bias are uploaded as F32 directly by load_weights() — no
+        conversion is needed here.
+
         The conv1d.weight may have an extra dim [conv_dim, 1, kernel] which
         we flatten to [conv_dim, kernel].
         """
@@ -343,14 +356,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 raw = self.weights[a_key].to_numpy().view(np.float16)
                 a_f32 = -np.exp(raw.astype(np.float32))
                 self.weights[a_key] = WebGPUBuffer.from_numpy(dev, a_f32, usage=rw)
-
-            # D and dt_bias: convert to f32 for shader correctness.
-            for wk in (f"{p}.D", f"{p}.dt_bias"):
-                if wk in self.weights:
-                    raw = self.weights[wk].to_numpy().view(np.float16)
-                    self.weights[wk] = WebGPUBuffer.from_numpy(
-                        dev, raw.astype(np.float32), usage=rw
-                    )
 
             # conv1d.weight: flatten any extra dimension.
             # Shape may be [conv_dim, 1, kernel] (from PyTorch unsqueeze) or
