@@ -58,10 +58,13 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     inv_freq_mask = 1.0 - ramp_mask
     scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
-    # YaRN attention scale: mscale = 0.1 * ln(factor) + 1.0, clamped to 1.0 for factor <= 1.
+    # YaRN attention scale: mscale = (0.1 * ln(factor) + 1.0) * attn_factor.
+    # attn_factor is an optional rope_scaling field (default 1.0), matching
+    # vLLM's YaRNScalingRotaryEmbedding which computes yarn_get_mscale(factor) * attn_factor.
     # Must be applied AFTER cos/sin in the shader (mscale * cos(pos * freq)),
     # not folded into inv_freq (which would compute cos(pos * freq * mscale) instead).
-    mscale = yarn_get_mscale(factor)
+    attn_factor = float(rope_scaling.get("attn_factor", 1.0))
+    mscale = yarn_get_mscale(factor) * attn_factor
     return scaled_inv_freq.astype(np.float32), float(mscale)
 
 
