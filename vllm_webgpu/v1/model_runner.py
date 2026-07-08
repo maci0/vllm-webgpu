@@ -176,9 +176,10 @@ class WebGPUModelRunner:
         # NemotronH attention layers live under .mixer, not .self_attn.
         _archs = getattr(mc, "architectures", None) or []
         _attn_suffix = ".mixer" if "NemotronHForCausalLM" in _archs else ".self_attn"
+        _layer_types = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
 
         if not lp_list:
-            layer_types = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
+            layer_types = _layer_types
             if layer_types and len(layer_types) == mc.num_hidden_layers:
                 default_hd = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
                 default_kv = getattr(mc, "num_key_value_heads", 1)
@@ -194,16 +195,15 @@ class WebGPUModelRunner:
                 return spec
 
         if lp_list and len(lp_list) == mc.num_hidden_layers:
-            _lt = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
             for i, lp in enumerate(lp_list):
-                if _lt and _lt[i] not in KV_ATTN_TYPES:
+                if _layer_types and _layer_types[i] not in KV_ATTN_TYPES:
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     lp["num_kv_heads"], lp["head_dim"])
         else:
             head_size = self.vllm_config.model_config.get_head_size()
             num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
-            _lt2 = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
+            _lt2 = _layer_types
             # Only trust layer_types when it covers every layer; a partial or
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
@@ -248,6 +248,13 @@ class WebGPUModelRunner:
         return None
 
     @staticmethod
+    def _log_softmax(arr: "np.ndarray") -> "np.ndarray":
+        """Numerically stable log-softmax along the last axis. Works for 1-D and N-D inputs."""
+        shift = arr.max(axis=-1, keepdims=True)
+        exp = np.exp(arr - shift)
+        return (arr - shift) - np.log(exp.sum(axis=-1, keepdims=True))
+
+    @staticmethod
     def _compute_request_logprobs(
         logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
     ) -> "tuple[np.ndarray, np.ndarray, int]":
@@ -268,11 +275,8 @@ class WebGPUModelRunner:
             num_logprobs = vocab_size
         k = min(num_logprobs, vocab_size)
 
-        # Numerically stable log-softmax, fully on CPU via numpy.
-        # Avoids the torch dispatcher and any torch.compile / TorchInductor tracing.
         arr = logits_1d.astype(np.float32)
-        _shift = arr.max()
-        log_probs = arr - _shift - np.log(np.sum(np.exp(arr - _shift)))
+        log_probs = WebGPUModelRunner._log_softmax(arr)
 
         # Top-k indices sorted by descending log-prob.
         if k == 0:
@@ -337,21 +341,15 @@ class WebGPUModelRunner:
             num_prompt_logprobs = full_logits.shape[-1]
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
-        # Numerically stable log-softmax over [T-1, vocab], fully on CPU via numpy.
-        # Avoids the torch dispatcher and any torch.compile / TorchInductor tracing.
         arr = full_logits[:num_positions].astype(np.float32)  # [T-1, vocab]
-        _shift = arr.max(axis=-1, keepdims=True)
-        _exp = np.exp(arr - _shift)
-        log_probs = (arr - _shift) - np.log(_exp.sum(axis=-1, keepdims=True))  # [T-1, vocab]
+        log_probs = WebGPUModelRunner._log_softmax(arr)  # [T-1, vocab]
 
         vocab_size = arr.shape[-1]
         row_idx = np.arange(num_positions)[:, None]
 
         # Top-k per position sorted by descending log-prob.
         if k == 0:
-            topk_part = np.empty((num_positions, 0), dtype=np.int64)
-            row_order = np.argsort(log_probs[row_idx, topk_part], axis=-1)[:, ::-1]
-            topk_idx = topk_part[row_idx, row_order]   # [T-1, 0]
+            topk_idx = np.empty((num_positions, 0), dtype=np.int64)
         elif k < vocab_size:
             topk_part = np.argpartition(log_probs, -k, axis=-1)[:, -k:]
             row_order = np.argsort(log_probs[row_idx, topk_part], axis=-1)[:, ::-1]
@@ -606,7 +604,6 @@ class WebGPUModelRunner:
                 pos = state["pos"]
                 blk_ids = list(state.get("block_ids", []))
                 num_logprobs = state.get("num_logprobs")
-                num_prompt_logprobs = state.get("num_prompt_logprobs")
 
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.
@@ -663,7 +660,6 @@ class WebGPUModelRunner:
                 self._req_state[rid] = {
                     "pos": pos + 1, "block_ids": blk_ids,
                     "last_tok": stok, "num_logprobs": num_logprobs,
-                    "num_prompt_logprobs": num_prompt_logprobs,
                     "sampling_params": state.get("sampling_params"),
                 }
                 all_req_ids.append(rid)

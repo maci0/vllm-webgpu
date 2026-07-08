@@ -1270,7 +1270,7 @@ def _dequant_mlx_int4(
     out_rows, packed_cols = weight_u32.shape
     in_cols = packed_cols * 8
     w = weight_u32.astype(np.uint32)
-    shifts = np.arange(8, dtype=np.uint32) * 4
+    shifts = _GPTQ_NIBBLE_SHIFTS
     nibbles = ((w[:, :, np.newaxis] >> shifts) & 0xF).reshape(out_rows, in_cols).astype(np.float32)
     n_groups = in_cols // group_size
     scales_bc = np.repeat(scales_f32.reshape(out_rows, n_groups), group_size, axis=1)

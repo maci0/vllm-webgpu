@@ -93,14 +93,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # and-count inside _mlp_layer on every forward pass.
         if isinstance(_raw_int, list):
             _sizes = _raw_int
-            _mlp_counter = 0
-            self._layer_int_size: list[int] = []
-            for lt in self._layer_types:
-                if lt == "mlp":
-                    self._layer_int_size.append(_sizes[_mlp_counter] if len(_sizes) > 1 else _sizes[0])
-                    _mlp_counter += 1
-                else:
-                    self._layer_int_size.append(0)
+            _mlp_count = sum(1 for t in self._layer_types if t == "mlp")
+            _sizes_iter = iter(_sizes if len(_sizes) > 1 else _sizes * _mlp_count)
+            self._layer_int_size: list[int] = [
+                next(_sizes_iter) if lt == "mlp" else 0 for lt in self._layer_types
+            ]
         else:
             self._layer_int_size = [
                 _raw_int if lt == "mlp" else 0
@@ -545,7 +542,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 self._mamba_layer(layer_idx, normed_x)
             elif lt == "attention":
                 self._attn_layer(
-                    layer_idx, normed_x, pos_buf, slot_map, bt_buf, ctx_len, num_tokens
+                    layer_idx, normed_x, slot_map, bt_buf, ctx_len, num_tokens
                 )
             elif lt == "mlp":
                 self._mlp_layer(layer_idx, normed_x, num_tokens)
@@ -691,7 +688,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self,
         layer_idx: int,
         normed_x: "WebGPUBuffer",
-        pos_buf: "WebGPUBuffer",
         slot_map: "WebGPUBuffer",
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
@@ -699,7 +695,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     ) -> None:
         """Full-attention layer (no per-head norm in NemotronH).
 
-        Pipeline: qkv_proj -> [extract Q/K/V] -> RoPE -> KV cache -> flash_attn -> o_proj.
+        Pipeline: qkv_proj -> [extract Q/K/V] -> KV cache -> flash_attn -> o_proj.
         Result goes to sc["mixer_out"].
         """
         sc    = self._sc

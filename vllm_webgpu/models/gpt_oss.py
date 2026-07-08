@@ -122,8 +122,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
             {"BLOCK_SIZE": self.block_size,
              "NUM_KV_HEADS": self.num_kv_heads,
-             "HEAD_DIM": self.head_dim,
-             "V_IN_OFFSET": 0},
+             "HEAD_DIM": self.head_dim},
             (num_tokens, self.num_kv_heads, 1),
         )
 

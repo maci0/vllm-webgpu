@@ -499,7 +499,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                    [b["k_rope"], k_cache, b["v_buf"], v_cache, slot_map_buf],
                                    {"BLOCK_SIZE": self.block_size,
                                     "NUM_KV_HEADS": self.num_kv_heads,
-                                    "HEAD_DIM": self.head_dim},
+                                    "HEAD_DIM": self.head_dim,
+                                    "V_IN_OFFSET": 0},
                                    (T, self.num_kv_heads, 1))
 
                     # ── Causal attention: all T tokens in one fused dispatch ──────
@@ -806,9 +807,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Fused K+V cache store.
         # When using fused QKV, V lives in qkv_buf starting at element (q_dim+kv_dim).
         _kv_consts: dict = {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                            "HEAD_DIM": self.head_dim}
-        if _v_offset:
-            _kv_consts["V_IN_OFFSET"] = _v_offset
+                            "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset}
         self._dispatch("kv_cache_store_both",
                        [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
                        _kv_consts,

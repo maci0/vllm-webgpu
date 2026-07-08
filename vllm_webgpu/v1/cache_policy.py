@@ -172,7 +172,7 @@ def _get_model_memory_usage(worker: "WebGPUWorker") -> int:
     model = runner.model if runner is not None else None
     if model is None:
         return 0
-    return sum(buf.nbytes for buf in model.weights.values() if hasattr(buf, "nbytes"))
+    return sum(buf.nbytes for buf in model.weights.values() if isinstance(buf, WebGPUBuffer))
 
 
 def determine_available_memory(worker: "WebGPUWorker") -> int:

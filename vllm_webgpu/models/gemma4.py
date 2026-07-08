@@ -1,4 +1,5 @@
 from __future__ import annotations
+import itertools
 import logging
 import math
 from typing import TYPE_CHECKING
@@ -436,7 +437,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             """Dispatch matmul_quant_mr4: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T."""
             uq = self._uq_for_key(w_key)
             if uq == 3:
-                base_key = w_key[:-7]
+                base_key = w_key.removesuffix(".weight")
                 group_k  = self._quant_extra(base_key, uq).get("GROUP_K", 128)
                 sc_b     = self.weights.get(w_key + ".scales", _dummy)
                 self._dispatch("matmul_quant_mr4",
@@ -467,10 +468,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "USE_FREQ_BUF": int(self._use_freq_buf),
         }
 
-        chunks = [
-            list(range(i, min(i + _CHUNK, self.num_layers)))
-            for i in range(0, self.num_layers, _CHUNK)
-        ]
+        chunks = [list(c) for c in itertools.batched(range(self.num_layers), _CHUNK)]
 
         for chunk_idx, chunk_layers in enumerate(chunks):
             with self._batched_dispatch():

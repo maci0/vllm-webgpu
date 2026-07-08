@@ -26,11 +26,11 @@ def _gemv_wg(N: int, uq: int) -> tuple:
     """Workgroup count for matmul_quant dispatch.
 
     SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6,7,8).
-    Row-per-thread: USE_QUANT in (1,2).
+    Row-per-thread: USE_QUANT in (1,2) — currently unreachable; no caller
+    produces those values, but the formula is preserved for future use.
     """
-    if uq in (0, 3, 4, 5, 6, 7, 8):
-        return (N, 1, 1)
-    return ((N + 255) // 256, 1, 1)
+    assert uq in (0, 3, 4, 5, 6, 7, 8), f"unexpected USE_QUANT={uq}"
+    return (N, 1, 1)
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +231,8 @@ class BaseWebGPUModel(ABC):
         fmt = detect_weight_format(path)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
-            actual = str(Path(path) / SAFE_WEIGHTS_NAME) if Path(path).is_dir() else path
+            p = Path(path)
+            actual = str(p / SAFE_WEIGHTS_NAME) if p.is_dir() else path
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys)
         elif fmt == "safetensors_sharded":

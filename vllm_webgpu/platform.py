@@ -5,6 +5,7 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
+import torch
 from vllm.logger import init_logger
 from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
 from vllm.utils.mem_utils import get_cpu_memory
@@ -15,13 +16,6 @@ if TYPE_CHECKING:
     from vllm.v1.attention.selector import AttentionSelectorConfig
 
 logger = init_logger(__name__)
-
-try:
-    from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE_RT
-    _CPU_ATTN_PATH = _ABE_RT.CPU_ATTN.get_path()
-    del _ABE_RT
-except Exception:
-    _CPU_ATTN_PATH = ""
 
 
 @functools.cache
@@ -123,14 +117,18 @@ class WebGPUPlatform(_Platform):
         attn_selector_config: AttentionSelectorConfig,
         num_heads: int | None = None,
     ) -> str:
-        return _CPU_ATTN_PATH
+        try:
+            from vllm.v1.attention.backends.registry import AttentionBackendEnum
+            return AttentionBackendEnum.CPU_ATTN.get_path()
+        except Exception:
+            return "vllm.v1.attention.backends.cpu_attn.CPUAttentionBackend"
 
     @classmethod
     def is_pin_memory_available(cls) -> bool:
         return False
 
     @classmethod
-    def set_device(cls, device) -> None:
+    def set_device(cls, device: torch.device) -> None:
         idx = device.index if device.index is not None else 0
         if idx != 0:
             raise ValueError(f"WebGPU only supports device 0, got {device}")
