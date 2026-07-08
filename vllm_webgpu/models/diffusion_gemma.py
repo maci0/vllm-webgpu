@@ -468,13 +468,15 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._dispatch("add_f32", [shared_residual, moe_out, out],
                                {"N": add_n},
                                ((add_n // 4 + 255) // 256, 1, 1))
-                if abs(layer_scalar - 1.0) > 1e-6:
-                    self._dispatch("f32_scale_inplace", [out],
-                                   {"N": add_n, "SCALE": layer_scalar},
-                                   ((add_n + 255) // 256, 1, 1))
         else:
             # No MoE: out = shared_residual
             out = shared_residual
+            layer_scalar = self._layer_scales[layer_idx]
+
+        if abs(layer_scalar - 1.0) > 1e-6:
+            self._dispatch("f32_scale_inplace", [out],
+                           {"N": add_n, "SCALE": layer_scalar},
+                           ((add_n + 255) // 256, 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
         return out
