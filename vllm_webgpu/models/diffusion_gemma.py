@@ -469,12 +469,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
                                (num_tokens, 1, 1))
                 hidden_states_1 = self._shared_res_buf
-                # Track whether the no-suffix fallback was used: if so the else-branch
-                # below must not norm again with the same key.
-                _pfn1_used_fallback = self.weights.get(_pfn1_key_1) is None
             else:
                 hidden_states_1 = sc["ffn_out"]
-                _pfn1_used_fallback = False
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe and f"{p}.router.proj.weight" in self.weights:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 import logging
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -65,7 +64,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
             "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": math.log(self.rope_theta),
+            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
@@ -203,7 +202,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
-        ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len else int(positions[-1]) + 1
+        ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len is not None else int(positions[-1]) + 1
         return (
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
@@ -418,11 +417,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # which dispatches matmul_quant with the correct USE_QUANT per key.
         # Check ALL representative weight keys — attn and FFN — to guard against mixed-quant
         # models where q_proj is f16 but FFN weights are in an unsupported format.
+        _last = self.num_layers - 1
         _rep_keys = [
             "model.layers.0.self_attn.q_proj.weight",
             "model.layers.0.mlp.gate_proj.weight",
             "model.layers.0.mlp.up_proj.weight",
             "model.layers.0.mlp.down_proj.weight",
+            f"model.layers.{_last}.self_attn.q_proj.weight",
+            f"model.layers.{_last}.mlp.gate_proj.weight",
         ]
         if any(self._uq_for_key(k) not in (0, 3) for k in _rep_keys if k in self.weights):
             return self._prefill_sequential_fallback(

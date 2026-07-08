@@ -96,7 +96,8 @@ def allocate_kv_pool_per_layer(
 
 def _get_model_memory_usage(worker: "WebGPUWorker") -> int:
     """Sum of all weight buffer sizes in bytes."""
-    model = getattr(getattr(worker, "model_runner", None), "model", None)
+    runner = worker.model_runner
+    model = runner.model if runner is not None else None
     if model is None:
         return 0
     return sum(buf.nbytes for buf in model.weights.values() if hasattr(buf, "nbytes"))
@@ -112,7 +113,6 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     with a 4 GB maxBufferSize, subtracting from maxBufferSize yields negative available
     memory and clamps to 0 KV blocks.
 
-    Falls back to a model-ratio heuristic when get_cpu_memory is unavailable.
     """
     config = worker.webgpu_config
     model_mem = _get_model_memory_usage(worker)

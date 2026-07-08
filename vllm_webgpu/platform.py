@@ -4,6 +4,7 @@ import functools
 from typing import TYPE_CHECKING
 
 from vllm.logger import init_logger
+from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
 from vllm.utils.mem_utils import get_cpu_memory
 
 if TYPE_CHECKING:
@@ -33,8 +34,6 @@ def _get_wgpu_adapter():
     except Exception:
         return None
 
-
-from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
 
 
 class WebGPUPlatform(_Platform):

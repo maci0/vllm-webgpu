@@ -9,6 +9,9 @@ _DTYPE_MAP = {
     np.uint32: "u32",
 }
 
+# Byte size for each dtype string. Kept in sync with _DTYPE_MAP.
+_ELEM_BYTES: dict[str, int] = {"f16": 2, "f32": 4, "u8": 1, "i32": 4, "u32": 4}
+
 
 def _usage_storage_rw():
     import wgpu

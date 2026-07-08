@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm_webgpu.models.base import _gemv_wg, _H_NAMES
-from vllm_webgpu.models.llama import LlamaWebGPUModel
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 
 if TYPE_CHECKING:
@@ -769,7 +768,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                    (n_heads, num_tokens, 1))
                 else:
                     self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                   {**_rope_base, "NUM_HEADS": n_heads},
+                                   {**self._rope_consts, "NUM_HEADS": n_heads},
                                    (num_tokens, n_heads, 1))
 
         # Fused K+V cache store. V always lives in its own sc["v_buf"] (no offset needed).

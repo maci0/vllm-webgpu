@@ -185,7 +185,8 @@ def load_safetensors_weights_sharded(
         shard_path = str(Path(model_dir) / shard)
         logger.info("Loading shard %s", shard)
         shard_weights = load_safetensors_weights(
-            shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys)
+            shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys,
+            skip_remap=True)
 
         # Commit all pending write_buffer operations by submitting a dummy command encoder.
         # queue.write_buffer() is only committed before the NEXT queue.submit(), not by
@@ -402,6 +403,7 @@ def load_safetensors_weights(
     wgpu_device,
     ct_meta: dict | None = None,
     f32_keys: "frozenset[str] | None" = None,
+    skip_remap: bool = False,
 ) -> dict:
     """Load safetensors weights and upload to GPU as F16.
 
@@ -1200,11 +1202,14 @@ def load_safetensors_weights(
         # Multimodal remapping for single-file models (same patterns as sharded loader).
         # Gemma4 unified: model.language_model.X → model.X
         # Gemma3 multimodal (rare single-file): language_model.X → X
-        keys = list(weights.keys())
-        if any(k.startswith("model.language_model.") or k.startswith("language_model.") for k in keys):
-            n_remapped = _apply_multimodal_remap(weights)
-            if n_remapped:
-                logger.info("Remapped %d language_model.* keys", n_remapped)
+        # Skipped when called from load_safetensors_weights_sharded, which applies
+        # the combined remap once after all shards are merged.
+        if not skip_remap:
+            keys = list(weights.keys())
+            if any(k.startswith("model.language_model.") or k.startswith("language_model.") for k in keys):
+                n_remapped = _apply_multimodal_remap(weights)
+                if n_remapped:
+                    logger.info("Remapped %d language_model.* keys", n_remapped)
 
         # Commit all pending write_buffer calls before returning.
         wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
@@ -1284,36 +1289,43 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
             if base + ".scales" in all_keys and base + ".biases" in all_keys:
                 quant_bases.append(base)
 
+    # Group quantized triplets by the shard that holds the .weight key.
+    # Opening a shard once per base avoids re-opening the same file for .scales and .biases.
+    from collections import defaultdict as _defaultdict
+    shard_to_quant_bases: dict[str, list[str]] = _defaultdict(list)
     for base in quant_bases:
-        wk = base + ".weight"
-        sk = base + ".scales"
-        bk = base + ".biases"
-        processed.update({wk, sk, bk})
+        shard_to_quant_bases[key_to_shard[base + ".weight"]].append(base)
 
-        # Open each required shard on demand.
-        def _load_key(k: str):
-            with _sft.safe_open(key_to_shard[k], framework="pt") as sf:
-                return sf.get_tensor(k)
+    for shard_path, bases in shard_to_quant_bases.items():
+        with _sft.safe_open(shard_path, framework="pt") as sf_w:
+            for base in bases:
+                wk = base + ".weight"
+                sk = base + ".scales"
+                bk = base + ".biases"
+                processed.update({wk, sk, bk})
 
-        t = _load_key(wk)
-        if t.dtype != _torch.uint32:
-            # Not actually an int4 weight; upload as plain float.
-            processed.discard(sk)
-            processed.discard(bk)
-            arr = t.to(_torch.float16).numpy() if t.dtype == _torch.float16 else np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
-            local_key = wk.removeprefix("language_model.")
-            weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
-            continue
+                t = sf_w.get_tensor(wk)
+                if t.dtype != _torch.uint32:
+                    # Not actually an int4 weight; upload as plain float.
+                    processed.discard(sk)
+                    processed.discard(bk)
+                    arr = t.to(_torch.float16).numpy() if t.dtype == _torch.float16 else np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
+                    local_key = wk.removeprefix("language_model.")
+                    weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
+                    continue
 
-        s_t = _load_key(sk)
-        b_t = _load_key(bk)
-        w_u32 = t.numpy()
-        scales_f32 = s_t.to(_torch.float32).numpy()
-        biases_f32 = b_t.to(_torch.float32).numpy()
-        dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
-        arr = np.clip(dequant, -_F16_MAX, _F16_MAX).astype(np.float16)
-        local_key = base.removeprefix("language_model.") + ".weight"
-        weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
+                # Load scales and biases from their respective shards (may differ from weight shard).
+                with _sft.safe_open(key_to_shard[sk], framework="pt") as sf_s:
+                    s_t = sf_s.get_tensor(sk)
+                with _sft.safe_open(key_to_shard[bk], framework="pt") as sf_b:
+                    b_t = sf_b.get_tensor(bk)
+                w_u32 = t.numpy()
+                scales_f32 = s_t.to(_torch.float32).numpy()
+                biases_f32 = b_t.to(_torch.float32).numpy()
+                dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
+                arr = np.clip(dequant, -_F16_MAX, _F16_MAX).astype(np.float16)
+                local_key = base.removeprefix("language_model.") + ".weight"
+                weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
 
     # Stream non-quantized tensors shard-by-shard.
     shard_files = sorted(set(weight_map.values()))

@@ -7,6 +7,7 @@ import numpy as np
 
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _H_NAMES
+from vllm_webgpu.webgpu.buffer import _ELEM_BYTES
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -315,9 +316,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             qmeta = self.weights.get("__quant_meta__")
             if qmeta is not None:
                 q_base = q_key.removesuffix(".weight")
+                k_base = k_key.removesuffix(".weight")
+                v_base = v_key.removesuffix(".weight")
                 qkv_base = f"{p}.qkv_proj"
                 if q_base in qmeta:
                     qmeta[qkv_base] = dict(qmeta[q_base])
+                # Remove stale entries for k_proj and v_proj; those weight
+                # tensors no longer exist after packing into qkv_proj.
+                qmeta.pop(k_base, None)
+                qmeta.pop(v_base, None)
+                qmeta.pop(q_base, None)
 
             # Also pack per-weight scales (GPU quant formats store them
             # alongside the weight at w_key + ".scales").
@@ -377,7 +385,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             cw_key = f"{p}.conv1d.weight"
             if cw_key in self.weights:
                 expected = self.conv_dim * self.conv_kernel
-                _ELEM_BYTES = {"f16": 2, "f32": 4, "u8": 1, "i32": 4}
                 elem_size = _ELEM_BYTES.get(getattr(self.weights[cw_key], "dtype", "f16"), 2)
                 actual = self.weights[cw_key].nbytes // elem_size
                 if actual != expected:
