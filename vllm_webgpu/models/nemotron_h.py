@@ -89,9 +89,24 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         self.block_size: int = get_config().block_size
 
-        # Parse hybrid layer pattern
-        pattern = getattr(model_config, "hybrid_override_pattern", "")
-        self._layer_types: list[str] = self._parse_hybrid_pattern(pattern)
+        # Derive per-layer type list from the config.
+        # HF NemotronHConfig stores the list in layers_block_type (accessible via
+        # attribute_map as layer_types); hybrid_override_pattern is a property that
+        # converts that list to a string.  Read the list directly to avoid a
+        # round-trip.  Fall back to the pattern string for vLLM's own NemotronHConfig
+        # which stores hybrid_override_pattern as a plain str attribute.
+        _block_list = (
+            list(getattr(model_config, "layers_block_type", None) or
+                 getattr(model_config, "layer_types", None) or [])
+        )
+        if _block_list:
+            _map = {"M": "mamba", "*": "attention", "-": "mlp", "E": "moe",
+                    "mamba": "mamba", "attention": "attention",
+                    "mlp": "mlp", "moe": "moe"}
+            self._layer_types: list[str] = [_map.get(t, "unknown") for t in _block_list]
+        else:
+            pattern = getattr(model_config, "hybrid_override_pattern", "")
+            self._layer_types = self._parse_hybrid_pattern(pattern)
         if len(self._layer_types) != self.num_layers:
             raise ValueError(
                 f"hybrid_override_pattern length {len(self._layer_types)} "

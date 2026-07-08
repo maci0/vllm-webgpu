@@ -1,4 +1,5 @@
 from __future__ import annotations
+import itertools
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -6,11 +7,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 try:
-    from vllm.config import VllmConfig
     from vllm.v1.kv_cache_interface import FullAttentionSpec, KVQuantMode
     from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors
 except ImportError:
-    VllmConfig = Any  # type: ignore[assignment,misc]
     FullAttentionSpec = None  # type: ignore[assignment,misc]
     KVQuantMode = None  # type: ignore[assignment,misc]
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
@@ -353,16 +352,8 @@ class WebGPUModelRunner:
 
     @staticmethod
     def _flat_block_ids(ids) -> list[int]:
-        """Recursively flatten block IDs from vLLM's nested tuple/list/ndarray format."""
-        if ids is None or (hasattr(ids, "__len__") and len(ids) == 0):
-            return []
-        result = []
-        for x in ids:
-            if isinstance(x, (list, tuple, np.ndarray)):
-                result.extend(WebGPUModelRunner._flat_block_ids(x))
-            else:
-                result.append(int(x))
-        return result
+        """Flatten block IDs from vLLM's block_ids: tuple[list[int], ...] format."""
+        return list(itertools.chain.from_iterable(ids)) if ids else []
 
     def _make_model_output(
         self,

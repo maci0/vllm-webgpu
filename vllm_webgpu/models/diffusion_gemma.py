@@ -50,7 +50,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         self.moe_intermediate_size: int = getattr(model_config, "moe_intermediate_size",
                                                    self.intermediate_size)
         self.is_moe: bool = self.num_experts > 0
-        self.canvas_length: int = getattr(model_config, "canvas_length", 256)
 
         if self.is_moe:
             logger.info("DiffusionGemma MoE: %d experts, top-%d, moe_inter=%d",
@@ -73,6 +72,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     def _pk(self, layer_idx: int) -> str:
         return f"model.decoder.layers.{layer_idx}"
+
+    def _layer_key_prefix(self, layer_idx: int) -> str:
+        return self._pk(layer_idx)
 
     def _postprocess_weights(self) -> None:
         """Tile per-head norm weights using the decoder prefix (model.decoder.layers.N).
@@ -111,15 +113,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
-        # Cache layer_scalar values at load time — avoid per-layer GPU→CPU readbacks.
-        self._layer_scales: list[float] = []
-        for i in range(self.num_layers):
-            p = self._pk(i)
-            ls_buf = self.weights.get(f"{p}.layer_scalar")
-            if ls_buf is not None:
-                self._layer_scales.append(float(ls_buf.to_numpy().view(np.float16).ravel()[0]))
-            else:
-                self._layer_scales.append(1.0)
 
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""

@@ -100,9 +100,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     model.load_weights(model_dir)
     print(f"  Loaded {len(model.weights)} tensors in {time.perf_counter() - t0:.1f}s")
 
-    if hasattr(model, "reset_recurrent_states"):
-        model.reset_recurrent_states()
-
     # KV cache
     import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer

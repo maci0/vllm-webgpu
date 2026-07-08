@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import time
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
@@ -66,7 +66,7 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
 
 
 
-class BaseWebGPUModel:
+class BaseWebGPUModel(ABC):
     # Declare whether forward() can return a (1, 1) int32 token ID instead of
     # full (1, vocab) float32 logits. Subclasses that implement logit_readback()
     # and GPU argmax set this to True so the runner can rely on a stable contract
@@ -241,7 +241,7 @@ class BaseWebGPUModel:
         self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
         val = int(np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32)[0])
         self._gpu_sample_staging.unmap()
-        return int(val)
+        return val
 
     def _scales_buf(self, w_key: str, uq: int, fallback: "object") -> "object":
         """Return the GPU scales buffer for any quant format.
@@ -401,7 +401,7 @@ class BaseWebGPUModel:
 
             # Prefill warmup: compiles matmul_quant_mr4, flash_attn_prefill, etc.
             T = 4
-            bt = np.zeros(max(len(self.kv_pool[0][0].shape) if self.kv_pool else 1, T), dtype=np.uint32)
+            bt = np.zeros(T, dtype=np.uint32)
             for i in range(T):
                 bt[i // 16] = i // 16
             class _Pre:

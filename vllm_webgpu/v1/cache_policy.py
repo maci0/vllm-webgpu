@@ -3,6 +3,7 @@ import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import _OVERHEAD_BYTES
 
 if TYPE_CHECKING:
@@ -34,8 +35,6 @@ class WebGPUCachePlanner:
         Available memory for KV cache = GPU memory limit - model weights - overhead.
         When `is_auto_memory` is False, applies `memory_fraction` to the device total instead.
         """
-        from vllm_webgpu.config import get_config
-
         config = get_config()
         limits = self._worker.wgpu_device.limits
         total = limits.get("max-buffer-size", 4 * 1024 ** 3)  # 4GB default cap; wgpu uses hyphenated keys
@@ -50,6 +49,14 @@ class WebGPUCachePlanner:
             return max(available, 0)
         return max(int(total * config.memory_fraction) - model_mem - _OVERHEAD_BYTES, 0)
 
+    @staticmethod
+    def _alloc_rw_buffer(dev, size: int):
+        """Allocate a STORAGE|COPY_SRC|COPY_DST WebGPU buffer of `size` bytes."""
+        import wgpu as wgpu_lib
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        return WebGPUBuffer.empty(dev, size, usage=rw)
+
     def allocate_kv_pool(
         self,
         num_blocks: int,
@@ -59,19 +66,15 @@ class WebGPUCachePlanner:
         head_dim: int,
     ) -> None:
         """Pre-allocate all K/V cache buffers for all layers at startup."""
-        import wgpu as wgpu_lib
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self._worker.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
         bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2  # f16
 
         model = self._worker.model_runner.model
         model.kv_pool.clear()
 
         for _ in range(num_layers):
-            k_buf = WebGPUBuffer.empty(dev, bytes_per_layer, usage=rw)
-            v_buf = WebGPUBuffer.empty(dev, bytes_per_layer, usage=rw)
+            k_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
+            v_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
             model.kv_pool.append((k_buf, v_buf))
 
         total_mb = (bytes_per_layer * num_layers * 2) // 2**20
@@ -94,11 +97,7 @@ class WebGPUCachePlanner:
         Full-attention layers get real KV cache buffers.
         Linear-attention layers get 16-byte placeholder buffers (never accessed by GDN).
         """
-        import wgpu as wgpu_lib
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self._worker.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
         bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2
 
         model = self._worker.model_runner.model
@@ -107,12 +106,12 @@ class WebGPUCachePlanner:
         full_attn_count = 0
         for i in range(num_layers):
             if layer_types[i] == "full_attention":
-                k_buf = WebGPUBuffer.empty(dev, bytes_per_layer, usage=rw)
-                v_buf = WebGPUBuffer.empty(dev, bytes_per_layer, usage=rw)
+                k_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
+                v_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
                 full_attn_count += 1
             else:
-                k_buf = WebGPUBuffer.empty(dev, 16, usage=rw)
-                v_buf = WebGPUBuffer.empty(dev, 16, usage=rw)
+                k_buf = self._alloc_rw_buffer(dev, 16)
+                v_buf = self._alloc_rw_buffer(dev, 16)
             model.kv_pool.append((k_buf, v_buf))
 
         total_mb = (bytes_per_layer * full_attn_count * 2) // 2**20

@@ -240,8 +240,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             ctx_len = num_tokens
 
         vocab = self.vocab_size
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        _rms_base = self._rms_consts
         sc = self._sc
 
         # Batch prefill: T>1 tokens use matmul_quant_mr4 (all T rows at once) plus

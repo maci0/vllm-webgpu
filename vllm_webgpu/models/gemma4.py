@@ -213,20 +213,30 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     logger.warning("Unexpected q/k_norm shape for %s: got %d, expected %d or %d",
                                    norm_key, len(raw), expected_len, hd)
 
-    def load_weights(self, path: str) -> None:
-        super().load_weights(path)
-        self._postprocess_weights()
-        # Cache layer_scalar values on CPU at load time — avoids 48 GPU→CPU
-        # readbacks per token (each to_numpy() is a blocking ~100µs sync).
+    def _layer_key_prefix(self, layer_idx: int) -> str:
+        """Return the weight key prefix for layer i. Subclasses may override."""
+        return f"model.layers.{layer_idx}"
+
+    def _load_layer_scales(self) -> None:
+        """Cache layer_scalar values on CPU at load time.
+
+        Avoids 48 GPU→CPU readbacks per token (each to_numpy() is a blocking ~100µs sync).
+        Subclasses that use a different key prefix must override this method.
+        """
         self._layer_scales: list[float] = []
         for i in range(self.num_layers):
-            p = f"model.layers.{i}"
+            p = self._layer_key_prefix(i)
             ls_buf = (self.weights.get(f"{p}.self_attn.layer_scale") or
                       self.weights.get(f"{p}.layer_scalar"))
             if ls_buf is not None:
                 self._layer_scales.append(float(ls_buf.to_numpy().view(np.float16)[0]))
             else:
                 self._layer_scales.append(1.0)
+
+    def load_weights(self, path: str) -> None:
+        super().load_weights(path)
+        self._postprocess_weights()
+        self._load_layer_scales()
         logger.info("Loaded %d weight tensors", len(self.weights))
 
     def forward(

@@ -556,8 +556,6 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                          shape=tuple(arr.shape), dtype="f16")
 
-        _upload = _upload_f16
-
         weights: dict = {}
 
         # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
@@ -716,7 +714,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                                 qw, sc,
                                 qz if qz is not None else np.zeros((sc.shape[0], qw.shape[1] // 8), dtype=np.int32),
                                 g_idx)
-                        _upload(w_f16, f"{base}.weight", weights)
+                        _upload_f16(w_f16, f"{base}.weight", weights)
                 except Exception as exc:
                     logger.warning("Failed to process %s: %s", base, exc)
 
@@ -1095,12 +1093,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                     qw = _load_raw(f"{base}.weight")          # [N, K//8] I32
                     sc_raw = _load_raw(f"{base}.weight_scale") # [N, G] F16/BF16/F32
 
-                    if sc_raw.dtype == np.float32:
-                        sc = sc_raw.astype(np.float16)
-                    elif hasattr(sc_raw, "view") and sc_raw.dtype == np.uint16:
-                        sc = ((sc_raw.astype(np.uint32) << 16).view(np.float32)).astype(np.float16)
-                    else:
-                        sc = sc_raw.astype(np.float16)
+                    sc = sc_raw.astype(np.float16)
 
                     # Transpose scale [N, G] → [G, N] to match shader expectation.
                     if sc.ndim == 2:

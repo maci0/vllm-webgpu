@@ -41,6 +41,7 @@ except ImportError:
     WebGPUDevice = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
+    from vllm.tasks import SupportedTask
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ class WebGPUWorker(WorkerBase):
         self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
-    def compile_or_warm_up_model(self) -> Any:
+    def compile_or_warm_up_model(self) -> CompilationTimes:
         if hasattr(self, "model_config"):
             set_random_seed(self.model_config.seed)
         start = time.perf_counter()
@@ -135,7 +136,7 @@ class WebGPUWorker(WorkerBase):
     def get_cache_block_size_bytes(self) -> int:
         return self.model_runner.get_cache_block_size_bytes()
 
-    def get_supported_tasks(self) -> tuple[str, ...]:
+    def get_supported_tasks(self) -> "tuple[SupportedTask, ...]":
         return self.model_runner.get_supported_tasks()
 
     def add_lora(self, lora_request: Any) -> bool:
@@ -148,13 +149,13 @@ class WebGPUWorker(WorkerBase):
     def pin_lora(self, lora_id: int) -> bool:
         return False
 
-    def list_loras(self) -> set:
+    def list_loras(self) -> set[int]:
         return set()
 
     def sleep(self, level: int = 1) -> None:
         logger.warning("Sleep mode not supported on WebGPU")
 
-    def wake_up(self, tags: list | None = None) -> None:
+    def wake_up(self, tags: list[str] | None = None) -> None:
         logger.warning("Wake mode not supported on WebGPU")
 
     def check_health(self) -> None:

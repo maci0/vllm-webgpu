@@ -234,7 +234,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         residual = sc[h_names[(self._hstate + 1) % 3]]
         out = sc[h_names[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
-        gelu_n = num_tokens * inter
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
@@ -366,6 +365,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 self._moe_ffn_layer(sc["ffn_normed"], layer_idx)
                 ffn_out = self._moe_sc["expert_out"]
             else:
+                gelu_n = num_tokens * inter
                 gw_k = f"{p}.mlp.gate_proj.weight"
                 uw_k = f"{p}.mlp.up_proj.weight"
                 uq_g = self._uq_for_key(gw_k)
