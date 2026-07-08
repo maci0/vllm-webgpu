@@ -125,6 +125,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         self._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
 
+        _vpt = min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0
+        self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
+
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Pre-allocate scratch buffers at maximum layer dimensions."""
         import wgpu as wgpu_lib
@@ -288,8 +291,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         logits_buf = pre["logits"]
         capped_buf = pre["capped"]
 
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
+        _rms_base = self._rms_consts
         sc = self._sc
 
         with self._batched_dispatch():
@@ -383,8 +385,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         out = sc[h_names[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
         gelu_n = num_tokens * inter
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_consts = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
+        _rms_consts = self._rms_consts
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
