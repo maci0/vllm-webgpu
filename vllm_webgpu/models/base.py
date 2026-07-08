@@ -48,9 +48,10 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
 
     # Use vLLM's correction-range helper to get the transition band in dimension-index
     # space, matching YaRNScalingRotaryEmbedding._compute_inv_freq exactly.
+    extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
     low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx)
     ramp_mask = yarn_linear_ramp_mask(low, high, head_dim // 2, torch.float64).numpy()
-    inv_freq_mask = 1.0 - ramp_mask
+    inv_freq_mask = (1.0 - ramp_mask) * extrapolation_factor
     scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
     # YaRN attention scale: mscale = (0.1 * ln(factor) + 1.0) * attn_factor.
