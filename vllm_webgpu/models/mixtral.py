@@ -289,6 +289,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 "ROPE_BASE": float(self.rope_theta),
                 "LN_ROPE_BASE": ln_rope,
                 "USE_FREQ_BUF": int(self._use_freq_buf),
+                "ATTN_SCALE": self._yarn_mscale,
             }
 
             if _use_fused_qkv and q_norm_w is not None:
