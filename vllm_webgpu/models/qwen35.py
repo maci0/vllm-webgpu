@@ -139,7 +139,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # _batched_dispatch encoder management). Set profiling=False before forward().
 
     def _is_full_attn(self, i: int) -> bool:
-        if self._layer_types is not None:
+        if self._layer_types is not None and i < len(self._layer_types):
             return self._layer_types[i] == "full_attention"
         return (i + 1) % _FULL_ATTN_INTERVAL == 0
 
