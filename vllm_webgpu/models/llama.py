@@ -699,6 +699,142 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
 
+    def _attn_block(
+        self,
+        layer_idx: int,
+        normed_x: "WebGPUBuffer",
+        pos_buf: "WebGPUBuffer",
+        slot_map: "WebGPUBuffer",
+        bt_buf: "WebGPUBuffer",
+        ctx_len: int,
+        num_tokens: int,
+    ) -> "WebGPUBuffer":
+        """QKV projections, RoPE, KV-cache store, attention decode, and O projection.
+
+        Returns sc["o_proj_out"]. Override in subclasses to modify the attention
+        computation (e.g. inject bias vectors or change context length per layer).
+        Must be called inside an active _batched_dispatch context.
+        """
+        sc = self._sc
+        hidden = self.hidden_size
+        p = f"model.layers.{layer_idx}"
+        q_dim = self.num_q_heads * self.head_dim
+        kv_dim = self.num_kv_heads * self.head_dim
+        ln_rope = self._ln_rope_theta
+
+        k_cache, v_cache = self.kv_pool[layer_idx]
+
+        # QKV projections: fused for f16 with per-head norm weights; separate otherwise.
+        q_wk = f"{p}.self_attn.q_proj.weight"
+        k_wk = f"{p}.self_attn.k_proj.weight"
+        v_wk = f"{p}.self_attn.v_proj.weight"
+        uq_q, uq_k, uq_v = self._uq_for_key(q_wk), self._uq_for_key(k_wk), self._uq_for_key(v_wk)
+        _has_qnorm = self.weights.get(f"{p}.self_attn.q_norm.weight") is not None
+
+        _use_fused_qkv = uq_q == 0 and uq_k == 0 and uq_v == 0 and _has_qnorm
+
+        if _use_fused_qkv:
+            # All f16 + per-head norms: single fused_qkv -> qkv_buf[Q|K|V].
+            self._dispatch("fused_qkv",
+                           [normed_x, self.weights[q_wk], self.weights[k_wk], self.weights[v_wk],
+                            sc["qkv_buf"]],
+                           {"K": hidden, "Q_DIM": q_dim, "KV_DIM": kv_dim},
+                           (q_dim + 2 * kv_dim, 1, 1))
+            _q_src = sc["qkv_buf"]
+            _k_src = sc["qkv_buf"]
+            _v_src = sc["qkv_buf"]
+            _v_offset = q_dim + kv_dim  # f16 elements before V section
+        else:
+            for out_buf, proj, dim, uq in [(sc["q_buf"], "q_proj", q_dim, uq_q),
+                                           (sc["k_buf"], "k_proj", kv_dim, uq_k),
+                                           (sc["v_buf"], "v_proj", kv_dim, uq_v)]:
+                w_key = f"{p}.self_attn.{proj}.weight"
+                qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
+                self._dispatch("matmul_quant",
+                               [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, normed_x), out_buf],
+                               {"K": hidden, "N": dim, "USE_QUANT": uq,
+                                **self._split_k_extra(uq), **qi},
+                               _gemv_wg(dim, uq))
+            _q_src = sc["q_buf"]
+            _k_src = sc["k_buf"]
+            _v_src = sc["v_buf"]
+            _v_offset = 0
+
+        # Per-head norm + RoPE for Q and K.
+        # When using fused QKV (f16 + per-head norms): single fused_qk_norm_rope dispatch.
+        # Otherwise: two separate fused_per_head_norm_rope (or plain rope) calls.
+        q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
+        k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
+        _freq_buf = self._rope_freq_buf
+        _rope_consts = {"HEAD_DIM": self.head_dim,
+                        "ROPE_BASE": float(self.rope_theta),
+                        "LN_ROPE_BASE": ln_rope,
+                        "USE_FREQ_BUF": int(self._use_freq_buf),
+                        "ATTN_SCALE": self._yarn_mscale}
+
+        if _use_fused_qkv and k_norm_w is not None:
+            # fused_qk_norm_rope: Q+K norm+rope in one dispatch.
+            # Binding 6 (k_input): unused here (K_SEPARATE=0), bind qkv_buf as dummy.
+            # Binding 7 (inv_freq_buf): always provided (wgpu requires all declared bindings).
+            self._dispatch("fused_qk_norm_rope",
+                           [sc["qkv_buf"], q_norm_w, k_norm_w, pos_buf,
+                            sc["q_rope"], sc["k_rope"], sc["qkv_buf"], _freq_buf],
+                           {**_rope_consts,
+                            "NUM_Q_HEADS": self.num_q_heads,
+                            "NUM_KV_HEADS": self.num_kv_heads,
+                            "HAS_WEIGHT": 1,
+                            "INPUT_OFFSET_K": q_dim},
+                           (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
+        else:
+            for src, dst, n_heads, norm_w, in_off in [
+                (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
+                (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, 0),
+            ]:
+                if norm_w is not None:
+                    # Binding 4 (inv_freq_buf): always provided.
+                    self._dispatch("fused_per_head_norm_rope",
+                                   [src, norm_w, pos_buf, dst, _freq_buf],
+                                   {**_rope_consts, "NUM_HEADS": n_heads,
+                                    "HAS_WEIGHT": 1, "INPUT_OFFSET": in_off},
+                                   (n_heads, num_tokens, 1))
+                else:
+                    # Binding 3 (inv_freq_buf): always provided.
+                    self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
+                                   {**_rope_consts, "NUM_HEADS": n_heads},
+                                   (num_tokens, n_heads, 1))
+
+        # Fused K+V cache store.
+        # When using fused QKV, V lives in qkv_buf starting at element (q_dim+kv_dim).
+        self._dispatch("kv_cache_store_both",
+                       [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
+                       {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
+                        "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
+                       (num_tokens, self.num_kv_heads, 1))
+
+        # Always use flash_attn_decode for single-token decode.
+        # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
+        # loops internally and has no dispatch dimension limit.
+        self._dispatch("flash_attn_decode",
+                       [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+                       {"BLOCK_SIZE": self.block_size,
+                        "NUM_Q_HEADS": self.num_q_heads,
+                        "NUM_KV_HEADS": self.num_kv_heads,
+                        "HEAD_DIM": self.head_dim,
+                        "CTX_LEN": self._effective_ctx_len(ctx_len)},
+                       (self.num_q_heads, 1, 1))
+
+        # Output projection.
+        w_key = f"{p}.self_attn.o_proj.weight"
+        uq = self._uq_for_key(w_key)
+        qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
+        self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
+                                        self._scales_buf(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
+                       {"K": q_dim, "N": hidden, "USE_QUANT": uq,
+                        **self._split_k_extra(uq), **qi},
+                       _gemv_wg(hidden, uq))
+
+        return sc["o_proj_out"]
+
     def _transformer_layer(
         self,
         layer_idx: int,
@@ -722,134 +858,21 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         sc = self._sc
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}"
-        q_dim = self.num_q_heads * self.head_dim
-        kv_dim = self.num_kv_heads * self.head_dim
-        inter = self.intermediate_size
-        ln_rope = self._ln_rope_theta
         _rms_c = self._rms_consts
 
         residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
         out = sc[_H_NAMES[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
 
-        k_cache, v_cache = self.kv_pool[layer_idx]
-
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # normed_x is already the pre-normed input (no rms_norm dispatch here).
-
-            # QKV projections: fused for f16 with per-head norm weights; separate otherwise.
-            q_wk = f"{p}.self_attn.q_proj.weight"
-            k_wk = f"{p}.self_attn.k_proj.weight"
-            v_wk = f"{p}.self_attn.v_proj.weight"
-            uq_q, uq_k, uq_v = self._uq_for_key(q_wk), self._uq_for_key(k_wk), self._uq_for_key(v_wk)
-            _has_qnorm = self.weights.get(f"{p}.self_attn.q_norm.weight") is not None
-
-            _use_fused_qkv = uq_q == 0 and uq_k == 0 and uq_v == 0 and _has_qnorm
-
-            if _use_fused_qkv:
-                # All f16 + per-head norms: single fused_qkv -> qkv_buf[Q|K|V].
-                self._dispatch("fused_qkv",
-                               [normed_x, self.weights[q_wk], self.weights[k_wk], self.weights[v_wk],
-                                sc["qkv_buf"]],
-                               {"K": hidden, "Q_DIM": q_dim, "KV_DIM": kv_dim},
-                               (q_dim + 2 * kv_dim, 1, 1))
-                _q_src = sc["qkv_buf"]
-                _k_src = sc["qkv_buf"]
-                _v_src = sc["qkv_buf"]
-                _v_offset = q_dim + kv_dim  # f16 elements before V section
-            else:
-                for out_buf, proj, dim, uq in [(sc["q_buf"], "q_proj", q_dim, uq_q),
-                                               (sc["k_buf"], "k_proj", kv_dim, uq_k),
-                                               (sc["v_buf"], "v_proj", kv_dim, uq_v)]:
-                    w_key = f"{p}.self_attn.{proj}.weight"
-                    qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
-                    self._dispatch("matmul_quant",
-                                   [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, normed_x), out_buf],
-                                   {"K": hidden, "N": dim, "USE_QUANT": uq,
-                                    **self._split_k_extra(uq), **qi},
-                                   _gemv_wg(dim, uq))
-                _q_src = sc["q_buf"]
-                _k_src = sc["k_buf"]
-                _v_src = sc["v_buf"]
-                _v_offset = 0
-
-            # Per-head norm + RoPE for Q and K.
-            # When using fused QKV (f16 + per-head norms): single fused_qk_norm_rope dispatch.
-            # Otherwise: two separate fused_per_head_norm_rope (or plain rope) calls.
-            q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
-            k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
-            _freq_buf = self._rope_freq_buf
-            _rope_consts = {"HEAD_DIM": self.head_dim,
-                            "ROPE_BASE": float(self.rope_theta),
-                            "LN_ROPE_BASE": ln_rope,
-                            "USE_FREQ_BUF": int(self._use_freq_buf),
-                            "ATTN_SCALE": self._yarn_mscale}
-
-            if _use_fused_qkv and k_norm_w is not None:
-                # fused_qk_norm_rope: Q+K norm+rope in one dispatch.
-                # Binding 6 (k_input): unused here (K_SEPARATE=0), bind qkv_buf as dummy.
-                # Binding 7 (inv_freq_buf): always provided (wgpu requires all declared bindings).
-                self._dispatch("fused_qk_norm_rope",
-                               [sc["qkv_buf"], q_norm_w, k_norm_w, pos_buf,
-                                sc["q_rope"], sc["k_rope"], sc["qkv_buf"], _freq_buf],
-                               {**_rope_consts,
-                                "NUM_Q_HEADS": self.num_q_heads,
-                                "NUM_KV_HEADS": self.num_kv_heads,
-                                "HAS_WEIGHT": 1,
-                                "INPUT_OFFSET_K": q_dim},
-                               (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
-            else:
-                for src, dst, n_heads, norm_w, in_off in [
-                    (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
-                    (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, 0),
-                ]:
-                    if norm_w is not None:
-                        # Binding 4 (inv_freq_buf): always provided.
-                        self._dispatch("fused_per_head_norm_rope",
-                                       [src, norm_w, pos_buf, dst, _freq_buf],
-                                       {**_rope_consts, "NUM_HEADS": n_heads,
-                                        "HAS_WEIGHT": 1, "INPUT_OFFSET": in_off},
-                                       (n_heads, num_tokens, 1))
-                    else:
-                        # Binding 3 (inv_freq_buf): always provided.
-                        self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                       {**_rope_consts, "NUM_HEADS": n_heads},
-                                       (num_tokens, n_heads, 1))
-
-            # Fused K+V cache store.
-            # When using fused QKV, V lives in qkv_buf starting at element (q_dim+kv_dim).
-            self._dispatch("kv_cache_store_both",
-                           [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
-                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                            "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
-                           (num_tokens, self.num_kv_heads, 1))
-
-            # Always use flash_attn_decode for single-token decode.
-            # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
-            # loops internally and has no dispatch dimension limit.
-            self._dispatch("flash_attn_decode",
-                           [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
-                           {"BLOCK_SIZE": self.block_size,
-                            "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": self.num_kv_heads,
-                            "HEAD_DIM": self.head_dim,
-                            "CTX_LEN": self._effective_ctx_len(ctx_len)},
-                           (self.num_q_heads, 1, 1))
-
-            # Output projection
-            w_key = f"{p}.self_attn.o_proj.weight"
-            uq = self._uq_for_key(w_key)
-            qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
-            self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
-                                            self._scales_buf(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": uq,
-                            **self._split_k_extra(uq), **qi},
-                           _gemv_wg(hidden, uq))
+            o_proj_out = self._attn_block(
+                layer_idx, normed_x, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
             # Fused post-attn residual-add + FFN pre-norm: saves 1 dispatch/layer.
             # residual = x_buf + o_proj_out; ffn_normed = rms_norm(residual, weight)
             self._dispatch("add_rms_norm",
-                           [x_buf, sc["o_proj_out"],
+                           [x_buf, o_proj_out,
                             self.weights[f"{p}.post_attention_layernorm.weight"],
                             residual, sc["ffn_normed"]],
                            _rms_c, (num_tokens, 1, 1))
