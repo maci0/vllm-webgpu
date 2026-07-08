@@ -202,7 +202,10 @@ class WebGPUModelRunner:
                 return spec
 
         if lp_list and len(lp_list) == mc.num_hidden_layers:
+            _lt = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
             for i, lp in enumerate(lp_list):
+                if _lt and _lt[i] not in KV_ATTN_TYPES:
+                    continue
                 spec[f"model.layers.{i}.self_attn"] = _make_spec(
                     lp["num_kv_heads"], lp["head_dim"])
         else:
