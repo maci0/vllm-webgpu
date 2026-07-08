@@ -89,24 +89,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         self.block_size: int = get_config().block_size
 
-        # Derive per-layer type list from the config.
-        # HF NemotronHConfig stores the list in layers_block_type (accessible via
-        # attribute_map as layer_types); hybrid_override_pattern is a property that
-        # converts that list to a string.  Read the list directly to avoid a
-        # round-trip.  Fall back to the pattern string for vLLM's own NemotronHConfig
-        # which stores hybrid_override_pattern as a plain str attribute.
-        _block_list = (
-            list(getattr(model_config, "layers_block_type", None) or
-                 getattr(model_config, "layer_types", None) or [])
-        )
-        if _block_list:
-            self._layer_types: list[str] = list(_block_list)
-        else:
-            pattern = getattr(model_config, "hybrid_override_pattern", "")
-            self._layer_types = self._parse_hybrid_pattern(pattern)
+        self._layer_types: list[str] = list(model_config.layers_block_type)
         if len(self._layer_types) != self.num_layers:
             raise ValueError(
-                f"hybrid_override_pattern length {len(self._layer_types)} "
+                f"layers_block_type length {len(self._layer_types)} "
                 f"!= num_hidden_layers {self.num_layers}"
             )
 
@@ -121,14 +107,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "VALS_PER_THREAD": min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0,
         }
         self._init_scratch_buffers(max_ctx)
-
-    # ── Pattern parsing ───────────────────────────────────────────────────────
-
-    @staticmethod
-    def _parse_hybrid_pattern(pattern: str) -> list[str]:
-        """Convert hybrid_override_pattern string to per-layer type names."""
-        _map = {"M": "mamba", "*": "attention", "-": "mlp", "E": "moe"}
-        return [_map.get(c, "unknown") for c in pattern]
 
     # ── Scratch buffer allocation ─────────────────────────────────────────────
 
@@ -152,7 +130,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         V   = self.vocab_size
         qd  = self.num_q_heads * self.head_dim
         kd  = self.num_kv_heads * self.head_dim
-        NQ  = self.num_q_heads
 
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, max(n, 8), usage=rw)
@@ -196,7 +173,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "q_rope":      mk(qd * 2),
             "k_rope":      mk(kd * 2),
             "attn_out":    mk(qd * 2),
-            "attn_scores": mk(NQ * max_ctx * 2),
 
             # MLP intermediates
             "up_buf":  mk(I * 2),

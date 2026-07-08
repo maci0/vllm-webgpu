@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import logging
 from typing import TYPE_CHECKING
 
@@ -10,34 +11,25 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Sentinel used to distinguish "not yet probed" from None (probe failed).
-_ADAPTER_NOT_PROBED = object()
-_wgpu_adapter = _ADAPTER_NOT_PROBED
 
-
+@functools.cache
 def _get_wgpu_adapter():
     """Return the wgpu adapter, probing once and caching the result.
 
     Returns None if wgpu is unavailable or the probe failed.
     """
-    global _wgpu_adapter
-    if _wgpu_adapter is _ADAPTER_NOT_PROBED:
-        try:
-            import wgpu
-            _wgpu_adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
-        except Exception:
-            _wgpu_adapter = None
-    return _wgpu_adapter
+    try:
+        import wgpu
+        return wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+    except Exception:
+        return None
 
 
 try:
-    from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum, DeviceCapability as _DeviceCapability
+    from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
 except ImportError:
     class _Platform: pass                                   # noqa: E701
     class _PlatformEnum: OOT = "OOT"                       # noqa: E701
-    class _DeviceCapability:                               # fallback missing .to_int() is intentional
-        def __init__(self, major=0, minor=0):
-            self.major, self.minor = major, minor
 
 
 class WebGPUPlatform(_Platform):
@@ -151,8 +143,9 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def get_all_gpu_pci_bus_ids(cls) -> dict[int, str]:
-        # WebGPU does not expose PCI bus IDs; return empty rather than raising.
-        return {}
+        raise NotImplementedError(
+            "VLLM_GPU_NIC_PCIE_MAPPING is not supported on the WebGPU platform."
+        )
 
     @classmethod
     def manual_seed_all(cls, seed: int) -> None:

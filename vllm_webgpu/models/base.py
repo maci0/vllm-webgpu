@@ -4,6 +4,7 @@ import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -21,9 +22,9 @@ logger = logging.getLogger(__name__)
 # Shader names + expected binding count for RoPE shaders that need a dummy
 # inv_freq_buf appended when USE_FREQ_BUF=0. Defined at module level to avoid
 # allocating a new set on every _dispatch() call.
-_ROPE_SHADERS_BY_LEN = {
+_ROPE_SHADERS_BY_LEN = frozenset({
     ("rope", 3), ("fused_per_head_norm_rope", 4), ("fused_qk_norm_rope", 7),
-}
+})
 
 
 def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> tuple[np.ndarray, float]:
@@ -145,12 +146,9 @@ class BaseWebGPUModel(ABC):
         if not self._prof_stats:
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
-        total = 0.0
-        rows = []
-        for label, times in sorted(self._prof_stats.items(), key=lambda x: -sum(x[1])):
-            avg = sum(times) / len(times)
-            total += avg
-            rows.append((label, avg, len(times)))
+        rows = [(lbl, sum(t) / len(t), len(t)) for lbl, t in self._prof_stats.items()]
+        rows.sort(key=lambda r: -(r[1] * r[2]))
+        total = sum(r[1] for r in rows)
         for label, avg, n in rows:
             pct = 100.0 * avg / total if total else 0
             lines.append(f"  {label:<40s} {avg:7.3f} ms  {pct:5.1f}%  (n={n})")
@@ -181,8 +179,7 @@ class BaseWebGPUModel(ABC):
         fmt = detect_weight_format(path)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
-            from pathlib import Path as _Path
-            actual = str(_Path(path) / "model.safetensors") if _Path(path).is_dir() else path
+            actual = str(Path(path) / "model.safetensors") if Path(path).is_dir() else path
             self.weights = load_safetensors_weights(actual, self.wgpu_device.wgpu_device)
         elif fmt == "safetensors_sharded":
             self.weights = load_safetensors_weights_sharded(path, self.wgpu_device.wgpu_device)
@@ -269,6 +266,10 @@ class BaseWebGPUModel(ABC):
         if uq in (3, 4, 5, 6, 7, 8):
             return self.weights.get(w_key + ".scales", fallback)
         return self.weights.get(w_key[:-7] + ".scales", fallback)
+
+    def _split_k_extra(self, uq: int) -> dict:
+        """Return SPLIT_K=0 override for quant types that do not support SPLIT_K=1."""
+        return {"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}
 
     def _quant_extra(self, base_key: str, uq: int) -> dict:
         """Return additional shader override constants for quantized dispatch."""
@@ -416,9 +417,7 @@ class BaseWebGPUModel(ABC):
 
             # Prefill warmup: compiles matmul_quant_mr4, flash_attn_prefill, etc.
             T = 4
-            bt = np.zeros(T, dtype=np.uint32)
-            for i in range(T):
-                bt[i // 16] = i // 16
+            bt = np.array([0], dtype=np.uint32)
             class _Pre:
                 slot_mapping = list(range(T))
                 block_tables = [bt.copy()]

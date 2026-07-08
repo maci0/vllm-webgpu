@@ -1,7 +1,6 @@
 """GptOssForCausalLM — OpenAI GPT-OSS hybrid SWA+MoE with attention biases."""
 from __future__ import annotations
 import logging
-import struct
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -126,7 +125,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             _q_src = sc["q_buf"]
             _k_src = sc["k_buf"]
             _v_src = sc["v_buf"]
-            _v_offset = 0
 
             if self._attn_bias:
                 q_bias = self.weights.get(f"{p}.self_attn.q_proj.bias")
@@ -180,7 +178,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 {"BLOCK_SIZE": self.block_size,
                  "NUM_KV_HEADS": self.num_kv_heads,
                  "HEAD_DIM": self.head_dim,
-                 "V_IN_OFFSET": _v_offset},
+                 "V_IN_OFFSET": 0},
                 (num_tokens, self.num_kv_heads, 1),
             )
 
@@ -375,7 +373,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
         dev.queue.write_buffer(
             msc["moe_w_buf"].buf, 0,
-            struct.pack(f"<{K}f", *expert_weights),
+            np.array(expert_weights, dtype=np.float32).tobytes(),
         )
         dev.queue.write_buffer(msc["expert_out"].buf, 0, b"\x00" * (hidden * 2))
 

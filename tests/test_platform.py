@@ -3,10 +3,9 @@ from unittest.mock import MagicMock, patch
 
 
 def test_is_available_no_wgpu():
-    import importlib
     with patch.dict("sys.modules", {"wgpu": None}):
         from vllm_webgpu import platform as plat
-        importlib.reload(plat)  # reset _wgpu_adapter cache with wgpu patched out
+        plat._get_wgpu_adapter.cache_clear()
         assert plat.WebGPUPlatform.is_available() is False
 
 
@@ -15,8 +14,7 @@ def test_is_available_no_adapter():
     mock_wgpu.gpu.request_adapter_sync.return_value = None
     with patch.dict("sys.modules", {"wgpu": mock_wgpu}):
         from vllm_webgpu import platform as plat
-        import importlib
-        importlib.reload(plat)
+        plat._get_wgpu_adapter.cache_clear()
         assert plat.WebGPUPlatform.is_available() is False
 
 
@@ -27,8 +25,7 @@ def test_is_available_with_adapter():
     mock_wgpu.gpu.request_adapter_sync.return_value = mock_adapter
     with patch.dict("sys.modules", {"wgpu": mock_wgpu}):
         from vllm_webgpu import platform as plat
-        import importlib
-        importlib.reload(plat)
+        plat._get_wgpu_adapter.cache_clear()
         assert plat.WebGPUPlatform.is_available() is True
 
 
@@ -41,8 +38,7 @@ def test_is_available_cpu_adapter_rejected():
         mock_wgpu.gpu.request_adapter_sync.return_value = mock_adapter
         with patch.dict("sys.modules", {"wgpu": mock_wgpu}):
             from vllm_webgpu import platform as plat
-            import importlib
-            importlib.reload(plat)
+            plat._get_wgpu_adapter.cache_clear()
             assert plat.WebGPUPlatform.is_available() is False, (
                 f"Expected False for adapter_type={adapter_type!r}"
             )

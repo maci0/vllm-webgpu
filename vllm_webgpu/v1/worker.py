@@ -47,12 +47,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _init_distributed(vllm_config: Any, rank: int, init_method: str, local_rank: int) -> None:
-    pc = vllm_config.parallel_config
-    init_distributed_environment(pc.world_size, rank, init_method, local_rank, backend="gloo")
-    ensure_model_parallel_initialized(pc.tensor_parallel_size, pc.pipeline_parallel_size)
-
-
 class WebGPUWorker(WorkerBase):
     model_runner: "WebGPUModelRunner"
 
@@ -87,7 +81,9 @@ class WebGPUWorker(WorkerBase):
         except ImportError:
             pass
 
-        _init_distributed(self.vllm_config, self.rank, self.distributed_init_method, self.local_rank)
+        pc = self.vllm_config.parallel_config
+        init_distributed_environment(pc.world_size, self.rank, self.distributed_init_method, self.local_rank, backend="gloo")
+        ensure_model_parallel_initialized(pc.tensor_parallel_size, pc.pipeline_parallel_size, pc.prefill_context_parallel_size, pc.decode_context_parallel_size)
         if hasattr(self, "model_config"):
             set_random_seed(self.model_config.seed)
 
@@ -131,6 +127,8 @@ class WebGPUWorker(WorkerBase):
     def update_max_model_len(self, max_model_len: int) -> None:
         if hasattr(self, "model_config"):
             self.model_config.max_model_len = max_model_len
+        if hasattr(self.model_runner, "update_max_model_len"):
+            self.model_runner.update_max_model_len(max_model_len)
 
     def get_cache_block_size_bytes(self) -> int:
         return self.model_runner.get_cache_block_size_bytes()

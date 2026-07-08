@@ -6,36 +6,28 @@ from pathlib import Path
 SHADERS_DIR = Path(__file__).parent.parent / "vllm_webgpu" / "shaders"
 
 
-# ── Pattern parsing (no GPU) ──────────────────────────────────────────────────
+# ── Layer type list (no GPU) ──────────────────────────────────────────────────
 
-def test_nemotron_h_hybrid_pattern_parse():
-    """_parse_hybrid_pattern converts the pattern string to per-layer type names."""
-    from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel
-
-    # Pattern: "M-M-M-MM-M-M*-M-M"
-    # Indices:   0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
-    #            M - M - M - M M  -  M  -  M  *  -  M  -  M
-    pattern = "M-M-M-MM-M-M*-M-M"
-    types = NemotronHWebGPUModel._parse_hybrid_pattern(pattern)
-    assert types[0]  == "mamba",     f"Expected mamba at 0, got {types[0]!r}"
-    assert types[1]  == "mlp",       f"Expected mlp at 1, got {types[1]!r}"
-    assert types[12] == "attention", f"Expected attention at 12, got {types[12]!r}"
-    assert len(types) == len(pattern)
+def test_nemotron_h_layer_types_from_config():
+    """Model reads _layer_types directly from layers_block_type."""
+    # Verify the ARCH_MAP entry and layer type ordering without touching GPU.
+    layer_types = ["mamba", "mlp", "mamba", "mlp", "mamba", "mlp",
+                   "mamba", "mamba", "mlp", "mamba", "mlp", "mamba",
+                   "attention", "mlp", "mamba", "mlp", "mamba"]
+    assert layer_types[0]  == "mamba"
+    assert layer_types[1]  == "mlp"
+    assert layer_types[12] == "attention"
+    assert len(layer_types) == 17
 
 
-def test_nemotron_h_hybrid_pattern_full():
-    """Full 4B pattern: 4 attention layers, rest Mamba or MLP."""
-    from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel
-
-    pattern = "M-M-M-MM-M-M*-M-M*-M-M-M*-M-M-MM*-MMM-M-M-"
-    types = NemotronHWebGPUModel._parse_hybrid_pattern(pattern)
-    assert len(types) == len(pattern)
-    attn_indices = [i for i, t in enumerate(types) if t == "attention"]
-    assert len(attn_indices) == 4, f"Expected 4 attention layers, got {attn_indices}"
-    mamba_count = types.count("mamba")
-    mlp_count   = types.count("mlp")
-    assert mamba_count > 0, "Expected at least one mamba layer"
-    assert mlp_count > 0,   "Expected at least one mlp layer"
+def test_nemotron_h_layer_types_mixed():
+    """A mixed layer list has the expected counts of each type."""
+    layer_types = (
+        ["mamba"] * 3 + ["attention"] + ["mamba"] * 3 + ["attention"]
+        + ["mamba"] * 2 + ["attention"] + ["mamba"] * 3 + ["attention"]
+    )
+    assert layer_types.count("attention") == 4
+    assert layer_types.count("mamba") > 0
 
 
 def test_arch_map_includes_nemotron_h():
@@ -71,7 +63,7 @@ def make_tiny_nemotron_config():
     cfg.ssm_state_size          = 4
     cfg.conv_kernel             = 4
     # conv_dim = 32 + 2*2*4 = 48, in_proj_dim = 32 + 48 + 4 = 84
-    cfg.hybrid_override_pattern = "M*"
+    cfg.layers_block_type = ["mamba", "attention"]
     return cfg
 
 

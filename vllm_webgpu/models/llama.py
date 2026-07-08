@@ -92,7 +92,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         I = self.intermediate_size
         Q = self.num_q_heads * self.head_dim
         KV = self.num_kv_heads * self.head_dim
-        NQ = self.num_q_heads
 
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, n, usage=rw)
@@ -760,7 +759,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     self._dispatch("matmul_quant",
                                    [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, normed_x), out_buf],
                                    {"K": hidden, "N": dim, "USE_QUANT": uq,
-                                    **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi},
+                                    **self._split_k_extra(uq), **qi},
                                    _gemv_wg(dim, uq))
                 _q_src = sc["q_buf"]
                 _k_src = sc["k_buf"]
@@ -837,7 +836,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
                                             self._scales_buf(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
                            {"K": q_dim, "N": hidden, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi},
+                            **self._split_k_extra(uq), **qi},
                            _gemv_wg(hidden, uq))
 
             # Fused post-attn residual-add + FFN pre-norm: saves 1 dispatch/layer.
@@ -905,8 +904,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                [normed_x, self.weights[w_k],
                                 self._scales_buf(w_k, uq2, normed_x), out_b],
                                {"K": hidden, "N": inter, "USE_QUANT": uq2,
-                                **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                                **qi2},
+                                **self._split_k_extra(uq2), **qi2},
                                _gemv_wg(inter, uq2))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                            {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
@@ -919,7 +917,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                        [sc["ffn_act"], self.weights[w_k],
                         self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
                        {"K": inter, "N": hidden, "USE_QUANT": uq,
-                        **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                        **qi3},
+                        **self._split_k_extra(uq), **qi3},
                        _gemv_wg(hidden, uq))
         return sc["ffn_out"]

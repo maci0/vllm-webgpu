@@ -17,7 +17,7 @@ except ImportError:
     LogprobsTensors = None  # type: ignore[assignment,misc]
 
 from vllm_webgpu.config import get_config
-from vllm_webgpu.utils import SHADERS_DIR
+from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
 from vllm_webgpu.v1.cache_policy import WebGPUCachePlanner
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -30,64 +30,19 @@ logger = logging.getLogger(__name__)
 
 def _is_greedy(sp) -> bool:
     """Return True when sampling params request greedy (argmax) decoding."""
-    if sp is None:
-        return True
-    temp = float(getattr(sp, "temperature", 0.0) or 0.0)
-    if temp > 1e-5:
-        return False
-    top_p = float(getattr(sp, "top_p", 1.0) or 1.0)
-    top_k = int(getattr(sp, "top_k", -1) or -1)
-    return top_p >= 1.0 and top_k <= 0
+    return sp is None or sp.temperature < 1e-5
 
 
 def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
-    """Sample one token from a 1-D float32 logit vector using SamplingParams.
-
-    Applies temperature scaling, top-k, and top-p (nucleus) filtering in that
-    order, then draws from the resulting categorical distribution.  Falls back
-    to argmax when sp is None or the effective temperature is zero.
-    """
+    """Sample one token from a 1-D float32 logit vector using SamplingParams."""
     if sp is None or _is_greedy(sp):
         return int(np.argmax(logits_1d))
-
-    temp = float(getattr(sp, "temperature", 1.0) or 1.0)
-    top_p = float(getattr(sp, "top_p", 1.0) or 1.0)
-    top_k = int(getattr(sp, "top_k", -1) or -1)
-
-    # Temperature scaling with numerically stable softmax.
-    scaled = logits_1d.astype(np.float32) / temp
-    scaled -= scaled.max()
-    probs = np.exp(scaled)
-    probs /= probs.sum()
-
-    # Top-k: keep exactly k tokens, matching torch.topk tie-breaking behaviour.
-    if top_k > 0:
-        k = min(top_k, len(probs))
-        top_k_idx = np.argpartition(probs, -k)[-k:]
-        top_k_idx = top_k_idx[np.argsort(probs[top_k_idx])[::-1]]
-        mask = np.zeros_like(probs)
-        mask[top_k_idx] = 1.0
-        probs = probs * mask
-        s = probs.sum()
-        if s > 0:
-            probs /= s
-
-    # Top-p (nucleus): keep the smallest set of tokens whose cumulative
-    # probability exceeds top_p.
-    if 0.0 < top_p < 1.0:
-        sorted_idx = np.argsort(probs)[::-1]
-        cumsum = np.cumsum(probs[sorted_idx])
-        # Include the first token that pushes cumsum over top_p.
-        cutoff = max(1, int(np.searchsorted(cumsum, top_p, side="left")) + 1)
-        keep = sorted_idx[:cutoff]
-        mask = np.zeros_like(probs)
-        mask[keep] = 1.0
-        probs = probs * mask
-        s = probs.sum()
-        if s > 0:
-            probs /= s
-
-    return int(np.random.choice(len(probs), p=probs))
+    return _sample_token(
+        logits_1d,
+        temperature=float(sp.temperature),
+        top_p=float(getattr(sp, "top_p", 1.0) or 1.0),
+        top_k=int(getattr(sp, "top_k", -1) or -1),
+    )
 
 
 ARCH_MAP = {
@@ -206,11 +161,8 @@ class WebGPUModelRunner:
         if FullAttentionSpec is None:
             return spec
 
-        try:
-            import torch as _torch
-            _dtype = _torch.float16
-        except ImportError:
-            _dtype = np.float16
+        import torch as _torch
+        _dtype = _torch.float16
 
         def _make_spec(num_kv_heads: int, head_size: int) -> Any:
             kw: dict[str, Any] = dict(
@@ -403,7 +355,7 @@ class WebGPUModelRunner:
             return None
 
         # Prune state for requests that completed in the previous step.
-        for rid in getattr(scheduler_output, "finished_req_ids", []):
+        for rid in scheduler_output.finished_req_ids:
             self._req_state.pop(rid, None)
 
         cached = scheduler_output.scheduled_cached_reqs
@@ -558,7 +510,7 @@ class WebGPUModelRunner:
         # To enable true batched decode we would need: N separate pre-alloc buffer
         # sets, N argmax result buffers, and attention shaders with a batched block
         # table (or a flash-attn style per-sequence loop inside the shader).
-        if hasattr(cached, "req_ids") and cached.req_ids:
+        if cached.req_ids:
             new_block_ids = getattr(cached, "new_block_ids", [])
             resumed_req_ids = getattr(cached, "resumed_req_ids", set())
 

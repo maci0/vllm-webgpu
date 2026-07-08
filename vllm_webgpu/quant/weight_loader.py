@@ -72,21 +72,26 @@ def _check_unsupported_quant(model_dir: Path) -> None:
 
 
 def detect_weight_format(path: str) -> str:
+    from transformers.utils import SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
     p = Path(path)
     if p.is_dir():
         _check_unsupported_quant(p)
-        if (p / "model.safetensors.index.json").exists():
+        if (p / SAFE_WEIGHTS_INDEX_NAME).exists():
             if _is_mlx_quantized_dir(p):
                 return "mlx_int4"
             return "safetensors_sharded"
-        if (p / "model.safetensors").exists():
+        if (p / SAFE_WEIGHTS_NAME).exists():
             return "safetensors"
         # No known safetensors manifest found in directory; default.
         return "safetensors"
     if p.suffix == ".gguf":
         return "gguf"
-    if p.suffix in {".safetensors", ".bin"}:
+    if p.suffix == ".safetensors":
         return "safetensors"
+    if p.suffix == ".bin":
+        raise ValueError(
+            f"Legacy .bin (PyTorch pickle) format not supported; convert to safetensors first: {path}"
+        )
     # Try magic bytes
     with open(p, "rb") as f:
         magic = f.read(4)
@@ -185,7 +190,7 @@ def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
     """
     import torch
     return (
-        torch.from_numpy(data.ravel().view(np.uint8))
+        torch.from_numpy(data.ravel())
         .view(torch.float8_e4m3fn)
         .to(torch.float32)
         .numpy()
@@ -1142,9 +1147,8 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
 
 def _bf16_raw_to_f32(raw: bytes, shape: tuple) -> "np.ndarray":
     """Convert raw BF16 bytes to float32 numpy array."""
-    u16 = np.frombuffer(raw, dtype=np.uint16)
-    f32 = (u16.astype(np.uint32) << 16).view(np.float32)
-    return f32.reshape(shape)
+    import torch
+    return torch.frombuffer(bytearray(raw), dtype=torch.bfloat16).float().numpy().reshape(shape)
 
 
 def _dequant_mlx_int4(
@@ -1245,8 +1249,6 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                 weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
                 continue
 
-        if key in processed:
-            continue
         processed.add(key)
 
         if key.endswith(".scales") or key.endswith(".biases"):

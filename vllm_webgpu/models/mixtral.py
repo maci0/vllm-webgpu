@@ -239,13 +239,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         rw_k = f"{p}.gate.weight"
         uq_r = self._uq_for_key(rw_k)
         qi_r = self._quant_extra(f"{p}.gate", uq_r)
-        extra_r: dict = {"SPLIT_K": 0} if uq_r not in (0, 3, 4, 5, 6, 7, 8) else {}
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[rw_k],
              self._scales_buf(rw_k, uq_r, msc["dummy_scales"]),
              msc["router_out"]],
-            {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **extra_r, **qi_r},
+            {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **self._split_k_extra(uq_r), **qi_r},
             _gemv_wg(N_E, uq_r),
         )
         self._dispatch(
@@ -312,14 +311,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 # Quantized path: separate gate and up matmuls then SiLU.
                 qi_g = self._quant_extra(f"{ep}.w1", uq_g)
                 qi_u = self._quant_extra(f"{ep}.w3", uq_u)
-                extra_g: dict = {"SPLIT_K": 0} if uq_g not in (0, 3, 4, 5, 6, 7, 8) else {}
-                extra_u: dict = {"SPLIT_K": 0} if uq_u not in (0, 3, 4, 5, 6, 7, 8) else {}
                 self._dispatch(
                     "matmul_quant",
                     [normed_x, self.weights[w1_key],
                      self._scales_buf(w1_key, uq_g, msc["dummy_scales"]),
                      msc["expert_gate"]],
-                    {"K": hidden, "N": inter, "USE_QUANT": uq_g, **extra_g, **qi_g},
+                    {"K": hidden, "N": inter, "USE_QUANT": uq_g, **self._split_k_extra(uq_g), **qi_g},
                     _gemv_wg(inter, uq_g),
                 )
                 self._dispatch(
@@ -327,7 +324,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     [normed_x, self.weights[w3_key],
                      self._scales_buf(w3_key, uq_u, msc["dummy_scales"]),
                      msc["expert_up"]],
-                    {"K": hidden, "N": inter, "USE_QUANT": uq_u, **extra_u, **qi_u},
+                    {"K": hidden, "N": inter, "USE_QUANT": uq_u, **self._split_k_extra(uq_u), **qi_u},
                     _gemv_wg(inter, uq_u),
                 )
                 self._dispatch(
@@ -351,13 +348,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             else:
                 # Quantized path: keep separate dispatches.
                 qi_d = self._quant_extra(f"{ep}.w2", uq_d)
-                extra_d: dict = {"SPLIT_K": 0} if uq_d not in (0, 3, 4, 5, 6, 7, 8) else {}
                 self._dispatch(
                     "matmul_quant",
                     [msc["expert_act"], self.weights[w2_key],
                      self._scales_buf(w2_key, uq_d, msc["dummy_scales"]),
                      msc["expert_tmp"]],
-                    {"K": inter, "N": hidden, "USE_QUANT": uq_d, **extra_d, **qi_d},
+                    {"K": inter, "N": hidden, "USE_QUANT": uq_d, **self._split_k_extra(uq_d), **qi_d},
                     _gemv_wg(hidden, uq_d),
                 )
                 self._dispatch(

@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 
 
-def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0):
+def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
     print(f"\nLoading model from: {model_dir}")
 
     if Path(model_dir).suffix == ".gguf":
@@ -209,22 +209,12 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         if temperature == 0.0:
             last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
         else:
+            from vllm_webgpu.utils import sample_token
             full = model.logit_readback() if has_gpu_argmax else logits
-            raw  = full[0].astype(np.float64)
-            rep  = 1.3
-            for tid in set(generated[-64:]):
-                if 0 <= tid < len(raw):
-                    raw[tid] = raw[tid] / rep if raw[tid] > 0 else raw[tid] * rep
-            raw  -= raw.max()
-            probs = np.exp(raw / temperature)
-            probs /= probs.sum()
-            idx   = np.argsort(probs)[::-1]
-            cum   = np.cumsum(probs[idx])
-            keep  = idx[:np.searchsorted(cum, 0.9) + 1]
-            masked = np.zeros_like(probs)
-            masked[keep] = probs[keep]
-            masked /= masked.sum()
-            last_token = int(np.random.choice(len(masked), p=masked))
+            last_token = sample_token(
+                full[0], temperature=temperature, top_p=top_p,
+                generated_ids=generated[-64:], repetition_penalty=1.3,
+            )
 
         if (step + 1) % 5 == 0:
             print(f"  [{step+1} tokens]: {repr(tok.decode(generated)[-60:])}", flush=True)
@@ -248,6 +238,7 @@ if __name__ == "__main__":
     parser.add_argument("--prompt",      default="What is 2+2?")
     parser.add_argument("--max_tokens",  type=int,   default=64)
     parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--top_p",       type=float, default=0.9)
     parser.add_argument("--gdn_bf16",    action="store_true",
                         help="Experimental: bf16 GDN weights for Qwen3.5 (safetensors BF16 only)")
     args = parser.parse_args()
@@ -257,4 +248,4 @@ if __name__ == "__main__":
 
     from vllm_webgpu.models.base import BaseWebGPUModel
     model_path = BaseWebGPUModel._resolve_model_path(args.model)
-    run(model_path, args.prompt, args.max_tokens, args.temperature)
+    run(model_path, args.prompt, args.max_tokens, args.temperature, args.top_p)

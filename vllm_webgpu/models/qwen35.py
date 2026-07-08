@@ -155,7 +155,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         I = self.intermediate_size
         Q = self.num_q_heads * self.head_dim
         KV = self.num_kv_heads * self.head_dim
-        NQ = self.num_q_heads
 
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, n, usage=rw)
@@ -548,8 +547,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         return. Subsequent dispatches in the same layer method (add_rms_norm for
         the residual connection) land in that new encoder, which is correct.
         """
-        import struct
-
         dev = self.wgpu_device.wgpu_device
         sc = self._sc
         p = f"model.layers.{layer_idx}.mlp"
@@ -598,7 +595,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # Write all K softmax weights into the combined weight buffer so the
         # moe_accumulate shader can read w_buf[K_IDX] without per-dispatch overhead.
         dev.queue.write_buffer(sc["moe_w_buf"].buf, 0,
-                               struct.pack(f"<{K}f", *expert_weights))
+                               np.array(expert_weights, dtype=np.float32).tobytes())
 
         # ── Phase B: expert dispatches (new encoder) ──────────────────────────
         # Subsequent _dispatch() calls (including add_rms_norm after the FFN in
