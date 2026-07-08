@@ -193,7 +193,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
         for i, lp in enumerate(self._lp):
-            p = f"model.layers.{i}"
+            p = self._layer_key_prefix(i)
             hd = lp["head_dim"]
             for norm_key, num_heads in [
                 (f"{p}.self_attn.q_norm.weight", lp["num_q_heads"]),
@@ -221,7 +221,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """Cache layer_scalar values on CPU at load time.
 
         Avoids 48 GPU→CPU readbacks per token (each to_numpy() is a blocking ~100µs sync).
-        Subclasses that use a different key prefix must override this method.
+        Subclasses with a different key scheme should override _layer_key_prefix instead.
         """
         self._layer_scales: list[float] = []
         for i in range(self.num_layers):
