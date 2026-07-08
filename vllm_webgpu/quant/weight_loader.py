@@ -380,8 +380,11 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
     config_groups = quant_cfg.get("config_groups")
     if not config_groups:
         return {}
-    first_group = next(iter(config_groups.values()), {})
-    weights_desc = first_group.get("weights", {})
+    weights_desc = next(
+        (g["weights"] for g in config_groups.values()
+         if isinstance(g, dict) and g.get("weights")),
+        {},
+    )
     if not weights_desc:
         return {}
     num_bits = int(weights_desc.get("num_bits", 8))
