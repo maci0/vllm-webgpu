@@ -355,8 +355,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # A: checkpoint stores as A_log; apply -exp() to get actual A.
             a_key = f"{p}.A"
             if a_key in self.weights:
-                raw = self.weights[a_key].to_numpy().view(np.float16)
-                a_f32 = -np.exp(raw.astype(np.float32))
+                raw = self.weights[a_key].to_numpy().view(np.float32)
+                a_f32 = -np.exp(raw)
                 self.weights[a_key] = WebGPUBuffer.from_numpy(dev, a_f32, usage=rw)
 
             # conv1d.weight: flatten any extra dimension.
