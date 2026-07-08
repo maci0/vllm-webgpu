@@ -125,13 +125,31 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     else:
         kv_h = cfg.num_key_value_heads
         hd   = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
-        print(f"\nAllocating KV cache: {num_blocks} blocks × {block_size} × {kv_h} heads × {hd} dim")
         kv_bytes = num_blocks * block_size * kv_h * hd * 2
-        for _ in range(cfg.num_hidden_layers):
-            model.kv_pool.append((
-                WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
-                WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
-            ))
+        layer_types = getattr(model, "_layer_types", None)
+        if layer_types:
+            attn_count = sum(1 for lt in layer_types if lt == "attention")
+            print(f"\nAllocating KV cache: {attn_count}/{cfg.num_hidden_layers} attention layers "
+                  f"× {num_blocks} blocks × {block_size} × {kv_h} heads × {hd} dim")
+            _dummy = (
+                WebGPUBuffer.empty(device.wgpu_device, 8, usage=rw),
+                WebGPUBuffer.empty(device.wgpu_device, 8, usage=rw),
+            )
+            for i in range(cfg.num_hidden_layers):
+                if layer_types[i] == "attention":
+                    model.kv_pool.append((
+                        WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
+                        WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
+                    ))
+                else:
+                    model.kv_pool.append(_dummy)
+        else:
+            print(f"\nAllocating KV cache: {num_blocks} blocks × {block_size} × {kv_h} heads × {hd} dim")
+            for _ in range(cfg.num_hidden_layers):
+                model.kv_pool.append((
+                    WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
+                    WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
+                ))
 
     # Prefill
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
