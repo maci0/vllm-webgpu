@@ -110,7 +110,7 @@ else:
 
 # ── Run prefill ───────────────────────────────────────────────────────────────
 # Allocate enough blocks for prompt + warmup + profiling steps
-total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps + 4
+total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps + args.decode_steps
 blk_ids = list(range((total_toks + block_size - 1) // block_size))
 bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -140,7 +140,7 @@ print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode toke
 # ── Decode warmup + production timing ─────────────────────────────────────────
 print(f"Warming up ({args.warmup_steps} steps)...")
 prod_times = []
-for step in range(args.warmup_steps + 5):  # 5 extra for production timing
+for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra for production timing
     slot = blk_ids[pos // block_size] * block_size + (pos % block_size)
 
     class _DM:
