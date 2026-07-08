@@ -85,20 +85,46 @@ class WebGPUCachePlanner:
 
     def determine_available_memory(self) -> int:
         """
-        Available memory for KV cache = GPU memory limit - model weights - overhead.
-        When `is_auto_memory` is False, applies `memory_fraction` to the device total instead.
+        Available memory for KV cache = device total - model weights - overhead.
+
+        Uses psutil to query real system memory, which is correct for unified-memory
+        platforms (Apple Silicon) and avoids confusing wgpu's per-buffer maxBufferSize
+        limit with total device memory. On a 7B f16 model (~14 GB weights) with a
+        4 GB maxBufferSize, subtracting from maxBufferSize yields negative available
+        memory and clamps to 0 KV blocks. psutil returns the actual physical total.
+
+        Falls back to a model-ratio heuristic when psutil is unavailable.
         """
         config = get_config()
-        limits = self._worker.wgpu_device.limits
-        total = limits.get("max-buffer-size", 4 * 1024 ** 3)  # 4GB default cap; wgpu uses hyphenated keys
         model_mem = self.get_model_memory_usage()
 
+        try:
+            import psutil
+            total: int | None = psutil.virtual_memory().total
+        except Exception:
+            total = None
+
         if config.is_auto_memory:
-            available = total - model_mem - _OVERHEAD_BYTES
-            logger.info(
-                "WebGPU memory: total=%dMB, model=%dMB, available=%dMB",
-                total // 2**20, model_mem // 2**20, available // 2**20,
-            )
+            if total is not None:
+                available = total - model_mem - _OVERHEAD_BYTES
+                logger.info(
+                    "WebGPU memory: total=%dMB model=%dMB available=%dMB",
+                    total // 2**20, model_mem // 2**20, max(available, 0) // 2**20,
+                )
+            else:
+                # Heuristic: allocate KV budget equal to model weight size (1:1 ratio).
+                available = model_mem
+                logger.info(
+                    "WebGPU memory: total=unknown model=%dMB available=%dMB (heuristic 1:1)",
+                    model_mem // 2**20, available // 2**20,
+                )
             return max(available, 0)
-        return max(int(total * config.memory_fraction) - model_mem - _OVERHEAD_BYTES, 0)
+
+        # Explicit fraction: user asked for `memory_fraction` of device total for KV.
+        if total is not None:
+            available = int(total * config.memory_fraction) - model_mem - _OVERHEAD_BYTES
+        else:
+            # Derive KV budget from model size when device total is unknown.
+            available = int(model_mem * config.memory_fraction / (1.0 - config.memory_fraction))
+        return max(available, 0)
 
