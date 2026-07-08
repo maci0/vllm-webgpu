@@ -1232,6 +1232,7 @@ def _dequant_mlx_int4(
 
 def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     """Load MLX affine int4 safetensors weights, dequantize to f16, upload to GPU."""
+    import torch as _torch
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
     p = Path(model_dir)
