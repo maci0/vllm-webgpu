@@ -33,7 +33,7 @@ def _is_greedy(sp) -> bool:
     if sp is None:
         return True
     temp = float(getattr(sp, "temperature", 0.0) or 0.0)
-    if temp > 1e-6:
+    if temp > 1e-5:
         return False
     top_p = float(getattr(sp, "top_p", 1.0) or 1.0)
     top_k = int(getattr(sp, "top_k", -1) or -1)
