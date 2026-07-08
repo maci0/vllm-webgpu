@@ -890,7 +890,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     {"K": self.hidden_size, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                     ((vocab + 255) // 256, 1, 1),
                 )
-                if getattr(self, "_greedy_decode", True):
+                if getattr(self, "_greedy_decode", True) and t == T - 1:
                     self._dispatch(
                         "argmax_f16",
                         [pre["logits"], self._ensure_sample_buf(vocab)],
