@@ -73,7 +73,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.config import get_config
-    from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES
+    from vllm_webgpu.v1.cache_policy import allocate_kv_pool_hybrid
 
     block_size = get_config().block_size
     max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
@@ -92,31 +92,16 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     else:
         kv_h = cfg.num_key_value_heads
         hd   = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
-        kv_bytes = num_blocks * block_size * kv_h * hd * 2
-        layer_types = getattr(model, "_layer_types", None)
-        if layer_types:
-            attn_count = sum(1 for lt in layer_types if lt in KV_ATTN_TYPES)
-            print(f"\nAllocating KV cache: {attn_count}/{cfg.num_hidden_layers} attention layers "
-                  f"× {num_blocks} blocks × {block_size} × {kv_h} heads × {hd} dim")
-            _dummy = (
-                WebGPUBuffer.empty(device.wgpu_device, 8, usage=rw),
-                WebGPUBuffer.empty(device.wgpu_device, 8, usage=rw),
-            )
-            for i in range(cfg.num_hidden_layers):
-                if layer_types[i] in KV_ATTN_TYPES:
-                    model.kv_pool.append((
-                        WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
-                        WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
-                    ))
-                else:
-                    model.kv_pool.append(_dummy)
-        else:
-            print(f"\nAllocating KV cache: {num_blocks} blocks × {block_size} × {kv_h} heads × {hd} dim")
-            for _ in range(cfg.num_hidden_layers):
-                model.kv_pool.append((
-                    WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
-                    WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
-                ))
+        allocate_kv_pool_hybrid(
+            device.wgpu_device,
+            model,
+            num_blocks=num_blocks,
+            num_layers=cfg.num_hidden_layers,
+            block_size=block_size,
+            num_kv_heads=kv_h,
+            head_dim=hd,
+            layer_types=getattr(model, "_layer_types", None),
+        )
 
     # Prefill
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
