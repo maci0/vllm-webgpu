@@ -290,12 +290,11 @@ class BaseWebGPUModel(ABC):
 
         For GPU quants (USE_QUANT 3-8): scales live at w_key + '.scales'
             e.g. 'model.layers.0.self_attn.q_proj.weight.scales'
-        For simple Q4 (USE_QUANT 1): scales live at w_key[:-7] + '.scales'
-            e.g. 'model.layers.0.self_attn.q_proj.scales'
+        For plain weights (USE_QUANT 0): no scales exist; return fallback.
         """
         if uq in (3, 4, 5, 6, 7, 8):
             return self.weights.get(w_key + ".scales", fallback)
-        return self.weights.get(w_key[:-7] + ".scales", fallback)
+        return fallback
 
     def _split_k_extra(self, uq: int) -> dict:
         """Return SPLIT_K=0 override for quant types that do not support SPLIT_K=1."""
@@ -335,8 +334,6 @@ class BaseWebGPUModel(ABC):
                 if fmt == "int8_gpu":  return 7
                 if fmt == "fp8_gpu":   return 5
                 if fmt == "nf4_gpu":   return 8
-        if self.weights.get(key[:-7] + ".scales") is not None:
-            return 1
         return 0
 
     def _dispatch(
