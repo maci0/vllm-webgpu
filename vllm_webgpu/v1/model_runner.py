@@ -252,14 +252,16 @@ class WebGPUModelRunner:
         if self.model is not None:
             self.model.warmup()
 
-    def execute_model(self, scheduler_output: "SchedulerOutput") -> Any:
+    def execute_model(self, scheduler_output: "SchedulerOutput") -> None:
         if self.model is None:
-            return EMPTY_MODEL_RUNNER_OUTPUT
+            self._last_model_output = EMPTY_MODEL_RUNNER_OUTPUT
+            return None
         try:
-            return self._execute_model_v2(scheduler_output)
+            self._last_model_output = self._execute_model_v2(scheduler_output)
         except Exception as e:
             logger.exception("execute_model failed: %s", e)
             raise
+        return None
 
     @staticmethod
     def _compute_request_logprobs(
