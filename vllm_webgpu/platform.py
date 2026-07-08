@@ -81,7 +81,7 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def get_device_capability(cls, device_id: int = 0) -> "_DeviceCapability | None":
-        return _DeviceCapability(major=8, minor=0)
+        return None
 
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
