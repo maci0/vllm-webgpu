@@ -223,15 +223,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def load_weights(self, path: str) -> None:
         """Load weights with key remapping and Mamba-specific postprocessing."""
-        # D and dt_bias are F32 in the checkpoint and are read as array<f32> by the
-        # SSM shader. The base loader would downcast them to F16, losing 13 mantissa
-        # bits. Pass their HF-side key names so they are uploaded as F32 directly.
+        # D, dt_bias, and A_log are F32 in the checkpoint and are read as array<f32>
+        # by the SSM shader. The base loader would downcast them to F16, losing 13
+        # mantissa bits. A_log near 0 (slow-decay states) would suffer 5-10% relative
+        # error, corrupting the SSM state transition coefficient A after -exp().
+        # Pass their HF-side key names so they are uploaded as F32 directly.
         # HF prefix is 'backbone.' (mapper swaps it to 'model.').
         f32_keys = frozenset(
             f"backbone.layers.{i}.mixer.{wk}"
             for i, lt in enumerate(self._layer_types)
             if lt == "mamba"
-            for wk in ("D", "dt_bias")
+            for wk in ("D", "dt_bias", "A_log")
         )
         super().load_weights(path, f32_keys=f32_keys)
         self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
