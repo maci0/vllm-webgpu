@@ -190,23 +190,14 @@ class WebGPUModelRunner:
             head_dim = getattr(hf, "head_dim", hf.hidden_size // hf.num_attention_heads)
             planner = WebGPUCachePlanner.from_runner(self.wgpu_device, self)
             layer_types = getattr(hf, "layer_types", None)
-            if layer_types and any(t != "full_attention" for t in layer_types):
-                planner.allocate_kv_pool_hybrid(
-                    num_blocks=num_blocks,
-                    num_layers=hf.num_hidden_layers,
-                    layer_types=layer_types,
-                    block_size=block_size,
-                    num_kv_heads=num_kv_heads,
-                    head_dim=head_dim,
-                )
-            else:
-                planner.allocate_kv_pool(
-                    num_blocks=num_blocks,
-                    num_layers=hf.num_hidden_layers,
-                    block_size=block_size,
-                    num_kv_heads=num_kv_heads,
-                    head_dim=head_dim,
-                )
+            planner.allocate_kv_pool_hybrid(
+                num_blocks=num_blocks,
+                num_layers=hf.num_hidden_layers,
+                block_size=block_size,
+                num_kv_heads=num_kv_heads,
+                head_dim=head_dim,
+                layer_types=layer_types if layer_types and any(t != "full_attention" for t in layer_types) else None,
+            )
 
     def get_kv_cache_spec(self) -> dict[str, Any]:
         mc = self.vllm_config.model_config.hf_config
@@ -270,7 +261,17 @@ class WebGPUModelRunner:
         mc = self.vllm_config.model_config.hf_config
         block_size = self.webgpu_config.block_size
         head_dim = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
-        return block_size * mc.num_key_value_heads * head_dim * 2 * 2  # K + V, f16
+        num_kv_heads = mc.num_key_value_heads
+        # Use the maximum per-layer values when heterogeneous layer params are available
+        # (e.g. Gemma4 models with mixed local/global attention dimensions).
+        lp_list = (
+            (getattr(self.model, "_lp", None) if self.model is not None else None)
+            or getattr(mc, "_layer_attention_params", None)
+        )
+        if lp_list:
+            head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
+            num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)
+        return block_size * num_kv_heads * head_dim * 2 * 2  # K + V, f16
 
     def warm_up(self) -> None:
         if self.model is not None:
@@ -386,14 +387,13 @@ class WebGPUModelRunner:
                     ranks_arr[i] = rank
             built_logprobs = LogprobsLists(tok_ids_arr, logprobs_arr, ranks_arr)
 
-        kw: dict[str, Any] = {
-            "req_ids": req_ids,
-            "req_id_to_index": {rid: i for i, rid in enumerate(req_ids)},
-            "sampled_token_ids": [[t] for t in sampled],
-            "logprobs": built_logprobs,
-            "prompt_logprobs_dict": prompt_logprobs_dict or {},
-        }
-        out = ModelRunnerOutput(**kw)
+        out = ModelRunnerOutput(
+            req_ids=req_ids,
+            req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
+            sampled_token_ids=[[t] for t in sampled],
+            logprobs=built_logprobs,
+            prompt_logprobs_dict=prompt_logprobs_dict or {},
+        )
         self._last_model_output = out
         return out
 

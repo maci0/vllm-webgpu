@@ -76,9 +76,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def _layer_key_prefix(self, layer_idx: int) -> str:
         return self._pk(layer_idx)
 
-    def load_weights(self, path: str) -> None:
-        super().load_weights(path)
-
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
         # Try decoder prefix first, fall back to standard
@@ -188,11 +185,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         num_tokens: int,
     ) -> "WebGPUBuffer":
         """DiffusionGemma transformer layer with shared + MoE FFN."""
-        import wgpu as wgpu_lib
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
         sc = self._sc
         lp = self._lp[layer_idx]
         hidden = self.hidden_size
@@ -374,7 +367,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 router_scale_w = self.weights.get(f"{p}.router.scale")
                 router_in = sc["o_proj_out"]   # reuse free scratch (hidden, f16)
                 if router_scale_w is not None:
-                    root_size = math.pow(hidden, -0.5)
+                    root_size = hidden ** -0.5
                     self._dispatch("router_norm_f32in",
                                    [shared_residual, router_scale_w, router_in],
                                    {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt,

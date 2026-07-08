@@ -245,13 +245,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         positions: np.ndarray,
         attn_metadata: object,
     ) -> np.ndarray:
-        import wgpu as wgpu_lib
-
         dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
         hidden = self.hidden_size
         vocab = self.vocab_size
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
         self._hstate = 0
 

@@ -63,7 +63,6 @@ class WebGPUWorker(WorkerBase):
         rank: int,
         distributed_init_method: str,
         is_driver_worker: bool = False,
-        **kwargs: Any,
     ) -> None:
         super().__init__(
             vllm_config=vllm_config,

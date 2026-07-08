@@ -138,8 +138,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         if ctx_len <= 0:
             ctx_len = num_tokens
 
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        _rms_base = self._rms_consts
 
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
         dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())

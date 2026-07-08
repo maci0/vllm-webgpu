@@ -57,40 +57,33 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # Build model
     print("\nBuilding model...")
+    from vllm_webgpu.v1.model_runner import ARCH_MAP as _FAMILY_MAP
     from vllm_webgpu.models.llama import LlamaWebGPUModel
     from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
     from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
     from vllm_webgpu.models.diffusion_gemma import DiffusionGemmaWebGPUModel
     from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel
+
+    _FAMILY_TO_CLASS = {
+        "llama": LlamaWebGPUModel,
+        "gemma4": Gemma4WebGPUModel,
+        "qwen35": Qwen35WebGPUModel,
+        "diffusion_gemma": DiffusionGemmaWebGPUModel,
+        "nemotron_h": NemotronHWebGPUModel,
+    }
     try:
         from vllm_webgpu.models.mixtral import MixtralWebGPUModel
         from vllm_webgpu.models.gpt_oss import GptOssWebGPUModel
-        _HAS_MIXTRAL = True
+        _FAMILY_TO_CLASS["mixtral"] = MixtralWebGPUModel
+        _FAMILY_TO_CLASS["gpt_oss"] = GptOssWebGPUModel
     except ImportError:
-        _HAS_MIXTRAL = False
+        pass
 
-    ARCH_MAP = {
-        "LlamaForCausalLM":                      LlamaWebGPUModel,
-        "Qwen2ForCausalLM":                       LlamaWebGPUModel,
-        "Qwen3ForCausalLM":                       LlamaWebGPUModel,
-        "Qwen3_5ForConditionalGeneration":         Qwen35WebGPUModel,
-        "Gemma3ForCausalLM":                      Gemma4WebGPUModel,
-        "Gemma3ForConditionalGeneration":          Gemma4WebGPUModel,
-        "Gemma4ForCausalLM":                      Gemma4WebGPUModel,
-        "Gemma4UnifiedForConditionalGeneration":   Gemma4WebGPUModel,
-        "Gemma4ForConditionalGeneration":          Gemma4WebGPUModel,
-        "DiffusionGemmaForBlockDiffusion":         DiffusionGemmaWebGPUModel,
-        "NemotronHForCausalLM":                    NemotronHWebGPUModel,
-    }
-    if _HAS_MIXTRAL:
-        ARCH_MAP["MistralForCausalLM"]  = MixtralWebGPUModel
-        ARCH_MAP["MixtralForCausalLM"]  = MixtralWebGPUModel
-        ARCH_MAP["GptOssForCausalLM"]   = GptOssWebGPUModel
-
-    ModelClass = ARCH_MAP.get(arch)
+    family = _FAMILY_MAP.get(arch)
+    ModelClass = _FAMILY_TO_CLASS.get(family) if family else None
     if ModelClass is None:
         raise NotImplementedError(
-            f"Architecture {arch!r} not supported. Supported: {sorted(ARCH_MAP)}")
+            f"Architecture {arch!r} not supported. Supported: {sorted(_FAMILY_MAP)}")
 
     model = ModelClass(cfg, device, pipeline_cache)
 
@@ -264,7 +257,4 @@ if __name__ == "__main__":
 
     from vllm_webgpu.models.base import BaseWebGPUModel
     model_path = BaseWebGPUModel._resolve_model_path(args.model)
-    if not Path(model_path).exists():
-        from huggingface_hub import snapshot_download
-        model_path = snapshot_download(args.model)
     run(model_path, args.prompt, args.max_tokens, args.temperature)

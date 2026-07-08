@@ -103,14 +103,14 @@ bt = np.array(blk_ids, dtype=np.uint32)
 
 print("Running prefill...")
 t0 = time.perf_counter()
-for i, tok in enumerate(tok_ids):
+for i, token_id in enumerate(tok_ids):
     slot = blk_ids[i // block_size] * block_size + (i % block_size)
 
     class _PM:
         _s = slot; _b = bt; _c = i + 1
         slot_mapping = [_s]; block_tables = [_b]; max_decode_seq_len = _c
 
-    logits = model.forward(np.array([tok], dtype=np.uint32), np.array([i], dtype=np.uint32), _PM())
+    logits = model.forward(np.array([token_id], dtype=np.uint32), np.array([i], dtype=np.uint32), _PM())
 
 _has_gpu_argmax = getattr(model, 'logit_returns_token_id', False)
 

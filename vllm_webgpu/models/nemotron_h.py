@@ -100,10 +100,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                  getattr(model_config, "layer_types", None) or [])
         )
         if _block_list:
-            _map = {"M": "mamba", "*": "attention", "-": "mlp", "E": "moe",
-                    "mamba": "mamba", "attention": "attention",
-                    "mlp": "mlp", "moe": "moe"}
-            self._layer_types: list[str] = [_map.get(t, "unknown") for t in _block_list]
+            self._layer_types: list[str] = list(_block_list)
         else:
             pattern = getattr(model_config, "hybrid_override_pattern", "")
             self._layer_types = self._parse_hybrid_pattern(pattern)
@@ -119,6 +116,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._ssm_states: dict[int, "WebGPUBuffer"] = {}
 
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
+        self._rms_base: dict = {
+            "HIDDEN_DIM": self.hidden_size,
+            "VALS_PER_THREAD": min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0,
+        }
         self._init_scratch_buffers(max_ctx)
 
     # ── Pattern parsing ───────────────────────────────────────────────────────
@@ -425,13 +426,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             ctx_len = num_tokens
 
         vocab = self.vocab_size
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
 
         if num_tokens > 1:
             return self._prefill_forward(
                 input_ids, positions, attn_metadata,
-                num_tokens, ctx_len, vocab, _rms_base,
+                num_tokens, ctx_len, vocab, self._rms_base,
             )
 
         # Decode path (T=1): zero-alloc hot path via pre-allocated buffers.
@@ -465,7 +464,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 [pre["x"],
                  self.weights["model.layers.0.norm.weight"],
                  self._sc["normed"]],
-                _rms_base,
+                self._rms_base,
                 (num_tokens, 1, 1),
             )
 
@@ -476,14 +475,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 normed_x, x_buf = self._layer_dispatch(
                     i, normed_x, x_buf,
                     pre["pos"], pre["slot_map"], pre["bt"],
-                    ctx_len, num_tokens, _rms_base,
+                    ctx_len, num_tokens, self._rms_base,
                 )
 
             # Final norm: x_buf holds the fully accumulated residual after all layers.
             self._dispatch(
                 "rms_norm",
                 [x_buf, self.weights["model.norm_f.weight"], pre["norm_out"]],
-                _rms_base,
+                self._rms_base,
                 (num_tokens, 1, 1),
             )
 

@@ -72,8 +72,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         3. MoE FFN: delegates to _moe_ffn_layer which uses mlp.experts prefix
            and respects swiglu_limit via the CLAMP_MAX shader override.
         """
-        import math
-
         # Per-layer effective context (sliding vs full attention).
         eff = self._layer_eff_ctx(layer_idx, ctx_len)
 
@@ -83,11 +81,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
         inter = self.intermediate_size
-        ln_rope = math.log(self.rope_theta)
-
-        _wg_size = 256
-        _vpt = min((hidden + _wg_size - 1) // _wg_size, 16) if hidden <= _wg_size * 16 else 0
-        _rms_c = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        ln_rope = self._ln_rope_theta
+        _rms_c = self._rms_consts
 
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
@@ -315,7 +310,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                     {"N": add_n},
                     ((add_n // 4 + 255) // 256, 1, 1),
                 )
-                normed_out = sc["normed"]  # stale; unused after last layer
+                normed_out = out
 
         self._hstate = (self._hstate + 2) % 3
         return normed_out, out

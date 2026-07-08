@@ -88,7 +88,6 @@ class BaseWebGPUModel(ABC):
         self._gpu_sample_tok: "WebGPUBuffer | None" = None    # [1] u32 next token (STORAGE)
         self._gpu_sample_vocab: int = 0
         self._gpu_sample_staging = None   # MAP_READ staging buffer for zero-sync readback
-        self._gpu_sample_tok_cpu: int = 0  # cached CPU result after readback
         self._prof_stats: dict[str, list[float]] = defaultdict(list)  # shader -> [ms, ...]
         self._prof_current_label: str = ""  # set per _batched_dispatch block
         # Dummy bias buffer for matmul_quant binding 4 (allocated on first use).

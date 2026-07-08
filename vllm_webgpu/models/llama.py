@@ -443,12 +443,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         normed_x = b["normed"]
         x_res    = b["x"]
 
-        # Build list of layer-index chunks.
-        chunks: list[list[int]] = []
-        ci = 0
-        while ci < self.num_layers:
-            chunks.append(list(range(ci, min(ci + _CHUNK, self.num_layers))))
-            ci += _CHUNK
+        chunks = [list(range(i, min(i + _CHUNK, self.num_layers))) for i in range(0, self.num_layers, _CHUNK)]
 
         for chunk_idx, chunk_layers in enumerate(chunks):
             with self._batched_dispatch():

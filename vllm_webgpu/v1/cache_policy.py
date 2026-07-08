@@ -58,45 +58,20 @@ class WebGPUCachePlanner:
         rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
         return WebGPUBuffer.empty(dev, size, usage=rw)
 
-    def allocate_kv_pool(
-        self,
-        num_blocks: int,
-        num_layers: int,
-        block_size: int,
-        num_kv_heads: int,
-        head_dim: int,
-    ) -> None:
-        """Pre-allocate all K/V cache buffers for all layers at startup."""
-        dev = self._worker.wgpu_device.wgpu_device
-        bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2  # f16
-
-        model = self._worker.model_runner.model
-        model.kv_pool.clear()
-
-        for _ in range(num_layers):
-            k_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
-            v_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
-            model.kv_pool.append((k_buf, v_buf))
-
-        total_mb = (bytes_per_layer * num_layers * 2) // 2**20
-        logger.info(
-            "KV cache: %d blocks × %d layers × %d KV heads × %d head_dim = %dMB",
-            num_blocks, num_layers, num_kv_heads, head_dim, total_mb,
-        )
-
     def allocate_kv_pool_hybrid(
         self,
         num_blocks: int,
         num_layers: int,
-        layer_types: list,
         block_size: int,
         num_kv_heads: int,
         head_dim: int,
+        layer_types: list | None = None,
     ) -> None:
-        """Allocate KV pool for a hybrid model (e.g. Qwen3.5).
+        """Allocate KV pool for all layers.
 
-        Full-attention layers get real KV cache buffers.
-        Linear-attention layers get 16-byte placeholder buffers (never accessed by GDN).
+        When layer_types is None (or all entries are "full_attention"), every layer
+        gets a full KV cache buffer.  When layer_types is provided, non-full-attention
+        layers get 16-byte placeholder buffers (never accessed during inference).
         """
         dev = self._worker.wgpu_device.wgpu_device
         bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2
@@ -106,7 +81,8 @@ class WebGPUCachePlanner:
 
         full_attn_count = 0
         for i in range(num_layers):
-            if layer_types[i] == "full_attention":
+            is_full = layer_types is None or layer_types[i] == "full_attention"
+            if is_full:
                 k_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
                 v_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
                 full_attn_count += 1
@@ -115,8 +91,15 @@ class WebGPUCachePlanner:
                 v_buf = self._alloc_rw_buffer(dev, 16)
             model.kv_pool.append((k_buf, v_buf))
 
-        total_mb = (bytes_per_layer * full_attn_count * 2) // 2**20
-        logger.info(
-            "KV cache (hybrid): %d full-attn × %d blocks × %d KV heads × %d head_dim = %dMB",
-            full_attn_count, num_blocks, num_kv_heads, head_dim, total_mb,
-        )
+        if layer_types is None:
+            total_mb = (bytes_per_layer * num_layers * 2) // 2**20
+            logger.info(
+                "KV cache: %d blocks × %d layers × %d KV heads × %d head_dim = %dMB",
+                num_blocks, num_layers, num_kv_heads, head_dim, total_mb,
+            )
+        else:
+            total_mb = (bytes_per_layer * full_attn_count * 2) // 2**20
+            logger.info(
+                "KV cache (hybrid): %d full-attn × %d blocks × %d KV heads × %d head_dim = %dMB",
+                full_attn_count, num_blocks, num_kv_heads, head_dim, total_mb,
+            )

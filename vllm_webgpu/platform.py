@@ -80,14 +80,10 @@ class WebGPUPlatform(_Platform):
         return 1
 
     @classmethod
-    def get_device_capability(cls, device_id: int = 0) -> "_DeviceCapability | None":
-        return None
-
-    @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
         try:
-            import psutil
-            return psutil.virtual_memory().total
+            from vllm.utils.mem_utils import get_cpu_memory
+            return get_cpu_memory()
         except Exception:
             return 0
 

@@ -490,11 +490,11 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
             dtype_str = header[name]["dtype"]
             t = sf.get_tensor(name)        # torch.Tensor on CPU
             if dtype_str == "BF16":
-                return t.to(torch.float32).numpy().reshape(t.shape)
+                return t.to(torch.float32).numpy()
             if "F8_" in dtype_str:
                 # FP8 variants (F8_E4M3, F8_E4M3FN, …): return raw uint8 bytes for
                 # the LUT-based decoder in _fp8_e4m3_to_f32.
-                return t.view(torch.uint8).numpy().reshape(t.shape)
+                return t.view(torch.uint8).numpy()
             return t.numpy()
 
         def _pad4(data: bytes) -> bytes:
@@ -675,8 +675,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                         sc_gn = sc.astype(np.float16)      # [G, N] f16
                         _upload_int32(qw_t, f"{base}.weight", weights)
                         _upload_f16(sc_gn, f"{base}.weight.scales", weights)
-                        weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                        weights["__quant_meta__"][base] = {"fmt": "gptq_sym", "group_size": group_size}
+                        weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
                     elif fmt == "awq" and qz is not None and g_idx is None:
                         # GPU AWQ: check if qzeros decode to symmetric (all zero_point=8).
@@ -694,8 +693,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                         sc_gn = sc.astype(np.float16) if sc.ndim == 2 else sc  # [G, N]
                         _upload_int32(qw, f"{base}.weight", weights)    # [K, N//8]
                         _upload_f16(sc_gn, f"{base}.weight.scales", weights)  # [G, N]
-                        weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                        weights["__quant_meta__"][base] = {"fmt": "awq_sym", "group_size": group_size}
+                        weights.setdefault("__quant_meta__", {})[base] = {"fmt": "awq_sym", "group_size": group_size}
                         logger.debug("GPU AWQ: %s (K=%d, N=%d, G=%d)", base, K_, N_, G_)
                     else:
                         # Fall back to CPU dequantization.
@@ -744,8 +742,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                     ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
                     _upload_u8(wp, f"{base}.weight", weights)
                     _upload_f16(ws_f16, f"{base}.weight.scales", weights)
-                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                    weights["__quant_meta__"][base] = {
+                    weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nvfp4_gpu", "global_scale": wgs,
                         "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
                     logger.debug("GPU NVFP4: %s (N=%d, K=%d, wgs=%.4f)", base, N_, K_, wgs)
@@ -785,8 +782,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                     ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
                     _upload_u8(wp, f"{base}.weight", weights)
                     _upload_f16(ws_f16, f"{base}.weight.scales", weights)
-                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                    weights["__quant_meta__"][base] = {
+                    weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nvfp4_gpu", "global_scale": wgs,
                         "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
                 except Exception as exc:
@@ -882,8 +878,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                     K_ = K2_ * 2
                     _upload_u8(wp, f"{base}.weight", weights)
                     _upload_f16(ws_f16, f"{base}.weight.scales", weights)
-                    weights["__quant_meta__"] = weights.get("__quant_meta__", {})
-                    weights["__quant_meta__"][base] = {
+                    weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nvfp4_gpu", "global_scale": 1.0, "group_size": 32}
                     logger.debug("GPU MXFP4: %s (N=%d, K=%d)", base, N_, K_)
                 except Exception as exc:

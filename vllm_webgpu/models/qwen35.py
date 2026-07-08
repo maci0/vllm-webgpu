@@ -128,6 +128,9 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
 
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
+        self._vpt: int = min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0
+        self._rms_consts: dict = {}  # populated in _postprocess_weights after _gemma_norm is known
+        self._lm_head_w = None  # resolved in load_weights after weights are available
         self._init_scratch_buffers(max_ctx)
 
         # Persistent GPU buffers for recurrent state (allocated after load_weights).
@@ -176,8 +179,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "v_buf":      mk(T * KV * 2),
             "q_rope":     mk(T * Q * 2),
             "k_rope":     mk(T * KV * 2),
-            "scores_buf": mk(NQ * max_ctx * 2),
-            "sm_buf":     mk(NQ * max_ctx * 2),
             "attn_out":   mk(T * Q * 2),
             "q_gate_buf": mk(T * Q * 2),  # attention output gate (silu(gate)*attn_out)
             "o_proj_out": mk(T * H * 2),
@@ -203,7 +204,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             "dummy_scales": mk(8),
         }
 
-        if self._is_moe and self._moe_num_experts > 0 and self._moe_k > 0:
+        if self._is_moe:
             _moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
             self._sc.update({
                 "moe_router_out":  mk(self._moe_num_experts * 2),  # [N_E] f16 router logits
@@ -280,6 +281,17 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                     self.weights[q_proj_key] = WebGPUBuffer.from_numpy(dev, q_arr, usage=rw)
                     gate_key = f"{p}.self_attn.q_gate_proj.weight"
                     self.weights[gate_key] = WebGPUBuffer.from_numpy(dev, gate_arr, usage=rw)
+
+        self._rms_consts = {
+            "HIDDEN_DIM": self.hidden_size,
+            "VALS_PER_THREAD": self._vpt,
+            "GEMMA_NORM": self._gemma_norm,
+        }
+        self._lm_head_w = (
+            self.weights.get("lm_head.weight")
+            or self.weights.get("model.lm_head.weight")
+            or self.weights["model.embed_tokens.weight"]
+        )
 
     def _alloc_lin_states(self) -> None:
         """Allocate GPU buffers for persistent GDN recurrent state.
@@ -399,9 +411,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         k_base = self._lin_k_heads * self._lin_k_dim  # K starts after Q
         v_base = self._lin_key_dim * 2                # V starts after Q+K
 
-        _rms_h = {"HIDDEN_DIM": hidden,
-                  "VALS_PER_THREAD": min((hidden + 255) // 256, 16) if hidden <= 4096 else 0,
-                  "GEMMA_NORM": self._gemma_norm}
+        _rms_h = self._rms_consts
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # normed_x is already the pre-normalized input from the caller.
@@ -720,8 +730,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         logits_buf = pre["logits"]
         vocab = self.vocab_size
 
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm}
+        _rms_base = self._rms_consts
 
         # Start the first command encoder manually.
         # Layer methods see _active_encoder is not None → their _batched_dispatch
@@ -750,12 +759,9 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             [x_buf, self.weights["model.norm.weight"], norm_out],
             _rms_base, (num_tokens, 1, 1))
 
-        lm_head_w = (self.weights.get("lm_head.weight")
-                     or self.weights.get("model.lm_head.weight")
-                     or self.weights["model.embed_tokens.weight"])
         self._dispatch(
             "matmul_quant",
-            [norm_out, lm_head_w, norm_out, logits_buf],
+            [norm_out, self._lm_head_w, norm_out, logits_buf],
             {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
             ((vocab + 255) // 256, 1, 1))
         self._dispatch(
@@ -803,9 +809,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # keeping each encoder well under Metal's per-command-buffer timeout.
         _CHUNK = 6
 
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt,
-                     "GEMMA_NORM": self._gemma_norm}
+        _rms_base = self._rms_consts
         sc = self._sc
         pre = self._pre
 
@@ -829,9 +833,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                 dev, np.array([attn_metadata.slot_mapping[tc]], dtype=np.uint32),
                 usage=rw))
 
-        lm_head_w = (self.weights.get("lm_head.weight")
-                     or self.weights.get("model.lm_head.weight")
-                     or self.weights["model.embed_tokens.weight"])
         self._ensure_sample_buf(vocab)
 
         for chunk_start in range(0, num_tokens, _CHUNK):
@@ -881,7 +882,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                     pre["norm_out"]],
                                    _rms_base, (1, 1, 1))
                     self._dispatch("matmul_quant",
-                                   [pre["norm_out"], lm_head_w,
+                                   [pre["norm_out"], self._lm_head_w,
                                     pre["norm_out"], pre["logits"]],
                                    {"K": hidden, "N": vocab,
                                     "USE_QUANT": 0, "SPLIT_K": 0},
@@ -954,8 +955,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # Single outer encoder for the entire forward pass — one queue.submit().
         # Inner _batched_dispatch() calls in layer methods are re-entrant no-ops
         # when profiling=False (default), recording all dispatches here.
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_base = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm}
+        _rms_base = self._rms_consts
         sc = self._sc
 
         with self._batched_dispatch():
@@ -983,13 +983,10 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            [x_buf, self.weights["model.norm.weight"], norm_out],
                            _rms_base, (num_tokens, 1, 1))
 
-            lm_head_w = (self.weights.get("lm_head.weight")
-                         or self.weights.get("model.lm_head.weight")
-                         or self.weights["model.embed_tokens.weight"])
             # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
-                           [norm_out, lm_head_w, norm_out, logits_buf],
+                           [norm_out, self._lm_head_w, norm_out, logits_buf],
                            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
             # GPU argmax inside the same encoder — 4-byte readback.
@@ -1040,8 +1037,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         add_n = num_tokens * hidden
         gelu_n = num_tokens * inter
 
-        _vpt = min((hidden + 255) // 256, 16) if hidden <= 4096 else 0
-        _rms_h = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm}
+        _rms_h = self._rms_consts
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         with self._batched_dispatch():
