@@ -157,11 +157,15 @@ stats = model._prof_stats
 if stats:
     total = sum(sum(v)/len(v) for v in stats.values())
 
-    # Aggregate by category (strip L00_ prefix)
+    # Aggregate by category (strip L00_ prefix; labels without a suffix, e.g.
+    # "L00", are grouped under "layer" so that per_layer divides by the actual
+    # number of labels in that category, not the total layer count).
     cat_totals: dict = defaultdict(float)
+    cat_layer_count: dict = defaultdict(int)
     for label, times in stats.items():
-        cat = label.split("_", 1)[1] if "_" in label else label  # "L00_attn" → "attn"
+        cat = label.split("_", 1)[1] if "_" in label else "layer"  # "L00_attn" → "attn"
         cat_totals[cat] += sum(times) / len(times)
+        cat_layer_count[cat] += 1
 
     print(f"Total GPU time: {total:.2f} ms")
     print(f"Python overhead: {avg_step_ms - total:.2f} ms")
@@ -169,7 +173,8 @@ if stats:
     print(f"\nBreakdown by category (summed across {num_layers} layers):")
     for cat, ms in sorted(cat_totals.items(), key=lambda x: -x[1]):
         pct = 100 * ms / total
-        per_layer = ms / num_layers
+        count = cat_layer_count[cat]
+        per_layer = ms / count
         print(f"  {cat:<12s} {ms:7.2f} ms total  {per_layer:.3f} ms/layer  {pct:.1f}%")
 
     print(f"\nBottleneck analysis:")
