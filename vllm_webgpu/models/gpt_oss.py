@@ -40,13 +40,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or self.intermediate_size
         self._clamp_extra: dict = {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
 
-    def _layer_eff_ctx(self, layer_idx: int, ctx_len: int) -> int:
-        """Return effective context for this layer respecting per-layer attention type."""
-        if self._layer_types and layer_idx < len(self._layer_types):
-            if self._layer_types[layer_idx] == "full_attention":
-                return ctx_len
-        return self._effective_ctx_len(ctx_len)
-
     def _attn_block(
         self,
         layer_idx: int,
@@ -66,7 +59,9 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         (free once the Q bias phase is done). Per-layer context length respects the
         layer_types list: full_attention layers ignore the sliding window cap.
         """
-        eff = self._layer_eff_ctx(layer_idx, ctx_len)
+        eff = (ctx_len if (self._layer_types and layer_idx < len(self._layer_types)
+               and self._layer_types[layer_idx] == "full_attention")
+               else self._effective_ctx_len(ctx_len))
 
         sc = self._sc
         hidden = self.hidden_size
@@ -149,7 +144,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
              self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
             {"K": q_dim, "N": hidden, "USE_QUANT": uq,
              **qi},
-            _gemv_wg(hidden, uq),
+            _gemv_wg(hidden),
         )
 
         # O-projection bias: write to gate_buf (free now — Q bias phase is done).

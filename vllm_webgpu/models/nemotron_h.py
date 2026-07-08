@@ -23,7 +23,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     Architecture: NemotronHForCausalLM from vLLM / HuggingFace.
     Each layer is one of:
       M = Mamba-2 SSM  (in_proj -> conv -> SSM -> gated_norm -> out_proj)
-      * = Attention     (qkv_proj -> rope -> flash_attn -> o_proj)
+      * = Attention     (qkv_proj -> flash_attn -> o_proj)
       - = MLP-only      (up_proj -> relu^2 -> down_proj)
       E = MoE (not implemented; raises at runtime)
 
@@ -185,8 +185,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "q_buf":       mk(qd * 2),
             "k_buf":       mk(kd * 2),
             "v_buf":       mk(kd * 2),
-            "q_rope":      mk(qd * 2),
-            "k_rope":      mk(kd * 2),
             "attn_out":    mk(qd * 2),
 
             # MLP intermediates
@@ -202,22 +200,29 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def _init_mamba_states(self) -> None:
         """Allocate zero-initialized GPU buffers for each Mamba layer's state."""
+        import math
+        from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
 
+        conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
+            tp_world_size=1,
+            intermediate_size=self.mamba_int,
+            n_groups=self.n_groups,
+            num_heads=self.mamba_num_heads,
+            head_dim=self.mamba_head_dim,
+            state_size=self.ssm_state_size,
+            conv_kernel=self.conv_kernel,
+        )
+        conv_bytes = math.prod(conv_shape) * 2   # f16: 2 bytes per element
+        ssm_bytes  = math.prod(ssm_shape) * 4    # f32: 4 bytes per element
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
                 continue
-            # conv_state: [(kernel-1), conv_dim] f16
-            conv_bytes = (self.conv_kernel - 1) * self.conv_dim * 2
-            self._conv_states[i] = WebGPUBuffer.empty(
-                dev, max(conv_bytes, 8)            )
-            # ssm_state: [num_heads, head_dim, state_size] f32
-            ssm_bytes = self.mamba_num_heads * self.mamba_head_dim * self.ssm_state_size * 4
-            self._ssm_states[i] = WebGPUBuffer.empty(
-                dev, max(ssm_bytes, 8)            )
+            self._conv_states[i] = WebGPUBuffer.empty(dev, max(conv_bytes, 8))
+            self._ssm_states[i]  = WebGPUBuffer.empty(dev, max(ssm_bytes, 8))
 
     def reset_recurrent_states(self) -> None:
         """Zero all Mamba conv and SSM states. Call before each new request."""
@@ -493,8 +498,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             ctx_len = int(positions[-1]) + 1
 
         pre = self._pre
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes(),
@@ -644,7 +649,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(in_w, uq, self._dummy_scales_buf), sc["mamba_inproj"]],
             {"K": H, "N": self.in_proj_dim, "USE_QUANT": uq,
              **self._quant_extra(f"{p}.in_proj", uq)},
-            _gemv_wg(self.in_proj_dim, uq),
+            _gemv_wg(self.in_proj_dim),
         )
 
         # GPU-side byte copies to extract the three portions of in_proj output.
@@ -714,7 +719,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(out_w, uq2, self._dummy_scales_buf), sc["mixer_out"]],
             {"K": MI, "N": H, "USE_QUANT": uq2,
              **self._quant_extra(f"{p}.out_proj", uq2)},
-            _gemv_wg(H, uq2),
+            _gemv_wg(H),
         )
 
     def _attn_layer(
@@ -747,7 +752,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(qkv_w, uq, self._dummy_scales_buf), sc["qkv_buf"]],
             {"K": H, "N": total_qkv, "USE_QUANT": uq,
              **self._quant_extra(f"{p}.qkv_proj", uq)},
-            _gemv_wg(total_qkv, uq),
+            _gemv_wg(total_qkv),
         )
 
         # GPU-side extraction: split QKV buffer into Q, K, V.
@@ -792,7 +797,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(ow, uq2, self._dummy_scales_buf), sc["mixer_out"]],
             {"K": q_dim, "N": H, "USE_QUANT": uq2,
              **self._quant_extra(f"{p}.o_proj", uq2)},
-            _gemv_wg(H, uq2),
+            _gemv_wg(H),
         )
 
     def _mlp_layer(
@@ -820,7 +825,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(uw, uq, self._dummy_scales_buf), sc["up_buf"]],
             {"K": H, "N": I, "USE_QUANT": uq,
              **self._quant_extra(f"{p}.up_proj", uq)},
-            _gemv_wg(I, uq),
+            _gemv_wg(I),
         )
 
         # relu^2 element-wise activation
@@ -841,7 +846,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(dw, uq2, self._dummy_scales_buf), sc["mixer_out"]],
             {"K": I, "N": H, "USE_QUANT": uq2,
              **self._quant_extra(f"{p}.down_proj", uq2)},
-            _gemv_wg(H, uq2),
+            _gemv_wg(H),
         )
 
     # ── Prefill fallback ──────────────────────────────────────────────────────
@@ -872,9 +877,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             tok_ctx = int(positions[t]) + 1
 
             dev.queue.write_buffer(
-                pre["ids"].buf, 0, input_ids[t:t+1].astype(np.uint32).tobytes())
+                pre["ids"].buf, 0, input_ids[t:t+1].astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(
-                pre["pos"].buf, 0, positions[t:t+1].astype(np.uint32).tobytes())
+                pre["pos"].buf, 0, positions[t:t+1].astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(
                 pre["slot_map"].buf, 0,
                 np.array(attn_metadata.slot_mapping[t:t+1], dtype=np.uint32).tobytes())

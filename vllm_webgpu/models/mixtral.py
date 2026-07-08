@@ -4,6 +4,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+try:
+    import wgpu as _wgpu_lib
+except ImportError:
+    _wgpu_lib = None  # type: ignore[assignment]
+
 from vllm_webgpu.models.base import _gemv_wg
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 
@@ -41,13 +46,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         pipeline_cache: "PipelineCache",
     ) -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
-        self._sw: int | None = getattr(model_config, "sliding_window", None) or None
+        self._sw: int | None = getattr(model_config, "sliding_window", None)
         self._num_experts: int = getattr(model_config, "num_local_experts", 0)
         self._top_k: int = getattr(model_config, "num_experts_per_tok", 0)
         self._is_moe: bool = self._num_experts > 0 and self._top_k > 0
 
         if self._is_moe:
-            import wgpu as _wgpu_lib
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
             dev = self.wgpu_device.wgpu_device
@@ -62,12 +66,14 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 self.intermediate_size,
                 getattr(model_config, "moe_intermediate_size", 0),
             )
+            # expert_gate and expert_up are only needed on the quantized path
+            # (uq_g != 0 or uq_u != 0). Allocate lazily on first use in
+            # _moe_ffn_layer to avoid wasting GPU memory for f16 MoE models.
+            self._moe_act_sz: int = _moe_act_sz
             self._moe_sc: dict[str, "WebGPUBuffer"] = {
                 "router_out":   mk(self._num_experts * 2),  # [N_E] f16 router logits
                 "topk_idx":     mk(self._top_k * 4),         # [K] u32 expert indices
                 "topk_w":       mk(self._top_k * 4),         # [K] f32 softmax weights
-                "expert_gate":  mk(_moe_act_sz * 2),         # [max_inter] f16 gate proj
-                "expert_up":    mk(_moe_act_sz * 2),         # [max_inter] f16 up proj
                 "expert_act":   mk(_moe_act_sz * 2),         # [max_inter] f16 activated
                 "expert_out":   mk(self.hidden_size * 2),    # [hidden] f16 accumulated
                 "expert_tmp":   mk(self.hidden_size * 2),    # [hidden] f16 per-expert
@@ -252,7 +258,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
              self._scales_buf(rw_k, uq_r, self._dummy_scales_buf),
              msc["router_out"]],
             {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **qi_r},
-            _gemv_wg(N_E, uq_r),
+            _gemv_wg(N_E),
         )
         self._dispatch(
             "topk_sort",
@@ -273,7 +279,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         dev.queue.on_submitted_work_done_sync()
 
         # Map the pre-allocated staging buffers — no extra GPU submit needed.
-        import wgpu as _wgpu_lib
         self._topk_idx_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
         raw_idx = np.frombuffer(bytes(self._topk_idx_staging.read_mapped()), dtype=np.uint32).copy()
         self._topk_idx_staging.unmap()
@@ -301,6 +306,15 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 f"Override _init_scratch_buffers to allocate max(intermediate_size, "
                 f"moe_intermediate_size) elements."
             )
+
+        # Lazy-allocate expert_gate and expert_up: only needed on the quantized path
+        # (uq != 0 for gate or up weights). For f16 MoE models they would otherwise
+        # sit allocated-but-unused for the entire model lifetime.
+        if "expert_gate" not in msc:
+            from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WBuf
+            _act_sz = self._moe_act_sz
+            msc["expert_gate"] = _WBuf.empty(dev, max(_act_sz * 2, 8))
+            msc["expert_up"]   = _WBuf.empty(dev, max(_act_sz * 2, 8))
 
         # Without a shared expert, zero-initialize the accumulation buffer so
         # the first expert's weighted output accumulates from zero.
@@ -339,7 +353,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                          self._scales_buf(sgw_k, uq_sg, self._dummy_scales_buf),
                          msc["expert_gate"]],
                         {"K": hidden, "N": _sinter, "USE_QUANT": uq_sg, **qi_sg},
-                        _gemv_wg(_sinter, uq_sg),
+                        _gemv_wg(_sinter),
                     )
                     self._dispatch(
                         "matmul_quant",
@@ -347,7 +361,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                          self._scales_buf(suw_k, uq_su, self._dummy_scales_buf),
                          msc["expert_up"]],
                         {"K": hidden, "N": _sinter, "USE_QUANT": uq_su, **qi_su},
-                        _gemv_wg(_sinter, uq_su),
+                        _gemv_wg(_sinter),
                     )
                     self._dispatch(
                         "gelu_mul",
@@ -362,7 +376,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     [msc["expert_act"], self.weights[sdw_k],
                      self._scales_buf(sdw_k, uq_sd, self._dummy_scales_buf), msc["expert_out"]],
                     {"K": _sinter, "N": hidden, "USE_QUANT": uq_sd, **qi_sd},
-                    _gemv_wg(hidden, uq_sd),
+                    _gemv_wg(hidden),
                 )
             else:
                 # Shared expert weights not loaded; fall back to zero-init.
@@ -403,7 +417,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                      self._scales_buf(w1_key, uq_g, self._dummy_scales_buf),
                      msc["expert_gate"]],
                     {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
-                    _gemv_wg(inter, uq_g),
+                    _gemv_wg(inter),
                 )
                 self._dispatch(
                     "matmul_quant",
@@ -411,7 +425,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                      self._scales_buf(w3_key, uq_u, self._dummy_scales_buf),
                      msc["expert_up"]],
                     {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
-                    _gemv_wg(inter, uq_u),
+                    _gemv_wg(inter),
                 )
                 self._dispatch(
                     "gelu_mul",
@@ -440,7 +454,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                      self._scales_buf(w2_key, uq_d, self._dummy_scales_buf),
                      msc["expert_tmp"]],
                     {"K": inter, "N": hidden, "USE_QUANT": uq_d, **qi_d},
-                    _gemv_wg(hidden, uq_d),
+                    _gemv_wg(hidden),
                 )
                 self._dispatch(
                     "moe_accumulate",

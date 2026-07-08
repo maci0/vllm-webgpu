@@ -6,7 +6,7 @@ import numpy as np
 
 from vllm_webgpu.models.base import _gemv_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
-from vllm_webgpu.quant.weight_loader import _GDN_BF16 as _GDN_BF16_FLAG
+import vllm_webgpu.envs as _webgpu_envs
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -103,7 +103,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # GDN_BF16: when set, GDN projection matmuls use bf16-preserved weight buffers
         # (key + "__bf16") instead of the default f16 version. Falls back silently if
         # the __bf16 buffer is absent (model not BF16 or flag off).
-        self._gdn_bf16: bool = _GDN_BF16_FLAG
+        self._gdn_bf16: bool = _webgpu_envs.GDN_BF16
 
         # Persistent GPU buffers for recurrent state (allocated after load_weights).
         # SSM state:  [NUM_V_HEADS, K_DIM, V_DIM] f32 = 2MB per linear-attn layer
@@ -549,7 +549,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 dev, np.array([attn_metadata.slot_mapping[tc]], dtype=np.uint32)))
 
         greedy = getattr(self, "_greedy_decode", True)
-        self._ensure_sample_buf(vocab)
+        if greedy:
+            self._ensure_sample_buf(vocab)
 
         for chunk_start in range(0, num_tokens, _CHUNK):
             chunk_end = min(chunk_start + _CHUNK, num_tokens)
@@ -727,7 +728,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                 self._scales_buf(gate_wk, uq_gate, self._dummy_scales_buf),
                                 sc["q_gate_buf"]],
                                {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, **qi_gate},
-                               _gemv_wg(q_dim, uq_gate))
+                               _gemv_wg(q_dim))
 
         # Per-head RMSNorm + RoPE with Qwen3.5-specific constants.
         _q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
@@ -798,7 +799,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                        [o_proj_in, self.weights[w_key],
                         self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
                        {"K": q_dim, "N": hidden, "USE_QUANT": uq, **qi},
-                       _gemv_wg(hidden, uq))
+                       _gemv_wg(hidden))
 
         return sc["o_proj_out"]
 

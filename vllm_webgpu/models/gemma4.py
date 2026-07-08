@@ -1,7 +1,6 @@
 from __future__ import annotations
 import itertools
 import logging
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -117,7 +116,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
-        self._ln_rope_theta: float = math.log(float(self.rope_theta))
+        self._ln_rope_theta: float = float(np.log(float(self.rope_theta)))
 
     def _scratch_token_count(self) -> int:
         """Number of tokens to size T-dependent scratch buffers for. Override in subclasses."""
@@ -883,7 +882,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 _use_fused_qkv = (uq_q == 0 and uq_k == 0 and uq_v == 0)
             else:
                 vw = None
-                uq_v = 0
                 _use_fused_qkv = False
 
             if _use_fused_qkv:
@@ -905,14 +903,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 self._scales_buf(qw, uq, normed_x), sc["q_buf"]],
                                {"K": hidden, "N": q_dim, "USE_QUANT": uq,
                                 **self._quant_extra(f"{p}.self_attn.q_proj", uq)},
-                               _gemv_wg(q_dim, uq))
+                               _gemv_wg(q_dim))
                 uq = uq_k
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[kw],
                                 self._scales_buf(kw, uq, normed_x), sc["k_buf"]],
                                {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
                                 **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
-                               _gemv_wg(kv_dim, uq))
+                               _gemv_wg(kv_dim))
                 if has_v:
                     uq = uq_v
                     self._dispatch("matmul_quant",
@@ -920,7 +918,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                     self._scales_buf(vw, uq, normed_x), sc["v_buf"]],
                                    {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
                                     **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
-                                   _gemv_wg(kv_dim, uq))
+                                   _gemv_wg(kv_dim))
                     _v_src = sc["v_buf"]
                 else:
                     _v_src = sc["k_buf"]  # global attention: V = K
@@ -1025,7 +1023,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             self._scales_buf(ow, uq, sc["attn_out"]), sc["o_proj_out"]],
                            {"K": q_dim, "N": hidden, "USE_QUANT": uq,
                             **self._quant_extra(f"{p}.self_attn.o_proj", uq)},
-                           _gemv_wg(hidden, uq))
+                           _gemv_wg(hidden))
 
             # Correct Gemma4 attention sublayer (matches HF Gemma3DecoderLayer.forward):
             #   residual = x
@@ -1085,7 +1083,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                     self._scales_buf(w_k, uq2, ffn_normed), out_b],
                                    {"K": hidden, "N": inter, "USE_QUANT": uq2,
                                     **self._quant_extra(f"{p}.mlp.{proj}", uq2)},
-                                   _gemv_wg(inter, uq2))
+                                   _gemv_wg(inter))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1),
                                shader_subdir="gemma")
@@ -1098,7 +1096,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
                            {"K": inter, "N": hidden, "USE_QUANT": uq,
                             **self._quant_extra(f"{p}.mlp.down_proj", uq)},
-                           _gemv_wg(hidden, uq))
+                           _gemv_wg(hidden))
 
             # Post-FFN norm on FFN output (before residual add), then fused residual + next pre-norm.
             # When post_ffw_w and next input_layernorm both exist (all non-last layers),

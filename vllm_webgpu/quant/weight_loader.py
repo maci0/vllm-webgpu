@@ -16,11 +16,11 @@ _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=np.int
 _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 
-# When set, GDN projection weights with BF16 dtype are uploaded in their native
-# bf16 bit pattern (packed u16 pairs → u32) under key + "__bf16", in addition to
-# the standard f16 version. The matmul_quant shader decodes them with
-# bitcast<f32>(word << 16u), preserving the full 8-bit bf16 exponent range.
-_GDN_BF16 = os.environ.get("GDN_BF16", "0") == "1"
+# GDN_BF16 is read lazily from envs.py so the environment variable is always
+# evaluated at the time of the upload call, not at module import time.
+def _gdn_bf16() -> bool:
+    import vllm_webgpu.envs as _envs
+    return _envs.GDN_BF16
 
 
 def _is_gdn_weight_key(key: str) -> bool:
@@ -59,13 +59,14 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
-    return sorted(
-        base
+    bases = {
+        k.removesuffix(".weight")
         for k in header
-        if k.endswith(".weight") and header[k].get("dtype") == "U8"
-        and (base := k.removesuffix(".weight"))
-        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
-    )
+        if k.endswith(".weight")
+        and header[k].get("dtype") == "U8"
+        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+    }
+    return sorted(bases)
 
 
 def _load_quant_cfg(config_path: Path) -> dict:
@@ -681,7 +682,7 @@ def load_safetensors_weights(
                 arr = sf.get_tensor(name).numpy()    # torch.float16 → np.float16
             elif dtype_str == "BF16":
                 t_bf16 = sf.get_tensor(name)
-                if _GDN_BF16 and _is_gdn_weight_key(name):
+                if _gdn_bf16() and _is_gdn_weight_key(name):
                     # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
                     # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
                     # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
@@ -709,7 +710,7 @@ def load_safetensors_weights(
                 _upload_u8(arr_u8, name, weights)
                 # Record int8 format in quant_meta for _uq() detection.
                 qmeta = weights.setdefault("__quant_meta__", {})
-                base_key = name[:-7] if name.endswith(".weight") else name
+                base_key = name.removesuffix(".weight")
                 qmeta.setdefault(base_key, {})["fmt"] = "int8_gpu"
                 # Load companion per-channel weight scale if present.
                 # compressed-tensors int8 (strategy=channel) stores a (N,) F32 scale at

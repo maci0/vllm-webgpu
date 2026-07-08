@@ -277,7 +277,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                     self._scales_buf(wk, uq, sc["normed"]), out_buf],
                                    {"K": hidden, "N": dim, "USE_QUANT": uq,
                                     **self._quant_extra(wk.removesuffix(".weight"), uq)},
-                                   _gemv_wg(dim, uq))
+                                   _gemv_wg(dim))
             # v_proj: global attention layers (no separate V; V=K) have no v_proj weight
             vw_key = f"{p}.self_attn.v_proj.weight"
             has_v_proj = vw_key in self.weights
@@ -298,7 +298,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                     sc["v_buf"]],
                                    {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
                                     **self._quant_extra(vw_key.removesuffix(".weight"), uq)},
-                                   _gemv_wg(kv_dim, uq))
+                                   _gemv_wg(kv_dim))
                 v_src = sc["v_buf"]
             else:
                 v_src = sc["k_buf"]  # global attention: V = K
@@ -377,7 +377,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 sc["o_proj_out"]],
                                {"K": q_dim, "N": hidden, "USE_QUANT": uq_ow,
                                 **self._quant_extra(ow.removesuffix(".weight"), uq_ow)},
-                               _gemv_wg(hidden, uq_ow))
+                               _gemv_wg(hidden))
 
             # post_attention norm + residual add
             pan_w = self.weights.get(f"{p}.post_attention_layernorm.weight")
@@ -435,7 +435,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                     self._scales_buf(wk, uq, ffn_in), out_b],
                                    {"K": hidden, "N": inter_shared, "USE_QUANT": uq,
                                     **self._quant_extra(wk.removesuffix(".weight"), uq)},
-                                   _gemv_wg(inter_shared, uq))
+                                   _gemv_wg(inter_shared))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                {"N": gelu_n_shared}, ((gelu_n_shared // 4 + 255) // 256, 1, 1),
                                shader_subdir="gemma")
@@ -456,7 +456,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
                                {"K": inter_shared, "N": hidden, "USE_QUANT": uq_dw,
                                 **self._quant_extra(dw.removesuffix(".weight"), uq_dw)},
-                               _gemv_wg(hidden, uq_dw))
+                               _gemv_wg(hidden))
 
             # MoE layers use post_feedforward_layernorm_1 for the shared MLP stream;
             # non-MoE layers only have the no-suffix key.
@@ -655,7 +655,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                            {"K": hidden, "N": inter_moe,
                                             "USE_QUANT": uq,
                                             **self._quant_extra(ew_key.removesuffix(".weight"), uq)},
-                                           _gemv_wg(inter_moe, uq))
+                                           _gemv_wg(inter_moe))
                         self._dispatch("gelu_mul",
                                        [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                        {"N": gelu_n_moe},
@@ -668,7 +668,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        {"K": inter_moe, "N": hidden,
                                         "USE_QUANT": uq_dk,
                                         **self._quant_extra(dk.removesuffix(".weight"), uq_dk)},
-                                       _gemv_wg(hidden, uq_dk))
+                                       _gemv_wg(hidden))
                         # K_IDX=0: w_per_token[0] is the scalar weight for this expert.
                         self._dispatch("moe_accumulate",
                                        [moe_acc, sc["ffn_out"],

@@ -22,13 +22,11 @@ if TYPE_CHECKING:
 _H_NAMES: tuple[str, str, str] = ("h0", "h1", "h2")
 
 
-def _gemv_wg(N: int, uq: int) -> tuple:
+def _gemv_wg(N: int) -> tuple:
     """Workgroup count for matmul_quant dispatch.
 
-    SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6,7,8).
+    SPLIT_K=1 (one workgroup per output row): always (N, 1, 1).
     """
-    if uq not in (0, 3, 4, 5, 6, 7, 8):
-        raise ValueError(f"unexpected USE_QUANT={uq}")
     return (N, 1, 1)
 
 logger = logging.getLogger(__name__)
@@ -84,7 +82,7 @@ def compute_yarn_freqs(
     # YaRNScalingRotaryEmbedding constructor which allocates a large
     # (max_position_embeddings * factor, rotary_dim) cos/sin cache
     # that is immediately discarded.
-    pos_freqs         = torch.tensor(rope_theta) ** (
+    pos_freqs         = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
     inv_freq_extrap   = 1.0 / pos_freqs

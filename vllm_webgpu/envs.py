@@ -11,6 +11,7 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_WEBGPU_MEMORY_FRACTION": lambda: os.getenv("VLLM_WEBGPU_MEMORY_FRACTION", "auto"),
     "VLLM_WEBGPU_POWER_PREFERENCE": lambda: os.getenv("VLLM_WEBGPU_POWER_PREFERENCE", "high-performance"),
     "VLLM_WEBGPU_BLOCK_SIZE": lambda: int(os.getenv("VLLM_WEBGPU_BLOCK_SIZE", "16")),
+    "GDN_BF16": lambda: os.getenv("GDN_BF16", "0") == "1",
 }
 
 
