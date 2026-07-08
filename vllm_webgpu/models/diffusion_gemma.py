@@ -284,16 +284,27 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
                             "HEAD_DIM": head_dim, "V_IN_OFFSET": 0},
                            (num_tokens, num_kv_heads, 1))
-            self._dispatch("attn_score", [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                            "MAX_SEQ_LEN": ctx_len}, (self.num_q_heads, ctx_len, 1))
-            self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
-                           {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
-            self._dispatch("attn_output", [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
-                           {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                            "CTX_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+            # Multi-token path: loop over tokens using Q_TOKEN_OFFSET / ATTN_TOKEN_OFFSET.
+            # Each iteration reuses scores_buf and sm_buf (sized NQ * max_ctx for one token);
+            # this is safe because every _dispatch ends its compute pass before the next begins,
+            # so GPU memory writes from attn_score are visible to the subsequent softmax.
+            # For num_tokens == 1 the loop runs once with offset 0, matching the old dispatch.
+            for _t in range(num_tokens):
+                _t_q_off = _t * q_dim
+                self._dispatch("attn_score",
+                               [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
+                                "MAX_SEQ_LEN": ctx_len, "Q_TOKEN_OFFSET": _t_q_off},
+                               (self.num_q_heads, ctx_len, 1))
+                self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
+                               {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
+                self._dispatch("attn_output",
+                               [sc["sm_buf"], v_cache, bt_buf, sc["attn_out"]],
+                               {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
+                                "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
+                                "CTX_LEN": ctx_len, "ATTN_TOKEN_OFFSET": _t_q_off},
+                               (self.num_q_heads, 1, 1))
 
             ow = f"{p}.self_attn.o_proj.weight"
             uq_ow = self._uq_for_key(ow)
