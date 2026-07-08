@@ -56,15 +56,22 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             def mk(n: int) -> "WebGPUBuffer":
                 return WebGPUBuffer.empty(dev, max(n, 8))
 
+            # Use the larger of intermediate_size and moe_intermediate_size so
+            # subclasses that pass expert_inter > intermediate_size to _moe_ffn_layer
+            # do not write past the buffer end.
+            _moe_act_sz = max(
+                self.intermediate_size,
+                getattr(model_config, "moe_intermediate_size", 0),
+            )
             self._moe_sc: dict[str, "WebGPUBuffer"] = {
-                "router_out":   mk(self._num_experts * 2),      # [N_E] f16 router logits
-                "topk_idx":     mk(self._top_k * 4),             # [K] u32 expert indices
-                "topk_w":       mk(self._top_k * 4),             # [K] f32 softmax weights
-                "expert_gate":  mk(self.intermediate_size * 2),  # [inter] f16 gate proj
-                "expert_up":    mk(self.intermediate_size * 2),  # [inter] f16 up proj
-                "expert_act":   mk(self.intermediate_size * 2),  # [inter] f16 activated
-                "expert_out":   mk(self.hidden_size * 2),        # [hidden] f16 accumulated
-                "expert_tmp":   mk(self.hidden_size * 2),        # [hidden] f16 per-expert
+                "router_out":   mk(self._num_experts * 2),  # [N_E] f16 router logits
+                "topk_idx":     mk(self._top_k * 4),         # [K] u32 expert indices
+                "topk_w":       mk(self._top_k * 4),         # [K] f32 softmax weights
+                "expert_gate":  mk(_moe_act_sz * 2),         # [max_inter] f16 gate proj
+                "expert_up":    mk(_moe_act_sz * 2),         # [max_inter] f16 up proj
+                "expert_act":   mk(_moe_act_sz * 2),         # [max_inter] f16 activated
+                "expert_out":   mk(self.hidden_size * 2),    # [hidden] f16 accumulated
+                "expert_tmp":   mk(self.hidden_size * 2),    # [hidden] f16 per-expert
             }
 
     def _effective_ctx_len(self, ctx_len: int) -> int:
@@ -254,6 +261,21 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             "L%02d MoE experts: %s  weights: %s",
             layer_idx, expert_indices,
             [f"{w:.3f}" for w in expert_weights],
+        )
+
+        # Guard: verify scratch buffers are large enough for both inter sizes.
+        # _init_scratch_buffers (or __init__) must allocate with the maximum
+        # possible intermediate size; assert here so buffer overruns fail fast.
+        _sinter_check = (
+            shared_expert_inter if shared_expert_inter is not None else inter
+        )
+        _max_inter = max(inter, _sinter_check if shared_expert_prefix is not None else 0)
+        _buf_capacity = msc["expert_act"].nbytes // 2  # bytes -> f16 elements
+        assert _max_inter <= _buf_capacity, (
+            f"MoE scratch buffer too small: need {_max_inter} f16 elements "
+            f"but expert_act holds {_buf_capacity}. "
+            f"Override _init_scratch_buffers to allocate max(intermediate_size, "
+            f"moe_intermediate_size) elements."
         )
 
         # Without a shared expert, zero-initialize the accumulation buffer so
