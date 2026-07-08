@@ -178,5 +178,6 @@ class WebGPUWorker(WorkerBase):
     def shutdown(self) -> None:
         if hasattr(self, "model_runner") and self.model_runner is not None:
             del self.model_runner
+        self.wgpu_device = None
         gc.collect()
         logger.info("WebGPU worker shutdown complete")
