@@ -6,6 +6,10 @@ from pathlib import Path
 
 import numpy as np
 
+# AWQ nibble reorder: position i in int32 holds nibble at bit offset
+# [0, 16, 4, 20, 8, 24, 12, 28] = [0,4,1,5,2,6,3,7] * 4
+_AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 16, 4, 20, 8, 24, 12, 28], dtype=np.int32)
+
 # When set, GDN projection weights with BF16 dtype are uploaded in their native
 # bf16 bit pattern (packed u16 pairs → u32) under key + "__bf16", in addition to
 # the standard f16 version. The matmul_quant shader decodes them with
@@ -241,9 +245,8 @@ def _awq_qzeros_symmetric(qzeros: np.ndarray) -> bool:
     Any other value means the checkpoint uses per-group asymmetric zeros
     and must fall back to CPU dequantisation.
     """
-    nibble_shifts = np.array([0, 16, 4, 20, 8, 24, 12, 28], dtype=np.int32)
     qz = np.asarray(qzeros, dtype=np.int32)
-    for shift in nibble_shifts:
+    for shift in _AWQ_NIBBLE_SHIFTS:
         nibbles = (qz >> shift) & 0xF
         if not np.all((nibbles == 0) | (nibbles == 8)):
             return False
@@ -267,10 +270,6 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) ->
     G = scales.shape[0]
     group_size = K // G
 
-    # AWQ nibble reorder: position i in int32 holds nibble at bit offset
-    # [0, 16, 4, 20, 8, 24, 12, 28] = [0,4,1,5,2,6,3,7] * 4
-    nibble_shifts = np.array([0, 16, 4, 20, 8, 24, 12, 28], dtype=np.int32)
-
     qw = qweight.astype(np.int32)            # (K, N//8)
     qz = qzeros.astype(np.int32)             # (G, N//8)
     sc = scales.astype(np.float32)           # (G, N)
@@ -279,7 +278,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) ->
     w_int4 = np.empty((K, N), dtype=np.uint8)
     z_int4 = np.empty((G, N), dtype=np.uint8)
     for j in range(8):
-        shift = nibble_shifts[j]
+        shift = _AWQ_NIBBLE_SHIFTS[j]
         w_int4[:, j::8] = (qw >> shift) & 0xF
         z_int4[:, j::8] = (qz >> shift) & 0xF
 
@@ -699,9 +698,7 @@ def load_safetensors_weights(
                         try:
                             sc_dtype = header[sc_key]["dtype"]
                             sc_t = sf.get_tensor(sc_key)
-                            if sc_dtype == "F32":
-                                sc_arr = sc_t.numpy().ravel()
-                            elif sc_dtype == "F16":
+                            if sc_dtype in ("F32", "F16"):
                                 sc_arr = sc_t.numpy().ravel()
                             elif sc_dtype == "BF16":
                                 sc_arr = sc_t.to(torch.float32).numpy().ravel()
@@ -709,7 +706,7 @@ def load_safetensors_weights(
                                 logger.warning("Int8 scale %s has unsupported dtype %s",
                                                sc_key, sc_dtype)
                                 break
-                            _upload_f16(sc_arr.astype(np.float16), f"{name}.scales", weights)
+                            _upload_f16(sc_arr, f"{name}.scales", weights)
                             qmeta[base_key]["group_size"] = 1
                             logger.debug("Int8 per-channel: %s scale n=%d", base_key, sc_arr.size)
                         except Exception as exc:

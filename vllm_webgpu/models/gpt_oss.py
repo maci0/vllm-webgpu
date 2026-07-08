@@ -71,7 +71,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         p = f"model.layers.{layer_idx}"
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
-        ln_rope = self._ln_rope_theta
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
@@ -103,13 +102,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
         q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
         k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
-        _rope_consts = {
-            "HEAD_DIM": self.head_dim,
-            "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": ln_rope,
-            "USE_FREQ_BUF": int(self._use_freq_buf),
-            "ATTN_SCALE": self._yarn_mscale,
-        }
+        _rope_consts = self._rope_consts
 
         for src, dst, n_heads, norm_w, in_off in [
             (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),

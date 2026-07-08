@@ -64,8 +64,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
             max_canvas_len = getattr(model_config, "canvas_length", 256)
-            self._moe_max_tokens = max_canvas_len
-            self._shared_res_buf = _WB.empty(_dev, max_canvas_len * self.hidden_size * 4, usage=_rw)
+            self._shared_res_buf = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2, usage=_rw)  # F16
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
             self._topk_idx_buf     = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4, usage=_rw)  # [T, K] u32
             self._topk_weight_buf  = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4, usage=_rw) # [T, K] f32

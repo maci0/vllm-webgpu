@@ -4,6 +4,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+import torch
+
 # vLLM v1 internals verified against vllm>=0.24,<0.25.
 # These paths have no stability guarantees; a patch release may move or rename
 # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
@@ -57,17 +59,12 @@ class WebGPUWorker(WorkerBase):
 
         self.wgpu_device = WebGPUDevice.initialize(self.webgpu_config.power_preference)
 
-        try:
-            import torch
-            self.device = torch.device("cpu")
-        except ImportError:
-            pass
+        self.device = torch.device("cpu")
 
         pc = self.vllm_config.parallel_config
         init_distributed_environment(pc.world_size, self.rank, self.distributed_init_method, self.local_rank, backend="gloo")
         ensure_model_parallel_initialized(pc.tensor_parallel_size, pc.pipeline_parallel_size, pc.prefill_context_parallel_size, pc.decode_context_parallel_size)
-        if hasattr(self, "model_config"):
-            set_random_seed(self.model_config.seed)
+        set_random_seed(self.model_config.seed)
 
         self.model_runner = WebGPUModelRunner(self.vllm_config, self.wgpu_device)
 
@@ -86,13 +83,12 @@ class WebGPUWorker(WorkerBase):
         return self.model_runner.get_kv_cache_spec()
 
     def initialize_from_config(self, kv_cache_config: Any) -> None:
-        if hasattr(self, "cache_config") and self.cache_config is not None:
+        if self.cache_config is not None:
             self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def compile_or_warm_up_model(self) -> CompilationTimes:
-        if hasattr(self, "model_config"):
-            set_random_seed(self.model_config.seed)
+        set_random_seed(self.model_config.seed)
         start = time.perf_counter()
         self.model_runner.warm_up()
         elapsed = time.perf_counter() - start
@@ -108,8 +104,7 @@ class WebGPUWorker(WorkerBase):
         return self.model_runner.model
 
     def update_max_model_len(self, max_model_len: int) -> None:
-        if hasattr(self, "model_config"):
-            self.model_config.max_model_len = max_model_len
+        self.model_config.max_model_len = max_model_len
         if hasattr(self.model_runner, "update_max_model_len"):
             self.model_runner.update_max_model_len(max_model_len)
 

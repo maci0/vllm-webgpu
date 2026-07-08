@@ -262,7 +262,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # Without a shared expert, zero-initialize the accumulation buffer so
         # the first expert's weighted output accumulates from zero.
         if shared_expert_prefix is None:
-            dev.queue.write_buffer(msc["expert_out"].buf, 0, b"\x00" * (hidden * 2))
+            dev.queue.write_buffer(msc["expert_out"].buf, 0, bytes(hidden * 2))
 
         # ── Phase B: expert dispatches (new encoder) ──────────────────────────
         # Subsequent _dispatch() calls (including the residual add in the calling
@@ -326,7 +326,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 )
             else:
                 # Shared expert weights not loaded; fall back to zero-init.
-                dev.queue.write_buffer(msc["expert_out"].buf, 0, b"\x00" * (hidden * 2))
+                dev.queue.write_buffer(msc["expert_out"].buf, 0, bytes(hidden * 2))
 
         for k_idx, exp_idx in enumerate(expert_indices):
             if expert_weights[k_idx] == 0.0:

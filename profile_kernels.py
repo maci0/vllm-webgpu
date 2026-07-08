@@ -7,6 +7,7 @@ Usage:
 """
 import argparse
 import time
+from collections import defaultdict
 from types import SimpleNamespace
 import numpy as np
 
@@ -161,7 +162,6 @@ if stats:
     total = sum(sum(v)/len(v) for v in stats.values())
 
     # Aggregate by category (strip L00_ prefix)
-    from collections import defaultdict
     cat_totals: dict = defaultdict(float)
     for label, times in stats.items():
         cat = label.split("_", 1)[1] if "_" in label else label  # "L00_attn" → "attn"

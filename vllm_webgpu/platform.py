@@ -65,7 +65,7 @@ class WebGPUPlatform(_Platform):
             adapter = _get_wgpu_adapter()
             if adapter:
                 info = adapter.info
-                return f"WebGPU ({info.get('device', 'unknown')})"
+                return f"WebGPU ({info.get('device') or 'unknown'})"
         except Exception:
             pass
         return "WebGPU"

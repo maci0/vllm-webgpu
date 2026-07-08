@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -346,12 +347,11 @@ class BaseWebGPUModel(ABC):
         workgroups: tuple[int, int, int],
         shader_subdir: str = "generic",
     ) -> None:
-        import wgpu as wgpu_lib
-
         # matmul_quant always declares binding 4 (bias). Callers that don't set
         # HAS_BIAS=1 still need to provide a buffer so the bind group layout matches.
         if shader_name == "matmul_quant" and len(bindings) == 4:
             if self._dummy_bias_buf is None:
+                import wgpu as wgpu_lib
                 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
                 dev = self.wgpu_device.wgpu_device
                 self._dummy_bias_buf = WebGPUBuffer.empty(
@@ -429,22 +429,24 @@ class BaseWebGPUModel(ABC):
         logger.info("Warming up shader pipelines (decode + prefill)...")
         try:
             # Decode warmup: compiles all decode-path shaders.
-            class _Dec:
-                slot_mapping = [0]
-                block_tables = [np.array([0], dtype=np.uint32)]
-                max_decode_seq_len = 1
+            _Dec = SimpleNamespace(
+                slot_mapping=[0],
+                block_tables=[np.array([0], dtype=np.uint32)],
+                max_decode_seq_len=1,
+            )
             self.forward(np.array([0], dtype=np.uint32),
-                         np.array([0], dtype=np.uint32), _Dec())
+                         np.array([0], dtype=np.uint32), _Dec)
 
             # Prefill warmup: compiles matmul_quant_mr4, flash_attn_prefill, etc.
             T = 4
             bt = np.array([0], dtype=np.uint32)
-            class _Pre:
-                slot_mapping = list(range(T))
-                block_tables = [bt.copy()]
-                max_decode_seq_len = T
+            _Pre = SimpleNamespace(
+                slot_mapping=list(range(T)),
+                block_tables=[bt.copy()],
+                max_decode_seq_len=T,
+            )
             self.forward(np.zeros(T, dtype=np.uint32),
-                         np.arange(T, dtype=np.uint32), _Pre())
+                         np.arange(T, dtype=np.uint32), _Pre)
 
             logger.info("Warmup complete (decode + prefill)")
         except Exception as exc:

@@ -436,8 +436,7 @@ class WebGPUModelRunner:
             # etc.) are listed in ARCH_MAP only for text-only inference. If a request
             # carries mm_inputs, the image would be silently ignored and the model
             # would produce text as if no image was provided. Raise early instead.
-            mm = getattr(req, "mm_features", None)
-            if mm:
+            if req.mm_features:
                 raise NotImplementedError(
                     f"req {rid}: multi-modal inputs (images/audio/video) are not supported "
                     f"by the WebGPU backend. The conditional-generation architecture is "
@@ -462,7 +461,7 @@ class WebGPUModelRunner:
             # Batch prefill: send the scheduled chunk of prompt tokens in a single
             # forward() call. With prefix caching, num_computed_tokens tokens are
             # already in the KV cache; only the uncached tail needs to be processed.
-            num_computed = getattr(req, "num_computed_tokens", 0)
+            num_computed = req.num_computed_tokens
             num_sched = scheduler_output.num_scheduled_tokens.get(rid, len(tok_ids))
             T = min(num_sched, len(tok_ids) - num_computed)
             chunk_toks = tok_ids[num_computed:num_computed + T]
@@ -557,8 +556,8 @@ class WebGPUModelRunner:
         # sets, N argmax result buffers, and attention shaders with a batched block
         # table (or a flash-attn style per-sequence loop inside the shader).
         if cached.req_ids:
-            new_block_ids = getattr(cached, "new_block_ids", [])
-            resumed_req_ids = getattr(cached, "resumed_req_ids", set())
+            new_block_ids = cached.new_block_ids
+            resumed_req_ids = cached.resumed_req_ids
 
             for i, rid in enumerate(cached.req_ids):
                 state = self._req_state.get(rid, {"pos": 0, "block_ids": [], "last_tok": 0})
