@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -55,17 +56,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             model_config, "head_dim", self.hidden_size // self.num_q_heads
         )
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
-        self._ln_rope_theta: float = float(np.log(float(self.rope_theta)))
+        self._ln_rope_theta: float = math.log(self.rope_theta)
 
         # MLP parameters (used in '-' layers).
         # intermediate_size may be a list for heterogeneous (puzzle) configs;
         # store the per-layer list and use the max for scratch buffer sizing.
         _raw_int = model_config.intermediate_size
         if isinstance(_raw_int, list):
-            self._intermediate_sizes: list[int] | None = _raw_int
             self.intermediate_size: int = max(_raw_int)
         else:
-            self._intermediate_sizes = None
             self.intermediate_size: int = _raw_int
 
         # Mamba-2 parameters

@@ -3,7 +3,6 @@
 Requires vLLM for model-path resolution (get_model_path) when invoked from
 __main__. The run() function itself only requires transformers and wgpu.
 """
-import math
 import os
 import time
 from pathlib import Path
@@ -73,7 +72,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     block_size = get_config().block_size
     max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
-    num_blocks = min(math.ceil(max_ctx / block_size) + 4, 4096)
+    num_blocks = min((max_ctx + block_size - 1) // block_size + 4, 4096)
 
     layer_params = getattr(model, "_lp", None)
     if layer_params:
@@ -111,14 +110,13 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     )
 
     has_gpu_argmax = getattr(model, "logit_returns_token_id", False)
+    last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[-1]))
     if has_gpu_argmax:
-        top1 = int(logits[0, 0])
         _real = model.logit_readback()
-        print(f"  Last prefill logit: argmax={top1}, value={float(_real[0][top1]):.2f}, "
+        print(f"  Last prefill logit: argmax={last_token}, value={float(_real[0][last_token]):.2f}, "
               f"std={float(_real[0].std()):.2f}")
     else:
-        top1 = int(np.argmax(logits[-1]))
-        print(f"  Last prefill logit: argmax={top1}, value={float(logits[-1][top1]):.2f}, "
+        print(f"  Last prefill logit: argmax={last_token}, value={float(logits[-1][last_token]):.2f}, "
               f"std={float(logits[-1].std()):.2f}")
 
     # Decode
@@ -126,7 +124,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     generated = []
     t_start = time.perf_counter()
-    last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[-1]))
 
     for step in range(max_tokens):
         if last_token == eos_id:

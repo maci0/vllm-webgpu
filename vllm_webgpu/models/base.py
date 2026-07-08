@@ -9,9 +9,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
-from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 # Scratch buffer rotation names shared across models.
@@ -52,6 +50,9 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies — cos(pos * freq * mscale) is wrong.
     """
+    import torch
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask)
     factor    = float(rope_scaling.get("factor", 1.0))
     beta_fast = float(rope_scaling.get("beta_fast", 32.0))
     beta_slow = float(rope_scaling.get("beta_slow", 1.0))
@@ -331,7 +332,7 @@ class BaseWebGPUModel(ABC):
         if w is not None:
             dtype = getattr(w, "dtype", "f16")
             qmeta = self.weights.get("__quant_meta__", {})
-            meta = qmeta.get(key[:-7], {})
+            meta = qmeta.get(key.removesuffix(".weight"), {})
             fmt = meta.get("fmt", "")
             if dtype == "i32":
                 return 4 if fmt == "awq_sym" else 3

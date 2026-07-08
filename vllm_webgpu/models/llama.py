@@ -609,6 +609,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         sc  = self._sc
 
         bt_arr = self._bt_arr(attn_metadata)
+        bt_bytes = bt_arr.tobytes()
 
         x_buf: "WebGPUBuffer" = pre["x"]
 
@@ -624,7 +625,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
-            dev.queue.write_buffer(pre["bt"].buf,       0, bt_arr.tobytes())
+            dev.queue.write_buffer(pre["bt"].buf,       0, bt_bytes)
 
             with self._batched_dispatch():
                 self._dispatch(
@@ -798,10 +799,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Fused K+V cache store.
         # When using fused QKV, V lives in qkv_buf starting at element (q_dim+kv_dim).
+        _kv_consts: dict = {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
+                            "HEAD_DIM": self.head_dim}
+        if _v_offset:
+            _kv_consts["V_IN_OFFSET"] = _v_offset
         self._dispatch("kv_cache_store_both",
                        [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
-                       {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                        "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
+                       _kv_consts,
                        (num_tokens, self.num_kv_heads, 1))
 
         # Always use flash_attn_decode for single-token decode.

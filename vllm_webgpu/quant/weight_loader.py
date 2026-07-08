@@ -274,12 +274,8 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) ->
     sc = scales.astype(np.float32)           # (G, N)
 
     # Unpack 8 nibbles per int32 → (K, N) uint8
-    w_int4 = np.empty((K, N), dtype=np.uint8)
-    z_int4 = np.empty((G, N), dtype=np.uint8)
-    for j in range(8):
-        shift = _AWQ_NIBBLE_SHIFTS[j]
-        w_int4[:, j::8] = (qw >> shift) & 0xF
-        z_int4[:, j::8] = (qz >> shift) & 0xF
+    w_int4 = ((qw[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(K, N).astype(np.uint8)
+    z_int4 = ((qz[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(G, N).astype(np.uint8)
 
     # Expand scales/zeros to (K, N) shape
     sc_exp = sc[np.arange(K) // group_size]   # (K, N)
@@ -312,15 +308,10 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     qz = qzeros.astype(np.int32)   # (G, N//8)
     sc = scales.astype(np.float32)  # (G, N)
 
-    # Unpack 8 nibbles per int32 along K → (K, N)
-    w_int4 = np.empty((K, N), dtype=np.uint8)
-    for bit in range(8):
-        w_int4[bit::8] = (qw >> (bit * 4)) & 0xF
-
-    # Unpack zeros: (G, N//8) → (G, N)
-    z_int4 = np.empty((G, N), dtype=np.uint8)
-    for bit in range(8):
-        z_int4[:, bit::8] = (qz >> (bit * 4)) & 0xF
+    # Unpack 8 nibbles per int32 along K → (K, N) and zeros (G, N//8) → (G, N)
+    shifts = np.arange(8, dtype=np.int32) * 4  # [0, 4, 8, ..., 28]
+    w_int4 = ((qw[:, np.newaxis, :] >> shifts[:, np.newaxis]) & 0xF).reshape(K, N).astype(np.uint8)
+    z_int4 = ((qz[:, :, np.newaxis] >> shifts) & 0xF).reshape(G, N).astype(np.uint8)
 
     # Group index: which group each input dim belongs to
     if g_idx is not None:
@@ -1252,12 +1243,6 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     shard_files = sorted(set(index["weight_map"].values()))
 
     import safetensors.numpy as _sfn
-    _DTYPE_MAP = {
-        "float16": "F16",
-        "uint16": "BF16",   # safetensors.numpy returns BF16 as raw uint16 bits
-        "float32": "F32",
-        "uint32": "U32",
-    }
     raw_tensors: dict = {}
     for shard_file in shard_files:
         shard_path = str(p / shard_file)
@@ -1265,7 +1250,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
         with _sfn.safe_open(shard_path, framework="numpy") as sf:
             for name in sf.keys():
                 arr = sf.get_tensor(name)
-                dtype_str = _DTYPE_MAP.get(arr.dtype.name, arr.dtype.name.upper())
+                dtype_str = sf.get_slice(name).get_dtype()
                 raw_tensors[name] = (dtype_str, arr.shape, arr.tobytes())
 
     weights: dict = {}

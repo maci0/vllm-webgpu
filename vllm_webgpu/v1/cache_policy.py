@@ -15,7 +15,7 @@ logger = init_logger(__name__)
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
 # this constant and uses it as the authoritative set.
 KV_ATTN_TYPES: frozenset[str] = frozenset(
-    {"attention", "full_attention", "local_attention", "sliding_attention"}
+    {"attention", "full_attention", "sliding_attention"}
 )
 
 

@@ -38,6 +38,7 @@ def sample_token(
     probs /= probs.sum()
 
     # Top-k: keep exactly k tokens.
+    top_k_idx = None
     if top_k > 0:
         k = min(top_k, len(probs))
         top_k_idx = np.argpartition(probs, -k)[-k:]
@@ -48,7 +49,12 @@ def sample_token(
 
     # Top-p (nucleus): keep the smallest set whose cumulative probability exceeds top_p.
     if 0.0 < top_p < 1.0:
-        sorted_idx = np.argsort(probs)[::-1]
+        if top_k_idx is not None:
+            # Only sort the non-zero top-k elements rather than the full vocab array.
+            order = np.argsort(probs[top_k_idx])[::-1]
+            sorted_idx = top_k_idx[order]
+        else:
+            sorted_idx = np.argsort(probs)[::-1]
         cumsum = np.cumsum(probs[sorted_idx])
         cutoff = max(1, int(np.searchsorted(cumsum, top_p, side="left")) + 1)
         keep = sorted_idx[:cutoff]

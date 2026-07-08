@@ -105,16 +105,16 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         _rope_consts = self._rope_consts
         _freq_buf = self._rope_freq_buf
 
-        for src, dst, n_heads, norm_w, in_off in [
-            (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
-            (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, 0),
+        for src, dst, n_heads, norm_w in [
+            (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w),
+            (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w),
         ]:
             if norm_w is not None:
                 self._dispatch(
                     "fused_per_head_norm_rope",
                     [src, norm_w, pos_buf, dst, _freq_buf],
                     {**_rope_consts, "NUM_HEADS": n_heads,
-                     "HAS_WEIGHT": 1, "INPUT_OFFSET": in_off},
+                     "HAS_WEIGHT": 1, "INPUT_OFFSET": 0},
                     (n_heads, num_tokens, 1),
                 )
             else:

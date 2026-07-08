@@ -852,9 +852,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Cached at load_weights() — no GPU-to-CPU readback per token.
         _ls = self._layer_scales[layer_idx]
 
-        h_names = ["h0", "h1", "h2"]
-        residual = sc[h_names[(self._hstate + 1) % 3]]
-        out = sc[h_names[(self._hstate + 2) % 3]]
+        residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
+        out = sc[_H_NAMES[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
         gelu_n = num_tokens * inter
         _rms_consts = self._rms_consts

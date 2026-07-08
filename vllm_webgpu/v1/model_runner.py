@@ -25,6 +25,12 @@ from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
 from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_pool_hybrid, allocate_kv_pool_per_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
+
+def _slot(blk_ids, pos: int, block_size: int) -> int:
+    """Compute the flat KV cache slot index for absolute token position `pos`."""
+    return int(blk_ids[pos // block_size]) * block_size + pos % block_size
+
+
 if TYPE_CHECKING:
     from vllm.tasks import SupportedTask
     from vllm_webgpu.models.base import BaseWebGPUModel
@@ -202,18 +208,20 @@ class WebGPUModelRunner:
                         spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
                 return spec
 
+        _archs2 = getattr(mc, "architectures", None) or []
+        _attn_suffix2 = ".mixer" if "NemotronHForCausalLM" in _archs2 else ".self_attn"
         if lp_list and len(lp_list) == mc.num_hidden_layers:
             _lt = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
             for i, lp in enumerate(lp_list):
                 if _lt and _lt[i] not in KV_ATTN_TYPES:
                     continue
-                spec[f"model.layers.{i}.self_attn"] = _make_spec(
+                spec[f"model.layers.{i}{_attn_suffix2}"] = _make_spec(
                     lp["num_kv_heads"], lp["head_dim"])
         else:
             head_size = self.vllm_config.model_config.get_head_size()
             num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
             for i in range(mc.num_hidden_layers):
-                spec[f"model.layers.{i}.self_attn"] = _make_spec(
+                spec[f"model.layers.{i}{_attn_suffix2}"] = _make_spec(
                     num_kv_heads, head_size)
         return spec
 
@@ -263,7 +271,7 @@ class WebGPUModelRunner:
         have length num_logprobs + 1.
         """
         x = logits_1d.astype(np.float32); x -= x.max()
-        log_probs = x - np.log(np.exp(x).sum())
+        log_probs = x - np.logaddexp.reduce(x)
         if num_logprobs < 0:
             num_logprobs = log_probs.size
         k = min(num_logprobs, log_probs.size)
@@ -487,7 +495,7 @@ class WebGPUModelRunner:
                         f"block table too short for req {rid}: token {abs_idx} needs block "
                         f"{blk_idx} but only {len(blk_ids)} blocks allocated"
                     )
-                slots.append(blk_ids[blk_idx] * block_size + (abs_idx % block_size))
+                slots.append(_slot(blk_ids, abs_idx, block_size))
 
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
@@ -620,7 +628,7 @@ class WebGPUModelRunner:
                                 f"block table too short for req {rid}: token {global_idx} "
                                 f"needs block {blk_idx} but only {len(blk_ids)} allocated"
                             )
-                        slots.append(blk_ids[blk_idx] * block_size + (global_idx % block_size))
+                        slots.append(_slot(blk_ids, global_idx, block_size))
 
                     _chunk_pm = SimpleNamespace(slot_mapping=slots, block_tables=[np.array(blk_ids, dtype=np.uint32)], max_decode_seq_len=chunk_end)
 
@@ -664,7 +672,7 @@ class WebGPUModelRunner:
                         f"block table too short for req {rid}: pos={pos} needs block "
                         f"{pos // block_size} but only {len(blk_ids)} blocks allocated"
                     )
-                slot = blk_ids[pos // block_size] * block_size + (pos % block_size)
+                slot = _slot(blk_ids, pos, block_size)
 
                 _sm = SimpleNamespace(slot_mapping=[slot], block_tables=[np.array(blk_ids, dtype=np.uint32)], max_decode_seq_len=pos + 1)
 

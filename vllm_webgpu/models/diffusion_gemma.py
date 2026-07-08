@@ -52,6 +52,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                    self.intermediate_size)
         self.is_moe: bool = self.num_experts > 0
 
+        # Default: no per-expert scales until load_weights() populates real values.
+        self._pes_cache: list[np.ndarray | None] = [None] * self.num_layers
+
         if self.is_moe:
             logger.info("DiffusionGemma MoE: %d experts, top-%d, moe_inter=%d",
                         self.num_experts, self.top_k_experts, self.moe_intermediate_size)
@@ -464,14 +467,19 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             # MoE layers use post_feedforward_layernorm_1 for the shared MLP stream;
             # non-MoE layers only have the no-suffix key.
-            pfn1_w = (self.weights.get(f"{p}.post_feedforward_layernorm_1.weight") or
+            _pfn1_key_1 = f"{p}.post_feedforward_layernorm_1.weight"
+            pfn1_w = (self.weights.get(_pfn1_key_1) or
                       self.weights.get(f"{p}.post_feedforward_layernorm.weight"))
             if self.is_moe and pfn1_w is not None:
                 self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
                                (num_tokens, 1, 1))
                 hidden_states_1 = self._shared_res_buf
+                # Track whether the no-suffix fallback was used: if so the else-branch
+                # below must not norm again with the same key.
+                _pfn1_used_fallback = self.weights.get(_pfn1_key_1) is None
             else:
                 hidden_states_1 = sc["ffn_out"]
+                _pfn1_used_fallback = False
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe and f"{p}.router.proj.weight" in self.weights:
@@ -566,7 +574,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # {layer}.router.per_expert_scale; shape [num_experts], dtype bfloat16/float32.
             # Use the cached numpy array (populated at load time) to avoid a
             # blocking GPU-CPU sync per inference step per MoE layer.
-            pes = getattr(self, "_pes_cache", [None] * self.num_layers)[layer_idx]
+            pes = self._pes_cache[layer_idx]
             if pes is not None:
                 rw_vals = rw_vals * pes[top_k_idx]  # [T, K] broadcast via advanced indexing
 
@@ -717,7 +725,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
             layer_scalar = self._layer_scales[layer_idx]
             pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
-            if pfn_w is not None:
+            if pfn_w is not None and not _pfn1_used_fallback:
                 self._dispatch("rms_norm", [hidden_states_1, pfn_w, sc["normed"]], _rms,
                                (num_tokens, 1, 1))
                 hidden_states_1 = sc["normed"]

@@ -184,7 +184,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                 "expert_act":   mk(_moe_act_sz * 2),            # [max_inter] f16 gate*up activated
                 "expert_out":   mk(H * 2),                      # [hidden] f16 accumulated output
                 "expert_tmp":   mk(H * 2),                      # [hidden] f16 per-expert temp
-                "dummy_scales": mk(8),                          # fallback scales binding
             }
 
     def _postprocess_weights(self) -> None:
@@ -677,12 +676,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
             raise RuntimeError("multi-sequence batching not supported in this build")
 
-        ctx_len = int(attn_metadata.max_decode_seq_len
-                      if attn_metadata.max_decode_seq_len is not None
-                      else int(positions[-1]) + 1)
-        if ctx_len <= 0:
-            ctx_len = int(positions[-1]) + 1
-
         # Prefill (num_tokens > 1): process tokens sequentially but batch CHUNK
         # tokens per command encoder to avoid Metal's per-command-buffer GPU timeout.
         # GDN SSM state is updated in-place on the GPU; sequential order is preserved
@@ -691,7 +684,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             return self._prefill_chunked_forward(
                 input_ids, positions, attn_metadata, num_tokens)
 
-        ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, _ = \
+        ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len = \
             self._decode_setup(input_ids, positions, attn_metadata)
         vocab = self.vocab_size
         greedy = getattr(self, "_greedy_decode", True)
@@ -845,7 +838,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         self._dispatch("kv_cache_store_both",
                        [sc["k_rope"], k_cache, sc["v_buf"], v_cache, slot_map],
                        {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                        "HEAD_DIM": self.head_dim, "V_IN_OFFSET": 0},
+                        "HEAD_DIM": self.head_dim},
                        (num_tokens, self.num_kv_heads, 1))
 
         self._dispatch("flash_attn_decode",
