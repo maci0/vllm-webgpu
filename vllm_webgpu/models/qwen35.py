@@ -1076,7 +1076,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                     self._scales_buf(gate_wk, uq_gate, normed_x),
                                     sc["q_gate_buf"]],
                                    {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate,
-                                    **({"SPLIT_K": 0} if uq_gate not in (0, 3, 4, 5, 6) else {}),
+                                    **({"SPLIT_K": 0} if uq_gate not in (0, 3, 4, 5, 6, 7, 8) else {}),
                                     **qi_gate},
                                    _gemv_wg(q_dim, uq_gate))
 
