@@ -279,7 +279,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             w = self.weights.get(conv_w_key)
             if w is not None and len(w.shape) == 3 and w.shape[1] == 1:
                 # [CONV_DIM, 1, KERNEL] → [CONV_DIM, KERNEL]: squeeze the groups dim.
-                arr = w.to_numpy().view(np.float16)[:, 0, :]
+                arr = w.to_numpy().view(np.float16).reshape(w.shape[0], w.shape[2])
                 self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr)
 
             # Upgrade SSM parameter precision: A_log and dt_bias are small per-head
