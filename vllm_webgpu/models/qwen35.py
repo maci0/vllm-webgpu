@@ -83,6 +83,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
         self._lin_key_dim: int  = self._lin_k_heads * self._lin_k_dim   # total key dim (= Q dim)
         self._lin_conv_dim: int = 2 * self._lin_key_dim + self._lin_val_dim  # QKV (Q_dim == K_dim)
+        # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
+        self._gdn_q_base: int = 0
+        self._gdn_k_base: int = self._lin_key_dim
+        self._gdn_v_base: int = 2 * self._lin_key_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
@@ -215,6 +219,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         for ln_i in range(min(self.num_layers, 4)):
             ln_w = self.weights.get(f"model.layers.{ln_i}.input_layernorm.weight")
             if ln_w is not None:
+                if getattr(ln_w, "dtype", "f16") != "f16":
+                    break  # unexpected dtype; leave _gemma_norm at default
                 mean_abs = float(np.abs(ln_w.to_numpy().view(np.float16)).mean())
                 self._gemma_norm = 0 if mean_abs > 0.7 else 1
                 break
@@ -298,7 +304,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         super().load_weights(path)
         self._alloc_lin_states()
         # Confirm MoE detection against actual weight keys.
-        has_moe_gate = "model.layers.0.mlp.gate.weight" in self.weights
+        # Check any layer rather than pinning to layer 0.
+        has_moe_gate = any("mlp.gate.weight" in k for k in self.weights)
         if has_moe_gate and not self._is_moe:
             logger.warning(
                 "MoE gate weight found but config did not declare num_experts. "
@@ -351,10 +358,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         out = sc[_H_NAMES[(self._hstate + 2) % 3]]
 
         # GDN linear attention has no KV cache — state is in ssm_gpu/conv_gpu buffers.
-        # Offsets into flat QKV buffer (f16 elements)
-        q_base = 0                                  # Q: [NUM_K_HEADS × K_DIM]
-        k_base = self._lin_key_dim                    # K starts after Q
-        v_base = self._lin_key_dim * 2                # V starts after Q+K
+        # Offsets into flat QKV buffer (f16 elements), precomputed in __init__.
+        q_base = self._gdn_q_base
+        k_base = self._gdn_k_base
+        v_base = self._gdn_v_base
 
         _rms_h = self._rms_consts
 

@@ -4,11 +4,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-try:
-    import wgpu as _wgpu_lib
-except ImportError:
-    _wgpu_lib = None  # type: ignore[assignment]
-
 from vllm_webgpu.models.base import _gemv_wg
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 
@@ -52,6 +47,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         self._is_moe: bool = self._num_experts > 0 and self._top_k > 0
 
         if self._is_moe:
+            import wgpu as _wgpu_lib
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
             dev = self.wgpu_device.wgpu_device
@@ -279,11 +275,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         dev.queue.on_submitted_work_done_sync()
 
         # Map the pre-allocated staging buffers — no extra GPU submit needed.
+        import wgpu as _wgpu_lib
         self._topk_idx_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
-        raw_idx = np.frombuffer(bytes(self._topk_idx_staging.read_mapped()), dtype=np.uint32).copy()
+        raw_idx = np.frombuffer(self._topk_idx_staging.read_mapped(), dtype=np.uint32).copy()
         self._topk_idx_staging.unmap()
         self._topk_w_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
-        raw_w = np.frombuffer(bytes(self._topk_w_staging.read_mapped()), dtype=np.float32).copy()
+        raw_w = np.frombuffer(self._topk_w_staging.read_mapped(), dtype=np.float32).copy()
         self._topk_w_staging.unmap()
         expert_indices = raw_idx[:K].tolist()
         expert_weights = raw_w[:K].tolist()

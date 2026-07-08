@@ -252,7 +252,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         super().load_weights(path)
         self._postprocess_weights()
         self._load_layer_scales()
-        logger.info("Loaded %d weight tensors", len(self.weights))
 
     def forward(
         self,

@@ -82,13 +82,7 @@ logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids
 
 _has_gpu_argmax = getattr(model, 'logit_returns_token_id', False)
 
-def _top1(logits_out):
-    """Extract the greedy token from either GPU-argmax (int32 [1,1]) or float logits."""
-    if _has_gpu_argmax:
-        return int(logits_out[0, 0])
-    return int(np.argmax(logits_out[-1]))
-
-decode_tok = _top1(logits)
+decode_tok = int(logits[0, 0]) if _has_gpu_argmax else int(np.argmax(logits[-1]))
 pos = len(tok_ids)
 print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")
 
@@ -102,7 +96,7 @@ for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra 
     t0 = time.perf_counter()
     logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _dm)
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    decode_tok = _top1(logits)
+    decode_tok = int(logits[0, 0]) if _has_gpu_argmax else int(np.argmax(logits[-1]))
     pos += 1
     if step >= args.warmup_steps:
         prod_times.append(elapsed_ms)
@@ -122,7 +116,7 @@ for step in range(args.decode_steps):
     _dm2 = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=pos + 1)
     t0 = time.perf_counter()
     logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _dm2)
-    decode_tok = _top1(logits)
+    decode_tok = int(logits[0, 0]) if _has_gpu_argmax else int(np.argmax(logits[-1]))
     decode_times.append((time.perf_counter() - t0) * 1000.0)
     pos += 1
 

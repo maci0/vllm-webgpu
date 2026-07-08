@@ -248,8 +248,7 @@ class BaseWebGPUModel(ABC):
 
     def _quant_info(self, base_key: str) -> dict:
         """Return quantization metadata for a weight base key, or empty dict."""
-        meta = self.weights.get("__quant_meta__", {})
-        return meta.get(base_key, {})
+        return self.weights.get("__quant_meta__", {}).get(base_key, {})
 
     # ── GPU sampler helpers ───────────────────────────────────────────────────
 

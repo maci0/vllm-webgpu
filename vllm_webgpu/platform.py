@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import functools
 import os
 import sys
 from typing import TYPE_CHECKING
@@ -18,10 +17,11 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
-@functools.cache
 def _get_wgpu_adapter():
-    """Return the wgpu adapter, probing once and caching the result.
+    """Return the wgpu adapter, probing on each call.
 
+    Not cached intentionally: config.reset_config() can change power_preference
+    between calls (e.g. in tests), and re-probing is cheap on failure.
     Returns None if wgpu is unavailable or the probe failed.
     """
     try:

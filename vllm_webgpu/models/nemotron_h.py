@@ -200,7 +200,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def _init_mamba_states(self) -> None:
         """Allocate zero-initialized GPU buffers for each Mamba layer's state."""
-        import math
         from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -215,8 +214,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        conv_bytes = math.prod(conv_shape) * 2   # f16: 2 bytes per element
-        ssm_bytes  = math.prod(ssm_shape) * 4    # f32: 4 bytes per element
+        conv_bytes = np.prod(conv_shape) * 2   # f16: 2 bytes per element
+        ssm_bytes  = np.prod(ssm_shape) * 4    # f32: 4 bytes per element
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":

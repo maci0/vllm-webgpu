@@ -1,7 +1,6 @@
 from __future__ import annotations
 import json
 import logging
-import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -1282,13 +1281,17 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     group_size = 64
     config_path = p / "config.json"
     if config_path.exists():
-        # Try compressed_tensors-aware loader for quantization_config.group_size first,
-        # then fall back to the raw 'quantization' key used by some MLX formats.
-        qs = _load_quant_cfg(config_path).get("group_size")
-        if not qs:
-            with open(config_path) as f:
-                cfg_raw = json.load(f)
-            qs = cfg_raw.get("quantization", {}).get("group_size")
+        # Single read: resolve quantization_config from nested locations, then
+        # fall back to the raw 'quantization' key used by some MLX formats.
+        with open(config_path) as f:
+            cfg_raw = json.load(f)
+        quant_cfg = (
+            cfg_raw.get("quantization_config")
+            or cfg_raw.get("text_config", {}).get("quantization_config")
+            or cfg_raw.get("compression_config")
+            or {}
+        )
+        qs = quant_cfg.get("group_size") or cfg_raw.get("quantization", {}).get("group_size")
         if qs:
             group_size = int(qs)
 
