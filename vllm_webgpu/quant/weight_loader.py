@@ -678,7 +678,7 @@ def load_safetensors_weights(
                 f32 = t_bf16.to(torch.float32).numpy()
                 arr = np.clip(f32, -65504.0, 65504.0).reshape(shape).astype(np.float16)
             elif dtype_str == "F32":
-                arr = sf.get_tensor(name).numpy().astype(np.float16)
+                arr = np.clip(sf.get_tensor(name).numpy(), -65504.0, 65504.0).astype(np.float16)
             elif dtype_str == "I8":
                 # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
                 # Upload raw bytes; shader does sign extension via int8_to_f32().
@@ -1311,7 +1311,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
             f32 = _bf16_raw_to_f32(raw, shape)
             arr = np.clip(f32, -65504.0, 65504.0).astype(np.float16)
         elif dtype_str == "F32":
-            arr = np.frombuffer(raw, dtype=np.float32).reshape(shape).astype(np.float16)
+            arr = np.clip(np.frombuffer(raw, dtype=np.float32).reshape(shape), -65504.0, 65504.0).astype(np.float16)
         elif dtype_str == "F16":
             arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
         else:
