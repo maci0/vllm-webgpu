@@ -325,12 +325,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             lm_head_w = self.weights.get("lm_head.weight",
                                          self.weights[self._embed_key()])
+            uq_lm = self._uq_for_key("lm_head.weight")
             # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
                            [norm_out, lm_head_w,
-                            self.weights.get("lm_head.scales", norm_out), logits_buf],
-                           {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                            self._scales_buf("lm_head.weight", uq_lm, norm_out), logits_buf],
+                           {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, **self._split_k_extra(uq_lm)},
                            ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
@@ -695,6 +696,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Extract last token, apply final norm, run LM head.
         # copy_buffer_to_buffer is a GPU-side operation (no CPU round-trip).
         lm_head_w = self.weights.get("lm_head.weight", self.weights[self._embed_key()])
+        uq_lm = self._uq_for_key("lm_head.weight")
         with self._batched_dispatch():
             last_byte_offset = (T - 1) * hidden * 4   # f32: 4 bytes per element
             assert self._active_encoder is not None
@@ -710,8 +712,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [b["last_norm"], lm_head_w,
-                 self.weights.get("lm_head.scales", _dummy), b["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                 self._scales_buf("lm_head.weight", uq_lm, _dummy), b["logits"]],
+                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, **self._split_k_extra(uq_lm)},
                 ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
@@ -792,6 +794,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         # Final norm and LM head on the last token's hidden state.
         lm_head_w = self.weights.get("lm_head.weight", self.weights[self._embed_key()])
+        uq_lm = self._uq_for_key("lm_head.weight")
         with self._batched_dispatch():
             self._dispatch(
                 "rms_norm_f32in",
@@ -800,8 +803,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [pre["norm_out"], lm_head_w,
-                 self.weights.get("lm_head.scales", pre["norm_out"]), pre["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                 self._scales_buf("lm_head.weight", uq_lm, pre["norm_out"]), pre["logits"]],
+                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, **self._split_k_extra(uq_lm)},
                 ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
