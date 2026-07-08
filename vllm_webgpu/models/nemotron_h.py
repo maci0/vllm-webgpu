@@ -227,6 +227,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Load weights with key remapping and Mamba-specific postprocessing."""
         super().load_weights(path)
         self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
+        qmeta = self.weights.get("__quant_meta__")
+        if qmeta:
+            self.weights["__quant_meta__"] = self._hf_to_vllm_mapper.apply_dict(qmeta)
         self._pack_attn_weights()
         self._postprocess_mamba_weights()
         self._init_mamba_states()
