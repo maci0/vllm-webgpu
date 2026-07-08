@@ -132,80 +132,58 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         return (i + 1) % _FULL_ATTN_INTERVAL == 0
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
+        # Inherit standard _pre (7 keys), _sc (17 keys), and _hstate from parent.
+        super()._init_scratch_buffers(max_ctx)
+
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
         T = 1
-        H = self.hidden_size
-        I = self.intermediate_size
         Q = self.num_q_heads * self.head_dim
-        KV = self.num_kv_heads * self.head_dim
 
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, n, usage=rw)
 
-        # Pre-allocated per-step buffers (reused every decode via write_buffer).
-        V = self.vocab_size
-        self._pre: dict[str, "WebGPUBuffer"] = {
-            "ids":      mk(T * 4),
-            "pos":      mk(T * 4),
-            "slot_map": mk(T * 4),
-            "bt":       mk(max(4096, (max_ctx + self.block_size - 1) // self.block_size) * 4),
-            "x":        mk(T * H * 2),
-            "norm_out": mk(T * H * 2),
-            "logits":   mk(T * V * 2),
-        }
+        # qkv_buf: parent sizes for full-attn (Q + 2*KV); GDN layers need
+        # lin_conv_dim (K+K+V heads packed). Replace with the larger GDN size so
+        # both full-attn and GDN layers can reuse the same buffer.
+        self._sc["qkv_buf"] = mk(self._lin_conv_dim * 2)
 
-        self._sc: dict[str, "WebGPUBuffer"] = {
-            "normed":     mk(T * H * 2),
-            "q_buf":      mk(T * Q * 2),
-            "k_buf":      mk(T * KV * 2),
-            "v_buf":      mk(T * KV * 2),
-            "q_rope":     mk(T * Q * 2),
-            "k_rope":     mk(T * KV * 2),
-            "attn_out":   mk(T * Q * 2),
-            "q_gate_buf": mk(T * Q * 2),  # attention output gate (silu(gate)*attn_out)
-            "o_proj_out": mk(T * H * 2),
-            "ffn_normed": mk(T * H * 2),
-            "gate_buf":    mk(T * I * 2),
-            "up_buf":   mk(T * I * 2),
-            "ffn_act":  mk(T * I * 2),
-            "ffn_out":  mk(T * H * 2),
-            "h0":         mk(T * H * 2),
-            "h1":         mk(T * H * 2),
-            "h2":         mk(T * H * 2),
-            # GDN linear-attention scratch buffers (sized from config, not hardcoded)
-            "qkv_buf":    mk(self._lin_conv_dim * 2),         # in_proj_qkv output
-            "qkv_conv":   mk(self._lin_conv_dim * 2),         # post-conv output
-            "a_buf":      mk(self._lin_k_heads * 2),          # in_proj_a output [K_HEADS f16]
-            "z_buf":      mk(self._lin_val_dim * 2),          # in_proj_z output
-            "gdn_out":    mk(self._lin_val_dim * 2),          # GDN attn output
-            "gated":      mk(self._lin_val_dim * 2),          # after norm+gate
-            "b_buf":      mk(self._lin_k_heads * 2),          # in_proj_b output [K_HEADS f16]
-            # Dummy binding-2 scales buffer for USE_QUANT=0 dispatches.
-            # Prevents sc["normed"] from being silently aliased as a scales buffer,
-            # which would corrupt output if a dispatch is promoted to USE_QUANT=1/2.
+        # Attention output gate: silu(gate)*attn_out before o_proj.
+        # Not present in the parent; added only for models with attn_output_gate=True,
+        # but always allocated so dispatch bindings are stable.
+        self._sc["q_gate_buf"] = mk(T * Q * 2)
+
+        # GDN linear-attention scratch buffers (sized from config, not hardcoded).
+        self._sc.update({
+            "qkv_conv":     mk(self._lin_conv_dim * 2),  # post-conv output
+            "a_buf":        mk(self._lin_k_heads * 2),   # in_proj_a output [K_HEADS f16]
+            "z_buf":        mk(self._lin_val_dim * 2),   # in_proj_z output
+            "gdn_out":      mk(self._lin_val_dim * 2),   # GDN attn output
+            "gated":        mk(self._lin_val_dim * 2),   # after norm+gate
+            "b_buf":        mk(self._lin_k_heads * 2),   # in_proj_b output [K_HEADS f16]
+            # Dummy binding-2 scales buffer for USE_QUANT=0 dispatches. Prevents
+            # sc["normed"] from being silently aliased as a scales buffer, which
+            # would corrupt output if a dispatch is promoted to USE_QUANT=1/2.
             "dummy_scales": mk(8),
-        }
+        })
 
         if self._is_moe:
+            H = self.hidden_size
             _moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
             self._moe_sc: dict[str, "WebGPUBuffer"] = {
                 "router_out":   mk(self._moe_num_experts * 2),  # [N_E] f16 router logits
-                "topk_idx":     mk(self._moe_k * 4),             # [K] u32 expert indices
-                "topk_w":       mk(self._moe_k * 4),             # [K] f32 softmax weights
-                "expert_gate":  mk(_moe_act_sz * 2),             # [max_inter] f16 gate proj
-                "expert_up":    mk(_moe_act_sz * 2),             # [max_inter] f16 up proj
-                "expert_act":   mk(_moe_act_sz * 2),             # [max_inter] f16 gate*up activated
-                "expert_out":   mk(H * 2),                       # [hidden] f16 accumulated output
-                "expert_tmp":   mk(H * 2),                       # [hidden] f16 per-expert temp
-                "moe_w_buf":    mk(self._moe_k * 4),             # [K] f32 written before each encoder
-                "dummy_scales": mk(8),                           # fallback scales binding
+                "topk_idx":     mk(self._moe_k * 4),            # [K] u32 expert indices
+                "topk_w":       mk(self._moe_k * 4),            # [K] f32 softmax weights
+                "expert_gate":  mk(_moe_act_sz * 2),            # [max_inter] f16 gate proj
+                "expert_up":    mk(_moe_act_sz * 2),            # [max_inter] f16 up proj
+                "expert_act":   mk(_moe_act_sz * 2),            # [max_inter] f16 gate*up activated
+                "expert_out":   mk(H * 2),                      # [hidden] f16 accumulated output
+                "expert_tmp":   mk(H * 2),                      # [hidden] f16 per-expert temp
+                "moe_w_buf":    mk(self._moe_k * 4),            # [K] f32 written before each encoder
+                "dummy_scales": mk(8),                          # fallback scales binding
             }
-
-        self._hstate: int = 0
 
     @property
     def _num_experts(self) -> int:
