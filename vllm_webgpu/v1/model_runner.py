@@ -531,7 +531,7 @@ class WebGPUModelRunner:
             # When chunked prefill is active (T < len(tok_ids)), store the full prompt so
             # subsequent chunks can be processed correctly via the cached-req path.
             self._req_state[rid] = {
-                "pos": T, "block_ids": blk_ids,
+                "pos": num_computed + T, "block_ids": blk_ids,
                 "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
                 "sampling_params": sp,
                 "all_prompt_tokens": tok_ids if T < len(tok_ids) else None,
