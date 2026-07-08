@@ -42,20 +42,26 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 def _check_unsupported_quant(model_dir: Path) -> None:
     """Raise ValueError if config.json names an unsupported quantization scheme.
 
-    Detects AQLM, HQQ, and QuIP# by reading quantization_config.quant_type from
-    config.json. These formats cannot be loaded as safetensors by this plugin;
-    raise early with a clear message rather than silently loading wrong data.
+    Detects AQLM, HQQ, and QuIP# by reading quant_type/quant_method from
+    config.json. Uses compressed_tensors.get_quantization_config() so that
+    quantization config nested under text_config.quantization_config (multimodal
+    models like Gemma3/Qwen3.5-MM) and compression_config are both covered.
+    These formats cannot be loaded as safetensors by this plugin; raise early
+    with a clear message rather than silently loading wrong data.
     """
-    import json
     config_json = model_dir / "config.json"
     if not config_json.exists():
         return
     try:
-        with open(config_json) as f:
-            cfg = json.load(f)
-    except Exception:
-        return
-    qcfg = cfg.get("quantization_config", {})
+        from compressed_tensors import get_quantization_config as _get_ct_config
+        qcfg = _get_ct_config(str(config_json)) or {}
+    except (ImportError, Exception):
+        try:
+            import json
+            with open(config_json) as f:
+                qcfg = json.load(f).get("quantization_config") or {}
+        except Exception:
+            return
     qt = (qcfg.get("quant_type") or qcfg.get("quant_method") or "").lower().strip()
     if qt in _UNSUPPORTED_QUANT_TYPES:
         raise ValueError(
