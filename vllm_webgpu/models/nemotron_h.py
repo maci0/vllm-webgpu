@@ -57,8 +57,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         )
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
 
-        # MLP parameters (used in '-' layers)
-        self.intermediate_size: int = model_config.intermediate_size
+        # MLP parameters (used in '-' layers).
+        # intermediate_size may be a list for heterogeneous (puzzle) configs;
+        # store the per-layer list and use the max for scratch buffer sizing.
+        _raw_int = model_config.intermediate_size
+        if isinstance(_raw_int, list):
+            self._intermediate_sizes: list[int] | None = _raw_int
+            self.intermediate_size: int = max(_raw_int)
+        else:
+            self._intermediate_sizes = None
+            self.intermediate_size: int = _raw_int
 
         # Mamba-2 parameters
         self.mamba_num_heads: int = model_config.mamba_num_heads
@@ -782,7 +790,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         sc  = self._sc
         p   = f"model.layers.{layer_idx}.mixer"
         H   = self.hidden_size
-        I   = self.intermediate_size
+        if self._intermediate_sizes is not None:
+            mlp_idx = sum(1 for j in range(layer_idx) if self._layer_types[j] == "mlp")
+            I = self._intermediate_sizes[mlp_idx]
+        else:
+            I = self.intermediate_size
 
         # up_proj: hidden -> intermediate
         uw  = f"{p}.up_proj.weight"
