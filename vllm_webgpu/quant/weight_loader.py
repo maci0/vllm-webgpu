@@ -821,12 +821,12 @@ def load_safetensors_weights(
                             # Symmetric AWQ uses zero_point=8 (uint4 midpoint), so every nibble
                             # is 8, encoded as 0x88888888 per int32 word.
                             # qzeros shape is (G, N//8) where G=sc.shape[0], N//8=qw.shape[1].
-                            qz_sym = np.full((sc.shape[0], qw.shape[1]), fill_value=0x88888888, dtype=np.int32)
+                            qz_sym = np.full((sc.shape[0], qw.shape[1]), fill_value=np.int32(-0x77777778), dtype=np.int32)
                             w_f16 = _dequant_awq(qw, sc, qz_sym)
                         else:
                             w_f16 = _dequant_gptq(
                                 qw, sc,
-                                qz if qz is not None else np.full((sc.shape[0], qw.shape[1] // 8), 0x88888888, dtype=np.int32),
+                                qz if qz is not None else np.full((sc.shape[0], qw.shape[1] // 8), np.int32(-0x77777778), dtype=np.int32),
                                 g_idx)
                         _upload_f16(w_f16, f"{base}.weight", weights)
                 except Exception as exc:
