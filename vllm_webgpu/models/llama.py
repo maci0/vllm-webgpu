@@ -404,6 +404,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                (N_out, T, 1))
             else:
                 # f16 path (uq == 0)
+                assert uq == 0, f"gemm_batch: unexpected uq={uq} for {w_key}"
                 self._dispatch("matmul_quant_mr4",
                                [x_buf, self.weights[w_key], self._dummy_scales_buf, out_buf],
                                {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
@@ -413,9 +414,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4) are both supported in the batch path.
         # All other quant types (AWQ, FP8, NF4, Q4_K, ...) fall through to _transformer_layer
         # which dispatches matmul_quant with the correct USE_QUANT per key.
-        _rep_quant_key = "model.layers.0.self_attn.q_proj.weight"
-        _rep_uq = self._uq_for_key(_rep_quant_key)
-        if _rep_uq not in (0, 3):
+        # Check ALL representative weight keys — attn and FFN — to guard against mixed-quant
+        # models where q_proj is f16 but FFN weights are in an unsupported format.
+        _rep_keys = [
+            "model.layers.0.self_attn.q_proj.weight",
+            "model.layers.0.mlp.gate_proj.weight",
+            "model.layers.0.mlp.up_proj.weight",
+            "model.layers.0.mlp.down_proj.weight",
+        ]
+        if any(self._uq_for_key(k) not in (0, 3) for k in _rep_keys if k in self.weights):
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T, hidden, vocab, rms_base,
             )
