@@ -407,11 +407,29 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 else:
                     moe_in = shared_residual
 
+                # Gemma4Router preprocessing (vLLM Gemma4Router.forward, line 292-296):
+                #   x = norm(x)          — no-weight RMSNorm on the raw residual
+                #   x = x * root_size    — 1/sqrt(hidden_size) scalar
+                #   x = x * router.scale — learned per-dimension scale
+                # Input is shared_residual (pre pre_feedforward_layernorm_2), not moe_in.
+                router_scale_w = self.weights.get(f"{p}.router.scale")
+                router_in = sc["o_proj_out"]   # reuse free scratch (hidden, f16)
+                if router_scale_w is not None:
+                    root_size = math.pow(hidden, -0.5)
+                    self._dispatch("router_norm_f32in",
+                                   [shared_residual, router_scale_w, router_in],
+                                   {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt,
+                                    "ROOT_SIZE": root_size},
+                                   (num_tokens, 1, 1))
+                else:
+                    logger.warning("L%d: router.scale missing, routing will be incorrect", layer_idx)
+                    router_in = moe_in
+
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = self._uq_for_key(rw_)
                 self._dispatch("matmul_quant",
-                               [moe_in, self.weights[rw_],
-                                self._scales_buf(rw_, uq_rw, moe_in),
+                               [router_in, self.weights[rw_],
+                                self._scales_buf(rw_, uq_rw, router_in),
                                 router_logits_buf],
                                {"K": hidden, "N": self.num_experts,
                                 "USE_QUANT": uq_rw, "SPLIT_K": 0,
