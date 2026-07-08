@@ -77,10 +77,8 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
-        import psutil
-        adapter = _get_wgpu_adapter()
-        limit = adapter.limits.get("max-buffer-size", 4 * 1024**3) if adapter else 4 * 1024**3
-        return min(psutil.virtual_memory().total, limit)
+        from vllm.utils.mem_utils import get_cpu_memory
+        return get_cpu_memory()
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
