@@ -105,7 +105,7 @@ def _top1(logits_out):
     """Extract the greedy token from either GPU-argmax (int32 [1,1]) or float logits."""
     if _has_gpu_argmax:
         return int(logits_out[0, 0])
-    return int(np.argmax(logits_out[0]))
+    return int(np.argmax(logits_out[-1]))
 
 decode_tok = _top1(logits)
 pos = len(tok_ids)
