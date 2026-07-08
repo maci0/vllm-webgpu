@@ -243,6 +243,6 @@ if __name__ == "__main__":
     if args.gdn_bf16:
         os.environ["GDN_BF16"] = "1"
 
-    from vllm_webgpu.models.base import BaseWebGPUModel
-    model_path = BaseWebGPUModel._resolve_model_path(args.model)
+    from vllm.transformers_utils.repo_utils import get_model_path
+    model_path = str(get_model_path(args.model))
     run(model_path, args.prompt, args.max_tokens, args.temperature, args.top_p)

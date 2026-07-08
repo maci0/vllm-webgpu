@@ -23,13 +23,13 @@ from vllm_webgpu.webgpu.device import WebGPUDevice
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 from vllm_webgpu.utils import SHADERS_DIR
 from vllm_webgpu.quant.weight_loader import detect_weight_format
-from vllm_webgpu.models.base import BaseWebGPUModel
+from vllm.transformers_utils.repo_utils import get_model_path
 
 wgpu_dev = WebGPUDevice.initialize()
 pipeline_cache = PipelineCache(wgpu_dev.wgpu_device, SHADERS_DIR)
 
 # ── Load model ────────────────────────────────────────────────────────────────
-model_path = BaseWebGPUModel._resolve_model_path(args.model)
+model_path = str(get_model_path(args.model))
 fmt = detect_weight_format(model_path)
 print(f"Model: {model_path}")
 print(f"Format: {fmt}")
