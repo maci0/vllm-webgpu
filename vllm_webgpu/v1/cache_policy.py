@@ -147,6 +147,9 @@ class WebGPUCachePlanner:
             available = int(total * config.memory_fraction) - model_mem - _OVERHEAD_BYTES
         else:
             # Derive KV budget from model size when device total is unknown.
-            available = int(model_mem * config.memory_fraction / (1.0 - config.memory_fraction))
+            # memory_fraction==1.0 means "all remaining memory", so guard against
+            # division by zero when the denominator is zero or negative.
+            denom = 1.0 - config.memory_fraction
+            available = int(model_mem) if denom <= 0 else int(model_mem * config.memory_fraction / denom)
         return max(available, 0)
 
