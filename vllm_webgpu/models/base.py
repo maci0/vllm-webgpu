@@ -63,8 +63,10 @@ def compute_yarn_freqs(
                 folded into the frequencies — cos(pos * freq * mscale) is wrong.
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask)
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
+    )
 
     if rotary_dim is None:
         rotary_dim = head_dim
@@ -74,14 +76,21 @@ def compute_yarn_freqs(
     beta_slow            = float(rope_scaling.get("beta_slow", 1.0))
     orig_ctx             = int(rope_scaling.get("original_max_position_embeddings", 4096))
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
+    truncate             = bool(rope_scaling.get("truncate", True))
 
-    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
-    inv_freq_extrap = 1.0 / pos_freqs
-    inv_freq_interp = 1.0 / (factor * pos_freqs)
-    truncate = bool(rope_scaling.get("truncate", True))
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
-    scaled_inv_freq = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).numpy().astype(np.float32)
+    # Delegate to vLLM's authoritative implementation. A SimpleNamespace acts
+    # as `self` so we skip the full nn.Module init (no CUDA required; the
+    # method is pure CPU torch ops).
+    ns = SimpleNamespace(
+        base=rope_theta,
+        rotary_dim=rotary_dim,
+        beta_fast=beta_fast,
+        beta_slow=beta_slow,
+        extrapolation_factor=extrapolation_factor,
+        max_position_embeddings=orig_ctx,
+        truncate=truncate,
+    )
+    scaled_inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(ns, factor).numpy().astype(np.float32)
 
     # YaRN attention scale: mscale = (0.1 * ln(factor) + 1.0) * attn_factor.
     # attn_factor is an optional rope_scaling field (default 1.0), matching
