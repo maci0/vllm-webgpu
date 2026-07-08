@@ -389,7 +389,23 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             uw_k = f"{p}.mlp.up_proj.weight"
             uq_g = self._uq_for_key(gw_k)
             uq_u = self._uq_for_key(uw_k)
-            if uq_g == 0 and uq_u == 0:
+            if num_tokens > 1 and uq_g in (0, 3) and uq_u in (0, 3):
+                # Batch path: one matmul_quant_mr4 per projection covers all T tokens.
+                for out_b, wk, uq in [
+                        (sc["gate_buf"], gw_k, uq_g),
+                        (sc["up_buf"],   uw_k, uq_u)]:
+                    _ex_mr4: dict = {"K": hidden, "N": inter_shared,
+                                     "M": num_tokens, "USE_QUANT": uq}
+                    if uq == 3:
+                        _ex_mr4["GROUP_K"] = self._quant_extra(wk[:-7], uq).get("GROUP_K", 128)
+                    self._dispatch("matmul_quant_mr4",
+                                   [ffn_in, self.weights[wk],
+                                    self._scales_buf(wk, uq, ffn_in), out_b],
+                                   _ex_mr4, (inter_shared, num_tokens, 1))
+                self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                               {"N": gelu_n_shared}, ((gelu_n_shared // 4 + 255) // 256, 1, 1),
+                               shader_subdir="gemma")
+            elif uq_g == 0 and uq_u == 0:
                 self._dispatch("fused_gate_act",
                                [ffn_in, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
                                {"K": hidden, "N": inter_shared, "GELU": 1}, (inter_shared, 1, 1))
@@ -410,13 +426,23 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             dw = f"{p}.mlp.down_proj.weight"
             uq_dw = self._uq_for_key(dw)
-            self._dispatch("matmul_quant",
-                           [sc["ffn_act"], self.weights[dw],
-                            self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter_shared, "N": hidden, "USE_QUANT": uq_dw,
-                            **self._split_k_extra(uq_dw),
-                            **self._quant_extra(dw[:-7], uq_dw)},
-                           _gemv_wg(hidden, uq_dw))
+            if num_tokens > 1 and uq_dw in (0, 3):
+                _ex_dw: dict = {"K": inter_shared, "N": hidden,
+                                "M": num_tokens, "USE_QUANT": uq_dw}
+                if uq_dw == 3:
+                    _ex_dw["GROUP_K"] = self._quant_extra(dw[:-7], uq_dw).get("GROUP_K", 128)
+                self._dispatch("matmul_quant_mr4",
+                               [sc["ffn_act"], self.weights[dw],
+                                self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
+                               _ex_dw, (hidden, num_tokens, 1))
+            else:
+                self._dispatch("matmul_quant",
+                               [sc["ffn_act"], self.weights[dw],
+                                self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
+                               {"K": inter_shared, "N": hidden, "USE_QUANT": uq_dw,
+                                **self._split_k_extra(uq_dw),
+                                **self._quant_extra(dw[:-7], uq_dw)},
+                               _gemv_wg(hidden, uq_dw))
 
             # MoE layers use post_feedforward_layernorm_1 for the shared MLP stream;
             # non-MoE layers only have the no-suffix key.
