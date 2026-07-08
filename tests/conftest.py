@@ -5,14 +5,16 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "requires_gpu: mark test as requiring a real WebGPU adapter")
     config.addinivalue_line("markers", "integration: mark test as an end-to-end integration test requiring a real GPU")
 
-    # Pre-warm the vLLM GDN op cache before any test runs. test_config.py
-    # permanently replaces sys.modules["vllm"] with a MagicMock which would
-    # prevent later lazy imports from reaching the real package.
+    # Pre-import vllm before any test runs. test_config.py has a guard
+    # `if "vllm" not in sys.modules` that installs a permanent MagicMock
+    # when vllm is absent. By importing vllm here, the guard is never
+    # triggered and the real package stays in sys.modules throughout the
+    # session, preventing ModuleNotFoundError in later tests (e.g.
+    # test_integration.py importing vllm.transformers_utils).
     try:
-        from vllm_webgpu.models.qwen35 import _get_vllm_gdn_ops
-        _get_vllm_gdn_ops()
-    except Exception:
-        pass  # vllm or GDN ops unavailable; affected tests will fail clearly
+        import vllm  # noqa: F401
+    except ImportError:
+        pass  # vllm not installed — test_config.py mock path still works
 
 
 @pytest.fixture(scope="session")

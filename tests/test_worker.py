@@ -194,7 +194,7 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
     runner = MagicMock(spec=WebGPUModelRunner)
     runner.model = None  # not yet loaded
     runner.vllm_config = vllm_config
-    runner.webgpu_config = WebGPUConfig()
+    runner.webgpu_config = WebGPUConfig.from_env()
     return runner
 
 
@@ -259,7 +259,7 @@ def test_get_kv_cache_spec_pre_load_gemma4_uniform_fallback():
     runner = MagicMock(spec=WebGPUModelRunner)
     runner.model = None
     runner.vllm_config = vllm_config
-    runner.webgpu_config = WebGPUConfig()
+    runner.webgpu_config = WebGPUConfig.from_env()
 
     spec = WebGPUModelRunner.get_kv_cache_spec(runner)
 

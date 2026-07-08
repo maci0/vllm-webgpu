@@ -55,9 +55,8 @@ def test_register_returns_class_path_when_available():
     import sys
     import vllm_webgpu
 
-    # Install vllm mock if not present so patch("vllm.envs.environment_variables") works.
-    # This uses a permanent injection (not patch.dict) because importlib.reload() in
-    # test_platform.py requires vllm_webgpu.platform to remain in sys.modules after this test.
+    # vllm is pre-imported by conftest.py so this branch is never taken; the
+    # guard is kept for environments where vllm is genuinely absent.
     if "vllm" not in sys.modules:
         sys.modules["vllm"] = MagicMock()
         sys.modules["vllm.envs"] = MagicMock()

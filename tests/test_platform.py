@@ -3,9 +3,11 @@ from unittest.mock import MagicMock, patch
 
 
 def test_is_available_no_wgpu():
+    import importlib
     with patch.dict("sys.modules", {"wgpu": None}):
-        from vllm_webgpu.platform import WebGPUPlatform
-        assert WebGPUPlatform.is_available() is False
+        from vllm_webgpu import platform as plat
+        importlib.reload(plat)  # reset _wgpu_adapter cache with wgpu patched out
+        assert plat.WebGPUPlatform.is_available() is False
 
 
 def test_is_available_no_adapter():
