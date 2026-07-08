@@ -170,7 +170,8 @@ class WebGPUWorker(WorkerBase):
         # Do not null model_runner itself: any post-shutdown delegate call (e.g.
         # reset_encoder_cache, get_supported_tasks) would raise AttributeError
         # on NoneType instead of a clear error.
-        self.model_runner.wgpu_device = None
+        if self.model_runner is not None:
+            self.model_runner.wgpu_device = None
         self.wgpu_device = None
         gc.collect()
         logger.info("WebGPU worker shutdown complete")
