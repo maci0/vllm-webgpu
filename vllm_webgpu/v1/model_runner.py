@@ -594,10 +594,6 @@ class WebGPUModelRunner:
                 # context (prefill) phase and has remaining prompt tokens stored.
                 is_ctx = (callable(getattr(cached, "is_context_phase", None))
                           and cached.is_context_phase(rid))
-                if not is_ctx:
-                    is_ctx = (not hasattr(cached, "num_output_tokens")
-                              or (i < len(cached.num_output_tokens)
-                                  and cached.num_output_tokens[i] == 0))
                 is_context = all_prompt is not None and pos < len(all_prompt) and is_ctx
 
                 if is_context:
