@@ -98,7 +98,8 @@ def compute_yarn_freqs(
     # Must be applied AFTER cos/sin in the shader (mscale * cos(pos * freq)),
     # not folded into inv_freq (which would compute cos(pos * freq * mscale) instead).
     attn_factor = float(rope_scaling.get("attn_factor", 1.0))
-    mscale = yarn_get_mscale(factor) * attn_factor
+    apply_yarn_scaling = bool(rope_scaling.get("apply_yarn_scaling", True))
+    mscale = (yarn_get_mscale(factor) * attn_factor) if apply_yarn_scaling else float(attn_factor)
     return scaled_inv_freq, float(mscale)
 
 
