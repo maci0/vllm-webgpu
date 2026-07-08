@@ -4,54 +4,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-try:
-    # All imports below are vLLM v1 internals verified against vllm>=0.24,<0.25.
-    # These paths have no stability guarantees; a patch release may move or rename
-    # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
-    # Update this comment and pyproject.toml when bumping the vLLM version.
-    from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
-    from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
-    from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase   # vllm>=0.24
-except ImportError:
-    from collections import namedtuple as _namedtuple
-    CompilationTimes = _namedtuple("CompilationTimes", ["language_model", "encoder"])  # type: ignore[assignment,misc]
-
-    def set_random_seed(seed: int) -> None:  # type: ignore[misc]
-        pass
-
-    def init_distributed_environment(*args: Any, **kwargs: Any) -> None:  # type: ignore[misc]
-        pass
-
-    def ensure_model_parallel_initialized(*args: Any, **kwargs: Any) -> None:  # type: ignore[misc]
-        pass
-
-    class WorkerBase:  # type: ignore[no-redef]
-        def __init__(self, **kwargs: Any) -> None:
-            for k, v in kwargs.items():
-                setattr(self, k, v)
-            # Unpack vllm_config sub-attributes to match the real WorkerBase contract.
-            # Keep in sync with vllm.v1.worker.worker_base.WorkerBase.__init__ (lines 64-79).
-            vc = kwargs.get("vllm_config")
-            if vc is not None:
-                self.cache_config = getattr(vc, "cache_config", None)
-                self.model_config = getattr(vc, "model_config", None)
-                self.lora_config = getattr(vc, "lora_config", None)
-                self.load_config = getattr(vc, "load_config", None)
-                self.parallel_config = getattr(vc, "parallel_config", None)
-                self.scheduler_config = getattr(vc, "scheduler_config", None)
-                self.device_config = getattr(vc, "device_config", None)
-                self.speculative_config = getattr(vc, "speculative_config", None)
-                self.observability_config = getattr(vc, "observability_config", None)
-                self.kv_transfer_config = getattr(vc, "kv_transfer_config", None)
-                self.compilation_config = getattr(vc, "compilation_config", None)
-                try:
-                    from vllm.platforms import current_platform as _cp
-                    self.current_platform = _cp
-                except ImportError:
-                    self.current_platform = None
-                rank = kwargs.get("rank")
-                if rank is not None and self.parallel_config is not None:
-                    self.parallel_config.rank = rank
+# vLLM v1 internals verified against vllm>=0.24,<0.25.
+# These paths have no stability guarantees; a patch release may move or rename
+# them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
+# Update this comment and pyproject.toml when bumping the vLLM version.
+from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
+from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
+from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase   # vllm>=0.24
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.v1.cache_policy import determine_available_memory
