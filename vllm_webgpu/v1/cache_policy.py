@@ -48,7 +48,7 @@ class WebGPUCachePlanner:
                 total // 2**20, model_mem // 2**20, available // 2**20,
             )
             return max(available, 0)
-        return max(int(total * config.memory_fraction) - model_mem, 0)
+        return max(int(total * config.memory_fraction) - model_mem - _OVERHEAD_BYTES, 0)
 
     def allocate_kv_pool(
         self,
