@@ -162,15 +162,8 @@ class BaseWebGPUModel:
     @staticmethod
     def _resolve_model_path(path: str) -> str:
         """Resolve a HuggingFace model ID or local path to an actual directory."""
-        from pathlib import Path
-        if Path(path).exists():
-            return path
-        try:
-            from huggingface_hub import snapshot_download
-            return snapshot_download(path, local_files_only=True)
-        except Exception:
-            pass
-        return path  # let the caller fail with a meaningful error
+        from vllm.transformers_utils.repo_utils import get_model_path
+        return str(get_model_path(path))
 
     def load_weights(self, path: str) -> None:
         """Load model weights from a HuggingFace safetensors directory.
