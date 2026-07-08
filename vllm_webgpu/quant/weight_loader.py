@@ -214,6 +214,9 @@ def load_safetensors_weights_sharded(
         applied = 0
         for wkey in list(weights.keys()):
             if wkey.endswith(".weight") and not wkey.startswith("__"):
+                buf = weights.get(wkey)
+                if buf is not None and getattr(buf, "dtype", None) == "f16":
+                    continue
                 base = wkey[:-len(".weight")]
                 if base not in qmeta:
                     entry: dict = {"fmt": global_ct["fmt"]}
