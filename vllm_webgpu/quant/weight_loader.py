@@ -6,11 +6,12 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from vllm.model_executor.layers.quantization.auto_awq import _REVERSE_AWQ_PACK_ORDER
 
-# AWQ nibble reorder: position i in int32 holds nibble at bit offset.
-# Derived from vllm's _REVERSE_AWQ_PACK_ORDER so it stays in sync if upstream changes.
-_AWQ_NIBBLE_SHIFTS: np.ndarray = np.array(_REVERSE_AWQ_PACK_ORDER, dtype=np.int32) * 4
+# AWQ nibble reorder table (Lin et al., AWQ: Activation-aware Weight Quantization,
+# https://arxiv.org/abs/2306.00978, Appendix). Each int32 stores 8 nibbles; the
+# pack order interleaves even/odd positions: [0,4,1,5,2,6,3,7]. Multiply by 4 to
+# convert nibble indices to bit offsets within the 32-bit word.
+_AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=np.int32) * 4
 # GPTQ nibble unpack: each int32 holds 8 nibbles at bit offsets [0, 4, 8, ..., 28].
 _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
