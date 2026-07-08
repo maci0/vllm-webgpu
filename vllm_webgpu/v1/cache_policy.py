@@ -78,9 +78,10 @@ class WebGPUCachePlanner:
         model = self._worker.model_runner.model
         model.kv_pool.clear()
 
+        FULL_ATTN_TYPES = {"attention", "full_attention"}
         full_attn_count = 0
         for i in range(num_layers):
-            is_full = layer_types is None or layer_types[i] == "full_attention"
+            is_full = layer_types is None or layer_types[i] in FULL_ATTN_TYPES
             if is_full:
                 k_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
                 v_buf = self._alloc_rw_buffer(dev, bytes_per_layer)
