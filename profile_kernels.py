@@ -45,6 +45,7 @@ else:
 print(f"Architecture: {arch}")
 
 from vllm_webgpu.v1.model_runner import ARCH_MAP, _build_model
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES
 if arch not in ARCH_MAP:
     raise ValueError(f"Architecture {arch!r} not supported. Supported: {sorted(ARCH_MAP)}")
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache)
@@ -97,7 +98,7 @@ else:
             WebGPUBuffer.empty(dev, 16, usage=rw),
         )
         for i in range(num_layers):
-            if layer_types[i] == "attention":
+            if layer_types[i] in KV_ATTN_TYPES:
                 model.kv_pool.append((
                     WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
                     WebGPUBuffer.empty(dev, kv_block_bytes, usage=rw),
