@@ -358,23 +358,23 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             with self._batched_dispatch(label=f"L{layer_idx:02d}R"):
                 if pfn2_w is not None:
-                    self._dispatch("rms_norm_f32in", [shared_residual, pfn2_w, sc["normed"]],
+                    self._dispatch("rms_norm_f32in", [residual, pfn2_w, sc["normed"]],
                                    _rms, (num_tokens, 1, 1))
                     moe_in = sc["normed"]
                 else:
-                    moe_in = shared_residual
+                    moe_in = residual
 
                 # Gemma4Router preprocessing (vLLM Gemma4Router.forward, line 292-296):
                 #   x = norm(x)          — no-weight RMSNorm on the raw residual
                 #   x = x * root_size    — 1/sqrt(hidden_size) scalar
                 #   x = x * router.scale — learned per-dimension scale
-                # Input is shared_residual (pre pre_feedforward_layernorm_2), not moe_in.
+                # Input is residual (post-attention, pre-MLP accumulation), not moe_in.
                 router_scale_w = self.weights.get(f"{p}.router.scale")
                 router_in = sc["o_proj_out"]   # reuse free scratch (hidden, f16)
                 if router_scale_w is not None:
                     root_size = hidden ** -0.5
                     self._dispatch("router_norm_f32in",
-                                   [shared_residual, router_scale_w, router_in],
+                                   [residual, router_scale_w, router_in],
                                    {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt,
                                     "ROOT_SIZE": root_size},
                                    (num_tokens, 1, 1))
