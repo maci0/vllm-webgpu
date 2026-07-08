@@ -233,7 +233,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
              self._lm_head_weight,
              self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
              logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": uq, **self._split_k_extra(uq)},
+            {"K": hidden, "N": vocab, "USE_QUANT": uq},
             ((vocab + 255) // 256, 1, 1),
         )
         if greedy:
@@ -570,7 +570,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            [b["last_norm"], self._lm_head_weight,
                             self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
                             b["logits"]],
-                           {"K": hidden, "N": vocab, "USE_QUANT": uq, **self._split_k_extra(uq)},
+                           {"K": hidden, "N": vocab, "USE_QUANT": uq},
                            ((vocab + 255) // 256, 1, 1))
 
             if getattr(self, "_greedy_decode", True):
@@ -662,7 +662,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 [pre["norm_out"], self._lm_head_weight,
                  self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
                  pre["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": uq, **self._split_k_extra(uq)},
+                {"K": hidden, "N": vocab, "USE_QUANT": uq},
                 ((vocab + 255) // 256, 1, 1),
             )
             if getattr(self, "_greedy_decode", True):
@@ -703,7 +703,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, self._dummy_scales_buf), out_buf],
-                {"K": hidden, "N": dim, "USE_QUANT": uq, **self._split_k_extra(uq), **qi},
+                {"K": hidden, "N": dim, "USE_QUANT": uq, **qi},
                 _gemv_wg(dim, uq),
             )
         return sc["q_buf"], sc["k_buf"], sc["v_buf"]
@@ -825,8 +825,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
         self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
                                         self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
-                       {"K": q_dim, "N": hidden, "USE_QUANT": uq,
-                        **self._split_k_extra(uq), **qi},
+                       {"K": q_dim, "N": hidden, "USE_QUANT": uq, **qi},
                        _gemv_wg(hidden, uq))
 
         return sc["o_proj_out"]
@@ -931,8 +930,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[w_k],
                                 self._scales_buf(w_k, uq2, self._dummy_scales_buf), out_b],
-                               {"K": hidden, "N": inter, "USE_QUANT": uq2,
-                                **self._split_k_extra(uq2), **qi2},
+                               {"K": hidden, "N": inter, "USE_QUANT": uq2, **qi2},
                                _gemv_wg(inter, uq2))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                            {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
@@ -944,7 +942,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._dispatch("matmul_quant",
                        [sc["ffn_act"], self.weights[w_k],
                         self._scales_buf(w_k, uq, self._dummy_scales_buf), sc["ffn_out"]],
-                       {"K": inter, "N": hidden, "USE_QUANT": uq,
-                        **self._split_k_extra(uq), **qi3},
+                       {"K": inter, "N": hidden, "USE_QUANT": uq, **qi3},
                        _gemv_wg(hidden, uq))
         return sc["ffn_out"]

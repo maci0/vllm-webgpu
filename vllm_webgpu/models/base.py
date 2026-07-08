@@ -305,18 +305,6 @@ class BaseWebGPUModel(ABC):
             return self.weights.get(w_key + ".scales", fallback)
         return fallback
 
-    def _split_k_extra(self, uq: int) -> dict:
-        """Return SPLIT_K=0 override for quant types that do not support SPLIT_K=1.
-
-        uq=1 and uq=2 are reserved for future shader variants. All current
-        call sites feed _uq_for_key output, which only returns values from
-        {0, 3, 4, 5, 6, 7, 8}, so this method always returns {} in practice.
-        The assertion guards against silent empty-dict returns if a new uq
-        value is introduced without updating this method.
-        """
-        assert uq in (0, 1, 2, 3, 4, 5, 6, 7, 8), f"unexpected uq={uq!r}"
-        return {"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}
-
     def _quant_extra(self, base_key: str, uq: int) -> dict:
         """Return additional shader override constants for quantized dispatch."""
         if uq in (3, 4):

@@ -794,8 +794,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                                [normed_x, self.weights[gate_wk],
                                 self._scales_buf(gate_wk, uq_gate, self._dummy_scales_buf),
                                 sc["q_gate_buf"]],
-                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate,
-                                **self._split_k_extra(uq_gate), **qi_gate},
+                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, **qi_gate},
                                _gemv_wg(q_dim, uq_gate))
 
         # Per-head RMSNorm + RoPE with Qwen3.5-specific constants.
@@ -865,8 +864,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         self._dispatch("matmul_quant",
                        [o_proj_in, self.weights[w_key],
                         self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
-                       {"K": q_dim, "N": hidden, "USE_QUANT": uq,
-                        **self._split_k_extra(uq), **qi},
+                       {"K": q_dim, "N": hidden, "USE_QUANT": uq, **qi},
                        _gemv_wg(hidden, uq))
 
         return sc["o_proj_out"]

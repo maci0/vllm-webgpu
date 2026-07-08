@@ -276,7 +276,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    [sc["normed"], self.weights[wk],
                                     self._scales_buf(wk, uq, sc["normed"]), out_buf],
                                    {"K": hidden, "N": dim, "USE_QUANT": uq,
-                                    **self._split_k_extra(uq),
                                     **self._quant_extra(wk[:-7], uq)},
                                    _gemv_wg(dim, uq))
             # v_proj: global attention layers (no separate V; V=K) have no v_proj weight
@@ -299,7 +298,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                     self._scales_buf(vw_key, uq, sc["normed"]),
                                     sc["v_buf"]],
                                    {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                                    **self._split_k_extra(uq),
                                     **self._quant_extra(vw_key[:-7], uq)},
                                    _gemv_wg(kv_dim, uq))
                 v_src = sc["v_buf"]
@@ -379,7 +377,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 self._scales_buf(ow, uq_ow, sc["attn_out"]),
                                 sc["o_proj_out"]],
                                {"K": q_dim, "N": hidden, "USE_QUANT": uq_ow,
-                                **self._split_k_extra(uq_ow),
                                 **self._quant_extra(ow[:-7], uq_ow)},
                                _gemv_wg(hidden, uq_ow))
 
@@ -439,7 +436,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    [ffn_in, self.weights[wk],
                                     self._scales_buf(wk, uq, ffn_in), out_b],
                                    {"K": hidden, "N": inter_shared, "USE_QUANT": uq,
-                                    **self._split_k_extra(uq),
                                     **self._quant_extra(wk[:-7], uq)},
                                    _gemv_wg(inter_shared, uq))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
@@ -462,7 +458,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [sc["ffn_act"], self.weights[dw],
                                 self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
                                {"K": inter_shared, "N": hidden, "USE_QUANT": uq_dw,
-                                **self._split_k_extra(uq_dw),
                                 **self._quant_extra(dw[:-7], uq_dw)},
                                _gemv_wg(hidden, uq_dw))
 
@@ -670,7 +665,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                             self._scales_buf(ew_key, uq, moe_in), ob],
                                            {"K": hidden, "N": inter_moe,
                                             "USE_QUANT": uq,
-                                            **self._split_k_extra(uq),
                                             **self._quant_extra(ew_key[:-7], uq)},
                                            _gemv_wg(inter_moe, uq))
                         self._dispatch("gelu_mul",
@@ -684,7 +678,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                         sc["ffn_out"]],
                                        {"K": inter_moe, "N": hidden,
                                         "USE_QUANT": uq_dk,
-                                        **self._split_k_extra(uq_dk),
                                         **self._quant_extra(dk[:-7], uq_dk)},
                                        _gemv_wg(hidden, uq_dk))
                         # K_IDX=0: w_per_token[0] is the scalar weight for this expert.
