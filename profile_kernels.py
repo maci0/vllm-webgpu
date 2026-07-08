@@ -97,11 +97,9 @@ bt = np.array(blk_ids, dtype=np.uint32)
 
 print("Running prefill...")
 t0 = time.perf_counter()
-for i, token_id in enumerate(tok_ids):
-    slot = blk_ids[i // block_size] * block_size + (i % block_size)
-
-    _pm = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=i + 1)
-    logits = model.forward(np.array([token_id], dtype=np.uint32), np.array([i], dtype=np.uint32), _pm)
+slots = [blk_ids[i // block_size] * block_size + (i % block_size) for i in range(len(tok_ids))]
+_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
+logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
 _has_gpu_argmax = getattr(model, 'logit_returns_token_id', False)
 
