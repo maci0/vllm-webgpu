@@ -67,8 +67,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._topk_idx_buf     = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)  # [K] u32
             self._topk_weight_buf  = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)  # [K] f32
             self._router_logit_buf = _WB.empty(_dev, self.num_experts * 2, usage=_rw)     # [E] f16
-            self._moe_acc_buf      = _WB.empty(_dev, self.hidden_size * 2, usage=_rw)     # [H] f16 ping
-            self._moe_tmp_buf      = _WB.empty(_dev, self.hidden_size * 2, usage=_rw)     # [H] f16 pong
+            self._moe_acc_buf      = _WB.empty(_dev, self.hidden_size * 2, usage=_rw)     # [H] f16 accumulator
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 
@@ -451,7 +450,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # GPU: run top-K expert FFNs
             gelu_n_moe = num_tokens * inter_moe
             moe_acc = self._moe_acc_buf
-            moe_tmp = self._moe_tmp_buf
+            # Zero-initialize the accumulation buffer before the expert loop so
+            # moe_accumulate can do in-place += without a ping-pong buffer.
+            dev.queue.write_buffer(moe_acc.buf, 0, b"\x00" * (add_n * 2))
 
             for idx, (eid, ew) in enumerate(zip(top_k_idx, rw_vals)):
                 ep = f"{p}.experts.{eid}"
@@ -487,13 +488,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                     "USE_QUANT": uq_dk, "SPLIT_K": 1,
                                     **self._quant_extra(dk[:-7], uq_dk)},
                                    (hidden, 1, 1))
-                    # Accumulate: moe_tmp = moe_acc + ew * ffn_out (ping-pong to avoid conflict)
-                    scale = float(ew)
-                    self._dispatch("add",
-                                   [moe_acc, sc["ffn_out"], moe_tmp],
-                                   {"N": add_n, "SCALE": scale},
-                                   ((add_n // 4 + 255) // 256, 1, 1))
-                    moe_acc, moe_tmp = moe_tmp, moe_acc  # swap ping-pong
+                    # Weighted in-place accumulate: moe_acc[i] += w_buf[idx] * ffn_out[i]
+                    # K_IDX indexes into _topk_weight_buf (already written by topk_sort).
+                    self._dispatch("moe_accumulate",
+                                   [moe_acc, sc["ffn_out"], self._topk_weight_buf],
+                                   {"N": add_n, "K_IDX": idx},
+                                   ((add_n + 255) // 256, 1, 1))
 
             # Post-MoE norm + residual add
             with self._batched_dispatch(label=f"L{layer_idx:02d}P"):
