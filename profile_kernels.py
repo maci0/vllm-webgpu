@@ -165,23 +165,13 @@ if stats:
         inter_sz = max(raw_inter_sz) if isinstance(raw_inter_sz, list) else raw_inter_sz
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
         attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
-        # FFN weight bytes.
-        # MoE (e.g. Mixtral): 3 matrices per expert (gate/w1, up/w3, down/w2) times the
-        # number of activated experts per token (top_k).  Weight keys live under
-        # block_sparse_moe so the old gate_proj prefix check misses them entirely.
-        # Dense SwiGLU: 3 matrices (gate, up, down).
-        # Dense plain MLP: 2 matrices (up, down).
+        # FFN weight bytes: 3 matrices (gate, up, down) for all SwiGLU models,
+        # multiplied by top_k for MoE (activated experts per token).
+        ffn_matrices = 3
+        ffn_w = 2 * (hid * inter_sz * ffn_matrices)
         if getattr(model, '_is_moe', False):
             top_k = getattr(model, '_top_k', 1)
-            ffn_matrices = 3 * top_k
-        else:
-            weights_registry = getattr(model, 'weights', {})
-            gate_proj_prefixes = ('model.layers.0.mlp.gate_proj.weight',
-                                  'model.decoder.layers.0.mlp.gate_proj.weight',
-                                  'transformer.h.0.mlp.gate_proj.weight')
-            has_gate_proj = any(k in weights_registry for k in gate_proj_prefixes)
-            ffn_matrices = 3 if has_gate_proj else 2
-        ffn_w = 2 * (hid * inter_sz * ffn_matrices)
+            ffn_w *= top_k
 
         # For hybrid architectures (e.g. NemotronH), layer types differ per layer.
         # Use per-layer type weights rather than applying (attn_w + ffn_w) uniformly.
