@@ -222,8 +222,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self._ssm_states[i] = WebGPUBuffer.empty(
                 dev, max(ssm_bytes, 8)            )
 
-        self.reset_recurrent_states()
-
     def reset_recurrent_states(self) -> None:
         """Zero all Mamba conv and SSM states. Call before each new request."""
         dev = self.wgpu_device.wgpu_device
@@ -797,7 +795,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         sc  = self._sc
         p   = f"model.layers.{layer_idx}.mixer"
         H   = self.hidden_size
-        I   = self._layer_int_size[layer_idx] or self.intermediate_size
+        I   = self._layer_int_size[layer_idx]
 
         # up_proj: hidden -> intermediate
         uw  = f"{p}.up_proj.weight"

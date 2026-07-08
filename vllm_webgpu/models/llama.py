@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -64,7 +65,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
             "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
+            "LN_ROPE_BASE": math.log(self.rope_theta),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
@@ -459,8 +460,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                    [b["x"], self.weights["model.layers.0.input_layernorm.weight"],
                                     b["normed"]],
                                    rms_base, (T, 1, 1))
-                    normed_x = b["normed"]
-                    x_res    = b["x"]
 
                 for i in chunk_layers:
                     p    = f"model.layers.{i}"

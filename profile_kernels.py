@@ -179,13 +179,18 @@ if stats:
 
     print(f"\nBottleneck analysis:")
     hid = hf_cfg.hidden_size
-    inter_sz = hf_cfg.intermediate_size
-    # Estimate weight bytes per layer
-    q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
-    attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
-    ffn_w = 2 * (hid * inter_sz * 3)  # gate, up, down
-    total_w_mb = (attn_w + ffn_w) * num_layers / 1e6
-    bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
-    print(f"  Weight data moved: {total_w_mb:.0f} MB")
-    print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (M3 Peak: ~200-400 GB/s)")
-    print(f"  BW utilization: {bw_util_gb_s/300*100:.1f}%")
+    if hasattr(hf_cfg, 'num_attention_heads'):
+        inter_sz = hf_cfg.intermediate_size
+        # Estimate weight bytes per layer (Llama/Qwen/Mixtral style)
+        q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
+        attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
+        # FFN weight bytes: SwiGLU uses gate+up+down (3 matrices); plain MLP uses up+down (2 matrices).
+        ffn_matrices = 2 if getattr(hf_cfg, 'num_hidden_layers_mlp_only', None) else 3
+        ffn_w = 2 * (hid * inter_sz * ffn_matrices)
+        total_w_mb = (attn_w + ffn_w) * num_layers / 1e6
+        bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
+        print(f"  Weight data moved: {total_w_mb:.0f} MB")
+        print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (M3 Peak: ~200-400 GB/s)")
+        print(f"  BW utilization: {bw_util_gb_s/300*100:.1f}%")
+    else:
+        print("  (Bottleneck analysis not available for this architecture)")

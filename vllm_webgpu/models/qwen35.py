@@ -123,13 +123,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
 
-    @property
-    def _lm_head_weight(self) -> "WebGPUBuffer":
-        return (
-            self.weights.get("lm_head.weight")
-            or self.weights["model.embed_tokens.weight"]
-        )
-
     def _is_full_attn(self, i: int) -> bool:
         if self._layer_types is not None:
             return self._layer_types[i] == "full_attention"

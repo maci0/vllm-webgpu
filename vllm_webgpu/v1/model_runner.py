@@ -112,7 +112,7 @@ class WebGPUModelRunner:
         self.webgpu_config = get_config()
         self.pipeline_cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
         self.model: "BaseWebGPUModel | None" = None
-        self._last_model_output: Any = None  # cached for sample_tokens()
+        self._last_model_output: Any = EMPTY_MODEL_RUNNER_OUTPUT  # cached for sample_tokens()
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
 
     def load_model(self) -> None:

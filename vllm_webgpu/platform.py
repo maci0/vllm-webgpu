@@ -34,11 +34,7 @@ def _get_wgpu_adapter():
         return None
 
 
-try:
-    from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
-except ImportError:
-    class _Platform: pass                                   # noqa: E701
-    class _PlatformEnum: OOT = "OOT"                       # noqa: E701
+from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
 
 
 class WebGPUPlatform(_Platform):
@@ -67,7 +63,7 @@ class WebGPUPlatform(_Platform):
             adapter = _get_wgpu_adapter()
             if adapter:
                 info = adapter.info
-                return f"WebGPU ({info.get('device') or 'unknown'})"
+                return f"WebGPU ({info.device or 'unknown'})"
         except Exception:
             pass
         return "WebGPU"

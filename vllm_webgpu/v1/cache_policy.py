@@ -120,12 +120,12 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     total: int = get_cpu_memory()
 
     if config.is_auto_memory:
-        available = total - model_mem - OVERHEAD_BYTES
+        available = max(total - model_mem - OVERHEAD_BYTES, 0)
         logger.info(
             "WebGPU memory: total=%dMB model=%dMB available=%dMB",
-            total // 2**20, model_mem // 2**20, max(available, 0) // 2**20,
+            total // 2**20, model_mem // 2**20, available // 2**20,
         )
-        return max(available, 0)
+        return available
 
     # Explicit fraction: user asked for `memory_fraction` of device total for KV.
     available = int(total * config.memory_fraction) - model_mem - OVERHEAD_BYTES

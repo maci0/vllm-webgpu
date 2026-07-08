@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-SAFE_WEIGHTS_NAME = "model.safetensors"
+from transformers.utils import SAFE_WEIGHTS_NAME
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:
@@ -324,8 +324,7 @@ class BaseWebGPUModel(ABC):
         w = self.weights.get(key)
         if w is not None:
             dtype = getattr(w, "dtype", "f16")
-            qmeta = self.weights.get("__quant_meta__", {})
-            meta = qmeta.get(key.removesuffix(".weight"), {})
+            meta = self._quant_info(key.removesuffix(".weight"))
             fmt = meta.get("fmt", "")
             if dtype == "i32":
                 return 4 if fmt == "awq_sym" else 3
