@@ -86,7 +86,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         attn_metadata: object,
     ) -> np.ndarray:
         """Route MoE decode to explicit-encoder path; everything else to parent."""
-        if self._is_moe and len(input_ids) == 1:
+        if self._is_moe:
+            if len(input_ids) > 1:
+                raise NotImplementedError(
+                    "Mixtral MoE batch prefill is not yet supported on WebGPU"
+                )
             return self._moe_decode_forward(input_ids, positions, attn_metadata)
         return super().forward(input_ids, positions, attn_metadata)
 
