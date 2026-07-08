@@ -234,6 +234,16 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """Return the weight key for the final layer norm. Subclasses may override."""
         return "model.norm.weight"
 
+    def _lm_head_key(self) -> str:
+        """Return the actual weight key for the LM head.
+
+        When the model uses tied embeddings there is no separate lm_head.weight
+        tensor in the checkpoint. Fall back to the embedding key so that quant
+        lookups (_uq_for_key, _scales_buf) operate on the correct key and do not
+        silently treat a quantized weight as raw f16.
+        """
+        return "lm_head.weight" if "lm_head.weight" in self.weights else self._embed_key()
+
     def _load_layer_scales(self) -> None:
         """Cache layer_scalar values on CPU at load time.
 
@@ -330,14 +340,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            [x_buf, self.weights[self._norm_key()], norm_out],
                            _rms_base, (num_tokens, 1, 1))
 
-            lm_head_w = self.weights.get("lm_head.weight",
-                                         self.weights[self._embed_key()])
-            uq_lm = self._uq_for_key("lm_head.weight")
+            _lm_key = self._lm_head_key()
+            lm_head_w = self.weights[_lm_key]
+            uq_lm = self._uq_for_key(_lm_key)
             # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
                            [norm_out, lm_head_w,
-                            self._scales_buf("lm_head.weight", uq_lm, norm_out), logits_buf],
+                            self._scales_buf(_lm_key, uq_lm, norm_out), logits_buf],
                            {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
 
@@ -701,8 +711,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         # Extract last token, apply final norm, run LM head.
         # copy_buffer_to_buffer is a GPU-side operation (no CPU round-trip).
-        lm_head_w = self.weights.get("lm_head.weight", self.weights[self._embed_key()])
-        uq_lm = self._uq_for_key("lm_head.weight")
+        _lm_key = self._lm_head_key()
+        lm_head_w = self.weights[_lm_key]
+        uq_lm = self._uq_for_key(_lm_key)
         with self._batched_dispatch():
             last_byte_offset = (T - 1) * hidden * 4   # f32: 4 bytes per element
             assert self._active_encoder is not None
@@ -718,7 +729,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [b["last_norm"], lm_head_w,
-                 self._scales_buf("lm_head.weight", uq_lm, _dummy), b["logits"]],
+                 self._scales_buf(_lm_key, uq_lm, _dummy), b["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1))
 
@@ -799,8 +810,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 )
 
         # Final norm and LM head on the last token's hidden state.
-        lm_head_w = self.weights.get("lm_head.weight", self.weights[self._embed_key()])
-        uq_lm = self._uq_for_key("lm_head.weight")
+        _lm_key = self._lm_head_key()
+        lm_head_w = self.weights[_lm_key]
+        uq_lm = self._uq_for_key(_lm_key)
         with self._batched_dispatch():
             self._dispatch(
                 "rms_norm_f32in",
@@ -809,7 +821,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [pre["norm_out"], lm_head_w,
-                 self._scales_buf("lm_head.weight", uq_lm, pre["norm_out"]), pre["logits"]],
+                 self._scales_buf(_lm_key, uq_lm, pre["norm_out"]), pre["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1))
 
