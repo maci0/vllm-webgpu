@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
+from vllm_webgpu.models.llama import _gemv_wg
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -276,9 +277,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._dispatch("matmul_quant",
                                [sc["normed"], self.weights[wk],
                                 self._scales_buf(wk, uq, sc["normed"]), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": uq, "SPLIT_K": 1,
+                               {"K": hidden, "N": dim, "USE_QUANT": uq,
+                                **self._split_k_extra(uq),
                                 **self._quant_extra(wk[:-7], uq)},
-                               (dim, 1, 1))
+                               _gemv_wg(dim, uq))
             # v_proj: global attention layers (no separate V; V=K) have no v_proj weight
             vw_key = f"{p}.self_attn.v_proj.weight"
             has_v_proj = vw_key in self.weights
@@ -288,9 +290,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [sc["normed"], self.weights[vw_key],
                                 self._scales_buf(vw_key, uq, sc["normed"]),
                                 sc["v_buf"]],
-                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq, "SPLIT_K": 1,
+                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
+                                **self._split_k_extra(uq),
                                 **self._quant_extra(vw_key[:-7], uq)},
-                               (kv_dim, 1, 1))
+                               _gemv_wg(kv_dim, uq))
                 v_src = sc["v_buf"]
             else:
                 v_src = sc["k_buf"]  # global attention: V = K
@@ -340,9 +343,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            [sc["attn_out"], self.weights[ow],
                             self._scales_buf(ow, uq_ow, sc["attn_out"]),
                             sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": uq_ow, "SPLIT_K": 1,
+                           {"K": q_dim, "N": hidden, "USE_QUANT": uq_ow,
+                            **self._split_k_extra(uq_ow),
                             **self._quant_extra(ow[:-7], uq_ow)},
-                           (hidden, 1, 1))
+                           _gemv_wg(hidden, uq_ow))
 
             # post_attention norm + residual add
             pan_w = self.weights.get(f"{p}.post_attention_layernorm.weight")
@@ -372,9 +376,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._dispatch("matmul_quant",
                                [ffn_in, self.weights[wk],
                                 self._scales_buf(wk, uq, ffn_in), out_b],
-                               {"K": hidden, "N": inter_shared, "USE_QUANT": uq, "SPLIT_K": 1,
+                               {"K": hidden, "N": inter_shared, "USE_QUANT": uq,
+                                **self._split_k_extra(uq),
                                 **self._quant_extra(wk[:-7], uq)},
-                               (inter_shared, 1, 1))
+                               _gemv_wg(inter_shared, uq))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                            {"N": gelu_n_shared}, ((gelu_n_shared // 4 + 255) // 256, 1, 1),
                            shader_subdir="gemma")
@@ -384,9 +389,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[dw],
                             self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
-                           {"K": inter_shared, "N": hidden, "USE_QUANT": uq_dw, "SPLIT_K": 1,
+                           {"K": inter_shared, "N": hidden, "USE_QUANT": uq_dw,
+                            **self._split_k_extra(uq_dw),
                             **self._quant_extra(dw[:-7], uq_dw)},
-                           (hidden, 1, 1))
+                           _gemv_wg(hidden, uq_dw))
 
             pfn1_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
             if pfn1_w is not None:
@@ -477,9 +483,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        [moe_in, self.weights[ew_key],
                                         self._scales_buf(ew_key, uq, moe_in), ob],
                                        {"K": hidden, "N": inter_moe,
-                                        "USE_QUANT": uq, "SPLIT_K": 1,
+                                        "USE_QUANT": uq,
+                                        **self._split_k_extra(uq),
                                         **self._quant_extra(ew_key[:-7], uq)},
-                                       (inter_moe, 1, 1))
+                                       _gemv_wg(inter_moe, uq))
                     self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                    {"N": gelu_n_moe},
                                    ((gelu_n_moe // 4 + 255) // 256, 1, 1),
@@ -491,9 +498,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                     self._scales_buf(dk, uq_dk, sc["ffn_act"]),
                                     sc["ffn_out"]],
                                    {"K": inter_moe, "N": hidden,
-                                    "USE_QUANT": uq_dk, "SPLIT_K": 1,
+                                    "USE_QUANT": uq_dk,
+                                    **self._split_k_extra(uq_dk),
                                     **self._quant_extra(dk[:-7], uq_dk)},
-                                   (hidden, 1, 1))
+                                   _gemv_wg(hidden, uq_dk))
                     # Weighted in-place accumulate: moe_acc[i] += w_buf[idx] * ffn_out[i]
                     # K_IDX indexes into _topk_weight_buf (already written by topk_sort).
                     self._dispatch("moe_accumulate",
