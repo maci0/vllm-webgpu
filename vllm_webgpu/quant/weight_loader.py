@@ -79,7 +79,7 @@ def _load_quant_cfg(config_path: Path) -> dict:
     try:
         from compressed_tensors import get_quantization_config as _get_ct_config
         return _get_ct_config(str(config_path)) or {}
-    except ImportError:
+    except Exception:
         return _read_quant_cfg_from_json(config_path)
 
 
