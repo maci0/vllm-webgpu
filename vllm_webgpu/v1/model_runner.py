@@ -368,7 +368,9 @@ class WebGPUModelRunner:
         row_idx = np.arange(num_positions)[:, None]
 
         # Top-k per position sorted by descending log-prob.
-        if k < vocab_size:
+        if k == 0:
+            topk_part = np.empty((num_positions, 0), dtype=np.int64)
+        elif k < vocab_size:
             topk_part = np.argpartition(log_probs, -k, axis=-1)[:, -k:]
         else:
             topk_part = np.tile(np.arange(vocab_size), (num_positions, 1))
