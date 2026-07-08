@@ -58,7 +58,13 @@ def _check_unsupported_quant(model_dir: Path) -> None:
     except (ImportError, Exception):
         try:
             with open(config_json) as f:
-                qcfg = json.load(f).get("quantization_config") or {}
+                raw = json.load(f)
+            qcfg = (
+                raw.get("quantization_config")
+                or (raw.get("text_config") or {}).get("quantization_config")
+                or raw.get("compression_config")
+                or {}
+            )
         except Exception:
             return
     qt = (qcfg.get("quant_type") or qcfg.get("quant_method") or "").lower().strip()
@@ -358,7 +364,13 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
     except (ImportError, Exception):
         try:
             with open(p) as _f:
-                quant_cfg = json.load(_f).get("quantization_config") or {}
+                _raw = json.load(_f)
+            quant_cfg = (
+                _raw.get("quantization_config")
+                or (_raw.get("text_config") or {}).get("quantization_config")
+                or _raw.get("compression_config")
+                or {}
+            )
         except Exception:
             return {}
     config_groups = quant_cfg.get("config_groups")
