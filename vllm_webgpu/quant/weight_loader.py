@@ -793,9 +793,11 @@ def load_safetensors_weights(
                         _upload_f32(sc_gn, f"{base}.weight.scales", weights)
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
-                    elif (fmt == "awq" and qz is not None and g_idx is None
-                          and _awq_qzeros_symmetric(qz)):
-                        # GPU AWQ: qzeros verified symmetric (every nibble is 0 or 8).
+                    elif (fmt == "awq" and g_idx is None
+                          and (qz is None or _awq_qzeros_symmetric(qz))):
+                        # GPU AWQ: either qzeros absent (implicit symmetric, all zero-points = 8)
+                        # or qzeros verified symmetric (every nibble is 0 or 8).
+                        # The shader hardcodes nibble - 8, matching both cases.
                         # Asymmetric checkpoints fall through to the CPU dequant branch.
                         K_, N8_ = qw.shape  # qw is [K, N//8]
                         N_ = N8_ * 8
