@@ -402,13 +402,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             """
             uq = self._uq_for_key(w_key)
             if uq == 3:
-                base_key = w_key[:-7]  # strip ".weight" suffix
-                group_k = self._quant_extra(base_key, uq).get("GROUP_K", 128)
-                sc_buf = self.weights.get(w_key + ".scales", _dummy)
+                sc_buf = self._scales_buf(w_key, uq, _dummy)
                 self._dispatch("matmul_quant_mr4",
                                [x_buf, self.weights[w_key], sc_buf, out_buf],
                                {"K": K_in, "N": N_out, "M": T,
-                                "USE_QUANT": 3, "GROUP_K": group_k},
+                                "USE_QUANT": uq, **self._quant_extra(w_key[:-7], uq)},
                                (N_out, T, 1))
             else:
                 # f16 path (uq == 0)
