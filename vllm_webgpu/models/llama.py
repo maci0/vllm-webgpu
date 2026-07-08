@@ -99,7 +99,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
-        max_bt_blocks = 4096  # block table entries; 4096 × 16 = 65536 tokens max
+        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      mk(T * 4),              # [1] uint32 token id
             "pos":      mk(T * 4),              # [1] uint32 position
