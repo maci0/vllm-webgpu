@@ -44,7 +44,7 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq from
+    Delegates to YaRNScalingRotaryEmbedding from
     vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope.
 
     Args:
@@ -60,52 +60,43 @@ def compute_yarn_freqs(
         freqs:  [rotary_dim // 2] float32 array of scaled inv_freq values.
         mscale: attention output scale factor (0.1 * ln(factor) + 1.0).
                 Must be applied to the output of cos/sin in the shader, NOT
-                folded into the frequencies — cos(pos * freq * mscale) is wrong.
+                folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
     )
 
     if rotary_dim is None:
         rotary_dim = head_dim
 
     factor               = float(rope_scaling.get("factor", 1.0))
-    beta_fast            = float(rope_scaling.get("beta_fast", 32.0))
-    beta_slow            = float(rope_scaling.get("beta_slow", 1.0))
+    beta_fast            = int(rope_scaling.get("beta_fast", 32))
+    beta_slow            = int(rope_scaling.get("beta_slow", 1))
     orig_ctx             = int(rope_scaling.get("original_max_position_embeddings", 4096))
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
     truncate             = bool(rope_scaling.get("truncate", True))
+    attn_factor          = float(rope_scaling.get("attn_factor", 1.0))
+    apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
 
-    # Inline the 5-line math from YaRNScalingRotaryEmbedding._compute_inv_freq
-    # using only the stable public helpers, avoiding a private-method dependency
-    # that would break silently on any vLLM upgrade that renames internals.
-    pos_freqs = torch.tensor(rope_theta) ** (
-        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
+    rope_obj = YaRNScalingRotaryEmbedding(
+        head_size=head_dim,
+        rotary_dim=rotary_dim,
+        max_position_embeddings=orig_ctx,
+        base=rope_theta,
+        is_neox_style=True,
+        scaling_factor=factor,
+        dtype=torch.float32,
+        extrapolation_factor=extrapolation_factor,
+        attn_factor=attn_factor,
+        beta_fast=beta_fast,
+        beta_slow=beta_slow,
+        apply_yarn_scaling=apply_yarn_scaling,
+        truncate=truncate,
     )
-    inv_freq_interp = 1.0 / (factor * pos_freqs)
-    inv_freq_extrap = 1.0 / pos_freqs
-    low, high = yarn_find_correction_range(
-        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
-    )
-    inv_freq_mask = (
-        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
-    ) * extrapolation_factor
-    scaled_inv_freq = (
-        inv_freq_interp * (1 - inv_freq_mask) + inv_freq_extrap * inv_freq_mask
-    ).numpy().astype(np.float32)
 
-    # YaRN attention scale: mscale = (0.1 * ln(factor) + 1.0) * attn_factor.
-    # attn_factor is an optional rope_scaling field (default 1.0), matching
-    # vLLM's YaRNScalingRotaryEmbedding which computes yarn_get_mscale(factor) * attn_factor.
-    # Must be applied AFTER cos/sin in the shader (mscale * cos(pos * freq)),
-    # not folded into inv_freq (which would compute cos(pos * freq * mscale) instead).
-    attn_factor = float(rope_scaling.get("attn_factor", 1.0))
-    apply_yarn_scaling = bool(rope_scaling.get("apply_yarn_scaling", True))
-    mscale = (yarn_get_mscale(factor) * attn_factor) if apply_yarn_scaling else float(attn_factor)
-    return scaled_inv_freq, float(mscale)
+    scaled_inv_freq = rope_obj._compute_inv_freq(factor).numpy().astype(np.float32)
+    return scaled_inv_freq, rope_obj.mscale
 
 
 
