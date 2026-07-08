@@ -115,9 +115,16 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # then calls self._init_scratch_buffers() and self._init_rope_freq_buf().
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
-        self._lm_head_w = None  # resolved in load_weights after weights are available
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
+
+    @property
+    def _lm_head_weight(self) -> "WebGPUBuffer":
+        return (
+            self.weights.get("lm_head.weight")
+            or self.weights.get("model.lm_head.weight")
+            or self.weights["model.embed_tokens.weight"]
+        )
 
     def _is_full_attn(self, i: int) -> bool:
         if self._layer_types is not None:
@@ -261,11 +268,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                     self.weights[gate_key] = WebGPUBuffer.from_numpy(dev, gate_arr, usage=rw)
 
         self._rms_consts["GEMMA_NORM"] = self._gemma_norm
-        self._lm_head_w = (
-            self.weights.get("lm_head.weight")
-            or self.weights.get("model.lm_head.weight")
-            or self.weights["model.embed_tokens.weight"]
-        )
 
     def _alloc_lin_states(self) -> None:
         """Allocate GPU buffers for persistent GDN recurrent state.
@@ -700,7 +702,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                                     pre["norm_out"]],
                                    _rms_base, (1, 1, 1))
                     self._dispatch("matmul_quant",
-                                   [pre["norm_out"], self._lm_head_w,
+                                   [pre["norm_out"], self._lm_head_weight,
                                     pre["norm_out"], pre["logits"]],
                                    {"K": hidden, "N": vocab,
                                     "USE_QUANT": 0, "SPLIT_K": 0},
@@ -802,7 +804,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
-                           [norm_out, self._lm_head_w, norm_out, logits_buf],
+                           [norm_out, self._lm_head_weight, norm_out, logits_buf],
                            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
             # GPU argmax inside the same encoder — 4-byte readback.
