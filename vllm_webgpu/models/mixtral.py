@@ -229,9 +229,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         inter = self.intermediate_size
         ln_rope = self._ln_rope_theta
 
-        _wg_size = 256
-        _vpt = min((hidden + _wg_size - 1) // _wg_size, 16) if hidden <= _wg_size * 16 else 0
-        _rms_c = {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": _vpt}
+        _rms_c = self._rms_consts
 
         h_names = ["h0", "h1", "h2"]
         residual = sc[h_names[(self._hstate + 1) % 3]]
