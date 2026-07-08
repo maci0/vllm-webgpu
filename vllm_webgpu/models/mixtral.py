@@ -294,12 +294,13 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # possible intermediate size; assert here so buffer overruns fail fast.
         _max_inter = max(inter, shared_expert_inter or inter) if shared_expert_prefix is not None else inter
         _buf_capacity = msc["expert_act"].nbytes // 2  # bytes -> f16 elements
-        assert _max_inter <= _buf_capacity, (
-            f"MoE scratch buffer too small: need {_max_inter} f16 elements "
-            f"but expert_act holds {_buf_capacity}. "
-            f"Override _init_scratch_buffers to allocate max(intermediate_size, "
-            f"moe_intermediate_size) elements."
-        )
+        if _max_inter > _buf_capacity:
+            raise RuntimeError(
+                f"MoE scratch buffer too small: need {_max_inter} f16 elements "
+                f"but expert_act holds {_buf_capacity}. "
+                f"Override _init_scratch_buffers to allocate max(intermediate_size, "
+                f"moe_intermediate_size) elements."
+            )
 
         # Without a shared expert, zero-initialize the accumulation buffer so
         # the first expert's weighted output accumulates from zero.
