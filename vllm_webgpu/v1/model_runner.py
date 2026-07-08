@@ -219,7 +219,15 @@ class WebGPUModelRunner:
         else:
             head_size = self.vllm_config.model_config.get_head_size()
             num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
+            _lt2 = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
+            # Only trust layer_types when it covers every layer; a partial or
+            # mismatched list (including a stray MagicMock in tests) falls back
+            # to the uniform path so all layers get a spec entry.
+            if _lt2 and len(_lt2) != mc.num_hidden_layers:
+                _lt2 = None
             for i in range(mc.num_hidden_layers):
+                if _lt2 is not None and _lt2[i] not in KV_ATTN_TYPES:
+                    continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     num_kv_heads, head_size)
         return spec
