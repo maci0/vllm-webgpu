@@ -485,8 +485,12 @@ def load_safetensors_weights(
         has_ct_pack_int4 = (
             bool(ct_meta and ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu")
             and any(
-                header[k].get("dtype") == "I32" and k.endswith(".weight")
-                and k[:-len(".weight")] + ".weight_scale" in header
+                header[k].get("dtype") == "I32"
+                and (k.endswith(".weight") or k.endswith(".weight_packed"))
+                and (
+                    (k.endswith(".weight") and k[:-len(".weight")] + ".weight_scale" in header)
+                    or (k.endswith(".weight_packed") and k[:-len(".weight_packed")] + ".weight_scale" in header)
+                )
                 for k in header if k != "__metadata__"
             )
         )
@@ -1126,15 +1130,26 @@ def load_safetensors_weights(
             # group_size comes from the quantization_config parsed in ct_meta.
             _ct_group_size = ct_meta["__global__"].get("group_size", 32)
 
-            ct_bases = sorted(set(
-                k[:-len(".weight")]
-                for k in header
-                if k.endswith(".weight") and header[k].get("dtype") == "I32"
-                and k[:-len(".weight")] + ".weight_scale" in header
-            ))
+            # Collect (base, weight_key) pairs for all I32 packed weight tensors.
+            # Canonical compressed-tensors saves as .weight_packed; some checkpoints use .weight.
+            _ct_base_map = {}  # base -> weight_key
+            for _k in header:
+                if _k == "__metadata__":
+                    continue
+                if header[_k].get("dtype") != "I32":
+                    continue
+                if _k.endswith(".weight_packed"):
+                    _base = _k[:-len(".weight_packed")]
+                    if _base + ".weight_scale" in header:
+                        _ct_base_map.setdefault(_base, _k)
+                elif _k.endswith(".weight"):
+                    _base = _k[:-len(".weight")]
+                    if _base + ".weight_scale" in header:
+                        _ct_base_map.setdefault(_base, _k)
+            ct_bases = sorted(_ct_base_map)
             ct_reserved = set()
             for _b in ct_bases:
-                ct_reserved.add(f"{_b}.weight")
+                ct_reserved.add(_ct_base_map[_b])
                 ct_reserved.add(f"{_b}.weight_scale")
 
             for name in header:
@@ -1146,7 +1161,8 @@ def load_safetensors_weights(
             weights.setdefault("__quant_meta__", {})
             for base in ct_bases:
                 try:
-                    qw = _load_raw(f"{base}.weight")          # [N, K//8] I32
+                    weight_key = _ct_base_map[base]
+                    qw = _load_raw(weight_key)                 # [N, K//8] I32
                     sc_raw = _load_raw(f"{base}.weight_scale") # [N, G] F16/BF16/F32
 
                     sc = sc_raw.astype(np.float16)
@@ -1155,15 +1171,15 @@ def load_safetensors_weights(
                     if sc.ndim == 2:
                         sc = np.ascontiguousarray(sc.T)
 
-                    _upload_int32(qw, f"{base}.weight", weights)
+                    _upload_int32(qw, weight_key, weights)
                     _upload_f16(sc, f"{base}.weight.scales", weights)
                     weights["__quant_meta__"][base] = {
                         "fmt": "gptq_sym",
                         "group_size": _ct_group_size,
                     }
                     logger.debug(
-                        "CT pack-int4: %s (N=%d, K=%d, G=%d, group_size=%d)",
-                        base, qw.shape[0], qw.shape[1] * 8,
+                        "CT pack-int4: %s key=%s (N=%d, K=%d, G=%d, group_size=%d)",
+                        base, weight_key, qw.shape[0], qw.shape[1] * 8,
                         sc.shape[0], _ct_group_size)
                 except Exception as exc:
                     logger.warning("Failed to process CT pack-int4 %s: %s", base, exc)
