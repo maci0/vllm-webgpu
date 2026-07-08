@@ -67,10 +67,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._moe_max_tokens = max_canvas_len
             self._shared_res_buf = _WB.empty(_dev, max_canvas_len * self.hidden_size * 4, usage=_rw)
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
-            self._topk_idx_buf     = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)          # [K] u32
-            self._topk_weight_buf  = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)          # [K] f32
-            self._router_logit_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2, usage=_rw)  # [T, E] f16
-            self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2, usage=_rw)  # [T, H] f16
+            self._topk_idx_buf     = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4, usage=_rw)  # [T, K] u32
+            self._topk_weight_buf  = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4, usage=_rw) # [T, K] f32
+            self._router_logit_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2, usage=_rw)   # [T, E] f16
+            self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2, usage=_rw)   # [T, H] f16
+            # Per-expert scratch: [T] f32 routing weight for one expert across all tokens.
+            self._moe_per_expert_weight_buf = _WB.empty(_dev, max_canvas_len * 4, usage=_rw)
 
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
@@ -384,24 +386,41 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = self._uq_for_key(rw_)
-                self._dispatch("matmul_quant",
-                               [router_in, self.weights[rw_],
-                                self._scales_buf(rw_, uq_rw, router_in),
-                                router_logits_buf],
-                               {"K": hidden, "N": self.num_experts,
-                                "USE_QUANT": uq_rw, "SPLIT_K": 0,
-                                **self._quant_extra(rw_[:-7], uq_rw)},
-                               ((self.num_experts + 255) // 256, 1, 1))
-                # GPU top-K: sorts N_EXPERTS logits, picks top-K indices + softmax weights.
-                # Eliminates the GPU→CPU readback that previously cost ~1ms per MoE layer.
+                _rw_sc = self._scales_buf(rw_, uq_rw, router_in)
+                if num_tokens > 1 and uq_rw in (0, 3):
+                    # Batched router projection: [T, hidden] x [num_experts, hidden]^T -> [T, E]
+                    _rw_extra: dict = {"K": hidden, "N": self.num_experts,
+                                       "M": num_tokens, "USE_QUANT": uq_rw}
+                    if uq_rw == 3:
+                        _rw_extra["GROUP_K"] = self._quant_extra(rw_[:-7], uq_rw).get("GROUP_K", 128)
+                    self._dispatch("matmul_quant_mr4",
+                                   [router_in, self.weights[rw_], _rw_sc, router_logits_buf],
+                                   _rw_extra,
+                                   (self.num_experts, num_tokens, 1))
+                else:
+                    if num_tokens > 1:
+                        logger.warning(
+                            "L%d: router uq=%d not supported for batched routing; "
+                            "token-0 routing applied to all tokens", layer_idx, uq_rw)
+                    self._dispatch("matmul_quant",
+                                   [router_in, self.weights[rw_], _rw_sc, router_logits_buf],
+                                   {"K": hidden, "N": self.num_experts,
+                                    "USE_QUANT": uq_rw, "SPLIT_K": 0,
+                                    **self._quant_extra(rw_[:-7], uq_rw)},
+                                   ((self.num_experts + 255) // 256, 1, 1))
+                # GPU top-K: per-token top-K selection from [T, N_EXPERTS] logits.
+                # Dispatch (num_tokens, 1, 1): each workgroup handles one token's logits.
                 self._dispatch("topk_sort",
                                [router_logits_buf, self._topk_idx_buf, self._topk_weight_buf],
                                {"N_EXPERTS": self.num_experts, "K": self.top_k_experts},
-                               (1, 1, 1))
+                               (num_tokens, 1, 1))
 
-            # Read back compact K-element arrays (negligible: K=8 = 32 bytes)
-            top_k_idx = self._topk_idx_buf.to_numpy().view(np.uint32)[:self.top_k_experts]
-            rw_vals   = self._topk_weight_buf.to_numpy().view(np.float32)[:self.top_k_experts]
+            # Read back per-token routing: [T, K] arrays of expert indices and softmax weights.
+            n_tk = num_tokens * self.top_k_experts
+            top_k_idx = (self._topk_idx_buf.to_numpy().view(np.uint32)[:n_tk]
+                         .reshape(num_tokens, self.top_k_experts))
+            rw_vals   = (self._topk_weight_buf.to_numpy().view(np.float32)[:n_tk]
+                         .reshape(num_tokens, self.top_k_experts))
 
             # Apply per-expert learned scale (vLLM gemma4_routing_function_torch:
             # topk_weights *= per_expert_scale[topk_ids]).  The HF checkpoint key is
@@ -409,19 +428,27 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             pes_w = self.weights.get(f"{p}.router.per_expert_scale")
             if pes_w is not None:
                 pes = pes_w.to_numpy().astype(np.float32)
-                rw_vals = rw_vals * pes[top_k_idx]
-                # Write scaled weights back so moe_accumulate reads correct values.
-                dev.queue.write_buffer(self._topk_weight_buf.buf, 0,
-                                       rw_vals.astype(np.float32).tobytes())
+                rw_vals = rw_vals * pes[top_k_idx]  # [T, K] broadcast via advanced indexing
 
-            # GPU: run top-K expert FFNs
+            # Build unique-expert -> per-token-weight mapping.
+            # expert_token_weights[eid][t] = routing weight for token t to expert eid
+            # (0.0 for tokens that do not route to eid).
+            expert_token_weights: dict = {}
+            for t in range(num_tokens):
+                for k in range(self.top_k_experts):
+                    eid = int(top_k_idx[t, k])
+                    if eid not in expert_token_weights:
+                        expert_token_weights[eid] = np.zeros(num_tokens, dtype=np.float32)
+                    expert_token_weights[eid][t] += float(rw_vals[t, k])
+
+            # GPU: run selected expert FFNs
             gelu_n_moe = num_tokens * inter_moe
             moe_acc = self._moe_acc_buf
             # Zero-initialize the accumulation buffer before the expert loop so
-            # moe_accumulate can do in-place += without a ping-pong buffer.
+            # moe_accumulate_batched can do in-place += without a ping-pong buffer.
             dev.queue.write_buffer(moe_acc.buf, 0, b"\x00" * (add_n * 2))
 
-            for idx, (eid, ew) in enumerate(zip(top_k_idx, rw_vals)):
+            for eid, w_per_token in expert_token_weights.items():
                 ep = f"{p}.experts.{eid}"
                 g_w = self.weights.get(f"{ep}.gate_proj.weight")
                 u_w = self.weights.get(f"{ep}.up_proj.weight")
@@ -430,39 +457,96 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     logger.warning("Missing expert %d for L%d", eid, layer_idx)
                     continue
 
+                uq_g  = self._uq_for_key(f"{ep}.gate_proj.weight")
+                uq_u  = self._uq_for_key(f"{ep}.up_proj.weight")
+                dk    = f"{ep}.down_proj.weight"
+                uq_dk = self._uq_for_key(dk)
+                use_mr4 = uq_g in (0, 3) and uq_u in (0, 3) and uq_dk in (0, 3)
+
+                if num_tokens > 1 and not use_mr4:
+                    raise RuntimeError(
+                        f"MoE multi-token FFN requires f16 (uq=0) or GPTQ (uq=3) weights; "
+                        f"expert {eid} at L{layer_idx} has uq=({uq_g},{uq_u},{uq_dk})"
+                    )
+
+                # Write per-token routing weights for this expert to GPU scratch buffer.
+                dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0,
+                                       w_per_token.tobytes())
+
                 with self._batched_dispatch(label=f"L{layer_idx:02d}E{eid}"):
-                    for ob, ew_key in [(sc["gate_buf"], f"{ep}.gate_proj.weight"),
-                                       (sc["up_buf"],   f"{ep}.up_proj.weight")]:
-                        uq = self._uq_for_key(ew_key)
+                    if use_mr4 and num_tokens > 1:
+                        # Batched GEMM path: process all T tokens through this expert.
+                        # gate/up: [T, hidden] x [inter_moe, hidden]^T -> [T, inter_moe]
+                        for ob, ew_key, uq in [
+                            (sc["gate_buf"], f"{ep}.gate_proj.weight", uq_g),
+                            (sc["up_buf"],   f"{ep}.up_proj.weight",   uq_u),
+                        ]:
+                            _sc_e = self._scales_buf(ew_key, uq, moe_in)
+                            _ex_e: dict = {"K": hidden, "N": inter_moe,
+                                           "M": num_tokens, "USE_QUANT": uq}
+                            if uq == 3:
+                                _ex_e["GROUP_K"] = (
+                                    self._quant_extra(ew_key[:-7], uq).get("GROUP_K", 128))
+                            self._dispatch("matmul_quant_mr4",
+                                           [moe_in, self.weights[ew_key], _sc_e, ob],
+                                           _ex_e,
+                                           (inter_moe, num_tokens, 1))
+                        self._dispatch("gelu_mul",
+                                       [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                                       {"N": gelu_n_moe},
+                                       ((gelu_n_moe // 4 + 255) // 256, 1, 1),
+                                       shader_subdir="gemma")
+                        # down: [T, inter_moe] x [hidden, inter_moe]^T -> [T, hidden]
+                        _sc_dk = self._scales_buf(dk, uq_dk, sc["ffn_act"])
+                        _ex_dk: dict = {"K": inter_moe, "N": hidden,
+                                        "M": num_tokens, "USE_QUANT": uq_dk}
+                        if uq_dk == 3:
+                            _ex_dk["GROUP_K"] = (
+                                self._quant_extra(dk[:-7], uq_dk).get("GROUP_K", 128))
+                        self._dispatch("matmul_quant_mr4",
+                                       [sc["ffn_act"], self.weights[dk], _sc_dk, sc["ffn_out"]],
+                                       _ex_dk,
+                                       (hidden, num_tokens, 1))
+                        # Per-token weighted accumulate: moe_acc[t*H+j] += w[t] * ffn_out[t*H+j]
+                        self._dispatch("moe_accumulate_batched",
+                                       [moe_acc, sc["ffn_out"],
+                                        self._moe_per_expert_weight_buf],
+                                       {"N": add_n, "H": hidden},
+                                       ((add_n + 255) // 256, 1, 1))
+                    else:
+                        # Single-token GEMV path (num_tokens==1).
+                        for ob, ew_key in [(sc["gate_buf"], f"{ep}.gate_proj.weight"),
+                                           (sc["up_buf"],   f"{ep}.up_proj.weight")]:
+                            uq = self._uq_for_key(ew_key)
+                            self._dispatch("matmul_quant",
+                                           [moe_in, self.weights[ew_key],
+                                            self._scales_buf(ew_key, uq, moe_in), ob],
+                                           {"K": hidden, "N": inter_moe,
+                                            "USE_QUANT": uq,
+                                            **self._split_k_extra(uq),
+                                            **self._quant_extra(ew_key[:-7], uq)},
+                                           _gemv_wg(inter_moe, uq))
+                        self._dispatch("gelu_mul",
+                                       [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                                       {"N": gelu_n_moe},
+                                       ((gelu_n_moe // 4 + 255) // 256, 1, 1),
+                                       shader_subdir="gemma")
+                        uq_dk2 = self._uq_for_key(dk)
                         self._dispatch("matmul_quant",
-                                       [moe_in, self.weights[ew_key],
-                                        self._scales_buf(ew_key, uq, moe_in), ob],
-                                       {"K": hidden, "N": inter_moe,
-                                        "USE_QUANT": uq,
-                                        **self._split_k_extra(uq),
-                                        **self._quant_extra(ew_key[:-7], uq)},
-                                       _gemv_wg(inter_moe, uq))
-                    self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                                   {"N": gelu_n_moe},
-                                   ((gelu_n_moe // 4 + 255) // 256, 1, 1),
-                                   shader_subdir="gemma")
-                    dk = f"{ep}.down_proj.weight"
-                    uq_dk = self._uq_for_key(dk)
-                    self._dispatch("matmul_quant",
-                                   [sc["ffn_act"], self.weights[dk],
-                                    self._scales_buf(dk, uq_dk, sc["ffn_act"]),
-                                    sc["ffn_out"]],
-                                   {"K": inter_moe, "N": hidden,
-                                    "USE_QUANT": uq_dk,
-                                    **self._split_k_extra(uq_dk),
-                                    **self._quant_extra(dk[:-7], uq_dk)},
-                                   _gemv_wg(hidden, uq_dk))
-                    # Weighted in-place accumulate: moe_acc[i] += w_buf[idx] * ffn_out[i]
-                    # K_IDX indexes into _topk_weight_buf (already written by topk_sort).
-                    self._dispatch("moe_accumulate",
-                                   [moe_acc, sc["ffn_out"], self._topk_weight_buf],
-                                   {"N": add_n, "K_IDX": idx},
-                                   ((add_n + 255) // 256, 1, 1))
+                                       [sc["ffn_act"], self.weights[dk],
+                                        self._scales_buf(dk, uq_dk2, sc["ffn_act"]),
+                                        sc["ffn_out"]],
+                                       {"K": inter_moe, "N": hidden,
+                                        "USE_QUANT": uq_dk2,
+                                        **self._split_k_extra(uq_dk2),
+                                        **self._quant_extra(dk[:-7], uq_dk2)},
+                                       _gemv_wg(hidden, uq_dk2))
+                        # K_IDX=0: w_per_token[0] is the scalar weight for this expert.
+                        self._dispatch("moe_accumulate",
+                                       [moe_acc, sc["ffn_out"],
+                                        self._moe_per_expert_weight_buf],
+                                       {"N": add_n, "K_IDX": 0},
+                                       ((add_n + 255) // 256, 1, 1))
 
             # Post-MoE norm + single residual add (vLLM Gemma4 pattern)
             with self._batched_dispatch(label=f"L{layer_idx:02d}P"):

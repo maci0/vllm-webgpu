@@ -1,22 +1,23 @@
 enable f16;
 
-// topk_sort.wgsl — GPU top-K selection for MoE router (split into two passes).
+// topk_sort.wgsl — GPU top-K selection for MoE router (multi-token).
 //
-// Pass 1 (indices only): Find top-K indices from N_EXPERTS logits.
-//   Input:  logits [N_EXPERTS] f16
-//   Output: topk_indices [K] u32
-//   Dispatch: (1, 1, 1) — single workgroup with N_EXPERTS threads.
-//   Algorithm: parallel insertion sort in shared memory (small N_EXPERTS ≤ 256).
+// Input:  logits [T, N_EXPERTS] f16  — router logits for T tokens
+// Output: topk_idx     [T, K] u32   — top-K expert indices per token
+//         topk_weights [T, K] f32   — softmax-normalized expert weights per token
 //
-// Pass 2 (softmax weights): Compute softmax over the selected K logits.
-//   Output: topk_weights [K] f32 — normalized expert weights.
+// Dispatch: (T, 1, 1) — one workgroup per token.
+//   workgroup_id.x = token index (t).
+//   Each workgroup uses 256 threads to load N_EXPERTS logits into shared memory,
+//   then thread 0 runs sequential top-K selection (K ≤ 8, N_EXPERTS ≤ 256).
+//   Thread 0 writes K results to topk_idx[t*K .. t*K+K-1] and topk_weights[...].
 
 override N_EXPERTS: u32 = 128u;
 override K: u32         = 8u;    // top-K experts to select
 
-@group(0) @binding(0) var<storage, read>       logits      : array<f16>;  // [N_EXPERTS]
-@group(0) @binding(1) var<storage, read_write> topk_idx    : array<u32>;  // [K] output indices
-@group(0) @binding(2) var<storage, read_write> topk_weights: array<f32>;  // [K] softmax weights
+@group(0) @binding(0) var<storage, read>       logits      : array<f16>;  // [T * N_EXPERTS]
+@group(0) @binding(1) var<storage, read_write> topk_idx    : array<u32>;  // [T * K] output indices
+@group(0) @binding(2) var<storage, read_write> topk_weights: array<f32>;  // [T * K] softmax weights
 
 var<workgroup> sh_logits:  array<f32, 256>;  // local copy of logits (up to 256 experts)
 var<workgroup> sh_topk_v:  array<f32, 8>;    // top-K values (up to 8)
@@ -24,19 +25,22 @@ var<workgroup> sh_topk_i:  array<u32, 8>;    // top-K indices
 
 @compute @workgroup_size(256, 1, 1)
 fn main(
-    @builtin(local_invocation_id) lid: vec3<u32>,
+    @builtin(workgroup_id)        wgid: vec3<u32>,
+    @builtin(local_invocation_id) lid:  vec3<u32>,
 ) {
-    let tid = lid.x;
+    let tid       = lid.x;
+    let token_idx = wgid.x;  // one workgroup per token
 
-    // Load logits into shared memory
+    // Load this token's logits into shared memory
+    let logit_base = token_idx * N_EXPERTS;
     if (tid < N_EXPERTS) {
-        sh_logits[tid] = f32(logits[tid]);
+        sh_logits[tid] = f32(logits[logit_base + tid]);
     } else {
         sh_logits[tid] = -1e30f;  // sentinel for unused slots
     }
     workgroupBarrier();
 
-    // Thread 0 does sequential top-K selection (tiny: K ≤ 8, N_EXPERTS ≤ 128)
+    // Thread 0 does sequential top-K selection (tiny: K ≤ 8, N_EXPERTS ≤ 256)
     if (tid == 0u) {
         // Initialize to sentinel
         for (var k = 0u; k < K; k++) {
@@ -66,10 +70,11 @@ fn main(
         for (var k = 0u; k < K; k++) { max_v = max(max_v, sh_topk_v[k]); }
         var sum_e = 0.0f;
         for (var k = 0u; k < K; k++) { sum_e += exp(sh_topk_v[k] - max_v); }
-        // Write outputs
+        // Write outputs at this token's offset
+        let out_base = token_idx * K;
         for (var k = 0u; k < K; k++) {
-            topk_idx[k]     = sh_topk_i[k];
-            topk_weights[k] = exp(sh_topk_v[k] - max_v) / sum_e;
+            topk_idx[out_base + k]     = sh_topk_i[k];
+            topk_weights[out_base + k] = exp(sh_topk_v[k] - max_v) / sum_e;
         }
     }
 }
