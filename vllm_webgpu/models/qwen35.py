@@ -62,8 +62,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         if self._rotary_dim % 2 != 0:
             self._rotary_dim -= 1
         # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
-        # Qwen3.5 uses mrope_interleaved=True.
-        self._rope_interleaved: int = 1 if getattr(model_config, "mrope_interleaved", False) else 0
+        # Qwen3.5 uses mrope_interleaved=True, stored in rope_parameters dict,
+        # not as a top-level config attribute.
+        _rope_params = getattr(model_config, "rope_parameters", {}) or {}
+        self._rope_interleaved: int = 1 if _rope_params.get("mrope_interleaved", False) else 0
         # Attention output gate: when True, q_proj.weight has shape [2*q_dim, hidden].
         # The first half is Q; the second half is a gate applied as silu(gate)*attn_out
         # before the o_proj. _postprocess_weights splits the weight and stores the gate
