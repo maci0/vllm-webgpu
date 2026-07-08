@@ -90,6 +90,64 @@ def allocate_kv_pool_per_layer(
         ))
 
 
+def allocate_kv_from_hf_config(
+    wgpu_device,
+    model,
+    hf_config,
+    num_blocks: int,
+    block_size: int,
+) -> None:
+    """Allocate KV cache from a HuggingFace config object.
+
+    Single source of truth used by WebGPUModelRunner.initialize_kv_cache,
+    run_inference.run, and profile_kernels. Add new model support here only.
+
+    Priority order:
+      1. model._lp (populated at load time for heterogeneous-dim models)
+      2. hf_config._layer_attention_params (absent for safetensors checkpoints)
+      3. Uniform allocation from hf_config scalar fields
+    """
+    lp_list = (
+        getattr(model, "_lp", None)
+        or getattr(hf_config, "_layer_attention_params", None)
+    )
+    if lp_list:
+        allocate_kv_pool_per_layer(
+            wgpu_device, model,
+            num_blocks=num_blocks,
+            block_size=block_size,
+            layer_params=lp_list,
+        )
+        return
+
+    num_kv_heads = hf_config.num_key_value_heads
+    head_dim = getattr(
+        hf_config, "head_dim",
+        hf_config.hidden_size // hf_config.num_attention_heads,
+    )
+    # model._layer_types wins; fall back to hf_config fields used by different
+    # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
+    layer_types = (
+        getattr(model, "_layer_types", None)
+        or getattr(hf_config, "layer_types", None)
+        or getattr(hf_config, "layers_block_type", None)
+    )
+    # Treat uniform full-attention lists the same as None (avoids tiny buffers).
+    if layer_types and all(t == "full_attention" for t in layer_types):
+        layer_types = None
+
+    allocate_kv_pool_hybrid(
+        wgpu_device,
+        model,
+        num_blocks=num_blocks,
+        num_layers=hf_config.num_hidden_layers,
+        block_size=block_size,
+        num_kv_heads=num_kv_heads,
+        head_dim=head_dim,
+        layer_types=layer_types,
+    )
+
+
 def _get_model_memory_usage(worker: "WebGPUWorker") -> int:
     """Sum of all weight buffer sizes in bytes."""
     runner = worker.model_runner

@@ -66,29 +66,13 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # KV cache
     from vllm_webgpu.config import get_config
-    from vllm_webgpu.v1.cache_policy import allocate_kv_pool_hybrid, allocate_kv_pool_per_layer
+    from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config
 
     block_size = get_config().block_size
     max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
     num_blocks = min((max_ctx + block_size - 1) // block_size + 4, 4096)
 
-    layer_params = getattr(model, "_lp", None)
-    if layer_params:
-        print(f"\nAllocating per-layer KV cache ({cfg.num_hidden_layers} layers, mixed dims)")
-        allocate_kv_pool_per_layer(device.wgpu_device, model, num_blocks=num_blocks, block_size=block_size, layer_params=layer_params)
-    else:
-        kv_h = cfg.num_key_value_heads
-        hd   = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
-        allocate_kv_pool_hybrid(
-            device.wgpu_device,
-            model,
-            num_blocks=num_blocks,
-            num_layers=cfg.num_hidden_layers,
-            block_size=block_size,
-            num_kv_heads=kv_h,
-            head_dim=hd,
-            layer_types=getattr(model, "_layer_types", None),
-        )
+    allocate_kv_from_hf_config(device.wgpu_device, model, cfg, num_blocks=num_blocks, block_size=block_size)
 
     # Prefill
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")

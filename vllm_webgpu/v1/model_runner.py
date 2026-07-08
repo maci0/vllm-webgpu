@@ -25,7 +25,7 @@ except ImportError:
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_pool_hybrid, allocate_kv_pool_per_layer
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_hf_config, allocate_kv_pool_hybrid, allocate_kv_pool_per_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
@@ -133,32 +133,13 @@ class WebGPUModelRunner:
         block_size = self.webgpu_config.block_size
         num_blocks = kv_cache_config.num_blocks
 
-        # Per-layer KV pool: Gemma4 has heterogeneous head_dim/num_kv_heads per layer.
-        # Prefer model._lp (populated at load time) over hf._layer_attention_params, which
-        # is absent for safetensors checkpoints. Matches the priority order in get_kv_cache_spec().
-        lp_list = (
-            (getattr(self.model, "_lp", None) if self.model is not None else None)
-            or getattr(hf, "_layer_attention_params", None)
+        allocate_kv_from_hf_config(
+            self.wgpu_device.wgpu_device,
+            self.model,
+            hf,
+            num_blocks=num_blocks,
+            block_size=block_size,
         )
-
-        if lp_list:
-            allocate_kv_pool_per_layer(
-                self.wgpu_device.wgpu_device, self.model, num_blocks, block_size, lp_list
-            )
-        else:
-            num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
-            head_dim = self.vllm_config.model_config.get_head_size()
-            layer_types = getattr(hf, "layer_types", None) or getattr(hf, "layers_block_type", None)
-            allocate_kv_pool_hybrid(
-                self.wgpu_device.wgpu_device,
-                self.model,
-                num_blocks=num_blocks,
-                num_layers=hf.num_hidden_layers,
-                block_size=block_size,
-                num_kv_heads=num_kv_heads,
-                head_dim=head_dim,
-                layer_types=layer_types if layer_types and any(t != "full_attention" for t in layer_types) else None,
-            )
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
