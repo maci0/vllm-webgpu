@@ -605,6 +605,18 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
 
+    def _decode_teardown(
+        self,
+        norm_out: "WebGPUBuffer",
+        logits_buf: "WebGPUBuffer",
+        vocab: int,
+        greedy: bool,
+        split_k: int = 1,
+    ) -> None:
+        # Qwen3.5 vocab (151936) exceeds the 65535 workgroup-per-dimension limit.
+        # Force SPLIT_K=0 (row-per-thread) regardless of the caller's default.
+        super()._decode_teardown(norm_out, logits_buf, vocab, greedy, split_k=0)
+
     def forward(
         self,
         input_ids: np.ndarray,
