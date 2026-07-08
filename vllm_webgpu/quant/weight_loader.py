@@ -196,6 +196,26 @@ def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
     )
 
 
+def _awq_qzeros_symmetric(qzeros: np.ndarray) -> bool:
+    """Return True only when every AWQ qzero nibble decodes to 0 or 8.
+
+    AWQ packs zero-points with nibble order [0,4,1,5,2,6,3,7], i.e. bit
+    offsets [0,16,4,20,8,24,12,28].  Symmetric checkpoints produced by
+    standard AWQ have all zero-points equal to 8 (midpoint of uint4).
+    Some loaders also store all-zero qzeros, which effectively sets the
+    zero-point to 0 (a valid degenerate case the GPU shader handles).
+    Any other value means the checkpoint uses per-group asymmetric zeros
+    and must fall back to CPU dequantisation.
+    """
+    nibble_shifts = np.array([0, 16, 4, 20, 8, 24, 12, 28], dtype=np.int32)
+    qz = np.asarray(qzeros, dtype=np.int32)
+    for shift in nibble_shifts:
+        nibbles = (qz >> shift) & 0xF
+        if not np.all((nibbles == 0) | (nibbles == 8)):
+            return False
+    return True
+
+
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
     """Dequantize AWQ int4 weights to float16.
 
@@ -691,13 +711,10 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
                         _upload_f16(sc_gn, f"{base}.weight.scales", weights)
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
-                    elif fmt == "awq" and qz is not None and g_idx is None:
-                        # GPU AWQ: check if qzeros decode to symmetric (all zero_point=8).
-                        # AWQ qzeros use same [0,4,1,5,2,6,3,7] nibble ordering.
-                        # All-zero qzeros → all zero_points = 0 → NOT symmetric.
-                        # qzeros with all nibbles = 8 → zero_point = 8 (symmetric).
-                        # We check for all-zero qzeros which means zero_point=0 (also
-                        # supported: just use -0 for zero instead of -8).
+                    elif (fmt == "awq" and qz is not None and g_idx is None
+                          and _awq_qzeros_symmetric(qz)):
+                        # GPU AWQ: qzeros verified symmetric (every nibble is 0 or 8).
+                        # Asymmetric checkpoints fall through to the CPU dequant branch.
                         K_, N8_ = qw.shape  # qw is [K, N//8]
                         N_ = N8_ * 8
                         G_ = sc.shape[0] if sc.ndim == 2 else K_ // 128
