@@ -524,7 +524,13 @@ class WebGPUModelRunner:
             # producing T-1 rows of top-K logprob data.
             if num_prompt_logprobs is not None and T > 1:
                 if last_logits.shape[-1] > 1:  # full [T, vocab] logits
-                    pt = self._compute_prompt_logprobs(last_logits, tok_ids, num_prompt_logprobs)
+                    # Pass only the chunk token window so full_logits[i] and
+                    # tok_ids_param[i+1] stay aligned regardless of num_computed.
+                    pt = self._compute_prompt_logprobs(
+                        last_logits,
+                        tok_ids[num_computed:num_computed + T + 1],
+                        num_prompt_logprobs,
+                    )
                     if pt is not None:
                         prompt_logprobs_dict[rid] = pt
                 else:
