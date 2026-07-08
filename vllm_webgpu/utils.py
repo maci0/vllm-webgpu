@@ -5,6 +5,9 @@ from pathlib import Path
 import numpy as np
 import torch
 from vllm.utils.mem_constants import MiB_bytes
+# apply_top_k_top_p_pytorch is an internal vLLM function used directly (not via the
+# public apply_top_k_top_p) so we can pass allow_cpu_sync=True, which selects the
+# O(vocab) topk path instead of the sort path for top-k-only filtering.
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
 
 SHADERS_DIR = Path(__file__).parent / "shaders"

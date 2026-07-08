@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -65,7 +66,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
             "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
+            "LN_ROPE_BASE": math.log(self.rope_theta),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
@@ -444,6 +445,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _hstate = 0
         normed_x = b["normed"]
         x_res    = b["x"]
+        _pfill_rope_base = self._rope_consts
+        _freq_buf = self._rope_freq_buf
 
         chunks = list(batched(range(self.num_layers), _CHUNK))
 
@@ -475,8 +478,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     gemm_batch(normed_x, v_wk, b["v_buf"],    hidden, kv_dim)
 
                     # ── Per-head RMSNorm + RoPE for all T tokens ──────────────────
-                    _pfill_rope_base = self._rope_consts
-                    _freq_buf = self._rope_freq_buf
                     for src, dst, n_h, wk in [
                         (b["q_buf"],  b["q_rope"], self.num_q_heads,  f"{p}.self_attn.q_norm.weight"),
                         (b["k_buf"],  b["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
@@ -485,11 +486,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                         if nw is not None:
                             self._dispatch("fused_per_head_norm_rope",
                                            [src, nw, pos_buf, dst, _freq_buf],
-                                           {**_pfill_rope_base, "NUM_HEADS": n_h, "HAS_WEIGHT": 1},
+                                           {**_pfill_rope_base, "NUM_HEADS": n_h, "HAS_WEIGHT": 1, "INPUT_OFFSET": 0},
                                            (n_h, T, 1))
                         else:
                             self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                           {**_pfill_rope_base, "NUM_HEADS": n_h},
+                                           {**_pfill_rope_base, "NUM_HEADS": n_h, "INPUT_OFFSET": 0},
                                            (T, n_h, 1))
 
                     k_cache, v_cache = self.kv_pool[i]

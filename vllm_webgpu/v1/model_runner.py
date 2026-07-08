@@ -248,13 +248,6 @@ class WebGPUModelRunner:
         return None
 
     @staticmethod
-    def _log_softmax(arr: "np.ndarray") -> "np.ndarray":
-        """Numerically stable log-softmax along the last axis. Works for 1-D and N-D inputs."""
-        shift = arr.max(axis=-1, keepdims=True)
-        exp = np.exp(arr - shift)
-        return (arr - shift) - np.log(exp.sum(axis=-1, keepdims=True))
-
-    @staticmethod
     def _compute_request_logprobs(
         logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
     ) -> "tuple[np.ndarray, np.ndarray, int]":
@@ -276,7 +269,7 @@ class WebGPUModelRunner:
         k = min(num_logprobs, vocab_size)
 
         arr = logits_1d.astype(np.float32)
-        log_probs = WebGPUModelRunner._log_softmax(arr)
+        log_probs = torch.nn.functional.log_softmax(torch.from_numpy(arr), dim=-1).numpy()
 
         # Top-k indices sorted by descending log-prob.
         if k == 0:
@@ -342,7 +335,7 @@ class WebGPUModelRunner:
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
         arr = full_logits[:num_positions].astype(np.float32)  # [T-1, vocab]
-        log_probs = WebGPUModelRunner._log_softmax(arr)  # [T-1, vocab]
+        log_probs = torch.nn.functional.log_softmax(torch.from_numpy(arr), dim=-1).numpy()  # [T-1, vocab]
 
         vocab_size = arr.shape[-1]
         row_idx = np.arange(num_positions)[:, None]
@@ -576,7 +569,6 @@ class WebGPUModelRunner:
             self._req_state[rid] = {
                 "pos": num_computed + T, "block_ids": blk_ids,
                 "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
-                "num_prompt_logprobs": num_prompt_logprobs,
                 "sampling_params": sp,
             }
 

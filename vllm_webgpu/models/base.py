@@ -26,10 +26,9 @@ def _gemv_wg(N: int, uq: int) -> tuple:
     """Workgroup count for matmul_quant dispatch.
 
     SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6,7,8).
-    Row-per-thread: USE_QUANT in (1,2) — currently unreachable; no caller
-    produces those values, but the formula is preserved for future use.
     """
-    assert uq in (0, 3, 4, 5, 6, 7, 8), f"unexpected USE_QUANT={uq}"
+    if uq not in (0, 3, 4, 5, 6, 7, 8):
+        raise ValueError(f"unexpected USE_QUANT={uq}")
     return (N, 1, 1)
 
 logger = logging.getLogger(__name__)
@@ -63,7 +62,7 @@ def compute_yarn_freqs(
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+    from vllm.model_executor.layers.rotary_embedding import (
         YaRNScalingRotaryEmbedding,
     )
 

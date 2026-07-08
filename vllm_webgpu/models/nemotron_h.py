@@ -93,8 +93,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # and-count inside _mlp_layer on every forward pass.
         if isinstance(_raw_int, list):
             _sizes = _raw_int
-            _mlp_count = sum(1 for t in self._layer_types if t == "mlp")
-            _sizes_iter = iter(_sizes if len(_sizes) > 1 else _sizes * _mlp_count)
+            if len(_sizes) == 1:
+                _sizes_iter = iter(_sizes * sum(1 for t in self._layer_types if t == "mlp"))
+            else:
+                _sizes_iter = iter(_sizes)
             self._layer_int_size: list[int] = [
                 next(_sizes_iter) if lt == "mlp" else 0 for lt in self._layer_types
             ]
@@ -496,7 +498,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             for i in range(self.num_layers):
                 normed_x, x_buf = self._layer_dispatch(
                     i, normed_x, x_buf,
-                    pre["pos"], pre["slot_map"], pre["bt"],
+                    pre["slot_map"], pre["bt"],
                     ctx_len, num_tokens, self._rms_base,
                 )
 
@@ -516,7 +518,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         layer_idx: int,
         normed_x: "WebGPUBuffer",
         x_buf: "WebGPUBuffer",
-        pos_buf: "WebGPUBuffer",
         slot_map: "WebGPUBuffer",
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
@@ -871,7 +872,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 for i in range(self.num_layers):
                     normed_x, x_buf = self._layer_dispatch(
                         i, normed_x, x_buf,
-                        pre["pos"], pre["slot_map"], pre["bt"],
+                        pre["slot_map"], pre["bt"],
                         tok_ctx, 1, rms_base,
                     )
 

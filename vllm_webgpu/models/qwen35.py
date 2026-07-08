@@ -1,12 +1,12 @@
 from __future__ import annotations
 import logging
-import os
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from vllm_webgpu.models.base import _gemv_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
+from vllm_webgpu.quant.weight_loader import _GDN_BF16 as _GDN_BF16_FLAG
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -101,7 +101,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # GDN_BF16: when set, GDN projection matmuls use bf16-preserved weight buffers
         # (key + "__bf16") instead of the default f16 version. Falls back silently if
         # the __bf16 buffer is absent (model not BF16 or flag off).
-        self._gdn_bf16: bool = os.environ.get("GDN_BF16", "0") == "1"
+        self._gdn_bf16: bool = _GDN_BF16_FLAG
 
         # Persistent GPU buffers for recurrent state (allocated after load_weights).
         # SSM state:  [NUM_V_HEADS, K_DIM, V_DIM] f32 = 2MB per linear-attn layer

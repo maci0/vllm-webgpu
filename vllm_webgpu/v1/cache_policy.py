@@ -42,6 +42,11 @@ def allocate_kv_pool_hybrid(
 
     model.kv_pool.clear()
 
+    if layer_types is not None and len(layer_types) != num_layers:
+        raise ValueError(
+            f"layer_types length {len(layer_types)} != num_layers {num_layers}"
+        )
+
     full_attn_count = 0
     for i in range(num_layers):
         is_full = layer_types is None or layer_types[i] in KV_ATTN_TYPES

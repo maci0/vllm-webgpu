@@ -37,6 +37,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._layer_types: list[str] = list(
             getattr(model_config, "layer_types", None) or []
         )
+        self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or self.intermediate_size
+        self._clamp_extra: dict = {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
 
     def _layer_eff_ctx(self, layer_idx: int, ctx_len: int) -> int:
         """Return effective context for this layer respecting per-layer attention type."""
@@ -178,18 +180,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
           router:  mlp.router.weight
           experts: mlp.experts.{j}.w1/w3/w2.weight
         """
-        clamp_extra: dict = (
-            {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
-        )
-        expert_inter = (
-            getattr(self.model_config, "moe_intermediate_size", None)
-            or self.intermediate_size
-        )
         super()._moe_ffn_layer(
             normed_x,
             layer_idx,
             bsm_prefix="mlp",
             router_subkey="router",
-            extra_gate_consts=clamp_extra,
-            expert_inter=expert_inter,
+            extra_gate_consts=self._clamp_extra,
+            expert_inter=self._moe_inter,
         )

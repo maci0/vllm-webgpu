@@ -674,14 +674,7 @@ def load_safetensors_weights(
                 else:
                     arr_f32 = np.ascontiguousarray(
                         sf.get_tensor(name).numpy().astype(np.float32))
-                data = _pad4(arr_f32.tobytes())
-                buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-                wgpu_device.queue.write_buffer(buf, 0, data)
-                _pending_bytes += len(data)
-                _maybe_flush()
-                weights[name] = WebGPUBuffer(
-                    buf=buf, device=wgpu_device,
-                    shape=tuple(arr_f32.shape), dtype="f32")
+                _upload_f32(arr_f32, name, weights)
                 return True
 
             if dtype_str == "F16":
@@ -863,7 +856,7 @@ def load_safetensors_weights(
                     # GPU NVFP4: upload raw weight_packed + F32-converted block scales.
                     # The shader uses GLOBAL_SCALE as an override constant and
                     # reads F8_E4M3 scales via the standard f32 scales binding.
-                    ws_f32 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float32))
+                    ws_f32 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws))
                     _upload_u8(wp, f"{base}.weight", weights)
                     _upload_f32(ws_f32, f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
@@ -903,7 +896,7 @@ def load_safetensors_weights(
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
                     N_, K2_ = wp.shape
                     K_ = K2_ * 2
-                    ws_f32 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float32))
+                    ws_f32 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws))
                     _upload_u8(wp, f"{base}.weight", weights)
                     _upload_f32(ws_f32, f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
