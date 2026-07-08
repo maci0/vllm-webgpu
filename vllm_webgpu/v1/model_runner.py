@@ -7,11 +7,12 @@ import numpy as np
 
 try:
     from vllm.config import VllmConfig
-    from vllm.v1.kv_cache_interface import FullAttentionSpec
+    from vllm.v1.kv_cache_interface import FullAttentionSpec, KVQuantMode
     from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors
 except ImportError:
     VllmConfig = Any  # type: ignore[assignment,misc]
     FullAttentionSpec = None  # type: ignore[assignment,misc]
+    KVQuantMode = None  # type: ignore[assignment,misc]
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
     LogprobsLists = None  # type: ignore[assignment,misc]
     LogprobsTensors = None  # type: ignore[assignment,misc]
@@ -215,9 +216,6 @@ class WebGPUModelRunner:
         if FullAttentionSpec is None:
             return spec
 
-        import inspect
-        sig = inspect.signature(FullAttentionSpec.__init__)
-        params = set(sig.parameters)
         try:
             import torch as _torch
             _dtype = _torch.float16
@@ -228,13 +226,8 @@ class WebGPUModelRunner:
             kw: dict[str, Any] = dict(
                 block_size=block_size, num_kv_heads=num_kv_heads,
                 head_size=head_size, dtype=_dtype,
+                kv_quant_mode=KVQuantMode.NONE,
             )
-            if "kv_quant_mode" in params:
-                try:
-                    from vllm.v1.kv_cache_interface import KVQuantMode
-                    kw["kv_quant_mode"] = KVQuantMode.NONE
-                except ImportError:
-                    kw["kv_quant_mode"] = 0
             return FullAttentionSpec(**kw)
 
         # Use per-layer params if available (Gemma4 heterogeneous layers).
