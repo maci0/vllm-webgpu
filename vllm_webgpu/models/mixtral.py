@@ -4,7 +4,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.llama import LlamaWebGPUModel, _gemv_wg
+from vllm_webgpu.models.base import _gemv_wg
+from vllm_webgpu.models.llama import LlamaWebGPUModel
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -51,10 +52,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
             dev = self.wgpu_device.wgpu_device
-            rw = self._rw_flags()
 
             def mk(n: int) -> "WebGPUBuffer":
-                return WebGPUBuffer.empty(dev, max(n, 8), usage=rw)
+                return WebGPUBuffer.empty(dev, max(n, 8))
 
             self._moe_sc: dict[str, "WebGPUBuffer"] = {
                 "router_out":   mk(self._num_experts * 2),      # [N_E] f16 router logits

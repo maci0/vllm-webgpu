@@ -8,12 +8,13 @@ import numpy as np
 
 try:
     from vllm.v1.kv_cache_interface import FullAttentionSpec
-    from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors
+    from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 except ImportError:
     FullAttentionSpec = None  # type: ignore[assignment,misc]
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
     LogprobsLists = None  # type: ignore[assignment,misc]
     LogprobsTensors = None  # type: ignore[assignment,misc]
+    EMPTY_MODEL_RUNNER_OUTPUT = None  # type: ignore[assignment,misc]
 
 try:
     from vllm.sampling_params import SamplingType
@@ -344,6 +345,10 @@ class WebGPUModelRunner:
     ) -> Any:
         if ModelRunnerOutput is None:
             return None
+
+        if not req_ids:
+            self._last_model_output = EMPTY_MODEL_RUNNER_OUTPUT
+            return EMPTY_MODEL_RUNNER_OUTPUT
 
         # Build LogprobsLists when at least one request supplied logprob tuples.
         built_logprobs = None

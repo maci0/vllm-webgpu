@@ -5,8 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import BaseWebGPUModel
-from vllm_webgpu.models.llama import _gemv_wg
+from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -17,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class Gemma4WebGPUModel(BaseWebGPUModel):
+    _GEMMA_NORM: int = 1  # all Gemma models use (1+w) RMSNorm
     """
     Gemma 4 transformer with heterogeneous per-layer attention.
 
@@ -49,7 +49,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # - _apply_v_norm: only Gemma4 applies per-head RMS norm to V before caching
         archs = getattr(model_config, "architectures", [])
         self._apply_v_norm = any("Gemma4" in a for a in archs)  # Gemma3 does NOT normalize V
-        self._gemma_norm_const = 1             # (1+w) RMSNorm for all Gemma models
 
         # Per-layer attention parameters (head_dim, num_kv_heads, q_dim, kv_dim, has_v_proj).
         # Set from _layer_attention_params if available (parsed from GGUF), otherwise derive
@@ -121,7 +120,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
 
         _vpt = self._vals_per_thread(self.hidden_size)
-        self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
+        self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
         self._ln_rope_theta: float = math.log(self.rope_theta)
 
     def _scratch_token_count(self) -> int:
@@ -137,14 +136,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
         T = self._scratch_token_count()
         H = self.hidden_size
         I = self._scratch_inter_size()
         NQ = self.num_q_heads
 
         def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, n, usage=rw)
+            return WebGPUBuffer.empty(dev, n)
 
         # Pre-allocated per-step buffers (reused every decode via write_buffer).
         V = self.vocab_size
@@ -195,7 +193,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
 
         for i, lp in enumerate(self._lp):
             p = self._layer_key_prefix(i)
@@ -213,7 +210,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     continue
                 if len(raw) == hd:
                     tiled = np.tile(raw, num_heads)
-                    self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled, usage=rw)
+                    self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled)
                 else:
                     logger.warning("Unexpected q/k_norm shape for %s: got %d, expected %d or %d",
                                    norm_key, len(raw), expected_len, hd)
@@ -380,7 +377,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 
         dev = self.wgpu_device.wgpu_device
-        rw  = self._rw_flags()
         hidden = self.hidden_size
         vocab  = self.vocab_size
         inter  = self.intermediate_size
@@ -388,7 +384,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         max_kv_dim = max(lp["kv_dim"] for lp in self._lp)
 
         def alloc(n_bytes: int) -> WebGPUBuffer:
-            return WebGPUBuffer.empty(dev, max(n_bytes, 8), usage=rw)
+            return WebGPUBuffer.empty(dev, max(n_bytes, 8))
 
         # T-token batch buffers. Allocated once per prefill call;
         # allocation cost is negligible vs the GEMM savings.
@@ -420,10 +416,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _dummy = alloc(8)
 
         slot_map_buf = WebGPUBuffer.from_numpy(
-            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32), usage=rw)
-        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32), usage=rw)
-        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32), usage=rw)
-        bt_buf  = WebGPUBuffer.from_numpy(dev, self._bt_arr(attn_metadata), usage=rw)
+            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
+        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
+        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
+        bt_buf  = WebGPUBuffer.from_numpy(dev, self._bt_arr(attn_metadata))
 
         _rms = self._rms_consts
 
@@ -521,7 +517,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                              "NUM_Q_HEADS":   self.num_q_heads,
                              "NUM_KV_HEADS":  num_kv_heads,
                              "HAS_WEIGHT":    1,
-                             "GEMMA_NORM":    self._gemma_norm_const,
+                             "GEMMA_NORM":    self._GEMMA_NORM,
                              "INPUT_OFFSET_K": 0,
                              "K_SEPARATE":    1},
                             (self.num_q_heads + num_kv_heads, T, 1))
@@ -539,7 +535,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                     [src, nw, pos_buf, dst, _freq_buf],
                                     {**_g4_rope_base, "HEAD_DIM": head_dim,
                                      "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
-                                     "GEMMA_NORM": self._gemma_norm_const,
+                                     "GEMMA_NORM": self._GEMMA_NORM,
                                      "INPUT_OFFSET": 0},
                                     (n_heads, T, 1))
                             else:
@@ -946,7 +942,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": num_kv_heads,
                                 "HAS_WEIGHT": 1,
-                                "GEMMA_NORM": self._gemma_norm_const,
+                                "GEMMA_NORM": self._GEMMA_NORM,
                                 "INPUT_OFFSET_K": _k_in_offset,
                                 "K_SEPARATE": _k_separate},
                                (self.num_q_heads + num_kv_heads, num_tokens, 1))
@@ -963,7 +959,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                        [src, norm_w, pos_buf, dst, _freq_buf],
                                        {**_g4_rope_base, "HEAD_DIM": head_dim,
                                         "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
-                                        "GEMMA_NORM": self._gemma_norm_const,
+                                        "GEMMA_NORM": self._GEMMA_NORM,
                                         "INPUT_OFFSET": in_off},
                                        (n_heads, num_tokens, 1))
                     elif not _use_fused_qkv:
@@ -1058,9 +1054,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                    _rms_consts, (num_tokens, 1, 1))
                     ffn_normed = sc["normed"]
                 else:
-                    self._dispatch("add_f32", [x_buf, attn_delta, residual],
-                                   {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
-                    ffn_normed = residual
+                    raise ValueError(
+                        f"Layer {layer_idx} missing pre_feedforward_layernorm.weight "
+                        "— f32 residual cannot be fed to f16 FFN projection"
+                    )
 
             # Gate + up projection
             # Fused gate+up (f16 only); Gemma uses tanh-GELU.

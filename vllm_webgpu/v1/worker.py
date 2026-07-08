@@ -1,6 +1,5 @@
 from __future__ import annotations
 import gc
-import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +10,7 @@ import torch
 # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
 # Update this comment and pyproject.toml when bumping the vLLM version.
 from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
+from vllm.logger import init_logger
 from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
 from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase   # vllm>=0.24
 
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from vllm.v1.kv_cache_interface import KVCacheSpec
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 class WebGPUWorker(WorkerBase):
@@ -115,8 +115,6 @@ class WebGPUWorker(WorkerBase):
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.model_config.max_model_len = max_model_len
-        if hasattr(self.model_runner, "update_max_model_len"):
-            self.model_runner.update_max_model_len(max_model_len)
 
     def get_cache_block_size_bytes(self) -> int:
         return self.model_runner.get_cache_block_size_bytes()

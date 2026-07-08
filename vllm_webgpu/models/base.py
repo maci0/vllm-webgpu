@@ -10,8 +10,19 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale
+from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask
 from vllm_webgpu.webgpu.pipeline import PipelineKey
+
+
+def _gemv_wg(N: int, uq: int) -> tuple:
+    """Workgroup count for matmul_quant dispatch.
+
+    SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6,7,8).
+    Row-per-thread: USE_QUANT in (1,2).
+    """
+    if uq in (0, 3, 4, 5, 6, 7, 8):
+        return (N, 1, 1)
+    return ((N + 255) // 256, 1, 1)
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -49,10 +60,9 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     # Use vLLM's correction-range helper to get the transition band in dimension-index
     # space, matching YaRNScalingRotaryEmbedding._compute_inv_freq exactly.
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
+    import torch
     low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx)
-    if low == high:
-        high += 0.001
-    ramp_mask = np.clip((np.arange(head_dim // 2, dtype=np.float32) - low) / (high - low), 0.0, 1.0)
+    ramp_mask = yarn_linear_ramp_mask(low, high, head_dim // 2, dtype=torch.float).numpy()
     inv_freq_mask = (1.0 - ramp_mask) * extrapolation_factor
     scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
@@ -103,17 +113,10 @@ class BaseWebGPUModel(ABC):
         # 1-element dummy; LlamaWebGPUModel._init_rope_freq_buf() replaces it with
         # actual YaRN frequencies when rope_scaling.rope_type == "yarn".
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WGPUBuf
-        _rw = BaseWebGPUModel._rw_flags()
         self._rope_freq_buf: "WebGPUBuffer" = _WGPUBuf.empty(
-            wgpu_device.wgpu_device, 4, usage=_rw)  # 1-element f32 placeholder
+            wgpu_device.wgpu_device, 4)  # 1-element f32 placeholder
         self._use_freq_buf: bool = False
         self._yarn_mscale: float = 1.0  # set to mscale when rope_type='yarn'
-
-    @staticmethod
-    def _rw_flags() -> int:
-        """Return the standard STORAGE|COPY_SRC|COPY_DST buffer usage flags."""
-        import wgpu as _wgpu
-        return _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
 
     @staticmethod
     def _vals_per_thread(hidden_size: int) -> int:
@@ -239,8 +242,7 @@ class BaseWebGPUModel(ABC):
         import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
-        self._gpu_sample_tok   = WebGPUBuffer.empty(dev, 4, usage=rw)      # 1 × u32
+        self._gpu_sample_tok   = WebGPUBuffer.empty(dev, 4)      # 1 × u32
         self._gpu_sample_vocab = vocab
         # MAP_READ staging buffer: copy argmax result here inside the MAIN command encoder,
         # then map after the single main sync — eliminates the second GPU sync per token.

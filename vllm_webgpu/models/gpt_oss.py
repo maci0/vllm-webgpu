@@ -2,8 +2,8 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+from vllm_webgpu.models.base import _gemv_wg
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
-from vllm_webgpu.models.llama import _gemv_wg
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer

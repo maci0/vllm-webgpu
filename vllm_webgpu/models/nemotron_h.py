@@ -6,8 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
-from vllm_webgpu.models.base import BaseWebGPUModel
-from vllm_webgpu.models.llama import _gemv_wg
+from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -15,6 +14,8 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 logger = logging.getLogger(__name__)
+
+_H_NAMES = ("h0", "h1", "h2")
 
 
 class NemotronHWebGPUModel(BaseWebGPUModel):
@@ -122,7 +123,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
+
 
         H   = self.hidden_size
         MI  = self.mamba_int
@@ -135,7 +136,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         kd  = self.num_kv_heads * self.head_dim
 
         def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, max(n, 8), usage=rw)
+            return WebGPUBuffer.empty(dev, max(n, 8))
 
         # Fixed pre-allocated decode buffers (zero-alloc hot path for T=1).
         self._pre: dict[str, "WebGPUBuffer"] = {
@@ -190,7 +191,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
+
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -198,13 +199,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # conv_state: [(kernel-1), conv_dim] f16
             conv_bytes = (self.conv_kernel - 1) * self.conv_dim * 2
             self._conv_states[i] = WebGPUBuffer.empty(
-                dev, max(conv_bytes, 8), usage=rw
-            )
+                dev, max(conv_bytes, 8)            )
             # ssm_state: [num_heads, head_dim, state_size] f32
             ssm_bytes = self.mamba_num_heads * self.mamba_head_dim * self.ssm_state_size * 4
             self._ssm_states[i] = WebGPUBuffer.empty(
-                dev, max(ssm_bytes, 8), usage=rw
-            )
+                dev, max(ssm_bytes, 8)            )
 
         self.reset_recurrent_states()
 
@@ -263,7 +262,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
+
 
         for i, lt in enumerate(self._layer_types):
             if lt != "attention":
@@ -290,8 +289,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             qkv_key = f"{p}.qkv_proj.weight"
             packed_buf = WebGPUBuffer.from_numpy(
-                dev, np.ascontiguousarray(qkv_bytes), usage=rw
-            )
+                dev, np.ascontiguousarray(qkv_bytes)            )
             # Override the dtype that from_numpy() inferred from the uint8
             # concatenation; the underlying GPU bytes are correct already.
             packed_buf.dtype = src_dtype
@@ -319,8 +317,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     self.weights[v_s].to_numpy(),
                 ])
                 scales_buf = WebGPUBuffer.from_numpy(
-                    dev, np.ascontiguousarray(packed_scales), usage=rw
-                )
+                    dev, np.ascontiguousarray(packed_scales)                )
                 scales_buf.dtype = scales_dtype
                 self.weights[f"{qkv_key}.scales"] = scales_buf
                 del self.weights[q_s], self.weights[k_s], self.weights[v_s]
@@ -339,8 +336,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     self.weights[v_s2].to_numpy(),
                 ])
                 scales_buf2 = WebGPUBuffer.from_numpy(
-                    dev, np.ascontiguousarray(packed_scales2), usage=rw
-                )
+                    dev, np.ascontiguousarray(packed_scales2)                )
                 scales_buf2.dtype = scales_dtype2
                 self.weights[f"{qkv_key[:-7]}.scales"] = scales_buf2
                 del self.weights[q_s2], self.weights[k_s2], self.weights[v_s2]
@@ -364,7 +360,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
+
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -376,23 +372,19 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if a_key in self.weights:
                 raw = self.weights[a_key].to_numpy().view(np.float32)
                 a_f32 = -np.exp(raw)
-                self.weights[a_key] = WebGPUBuffer.from_numpy(dev, a_f32, usage=rw)
+                self.weights[a_key] = WebGPUBuffer.from_numpy(dev, a_f32)
 
-            # conv1d.weight: flatten any extra dimension.
-            # Shape may be [conv_dim, 1, kernel] (from PyTorch unsqueeze) or
-            # [conv_dim, kernel]. Flatten to [conv_dim * kernel] f16 elements.
+            # conv1d.weight: validate element count.
+            # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements
+            # are in the same row-major order in both cases, so no GPU roundtrip needed.
             cw_key = f"{p}.conv1d.weight"
             if cw_key in self.weights:
-                raw_bytes = self.weights[cw_key].to_numpy()  # u8
                 expected = self.conv_dim * self.conv_kernel
-                arr = raw_bytes.view(np.float16).ravel()
-                if len(arr) != expected:
+                actual = self.weights[cw_key].nbytes // 2  # f16 = 2 bytes
+                if actual != expected:
                     raise ValueError(
-                        f"conv1d.weight layer {i}: got {len(arr)} elements, expected {expected}"
+                        f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"
                     )
-                self.weights[cw_key] = WebGPUBuffer.from_numpy(
-                    dev, np.ascontiguousarray(arr), usage=rw
-                )
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 
@@ -530,8 +522,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """
         sc = self._sc
         lt = self._layer_types[layer_idx]
-        h_names = ["h0", "h1", "h2"]
-        out = sc[h_names[(self._hstate + 2) % 3]]
+        out = sc[_H_NAMES[(self._hstate + 2) % 3]]
         add_n = num_tokens * self.hidden_size
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):

@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm_webgpu.models.base import _gemv_wg
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
-from vllm_webgpu.models.llama import _gemv_wg
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -59,19 +59,18 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # tensor states (x_buf, post-attn, post-shared-expert, post-moe).
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WB
             _dev = wgpu_device.wgpu_device
-            _rw = self._rw_flags()
             # canvas_length is the max batch size during diffusion inference (default 256).
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
             max_canvas_len = getattr(model_config, "canvas_length", 256)
-            self._shared_res_buf = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2, usage=_rw)  # F16
+            self._shared_res_buf = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2)  # F16
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
-            self._topk_idx_buf     = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4, usage=_rw)  # [T, K] u32
-            self._topk_weight_buf  = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4, usage=_rw) # [T, K] f32
-            self._router_logit_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2, usage=_rw)   # [T, E] f16
-            self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2, usage=_rw)   # [T, H] f16
+            self._topk_idx_buf     = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
+            self._topk_weight_buf  = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] f32
+            self._router_logit_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2)    # [T, E] f16
+            self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2)    # [T, H] f16
             # Per-expert scratch: [T] f32 routing weight for one expert across all tokens.
-            self._moe_per_expert_weight_buf = _WB.empty(_dev, max_canvas_len * 4, usage=_rw)
+            self._moe_per_expert_weight_buf = _WB.empty(_dev, max_canvas_len * 4)
 
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
@@ -202,7 +201,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         num_tokens: int,
     ) -> "WebGPUBuffer":
         """DiffusionGemma transformer layer with shared + MoE FFN."""
-        dev = self.wgpu_device.wgpu_device
         sc = self._sc
         lp = self._lp[layer_idx]
         hidden = self.hidden_size
@@ -270,7 +268,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     self._dispatch("fused_per_head_norm_rope",
                                    [src, nw, pos_buf, dst, _freq_buf],
                                    {**_dg_rope_base, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
-                                    "HAS_WEIGHT": 1, "GEMMA_NORM": self._gemma_norm_const},
+                                    "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM},
                                    (n_heads, num_tokens, 1))
                 else:
                     # Binding 3 (inv_freq_buf): always provided.
@@ -331,27 +329,38 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # ── Shared expert FFN ─────────────────────────────────────────────
             gelu_n_shared = num_tokens * inter_shared
             pfn_w = self.weights.get(f"{p}.pre_feedforward_layernorm.weight")
-            if pfn_w is not None:
-                self._dispatch("rms_norm_f32in", [residual, pfn_w, sc["normed"]],
-                               _rms, (num_tokens, 1, 1))
-                ffn_in = sc["normed"]
-            else:
-                ffn_in = residual
+            if pfn_w is None:
+                raise ValueError(
+                    f"Layer {layer_idx} missing pre_feedforward_layernorm.weight "
+                    "— f32 residual cannot be fed to f16 FFN projection"
+                )
+            self._dispatch("rms_norm_f32in", [residual, pfn_w, sc["normed"]],
+                           _rms, (num_tokens, 1, 1))
+            ffn_in = sc["normed"]
 
-            # Shared expert gate + up → SwiGLU (Gemma uses GELU)
-            for out_b, proj in [(sc["gate_buf"], "gate_proj"), (sc["up_buf"], "up_proj")]:
-                wk = f"{p}.mlp.{proj}.weight"
-                uq = self._uq_for_key(wk)
-                self._dispatch("matmul_quant",
-                               [ffn_in, self.weights[wk],
-                                self._scales_buf(wk, uq, ffn_in), out_b],
-                               {"K": hidden, "N": inter_shared, "USE_QUANT": uq,
-                                **self._split_k_extra(uq),
-                                **self._quant_extra(wk[:-7], uq)},
-                               _gemv_wg(inter_shared, uq))
-            self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                           {"N": gelu_n_shared}, ((gelu_n_shared // 4 + 255) // 256, 1, 1),
-                           shader_subdir="gemma")
+            # Shared expert gate + up → tanh-GELU activation
+            gw_k = f"{p}.mlp.gate_proj.weight"
+            uw_k = f"{p}.mlp.up_proj.weight"
+            uq_g = self._uq_for_key(gw_k)
+            uq_u = self._uq_for_key(uw_k)
+            if uq_g == 0 and uq_u == 0:
+                self._dispatch("fused_gate_act",
+                               [ffn_in, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
+                               {"K": hidden, "N": inter_shared, "GELU": 1}, (inter_shared, 1, 1))
+            else:
+                for out_b, proj, wk, uq in [
+                        (sc["gate_buf"], "gate_proj", gw_k, uq_g),
+                        (sc["up_buf"],   "up_proj",   uw_k, uq_u)]:
+                    self._dispatch("matmul_quant",
+                                   [ffn_in, self.weights[wk],
+                                    self._scales_buf(wk, uq, ffn_in), out_b],
+                                   {"K": hidden, "N": inter_shared, "USE_QUANT": uq,
+                                    **self._split_k_extra(uq),
+                                    **self._quant_extra(wk[:-7], uq)},
+                                   _gemv_wg(inter_shared, uq))
+                self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                               {"N": gelu_n_shared}, ((gelu_n_shared // 4 + 255) // 256, 1, 1),
+                               shader_subdir="gemma")
 
             dw = f"{p}.mlp.down_proj.weight"
             uq_dw = self._uq_for_key(dw)
@@ -376,6 +385,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe and f"{p}.router.proj.weight" in self.weights:
+            dev = self.wgpu_device.wgpu_device
             router_logits_buf = self._router_logit_buf
             pfn2_w = self.weights.get(f"{p}.pre_feedforward_layernorm_2.weight")
 

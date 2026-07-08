@@ -1,17 +1,16 @@
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 import psutil
 
-from vllm.utils.mem_utils import get_cpu_memory
+from vllm.logger import init_logger
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import _OVERHEAD_BYTES
 
 if TYPE_CHECKING:
     from vllm_webgpu.v1.worker import WebGPUWorker
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 # Layer type strings that carry KV state and require cache allocation.
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
@@ -123,7 +122,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     model_mem = _get_model_memory_usage(worker)
 
     try:
-        total: int | None = get_cpu_memory()
+        total: int | None = psutil.virtual_memory().total
     except (OSError, psutil.Error):
         total = None
 

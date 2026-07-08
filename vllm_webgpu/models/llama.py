@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm_webgpu.config import get_config
-from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs
+from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
@@ -16,17 +16,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _H_NAMES = ("h0", "h1", "h2")
-
-
-def _gemv_wg(N: int, uq: int) -> tuple:
-    """Workgroup count for matmul_quant dispatch.
-
-    SPLIT_K=1 (one workgroup per output row): USE_QUANT in (0,3,4,5,6,7,8).
-    Row-per-thread: USE_QUANT in (1,2).
-    """
-    if uq in (0, 3, 4, 5, 6, 7, 8):
-        return (N, 1, 1)
-    return ((N + 255) // 256, 1, 1)
 
 
 class LlamaWebGPUModel(BaseWebGPUModel):
@@ -91,7 +80,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Decode path only (num_tokens=1). Sizes are fixed by model dimensions.
         """
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
         T = 1  # decode: num_tokens == 1
         H = self.hidden_size
         I = self.intermediate_size
@@ -99,7 +87,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         KV = self.num_kv_heads * self.head_dim
 
         def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, n, usage=rw)
+            return WebGPUBuffer.empty(dev, n)
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
@@ -135,6 +123,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "h1":         mk(T * H * 2),
             "h2":         mk(T * H * 2),
         }
+        # Small dummy buffer for binding slot 2 (scales) on USE_QUANT=0 lm_head dispatches.
+        self._dummy_scales_buf: "WebGPUBuffer" = mk(4)
         # Index into hidden-state rotation: the layer output cycles h0 -> h1 -> h2 -> h0 ...
         self._hstate: int = 0
 
@@ -152,9 +142,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return  # base-class dummy buffer is sufficient; _use_freq_buf stays False
 
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
         freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling)
-        self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs, usage=rw)
+        self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale
         self._use_freq_buf = True
         logger.info(
@@ -173,7 +162,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         expecting shape (num_heads * head_dim,). Tile if the loaded shape is just (head_dim,).
         """
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
 
         for i in range(self.num_layers):
             p = f"model.layers.{i}"
@@ -190,7 +178,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 if buf.shape == (self.head_dim,):
                     # Shared norm: tile to (num_heads * head_dim,) so each head uses same weights.
                     tiled = np.tile(buf.to_numpy().view(np.float16), num_heads)
-                    self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled, usage=rw)
+                    self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled)
                 else:
                     raise ValueError(
                         f"{norm_key}: unexpected shape {buf.shape}, "
@@ -217,12 +205,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
-        ctx_len = int(
-            attn_metadata.max_decode_seq_len
-            if attn_metadata.max_decode_seq_len is not None
-            else int(positions[-1]) + 1)
-        if ctx_len <= 0:
-            ctx_len = int(positions[-1]) + 1
+        ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len else int(positions[-1]) + 1
         return (
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
@@ -251,7 +234,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "matmul_quant",
             [norm_out,
              self._lm_head_weight,
-             self.weights.get("lm_head.scales", norm_out),
+             self.weights.get("lm_head.scales", self._dummy_scales_buf),
              logits_buf],
             {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
             ((vocab + 255) // 256, 1, 1),
@@ -370,10 +353,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """
         dev  = self.wgpu_device.wgpu_device
-        rw   = self._rw_flags()
 
         def alloc(n_f16: int) -> WebGPUBuffer:
-            return WebGPUBuffer.empty(dev, max(n_f16 * 2, 8), usage=rw)
+            return WebGPUBuffer.empty(dev, max(n_f16 * 2, 8))
 
         q_dim  = self.num_q_heads  * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
@@ -406,9 +388,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         }
 
         slot_map_arr = np.array(attn_metadata.slot_mapping, dtype=np.uint32)
-        slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr, usage=rw)
-        pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32), usage=rw)
-        ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32), usage=rw)
+        slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr)
+        pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
+        ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
         # Small dummy scales buffer for USE_QUANT=0 f16 path (binding 2 not read).
         _dummy = alloc(4)
 
@@ -684,7 +666,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [pre["norm_out"], self._lm_head_weight,
-                 self.weights.get("lm_head.scales", pre["norm_out"]),
+                 self.weights.get("lm_head.scales", self._dummy_scales_buf),
                  pre["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1),

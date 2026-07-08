@@ -231,11 +231,10 @@ def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
     """
     import torch
     return (
-        torch.from_numpy(data.ravel())
+        torch.from_numpy(np.ascontiguousarray(data))
         .view(torch.float8_e4m3fn)
         .to(torch.float32)
         .numpy()
-        .reshape(data.shape)
     )
 
 
@@ -250,12 +249,8 @@ def _awq_qzeros_symmetric(qzeros: np.ndarray) -> bool:
     Any other value means the checkpoint uses per-group asymmetric zeros
     and must fall back to CPU dequantisation.
     """
-    qz = np.asarray(qzeros, dtype=np.int32)
-    for shift in _AWQ_NIBBLE_SHIFTS:
-        nibbles = (qz >> shift) & 0xF
-        if not np.all((nibbles == 0) | (nibbles == 8)):
-            return False
-    return True
+    all_nibbles = (np.asarray(qzeros, dtype=np.int32)[..., np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF
+    return bool(np.all((all_nibbles == 0) | (all_nibbles == 8)))
 
 
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
@@ -679,7 +674,7 @@ def load_safetensors_weights(
                     weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
                                                             shape=tuple(shape), dtype="u32")
                 f32 = t_bf16.to(torch.float32).numpy()
-                arr = np.clip(f32, -65504.0, 65504.0).reshape(shape).astype(np.float16)
+                arr = np.clip(f32, -65504.0, 65504.0).astype(np.float16)
             elif dtype_str == "F32":
                 arr = np.clip(sf.get_tensor(name).numpy(), -65504.0, 65504.0).astype(np.float16)
             elif dtype_str == "I8":
@@ -1205,12 +1200,6 @@ def load_safetensors_weights(
         return weights
 
 
-def _bf16_raw_to_f32(raw: bytes, shape: tuple) -> "np.ndarray":
-    """Convert raw BF16 bytes to float32 numpy array."""
-    import torch as _torch_bf
-    return _torch_bf.frombuffer(raw, dtype=_torch_bf.bfloat16).to(_torch_bf.float32).numpy().reshape(shape)
-
-
 def _dequant_mlx_int4(
     weight_u32: "np.ndarray",
     scales_f32: "np.ndarray",
@@ -1294,9 +1283,10 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                 _, s_shape, s_raw = raw_tensors[scales_key]
                 _, b_shape, b_raw = raw_tensors[biases_key]
                 processed.update({key, scales_key, biases_key})
+                import torch as _torch
                 w_u32 = np.frombuffer(raw, dtype=np.uint32).reshape(shape)
-                scales_f32 = _bf16_raw_to_f32(s_raw, s_shape)
-                biases_f32 = _bf16_raw_to_f32(b_raw, b_shape)
+                scales_f32 = _torch.frombuffer(s_raw, dtype=_torch.bfloat16).to(_torch.float32).numpy().reshape(s_shape)
+                biases_f32 = _torch.frombuffer(b_raw, dtype=_torch.bfloat16).to(_torch.float32).numpy().reshape(b_shape)
                 dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
                 arr = np.clip(dequant, -65504.0, 65504.0).astype(np.float16)
                 local_key = base.removeprefix("language_model.") + ".weight"
@@ -1311,7 +1301,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                 continue
 
         if dtype_str == "BF16":
-            f32 = _bf16_raw_to_f32(raw, shape)
+            f32 = _torch.frombuffer(raw, dtype=_torch.bfloat16).to(_torch.float32).numpy().reshape(shape)
             arr = np.clip(f32, -65504.0, 65504.0).astype(np.float16)
         elif dtype_str == "F32":
             arr = np.clip(np.frombuffer(raw, dtype=np.float32).reshape(shape), -65504.0, 65504.0).astype(np.float16)

@@ -5,7 +5,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.llama import LlamaWebGPUModel, _gemv_wg
+from vllm_webgpu.models.base import _gemv_wg
+from vllm_webgpu.models.llama import LlamaWebGPUModel, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 
 if TYPE_CHECKING:
@@ -138,11 +139,10 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         super()._init_scratch_buffers(max_ctx)
 
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
         Q = self.num_q_heads * self.head_dim
 
         def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, n, usage=rw)
+            return WebGPUBuffer.empty(dev, n)
 
         # qkv_buf: parent sizes for full-attn (Q + 2*KV); GDN layers need
         # lin_conv_dim (K+K+V heads packed). Replace with the larger GDN size so
@@ -204,7 +204,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         """
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
 
         # Tile q_norm/k_norm weights via the parent implementation. Linear-attn layers
         # have no norm keys, so the parent loop skips them gracefully.
@@ -238,9 +237,9 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                     arr = buf.to_numpy().view(np.float16).reshape(self.num_q_heads, 2 * hd, buf.shape[1])
                     q_arr = np.ascontiguousarray(arr[:, :hd, :].reshape(q_dim, buf.shape[1]))
                     gate_arr = np.ascontiguousarray(arr[:, hd:, :].reshape(q_dim, buf.shape[1]))
-                    self.weights[q_proj_key] = WebGPUBuffer.from_numpy(dev, q_arr, usage=rw)
+                    self.weights[q_proj_key] = WebGPUBuffer.from_numpy(dev, q_arr)
                     gate_key = f"{p}.self_attn.q_gate_proj.weight"
-                    self.weights[gate_key] = WebGPUBuffer.from_numpy(dev, gate_arr, usage=rw)
+                    self.weights[gate_key] = WebGPUBuffer.from_numpy(dev, gate_arr)
 
         self._rms_consts["GEMMA_NORM"] = self._gemma_norm
 
@@ -257,7 +256,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
 
         ssm_bytes  = self._lin_v_heads * self._lin_k_dim * self._lin_v_dim * 4   # f32
         conv_bytes = (self._lin_conv_kernel - 1) * self._lin_conv_dim * 2        # f16
@@ -268,8 +266,8 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         for i in range(self.num_layers):
             if self._is_full_attn(i):
                 continue
-            self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes,  usage=rw)
-            self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes, usage=rw)
+            self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes)
+            self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes)
 
             # conv1d weight from HuggingFace has shape [CONV_DIM, 1, KERNEL] (standard
             # PyTorch depthwise conv). The shader expects [CONV_DIM, KERNEL] (flat 2D).
@@ -280,7 +278,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             if w is not None and len(w.shape) == 3 and w.shape[1] == 1:
                 # [CONV_DIM, 1, KERNEL] → [CONV_DIM, KERNEL]: drop the middle 1.
                 arr = w.to_numpy().view(np.float16).reshape(w.shape[0], w.shape[2])
-                self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr, usage=rw)
+                self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr)
 
             # Upgrade SSM parameter precision: A_log and dt_bias are small per-head
             # arrays originally in bf16 but stored as f16. Keeping them as f32 avoids
@@ -292,7 +290,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                     continue
                 f16_np = w.to_numpy().view(np.float16)
                 f32_np = f16_np.astype(np.float32)
-                self.weights[key] = WebGPUBuffer.from_numpy(dev, f32_np, usage=rw)
+                self.weights[key] = WebGPUBuffer.from_numpy(dev, f32_np)
 
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
@@ -350,9 +348,8 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         pp = f"model.layers.{layer_idx}"
         add_n = num_tokens * hidden
 
-        h_names = ["h0", "h1", "h2"]
-        residual = sc[h_names[(self._hstate + 1) % 3]]
-        out = sc[h_names[(self._hstate + 2) % 3]]
+        residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
+        out = sc[_H_NAMES[(self._hstate + 2) % 3]]
 
         # GDN linear attention has no KV cache — state is in ssm_gpu/conv_gpu buffers.
         # Offsets into flat QKV buffer (f16 elements)
@@ -580,7 +577,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = self._rw_flags()
 
         hidden = self.hidden_size
         vocab = self.vocab_size
@@ -597,19 +593,18 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # Shared scratch (sc["normed"], sc["h0/h1/h2"]) is safe to reuse because
         # the GPU executes dispatches within each encoder in submission order.
         bt_arr = self._bt_arr(attn_metadata)
-        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr, usage=rw)
+        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
 
         tok_ids_bufs: list = []
         tok_pos_bufs: list = []
         tok_slot_bufs: list = []
         for tc in range(num_tokens):
             tok_ids_bufs.append(WebGPUBuffer.from_numpy(
-                dev, input_ids[tc:tc+1].astype(np.uint32), usage=rw))
+                dev, input_ids[tc:tc+1].astype(np.uint32)))
             tok_pos_bufs.append(WebGPUBuffer.from_numpy(
-                dev, positions[tc:tc+1].astype(np.uint32), usage=rw))
+                dev, positions[tc:tc+1].astype(np.uint32)))
             tok_slot_bufs.append(WebGPUBuffer.from_numpy(
-                dev, np.array([attn_metadata.slot_mapping[tc]], dtype=np.uint32),
-                usage=rw))
+                dev, np.array([attn_metadata.slot_mapping[tc]], dtype=np.uint32)))
 
         greedy = getattr(self, "_greedy_decode", True)
         self._ensure_sample_buf(vocab)
@@ -872,7 +867,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                                    (n_heads, num_tokens, 1))
                 else:
                     self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                   {**_rope_base, "NUM_HEADS": n_heads},
+                                   {**self._rope_consts, "NUM_HEADS": n_heads},
                                    (num_tokens, n_heads, 1))
 
         # Fused K+V cache store. V always lives in its own sc["v_buf"] (no offset needed).
