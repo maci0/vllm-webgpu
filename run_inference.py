@@ -120,16 +120,16 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         print(f"  Last prefill logit: argmax={top1}, value={float(_real[0][top1]):.2f}, "
               f"std={float(_real[0].std()):.2f}")
     else:
-        top1 = int(np.argmax(logits[0]))
-        print(f"  Last prefill logit: argmax={top1}, value={float(logits[0][top1]):.2f}, "
-              f"std={float(logits[0].std()):.2f}")
+        top1 = int(np.argmax(logits[-1]))
+        print(f"  Last prefill logit: argmax={top1}, value={float(logits[-1][top1]):.2f}, "
+              f"std={float(logits[-1].std()):.2f}")
 
     # Decode
     print(f"\nDecoding (max {max_tokens} tokens)...")
 
     generated = []
     t_start = time.perf_counter()
-    last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
+    last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[-1]))
 
     for step in range(max_tokens):
         if last_token == eos_id:
