@@ -188,13 +188,16 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             uq_lm = self._uq_for_key(_lm_key)
             sc_lm = self._scales_buf(_lm_key, uq_lm, norm_out)
             if num_tokens > 1:
-                # Batched path: matmul_quant_mr4 reads all M rows of norm_out.
-                # Dispatch (vocab, num_tokens, 1) so every token gets its logits.
-                self._dispatch("matmul_quant_mr4",
+                # Batched LM head: vocab_size (256128) exceeds the WebGPU 65535
+                # per-dimension dispatch limit, so (vocab, num_tokens, 1) is
+                # illegal.  matmul_quant_mr4_tiled dispatches
+                # ((vocab+255)//256, num_tokens, 1): each workgroup covers 256
+                # output columns, one per thread, avoiding the limit.
+                self._dispatch("matmul_quant_mr4_tiled",
                                [norm_out, lm_head_w, sc_lm, logits_buf],
                                {"K": hidden, "N": vocab, "M": num_tokens, "USE_QUANT": uq_lm,
                                 **self._quant_extra(_lm_base, uq_lm)},
-                               (vocab, num_tokens, 1))
+                               ((vocab + 255) // 256, num_tokens, 1))
             else:
                 # Single-token decode path.
                 self._dispatch("matmul_quant",
