@@ -10,7 +10,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from transformers.utils import SAFE_WEIGHTS_NAME
 from vllm_webgpu.webgpu.pipeline import PipelineKey
+
+if TYPE_CHECKING:
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.device import WebGPUDevice
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 # Scratch buffer rotation names shared across models.
 _H_NAMES: tuple[str, str, str] = ("h0", "h1", "h2")
@@ -25,11 +31,6 @@ def _gemv_wg(N: int, uq: int) -> tuple:
     if uq in (0, 3, 4, 5, 6, 7, 8):
         return (N, 1, 1)
     return ((N + 255) // 256, 1, 1)
-
-if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-    from vllm_webgpu.webgpu.device import WebGPUDevice
-    from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 logger = logging.getLogger(__name__)
 
@@ -207,7 +208,6 @@ class BaseWebGPUModel(ABC):
             f32_keys: Optional set of checkpoint key names that must be uploaded as float32
                       instead of the default float16. Passed through to the safetensors loader.
         """
-        from transformers.utils import SAFE_WEIGHTS_NAME
         from vllm.transformers_utils.repo_utils import get_model_path
         from vllm_webgpu.quant.weight_loader import (
             detect_weight_format, load_safetensors_weights,
@@ -306,7 +306,15 @@ class BaseWebGPUModel(ABC):
         return fallback
 
     def _split_k_extra(self, uq: int) -> dict:
-        """Return SPLIT_K=0 override for quant types that do not support SPLIT_K=1."""
+        """Return SPLIT_K=0 override for quant types that do not support SPLIT_K=1.
+
+        uq=1 and uq=2 are reserved for future shader variants. All current
+        call sites feed _uq_for_key output, which only returns values from
+        {0, 3, 4, 5, 6, 7, 8}, so this method always returns {} in practice.
+        The assertion guards against silent empty-dict returns if a new uq
+        value is introduced without updating this method.
+        """
+        assert uq in (0, 1, 2, 3, 4, 5, 6, 7, 8), f"unexpected uq={uq!r}"
         return {"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}
 
     def _quant_extra(self, base_key: str, uq: int) -> dict:

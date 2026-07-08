@@ -1214,7 +1214,8 @@ def _dequant_mlx_int4(
     out_rows, packed_cols = weight_u32.shape
     in_cols = packed_cols * 8
     w = weight_u32.astype(np.uint32)
-    nibbles = np.stack([(w >> (4 * i)) & 0xF for i in range(8)], axis=-1).reshape(out_rows, in_cols).astype(np.float32)
+    shifts = np.arange(8, dtype=np.uint32) * 4
+    nibbles = ((w[:, :, np.newaxis] >> shifts) & 0xF).reshape(out_rows, in_cols).astype(np.float32)
     n_groups = in_cols // group_size
     scales_bc = np.repeat(scales_f32.reshape(out_rows, n_groups), group_size, axis=1)
     biases_bc = np.repeat(biases_f32.reshape(out_rows, n_groups), group_size, axis=1)

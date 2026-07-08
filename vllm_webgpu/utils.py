@@ -8,7 +8,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sampl
 
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
-_OVERHEAD_BYTES = 512 * 1024 * 1024  # 512MB buffer for driver overhead + activations
+OVERHEAD_BYTES = 512 * 1024 * 1024  # 512MB buffer for driver overhead + activations
 
 
 def sample_token(

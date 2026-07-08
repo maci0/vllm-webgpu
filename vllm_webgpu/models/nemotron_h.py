@@ -56,7 +56,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             model_config, "head_dim", self.hidden_size // self.num_q_heads
         )
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
-        self._ln_rope_theta: float = math.log(self.rope_theta)
 
         # MLP parameters (used in '-' layers).
         # intermediate_size may be a list for heterogeneous (puzzle) configs;
@@ -75,10 +74,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.n_groups: int = model_config.n_groups
         self.ssm_state_size: int = model_config.ssm_state_size
         self.conv_kernel: int = model_config.conv_kernel
-        self.groups_state_size: int = self.n_groups * self.ssm_state_size
+        groups_state_size: int = self.n_groups * self.ssm_state_size
         # conv_dim: size of the vector passed through the causal conv
         # = x (mamba_int) + B (n_groups*state_size) + C (n_groups*state_size)
-        self.conv_dim: int = self.mamba_int + 2 * self.groups_state_size
+        self.conv_dim: int = self.mamba_int + 2 * groups_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         self.in_proj_dim: int = (
             self.mamba_int + self.conv_dim + self.mamba_num_heads
@@ -96,12 +95,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Index by layer_idx; 0 for non-MLP layers. Avoids O(num_layers) slice-
         # and-count inside _mlp_layer on every forward pass.
         if isinstance(_raw_int, list):
-            _sizes = _raw_int if len(_raw_int) > 1 else _raw_int * self.num_layers
+            _sizes = _raw_int
             _mlp_counter = 0
             self._layer_int_size: list[int] = []
             for lt in self._layer_types:
                 if lt == "mlp":
-                    self._layer_int_size.append(_sizes[_mlp_counter])
+                    self._layer_int_size.append(_sizes[_mlp_counter] if len(_sizes) > 1 else _sizes[0])
                     _mlp_counter += 1
                 else:
                     self._layer_int_size.append(0)
@@ -123,7 +122,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM":     self.head_dim,
             "ROPE_BASE":    float(self.rope_theta),
-            "LN_ROPE_BASE": self._ln_rope_theta,
+            "LN_ROPE_BASE": math.log(self.rope_theta),
             "USE_FREQ_BUF": 0,
         }
         self._init_scratch_buffers()

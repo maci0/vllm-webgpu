@@ -163,7 +163,7 @@ class WebGPUWorker(WorkerBase):
         self.model_runner.reset_encoder_cache()
 
     def shutdown(self) -> None:
-        if hasattr(self, "model_runner") and self.model_runner is not None:
+        if self.model_runner is not None:
             del self.model_runner
         self.wgpu_device = None
         gc.collect()

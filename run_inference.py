@@ -35,10 +35,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     tok = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
     messages = [{"role": "user", "content": prompt}]
     try:
-        result = tok.apply_chat_template(
+        input_ids_list = tok.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True)
-        # transformers may return a BatchEncoding (dict subclass) or a plain list.
-        input_ids_list = result["input_ids"] if isinstance(result, dict) else result
     except Exception:
         input_ids_list = tok.encode(prompt)
     eos_id = tok.eos_token_id

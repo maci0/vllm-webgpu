@@ -52,10 +52,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                    self.intermediate_size)
         self.is_moe: bool = self.num_experts > 0
 
-        # Default: no per-expert scales until load_weights() populates real values.
-        self._pes_cache: list[np.ndarray | None] = [None] * self.num_layers
-
         if self.is_moe:
+            # Initialized here for the case where forward() is called without load_weights().
+            # load_weights() resets and rebuilds this list with real per-expert scale arrays.
+            self._pes_cache: list[np.ndarray | None] = [None] * self.num_layers
             logger.info("DiffusionGemma MoE: %d experts, top-%d, moe_inter=%d",
                         self.num_experts, self.top_k_experts, self.moe_intermediate_size)
             # Extra scratch buffer: shared-expert residual (F32 like h0/h1/h2).
@@ -92,24 +92,25 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
-        # Try decoder prefix first, fall back to standard
-        for k in ("model.decoder.embed_tokens.weight", "model.embed_tokens.weight"):
-            if k in self.weights:
-                return k
-        return "model.embed_tokens.weight"
+        return next(
+            (k for k in ("model.decoder.embed_tokens.weight", "model.embed_tokens.weight")
+             if k in self.weights),
+            "model.embed_tokens.weight",
+        )
 
     def _norm_key(self) -> str:
-        for k in ("model.decoder.norm.weight", "model.norm.weight"):
-            if k in self.weights:
-                return k
-        return "model.norm.weight"
+        return next(
+            (k for k in ("model.decoder.norm.weight", "model.norm.weight")
+             if k in self.weights),
+            "model.norm.weight",
+        )
 
     def _lm_head_key(self) -> str:
-        for k in ("lm_head.weight", "model.decoder.lm_head.weight",
-                  "model.lm_head.weight"):
-            if k in self.weights:
-                return k
-        return self._embed_key()  # tied weights fallback
+        return next(
+            (k for k in ("lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight")
+             if k in self.weights),
+            self._embed_key(),  # tied weights fallback
+        )
 
     # ── Weight loading ───────────────────────────────────────────────────────
 

@@ -127,7 +127,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
     def _lm_head_weight(self) -> "WebGPUBuffer":
         return (
             self.weights.get("lm_head.weight")
-            or self.weights.get("model.lm_head.weight")
             or self.weights["model.embed_tokens.weight"]
         )
 
@@ -226,7 +225,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                 hd = self.head_dim
                 q_proj_key = f"{p}.self_attn.q_proj.weight"
                 buf = self.weights.get(q_proj_key)
-                if buf is not None and len(buf.shape) >= 1 and buf.shape[0] == 2 * q_dim:
+                if buf is not None and buf.shape[0] == 2 * q_dim:
                     arr = buf.to_numpy().view(np.float16).reshape(self.num_q_heads, 2 * hd, buf.shape[1])
                     q_arr = np.ascontiguousarray(arr[:, :hd, :].reshape(q_dim, buf.shape[1]))
                     gate_arr = np.ascontiguousarray(arr[:, hd:, :].reshape(q_dim, buf.shape[1]))

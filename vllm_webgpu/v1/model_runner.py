@@ -189,6 +189,10 @@ class WebGPUModelRunner:
         # Only layers whose type appears in ATTN_TYPES get a KV cache entry.
         # Mamba, MLP, and linear-attention layers carry no KV state and must be
         # excluded — emitting a FullAttentionSpec for them over-reports KV memory.
+        # NemotronH attention layers live under .mixer, not .self_attn.
+        _archs = getattr(mc, "architectures", None) or []
+        _attn_suffix = ".mixer" if "NemotronHForCausalLM" in _archs else ".self_attn"
+
         if not lp_list:
             layer_types = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
             if layer_types and len(layer_types) == mc.num_hidden_layers:
@@ -196,9 +200,6 @@ class WebGPUModelRunner:
                 default_kv = getattr(mc, "num_key_value_heads", 1)
                 global_hd = getattr(mc, "global_head_dim", default_hd)
                 global_kv = getattr(mc, "num_global_key_value_heads", 1)
-                # NemotronH attention layers live under .mixer, not .self_attn.
-                _archs = getattr(mc, "architectures", None) or []
-                _attn_suffix = ".mixer" if "NemotronHForCausalLM" in _archs else ".self_attn"
                 for i, lt in enumerate(layer_types):
                     if lt not in KV_ATTN_TYPES:
                         continue
@@ -208,20 +209,18 @@ class WebGPUModelRunner:
                         spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
                 return spec
 
-        _archs2 = getattr(mc, "architectures", None) or []
-        _attn_suffix2 = ".mixer" if "NemotronHForCausalLM" in _archs2 else ".self_attn"
         if lp_list and len(lp_list) == mc.num_hidden_layers:
             _lt = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
             for i, lp in enumerate(lp_list):
                 if _lt and _lt[i] not in KV_ATTN_TYPES:
                     continue
-                spec[f"model.layers.{i}{_attn_suffix2}"] = _make_spec(
+                spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     lp["num_kv_heads"], lp["head_dim"])
         else:
             head_size = self.vllm_config.model_config.get_head_size()
             num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
             for i in range(mc.num_hidden_layers):
-                spec[f"model.layers.{i}{_attn_suffix2}"] = _make_spec(
+                spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     num_kv_heads, head_size)
         return spec
 
@@ -271,8 +270,12 @@ class WebGPUModelRunner:
         have length num_logprobs + 1.
         """
         x = logits_1d.astype(np.float32); x -= x.max()
-        log_probs = x - np.logaddexp.reduce(x)
+        log_probs = x - np.log(np.sum(np.exp(x)))
         if num_logprobs < 0:
+            logger.warning(
+                "num_logprobs=%d will return full-vocab logprobs; this is very slow on CPU",
+                num_logprobs,
+            )
             num_logprobs = log_probs.size
         k = min(num_logprobs, log_probs.size)
         if k == 0:

@@ -90,8 +90,8 @@ else:
 # ── Run prefill ───────────────────────────────────────────────────────────────
 # Allocate enough blocks for prompt + warmup + profiling steps
 total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
-num_blocks = (total_toks + block_size - 1) // block_size
-bt = np.arange(num_blocks, dtype=np.uint32)
+bt_blocks = (total_toks + block_size - 1) // block_size
+bt = np.arange(bt_blocks, dtype=np.uint32)
 
 print("Running prefill...")
 t0 = time.perf_counter()

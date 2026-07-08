@@ -41,9 +41,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         pipeline_cache: "PipelineCache",
     ) -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
-        self._sw: int | None = getattr(model_config, "sliding_window", None)
-        if not self._sw:  # treat 0 and None as disabled
-            self._sw = None
+        self._sw: int | None = getattr(model_config, "sliding_window", None) or None
         self._num_experts: int = getattr(model_config, "num_local_experts", 0)
         self._top_k: int = getattr(model_config, "num_experts_per_tok", 0)
         self._is_moe: bool = self._num_experts > 0 and self._top_k > 0

@@ -3,8 +3,7 @@ from typing import TYPE_CHECKING
 
 from vllm.logger import init_logger
 from vllm.utils.mem_utils import get_cpu_memory
-from vllm_webgpu.config import get_config
-from vllm_webgpu.utils import _OVERHEAD_BYTES
+from vllm_webgpu.utils import OVERHEAD_BYTES
 
 if TYPE_CHECKING:
     from vllm_webgpu.v1.worker import WebGPUWorker
@@ -115,7 +114,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
 
     Falls back to a model-ratio heuristic when get_cpu_memory is unavailable.
     """
-    config = get_config()
+    config = worker.webgpu_config
     model_mem = _get_model_memory_usage(worker)
 
     try:
@@ -125,7 +124,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
 
     if config.is_auto_memory:
         if total is not None:
-            available = total - model_mem - _OVERHEAD_BYTES
+            available = total - model_mem - OVERHEAD_BYTES
             logger.info(
                 "WebGPU memory: total=%dMB model=%dMB available=%dMB",
                 total // 2**20, model_mem // 2**20, max(available, 0) // 2**20,
@@ -141,7 +140,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
 
     # Explicit fraction: user asked for `memory_fraction` of device total for KV.
     if total is not None:
-        available = int(total * config.memory_fraction) - model_mem - _OVERHEAD_BYTES
+        available = int(total * config.memory_fraction) - model_mem - OVERHEAD_BYTES
     else:
         # Derive KV budget from model size when device total is unknown.
         # memory_fraction==1.0 means "all remaining memory", so guard against
