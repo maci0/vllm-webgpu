@@ -710,6 +710,11 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                         # Fall back to CPU dequantization.
                         if fmt == "awq" and qz is not None:
                             w_f16 = _dequant_awq(qw, sc, qz)
+                        elif fmt == "awq" and qz is None:
+                            # AWQ without qzeros: treat all zero-points as 0 (symmetric).
+                            # qzeros shape is (G, N//8) where G=sc.shape[0], N//8=qw.shape[1].
+                            qz_zero = np.zeros((sc.shape[0], qw.shape[1]), dtype=np.int32)
+                            w_f16 = _dequant_awq(qw, sc, qz_zero)
                         else:
                             w_f16 = _dequant_gptq(
                                 qw, sc,
