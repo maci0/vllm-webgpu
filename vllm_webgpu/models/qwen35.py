@@ -349,17 +349,13 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
     def reset_recurrent_states(self) -> None:
         """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
-        import wgpu as wgpu_lib
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
-        ssm_bytes  = self._lin_v_heads * self._lin_k_dim * self._lin_v_dim * 4
-        conv_bytes = (self._lin_conv_kernel - 1) * self._lin_conv_dim * 2
-        for i in range(self.num_layers):
-            if self._is_full_attn(i):
-                continue
-            self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes,  usage=rw)
-            self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes, usage=rw)
+        for buf in self._ssm_gpu:
+            if buf is not None:
+                dev.queue.write_buffer(buf.buf, 0, bytes(buf.buf.size))
+        for buf in self._conv_gpu:
+            if buf is not None:
+                dev.queue.write_buffer(buf.buf, 0, bytes(buf.buf.size))
 
     def _gdn_layer_gpu(
         self,
