@@ -453,6 +453,16 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 input_ids, positions, attn_metadata, T, hidden, vocab, rms_base,
             )
 
+        # Sliding Window Attention models must use the sequential path so that
+        # each token's ctx_len is capped by _effective_ctx_len (overridden in
+        # MixtralWebGPUModel). flash_attn_prefill applies standard causal masking
+        # and has no WINDOW_SIZE constant, so batch prefill would attend across the
+        # full context and produce wrong attention beyond the window.
+        if getattr(self, "_sw", None):
+            return self._prefill_sequential_fallback(
+                input_ids, positions, attn_metadata, T, hidden, vocab, rms_base,
+            )
+
         # _CHUNK layers per command encoder keeps each submit under Metal's GPU timeout.
         # At T=19 and inter=9728, a single 36-layer encoder generates ~37M threads and
         # exceeds the ~4-8 s per-command-buffer limit. 4 layers at a time stays safe.
