@@ -57,35 +57,11 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # Build model
     print("\nBuilding model...")
-    from vllm_webgpu.v1.model_runner import ARCH_MAP as _FAMILY_MAP
-    from vllm_webgpu.models.llama import LlamaWebGPUModel
-    from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
-    from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
-    from vllm_webgpu.models.diffusion_gemma import DiffusionGemmaWebGPUModel
-    from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel
-
-    _FAMILY_TO_CLASS = {
-        "llama": LlamaWebGPUModel,
-        "gemma4": Gemma4WebGPUModel,
-        "qwen35": Qwen35WebGPUModel,
-        "diffusion_gemma": DiffusionGemmaWebGPUModel,
-        "nemotron_h": NemotronHWebGPUModel,
-    }
-    try:
-        from vllm_webgpu.models.mixtral import MixtralWebGPUModel
-        from vllm_webgpu.models.gpt_oss import GptOssWebGPUModel
-        _FAMILY_TO_CLASS["mixtral"] = MixtralWebGPUModel
-        _FAMILY_TO_CLASS["gpt_oss"] = GptOssWebGPUModel
-    except ImportError:
-        pass
-
-    family = _FAMILY_MAP.get(arch)
-    ModelClass = _FAMILY_TO_CLASS.get(family) if family else None
-    if ModelClass is None:
+    from vllm_webgpu.v1.model_runner import ARCH_MAP, _build_model
+    if arch not in ARCH_MAP:
         raise NotImplementedError(
-            f"Architecture {arch!r} not supported. Supported: {sorted(_FAMILY_MAP)}")
-
-    model = ModelClass(cfg, device, pipeline_cache)
+            f"Architecture {arch!r} not supported. Supported: {sorted(ARCH_MAP)}")
+    model = _build_model(arch, cfg, device, pipeline_cache)
 
     # Load weights
     print("\nLoading weights (this may take a while)...")
