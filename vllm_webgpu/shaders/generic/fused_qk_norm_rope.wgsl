@@ -49,6 +49,9 @@ override K_SEPARATE: u32 = 0u;
 // USE_FREQ_BUF=1: read precomputed inv_freq from binding 7 instead of computing inline.
 // Enables YaRN and other scaled RoPE variants via CPU-side frequency precomputation.
 override USE_FREQ_BUF: u32 = 0u;
+// ATTN_SCALE: applied as (ATTN_SCALE * cos(angle), ATTN_SCALE * sin(angle)).
+// Set to YaRN mscale (0.1 * ln(factor) + 1.0) when USE_FREQ_BUF=1; leave at 1.0 otherwise.
+override ATTN_SCALE: f32   = 1.0;
 
 @group(0) @binding(0) var<storage, read>       input        : array<f16>;
 @group(0) @binding(1) var<storage, read>       q_norm_w     : array<f16>;
@@ -160,8 +163,8 @@ fn main(
                 theta_i = exp(-f32(i * 2u) / f32(ROTARY_DIM) * LN_ROPE_BASE);
             }
             let angle   = pos * theta_i;
-            let cos_v   = cos(angle);
-            let sin_v   = sin(angle);
+            let cos_v   = ATTN_SCALE * cos(angle);
+            let sin_v   = ATTN_SCALE * sin(angle);
             let r1 = f16(n1 * cos_v - n2 * sin_v);
             let r2 = f16(n2 * cos_v + n1 * sin_v);
             if (!is_k) { q_rope_out[out_idx1] = r1; q_rope_out[out_idx2] = r2; }

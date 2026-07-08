@@ -7,6 +7,9 @@ override LN_ROPE_BASE: f32  = 9.210340372;  // = log(ROPE_BASE); host sets this
 // USE_FREQ_BUF=1: read precomputed inv_freq from binding 3 instead of computing inline.
 // Enables YaRN and other scaled RoPE variants via CPU-side frequency precomputation.
 override USE_FREQ_BUF: u32  = 0u;
+// ATTN_SCALE: applied as (ATTN_SCALE * cos(angle), ATTN_SCALE * sin(angle)).
+// Set to YaRN mscale (0.1 * ln(factor) + 1.0) when USE_FREQ_BUF=1; leave at 1.0 otherwise.
+override ATTN_SCALE: f32    = 1.0;
 
 @group(0) @binding(0) var<storage, read>       input        : array<f16>;
 @group(0) @binding(1) var<storage, read>       positions    : array<u32>;
@@ -38,8 +41,8 @@ fn main(
             theta_i = exp(-f32(i * 2u) / f32(HEAD_DIM) * LN_ROPE_BASE);
         }
         let angle   = pos * theta_i;
-        let cos_v   = cos(angle);
-        let sin_v   = sin(angle);
+        let cos_v   = ATTN_SCALE * cos(angle);
+        let sin_v   = ATTN_SCALE * sin(angle);
 
         let x1 = f32(input[base + i]);
         let x2 = f32(input[base + half + i]);

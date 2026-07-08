@@ -25,11 +25,14 @@ _ROPE_SHADERS_BY_LEN = {
 }
 
 
-def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> np.ndarray:
+def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Returns: [head_dim // 2] float32 array of inv_freq values.
-    The mscale factor is folded in so the shader needs no further adjustment.
+    Returns:
+        freqs:  [head_dim // 2] float32 array of scaled inv_freq values.
+        mscale: attention output scale factor (0.1 * ln(factor) + 1.0).
+                Must be applied to the output of cos/sin in the shader, NOT
+                folded into the frequencies — cos(pos * freq * mscale) is wrong.
     """
     factor    = float(rope_scaling.get("factor", 1.0))
     beta_fast = float(rope_scaling.get("beta_fast", 32.0))
@@ -56,9 +59,10 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     )
 
     # YaRN attention scale: mscale = 0.1 * ln(factor) + 1.0
-    # Folded into inv_freq so Q scaling is transparent to the shader.
+    # Must be applied AFTER cos/sin in the shader (mscale * cos(pos * freq)),
+    # not folded into inv_freq (which would compute cos(pos * freq * mscale) instead).
     mscale = 0.1 * np.log(factor) + 1.0
-    return (scaled_inv_freq * mscale).astype(np.float32)
+    return scaled_inv_freq.astype(np.float32), float(mscale)
 
 
 
@@ -102,6 +106,7 @@ class BaseWebGPUModel:
         self._rope_freq_buf: "WebGPUBuffer" = _WGPUBuf.empty(
             wgpu_device.wgpu_device, 4, usage=_rw)  # 1-element f32 placeholder
         self._use_freq_buf: bool = False
+        self._yarn_mscale: float = 1.0  # set to mscale when rope_type='yarn'
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):

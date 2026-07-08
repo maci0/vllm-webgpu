@@ -154,8 +154,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         rw = (wgpu_lib.BufferUsage.STORAGE
               | wgpu_lib.BufferUsage.COPY_SRC
               | wgpu_lib.BufferUsage.COPY_DST)
-        freqs = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling)
+        freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs, usage=rw)
+        self._yarn_mscale = mscale
         self._use_freq_buf = True
         logger.info(
             "YaRN RoPE: factor=%.1f beta_fast=%.1f beta_slow=%.1f orig_ctx=%d",
@@ -483,7 +484,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     _pfill_rope_base = {"HEAD_DIM": self.head_dim,
                                         "ROPE_BASE": float(self.rope_theta),
                                         "LN_ROPE_BASE": ln_rope,
-                                        "USE_FREQ_BUF": int(self._use_freq_buf)}
+                                        "USE_FREQ_BUF": int(self._use_freq_buf),
+                                        "ATTN_SCALE": self._yarn_mscale}
                     _freq_buf = self._rope_freq_buf
                     for src, dst, n_h, wk in [
                         (b["q_buf"],  b["q_rope"], self.num_q_heads,  f"{p}.self_attn.q_norm.weight"),
@@ -790,7 +792,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             _rope_consts = {"HEAD_DIM": self.head_dim,
                             "ROPE_BASE": float(self.rope_theta),
                             "LN_ROPE_BASE": ln_rope,
-                            "USE_FREQ_BUF": int(self._use_freq_buf)}
+                            "USE_FREQ_BUF": int(self._use_freq_buf),
+                            "ATTN_SCALE": self._yarn_mscale}
 
             if _use_fused_qkv and q_norm_w is not None:
                 # fused_qk_norm_rope: Q+K norm+rope in one dispatch.
