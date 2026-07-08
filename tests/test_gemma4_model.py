@@ -149,3 +149,109 @@ def test_gemma4_gptq_forward(wgpu_device):
 
     token_id = int(result[0, 0])
     assert 0 <= token_id < vocab, f"token_id {token_id} out of range [0, {vocab})"
+
+
+@pytest.mark.integration
+def test_gemma4_prefill_forward(wgpu_device):
+    """Smoke test: Gemma4 prefill (T>1) routes to _prefill_batch_forward.
+
+    Verifies that forward() with num_tokens > 1 dispatches batch GEMM via
+    matmul_quant_mr4 + flash_attn_prefill and returns a valid token id.
+    Uses the same fake f16 weights as the decode smoke test.
+    """
+    import wgpu as wgpu_lib
+    from unittest.mock import patch, MagicMock
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    hidden    = 128
+    inter     = 256
+    heads     = 4
+    kv_heads  = 2
+    head_dim  = hidden // heads   # 32
+    q_dim     = heads * head_dim  # 128
+    kv_dim    = kv_heads * head_dim  # 64
+    vocab     = 64
+    layers    = 1
+    block_size = 16
+    num_blocks = 8
+    T         = 4   # prefill prompt length
+
+    class _FakeCfg:
+        hidden_size = hidden
+        num_hidden_layers = layers
+        num_attention_heads = heads
+        num_key_value_heads = kv_heads
+        intermediate_size = inter
+        vocab_size = vocab
+        head_dim = hidden // heads
+        query_pre_attn_scalar = 1.0
+        final_logit_softcapping = 30.0
+        architectures = ["Gemma3ForCausalLM"]
+        ple_layer_indices = []
+        max_position_embeddings = 128
+        rope_theta = 10000.0
+
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = Gemma4WebGPUModel(_FakeCfg(), wgpu_device, cache)
+
+    dev = wgpu_device.wgpu_device
+    rw  = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    rng = np.random.default_rng(7)
+
+    def f16(shape):
+        return WebGPUBuffer.from_numpy(dev, rng.standard_normal(shape).astype(np.float16))
+
+    p = "model.layers.0"
+    model.weights["model.embed_tokens.weight"]            = f16((vocab, hidden))
+    model.weights["model.norm.weight"]                    = f16((hidden,))
+    model.weights[f"{p}.input_layernorm.weight"]          = f16((hidden,))
+    model.weights[f"{p}.post_attention_layernorm.weight"] = f16((hidden,))
+    model.weights[f"{p}.pre_feedforward_layernorm.weight"]  = f16((hidden,))
+    model.weights[f"{p}.post_feedforward_layernorm.weight"] = f16((hidden,))
+    for key, shape in [
+        (f"{p}.self_attn.q_proj.weight", (q_dim, hidden)),
+        (f"{p}.self_attn.k_proj.weight", (kv_dim, hidden)),
+        (f"{p}.self_attn.v_proj.weight", (kv_dim, hidden)),
+        (f"{p}.self_attn.o_proj.weight", (hidden, q_dim)),
+        (f"{p}.mlp.gate_proj.weight",    (inter, hidden)),
+        (f"{p}.mlp.up_proj.weight",      (inter, hidden)),
+        (f"{p}.mlp.down_proj.weight",    (hidden, inter)),
+    ]:
+        model.weights[key] = f16(shape)
+
+    model._postprocess_weights()
+    model._layer_scales = [1.0] * layers
+
+    for _ in range(layers):
+        k_buf = WebGPUBuffer.empty(dev, num_blocks * block_size * kv_heads * head_dim * 2, usage=rw)
+        v_buf = WebGPUBuffer.empty(dev, num_blocks * block_size * kv_heads * head_dim * 2, usage=rw)
+        model.kv_pool.append((k_buf, v_buf))
+
+    class _FakeMeta:
+        slot_mapping = list(range(T))
+        block_tables = [np.zeros(num_blocks, dtype=np.uint32)]
+        max_decode_seq_len = None
+
+    # Confirm that forward() dispatches to _prefill_batch_forward for T>1.
+    sentinel = np.array([[5]], dtype=np.int32)
+    with patch.object(model, "_prefill_batch_forward",
+                      return_value=sentinel) as mock_pfb:
+        result = model.forward(
+            np.arange(T, dtype=np.uint32),
+            np.arange(T, dtype=np.uint32),
+            _FakeMeta(),
+        )
+        assert mock_pfb.called, "_prefill_batch_forward was not called for T>1"
+        assert (result == sentinel).all()
+
+    # Run the real prefill path end-to-end.
+    result = model.forward(
+        np.arange(T, dtype=np.uint32),
+        np.arange(T, dtype=np.uint32),
+        _FakeMeta(),
+    )
+    token_id = int(result[0, 0])
+    assert 0 <= token_id < vocab, f"prefill token_id {token_id} out of range [0, {vocab})"

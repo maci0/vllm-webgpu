@@ -273,6 +273,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 "block tables; call forward() once per decode request"
             )
 
+        # Prefill path: T>1 tokens use matmul_quant_mr4 (batch GEMM) and flash_attn_prefill.
+        if num_tokens > 1:
+            return self._prefill_batch_forward(input_ids, positions, attn_metadata, num_tokens)
+
         ctx_len = int(attn_metadata.max_decode_seq_len
                       if attn_metadata.max_decode_seq_len is not None
                       else int(positions[-1]) + 1)
@@ -341,6 +345,474 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 result_buf = capped_buf
             else:
                 result_buf = logits_buf
+
+            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf(vocab)],
+                           {"N": vocab}, (1, 1, 1))
+            self._copy_sample_to_staging()
+
+        self._last_logit_buf = result_buf
+        self._last_vocab     = vocab
+        tok = self._read_sample_tok()
+        return np.array([[tok]], dtype=np.int32)
+
+    def _prefill_batch_forward(  # noqa: C901
+        self,
+        input_ids: "np.ndarray",
+        positions: "np.ndarray",
+        attn_metadata: object,
+        T: int,
+    ) -> "np.ndarray":
+        """Batch prefill: process T prompt tokens in a series of GPU command encoders.
+
+        GEMM ops use matmul_quant_mr4 (T rows at once).
+        Attention uses flash_attn_prefill (dense causal Q/K/V, not paged cache).
+        Layers are chunked across separate command encoders (4 per submit) to stay
+        under Metal's per-command-buffer GPU timeout.
+        Returns shape (1, 1) int32 (GPU argmax of last-token logits).
+        """
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+        # Only matmul_quant_mr4 USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ int4) are
+        # supported in the batch path. Other quant types fall back to token-by-token.
+        _rep_key = f"{self._layer_key_prefix(0)}.self_attn.q_proj.weight"
+        _rep_uq  = self._uq_for_key(_rep_key)
+        if _rep_uq not in (0, 3):
+            return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
+
+        dev = self.wgpu_device.wgpu_device
+        rw  = self._rw_flags()
+        hidden = self.hidden_size
+        vocab  = self.vocab_size
+        inter  = self.intermediate_size
+        max_q_dim  = max(lp["q_dim"]  for lp in self._lp)
+        max_kv_dim = max(lp["kv_dim"] for lp in self._lp)
+
+        def alloc(n_bytes: int) -> WebGPUBuffer:
+            return WebGPUBuffer.empty(dev, max(n_bytes, 8), usage=rw)
+
+        # T-token batch buffers. Allocated once per prefill call;
+        # allocation cost is negligible vs the GEMM savings.
+        b: dict = {
+            "x":        alloc(T * hidden * 4),       # f32 embedding residual
+            "normed":   alloc(T * hidden * 2),        # f16 normed (pre-attn and pre-FFN)
+            "q_buf":    alloc(T * max_q_dim * 2),     # f16 Q projection output
+            "k_buf":    alloc(T * max_kv_dim * 2),    # f16 K projection output
+            "v_buf":    alloc(T * max_kv_dim * 2),    # f16 V projection output
+            "q_rope":   alloc(T * max_q_dim * 2),     # f16 Q after norm+rope
+            "k_rope":   alloc(T * max_kv_dim * 2),    # f16 K after norm+rope
+            "v_normed": alloc(T * max_kv_dim * 2),    # f16 V after per-head RMS norm
+            "attn_out": alloc(T * max_q_dim * 2),     # f16 attention output
+            "o_proj":   alloc(T * hidden * 2),         # f16 output projection
+            "ffn_n":    alloc(T * hidden * 2),         # f16 FFN normed (intermediate)
+            "gate_buf": alloc(T * inter * 2),          # f16 FFN gate
+            "up_buf":   alloc(T * inter * 2),          # f16 FFN up
+            "ffn_act":  alloc(T * inter * 2),          # f16 activated gate*up
+            "ffn_out":  alloc(T * hidden * 2),         # f16 FFN output
+            "h0":       alloc(T * hidden * 4),         # f32 residual (rotation slot 0)
+            "h1":       alloc(T * hidden * 4),         # f32 residual (rotation slot 1)
+            "h2":       alloc(T * hidden * 4),         # f32 residual (rotation slot 2)
+            # Single-token scratch for final norm + LM head
+            "last_f32":  alloc(hidden * 4),            # f32 last-token residual copy
+            "last_norm": alloc(hidden * 2),            # f16 last-token after final norm
+            "logits":    alloc(vocab * 2),             # f16 LM head output
+            "capped":    alloc(vocab * 2),             # f16 softcapped logits (Gemma4)
+        }
+        _dummy = alloc(8)
+
+        slot_map_buf = WebGPUBuffer.from_numpy(
+            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32), usage=rw)
+        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32), usage=rw)
+        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32), usage=rw)
+        bt_buf  = WebGPUBuffer.from_numpy(dev, self._bt_arr(attn_metadata), usage=rw)
+
+        _rms = self._rms_consts
+
+        def gemm_batch(x_b: WebGPUBuffer, w_key: str,
+                       out_b: WebGPUBuffer, K_in: int, N_out: int) -> None:
+            """Dispatch matmul_quant_mr4: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T."""
+            uq = self._uq_for_key(w_key)
+            if uq == 3:
+                base_key = w_key[:-7]
+                group_k  = self._quant_extra(base_key, uq).get("GROUP_K", 128)
+                sc_b     = self.weights.get(w_key + ".scales", _dummy)
+                self._dispatch("matmul_quant_mr4",
+                               [x_b, self.weights[w_key], sc_b, out_b],
+                               {"K": K_in, "N": N_out, "M": T,
+                                "USE_QUANT": 3, "GROUP_K": group_k},
+                               (N_out, T, 1))
+            else:
+                self._dispatch("matmul_quant_mr4",
+                               [x_b, self.weights[w_key], _dummy, out_b],
+                               {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
+                               (N_out, T, 1))
+
+        _CHUNK   = 4
+        _hstate  = 0
+        _H_NAMES = ["h0", "h1", "h2"]
+        normed_x = b["normed"]
+        x_res    = b["x"]
+        _freq_buf = self._rope_freq_buf
+        _g4_rope_base = {
+            "ROPE_BASE":    float(self.rope_theta),
+            "LN_ROPE_BASE": self._ln_rope_theta,
+            "USE_FREQ_BUF": int(self._use_freq_buf),
+        }
+
+        chunks = [
+            list(range(i, min(i + _CHUNK, self.num_layers)))
+            for i in range(0, self.num_layers, _CHUNK)
+        ]
+
+        for chunk_idx, chunk_layers in enumerate(chunks):
+            with self._batched_dispatch():
+                if chunk_idx == 0:
+                    self._dispatch("embedding_lookup_f32",
+                                   [self.weights[self._embed_key()], ids_buf, b["x"]],
+                                   {"HIDDEN_DIM": hidden}, (T, 1, 1))
+                    self._dispatch(
+                        "rms_norm_f32in",
+                        [b["x"],
+                         self.weights[f"{self._layer_key_prefix(0)}.input_layernorm.weight"],
+                         b["normed"]],
+                        _rms, (T, 1, 1))
+                    normed_x = b["normed"]
+                    x_res    = b["x"]
+
+                for i in chunk_layers:
+                    lp           = self._lp[i]
+                    p            = self._layer_key_prefix(i)
+                    q_dim        = lp["q_dim"]
+                    kv_dim       = lp["kv_dim"]
+                    head_dim     = lp["head_dim"]
+                    num_kv_heads = lp["num_kv_heads"]
+                    has_v        = lp["has_v_proj"]
+                    add_n        = T * hidden
+                    gelu_n       = T * inter
+                    _ls          = self._layer_scales[i]
+
+                    residual = b[_H_NAMES[(_hstate + 1) % 3]]
+                    out_h    = b[_H_NAMES[(_hstate + 2) % 3]]
+
+                    qw = f"{p}.self_attn.q_proj.weight"
+                    kw = f"{p}.self_attn.k_proj.weight"
+
+                    # QKV projections (always separate in batch path — no fused_qkv)
+                    gemm_batch(normed_x, qw, b["q_buf"], hidden, q_dim)
+                    gemm_batch(normed_x, kw, b["k_buf"], hidden, kv_dim)
+                    if has_v:
+                        gemm_batch(normed_x, f"{p}.self_attn.v_proj.weight",
+                                   b["v_buf"], hidden, kv_dim)
+                        v_src = b["v_buf"]
+                    else:
+                        v_src = b["k_buf"]   # global attention: V = K (pre-RoPE)
+
+                    # Per-head RMSNorm + RoPE for Q and K
+                    q_norm_w  = self.weights.get(f"{p}.self_attn.q_norm.weight")
+                    k_norm_wl = self.weights.get(f"{p}.self_attn.k_norm.weight")
+                    if q_norm_w is not None and k_norm_wl is not None:
+                        # K_SEPARATE=1: Q and K are in separate buffers.
+                        # Binding 0=Q buf, binding 6=K buf, INPUT_OFFSET_K=0.
+                        self._dispatch(
+                            "fused_qk_norm_rope",
+                            [b["q_buf"], q_norm_w, k_norm_wl, pos_buf,
+                             b["q_rope"], b["k_rope"], b["k_buf"], _freq_buf],
+                            {**_g4_rope_base,
+                             "HEAD_DIM":      head_dim,
+                             "NUM_Q_HEADS":   self.num_q_heads,
+                             "NUM_KV_HEADS":  num_kv_heads,
+                             "HAS_WEIGHT":    1,
+                             "GEMMA_NORM":    self._gemma_norm_const,
+                             "INPUT_OFFSET_K": 0,
+                             "K_SEPARATE":    1},
+                            (self.num_q_heads + num_kv_heads, T, 1))
+                    else:
+                        for src, dst, n_heads, wk in [
+                            (b["q_buf"], b["q_rope"], self.num_q_heads,
+                             f"{p}.self_attn.q_norm.weight"),
+                            (b["k_buf"], b["k_rope"], num_kv_heads,
+                             f"{p}.self_attn.k_norm.weight"),
+                        ]:
+                            nw = self.weights.get(wk)
+                            if nw is not None:
+                                self._dispatch(
+                                    "fused_per_head_norm_rope",
+                                    [src, nw, pos_buf, dst, _freq_buf],
+                                    {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                     "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
+                                     "GEMMA_NORM": self._gemma_norm_const,
+                                     "INPUT_OFFSET": 0},
+                                    (n_heads, T, 1))
+                            else:
+                                self._dispatch(
+                                    "rope",
+                                    [src, pos_buf, dst, _freq_buf],
+                                    {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                     "NUM_HEADS": n_heads},
+                                    (T, n_heads, 1))
+
+                    # Per-head RMS norm on V before caching (Gemma4 only; not Gemma3).
+                    # v_src is b["v_buf"] for local layers and b["k_buf"] for global;
+                    # both are standalone buffers so V_IN_OFFSET=0.
+                    if self._apply_v_norm:
+                        self._dispatch(
+                            "per_head_rms_norm_no_weight",
+                            [v_src, b["v_normed"]],
+                            {"HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads,
+                             "WG_SIZE": min(head_dim, 128), "V_IN_OFFSET": 0},
+                            (num_kv_heads, T, 1), shader_subdir="gemma")
+                        v_for_attn = b["v_normed"]
+                    else:
+                        v_for_attn = v_src
+
+                    k_cache, v_cache = self.kv_pool[i]
+
+                    # KV cache store (paged, for subsequent decode steps).
+                    # V_IN_OFFSET=0: v_for_attn is always a standalone buffer here.
+                    self._dispatch(
+                        "kv_cache_store_both",
+                        [b["k_rope"], k_cache, v_for_attn, v_cache, slot_map_buf],
+                        {"BLOCK_SIZE":   self.block_size,
+                         "NUM_KV_HEADS": num_kv_heads,
+                         "HEAD_DIM":     head_dim,
+                         "V_IN_OFFSET":  0},
+                        (T, num_kv_heads, 1))
+
+                    # Causal attention over all T query tokens (dense Q/K/V, not paged).
+                    # flash_attn_prefill applies causal masking: token t_q attends to [0, t_q].
+                    self._dispatch(
+                        "flash_attn_prefill",
+                        [b["q_rope"], b["k_rope"], v_for_attn, b["attn_out"]],
+                        {"NUM_Q_HEADS":  self.num_q_heads,
+                         "NUM_KV_HEADS": num_kv_heads,
+                         "HEAD_DIM":     head_dim,
+                         "NUM_T":        T},
+                        (self.num_q_heads, T, 1))
+
+                    # Output projection (batch GEMM)
+                    gemm_batch(b["attn_out"], f"{p}.self_attn.o_proj.weight",
+                               b["o_proj"], q_dim, hidden)
+
+                    # Post-attention norm + residual add + pre-FFN norm.
+                    # Gemma4 correct sublayer order:
+                    #   residual = x
+                    #   hidden   = input_layernorm(x) → attn → o_proj
+                    #   hidden   = post_attention_layernorm(hidden)
+                    #   residual = residual + hidden
+                    #   ffn_in   = pre_feedforward_layernorm(residual)
+                    post_attn_w = self.weights.get(
+                        f"{p}.post_attention_layernorm.weight")
+                    pre_ffn_w   = self.weights.get(
+                        f"{p}.pre_feedforward_layernorm.weight")
+
+                    if post_attn_w is not None and pre_ffn_w is not None:
+                        self._dispatch(
+                            "rms_norm_add_f32_rms_norm",
+                            [b["o_proj"], post_attn_w,
+                             x_res, pre_ffn_w,
+                             residual, b["normed"]],
+                            _rms, (T, 1, 1))
+                        ffn_normed = b["normed"]
+                    else:
+                        if post_attn_w is not None:
+                            self._dispatch(
+                                "rms_norm",
+                                [b["o_proj"], post_attn_w, b["ffn_n"]],
+                                _rms, (T, 1, 1))
+                            attn_delta = b["ffn_n"]
+                        else:
+                            attn_delta = b["o_proj"]
+                        if pre_ffn_w is not None:
+                            self._dispatch(
+                                "add_f32_rms_norm",
+                                [x_res, attn_delta, pre_ffn_w, residual, b["normed"]],
+                                _rms, (T, 1, 1))
+                            ffn_normed = b["normed"]
+                        else:
+                            self._dispatch(
+                                "add_f32", [x_res, attn_delta, residual],
+                                {"N": add_n},
+                                ((add_n // 4 + 255) // 256, 1, 1))
+                            ffn_normed = residual
+
+                    # FFN gate + up projections (batch GEMM) + tanh-GELU activation
+                    gw_k = f"{p}.mlp.gate_proj.weight"
+                    uw_k = f"{p}.mlp.up_proj.weight"
+                    gemm_batch(ffn_normed, gw_k, b["gate_buf"], hidden, inter)
+                    gemm_batch(ffn_normed, uw_k, b["up_buf"],   hidden, inter)
+                    self._dispatch(
+                        "gelu_mul",
+                        [b["gate_buf"], b["up_buf"], b["ffn_act"]],
+                        {"N": gelu_n},
+                        ((gelu_n // 4 + 255) // 256, 1, 1),
+                        shader_subdir="gemma")
+
+                    # FFN down projection (batch GEMM)
+                    gemm_batch(b["ffn_act"], f"{p}.mlp.down_proj.weight",
+                               b["ffn_out"], inter, hidden)
+
+                    # Post-FFN norm + residual add (+ pre-norm for next layer if not last)
+                    post_ffw_w = self.weights.get(
+                        f"{p}.post_feedforward_layernorm.weight")
+                    if i < self.num_layers - 1:
+                        next_w = self.weights[
+                            f"{self._layer_key_prefix(i + 1)}.input_layernorm.weight"]
+                        if post_ffw_w is not None:
+                            self._dispatch(
+                                "rms_norm_add_f32_rms_norm",
+                                [b["ffn_out"], post_ffw_w,
+                                 residual, next_w,
+                                 out_h, b["normed"]],
+                                _rms, (T, 1, 1))
+                        else:
+                            self._dispatch(
+                                "add_f32_rms_norm",
+                                [residual, b["ffn_out"], next_w, out_h, b["normed"]],
+                                _rms, (T, 1, 1))
+                    else:
+                        # Last layer: no next pre-norm, just update residual.
+                        if post_ffw_w is not None:
+                            self._dispatch(
+                                "rms_norm", [b["ffn_out"], post_ffw_w, b["o_proj"]],
+                                _rms, (T, 1, 1))
+                            ffn_delta = b["o_proj"]
+                        else:
+                            ffn_delta = b["ffn_out"]
+                        self._dispatch(
+                            "add_f32", [residual, ffn_delta, out_h],
+                            {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+
+                    # Apply layer_scalar to the full f32 residual (matches vLLM).
+                    if abs(_ls - 1.0) > 1e-6:
+                        self._dispatch(
+                            "f32_scale_inplace", [out_h],
+                            {"N": add_n, "SCALE": _ls},
+                            ((add_n + 255) // 256, 1, 1))
+
+                    normed_x = b["normed"]
+                    x_res    = out_h
+                    _hstate  = (_hstate + 2) % 3
+
+        # Extract last token, apply final norm, run LM head.
+        # copy_buffer_to_buffer is a GPU-side operation (no CPU round-trip).
+        lm_head_w = self.weights.get("lm_head.weight", self.weights[self._embed_key()])
+        with self._batched_dispatch():
+            last_byte_offset = (T - 1) * hidden * 4   # f32: 4 bytes per element
+            assert self._active_encoder is not None
+            self._active_encoder.copy_buffer_to_buffer(
+                x_res.buf, last_byte_offset,
+                b["last_f32"].buf, 0,
+                hidden * 4,
+            )
+            self._dispatch(
+                "rms_norm_f32in",
+                [b["last_f32"], self.weights[self._norm_key()], b["last_norm"]],
+                _rms, (1, 1, 1))
+            self._dispatch(
+                "matmul_quant",
+                [b["last_norm"], lm_head_w,
+                 self.weights.get("lm_head.scales", _dummy), b["logits"]],
+                {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                ((vocab + 255) // 256, 1, 1))
+
+            if self.softcap is not None and self.softcap > 0:
+                self._dispatch(
+                    "logit_softcap", [b["logits"], b["capped"]],
+                    {"N": vocab, "CAP": float(self.softcap)},
+                    ((vocab + 255) // 256, 1, 1),
+                    shader_subdir="gemma")
+                result_buf = b["capped"]
+            else:
+                result_buf = b["logits"]
+
+            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf(vocab)],
+                           {"N": vocab}, (1, 1, 1))
+            self._copy_sample_to_staging()
+
+        self._last_logit_buf = result_buf
+        self._last_vocab     = vocab
+        tok = self._read_sample_tok()
+        return np.array([[tok]], dtype=np.int32)
+
+    def _prefill_sequential_fallback(
+        self,
+        input_ids: "np.ndarray",
+        positions: "np.ndarray",
+        attn_metadata: object,
+        T: int,
+    ) -> "np.ndarray":
+        """Process T prefill tokens one at a time via the decode-path infrastructure.
+
+        Used when projection weights use a quant format not supported by
+        matmul_quant_mr4 (anything other than f16 or GPTQ int4). Each token runs
+        through _transformer_layer with num_tokens=1, building the KV cache
+        incrementally to maintain causal attention. Only the last token's logits
+        are returned.
+        """
+        dev = self.wgpu_device.wgpu_device
+        pre = self._pre
+        sc  = self._sc
+        hidden = self.hidden_size
+        vocab  = self.vocab_size
+        _rms   = self._rms_consts
+        bt_arr = self._bt_arr(attn_metadata)
+
+        for t in range(T):
+            self._hstate = 0
+            tok_pos = int(positions[t])
+            tok_ctx = tok_pos + 1
+
+            ids_t  = input_ids[t : t + 1]
+            pos_t  = positions[t : t + 1]
+            slot_t = np.array(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32)
+
+            dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32).tobytes())
+            dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32).tobytes())
+            dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
+            dev.queue.write_buffer(pre["bt"].buf,       0, bt_arr.tobytes())
+
+            with self._batched_dispatch():
+                self._dispatch(
+                    "embedding_lookup_f32",
+                    [self.weights[self._embed_key()], pre["ids"], pre["x"]],
+                    {"HIDDEN_DIM": hidden}, (1, 1, 1))
+                self._dispatch(
+                    "rms_norm_f32in",
+                    [pre["x"],
+                     self.weights[f"{self._layer_key_prefix(0)}.input_layernorm.weight"],
+                     sc["normed"]],
+                    _rms, (1, 1, 1))
+
+            normed_x = sc["normed"]
+            x_buf    = pre["x"]
+            for layer_idx in range(self.num_layers):
+                normed_x, x_buf = self._transformer_layer(
+                    layer_idx, normed_x, x_buf,
+                    pre["pos"], pre["slot_map"], pre["bt"], tok_ctx, 1,
+                )
+
+        # Final norm and LM head on the last token's hidden state.
+        lm_head_w = self.weights.get("lm_head.weight", self.weights[self._embed_key()])
+        with self._batched_dispatch():
+            self._dispatch(
+                "rms_norm_f32in",
+                [x_buf, self.weights[self._norm_key()], pre["norm_out"]],
+                _rms, (1, 1, 1))
+            self._dispatch(
+                "matmul_quant",
+                [pre["norm_out"], lm_head_w,
+                 self.weights.get("lm_head.scales", pre["norm_out"]), pre["logits"]],
+                {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                ((vocab + 255) // 256, 1, 1))
+
+            if self.softcap is not None and self.softcap > 0:
+                self._dispatch(
+                    "logit_softcap", [pre["logits"], pre["capped"]],
+                    {"N": vocab, "CAP": float(self.softcap)},
+                    ((vocab + 255) // 256, 1, 1),
+                    shader_subdir="gemma")
+                result_buf = pre["capped"]
+            else:
+                result_buf = pre["logits"]
 
             self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf(vocab)],
                            {"N": vocab}, (1, 1, 1))
