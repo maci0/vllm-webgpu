@@ -298,7 +298,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     self._dispatch(
                         "fused_gate_act",
                         [normed_x, self.weights[sgw_k], self.weights[suw_k], msc["expert_act"]],
-                        {"K": hidden, "N": _sinter, "GELU": 0},
+                        {"K": hidden, "N": _sinter, "GELU": 0, **extra_gate_consts},
                         (_sinter, 1, 1),
                     )
                 else:
