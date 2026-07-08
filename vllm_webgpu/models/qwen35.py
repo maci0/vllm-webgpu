@@ -411,7 +411,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                            (cd, 1, 1))
 
             # 3. Causal conv step: updates conv_state in-place, writes qkv_conv
-            conv_w = self.weights.get(f"{p}.conv1d.weight", normed_x)
+            conv_w = self.weights[f"{p}.conv1d.weight"]
             self._dispatch("causal_conv_step",
                            [sc["qkv_buf"], conv_w, self._conv_gpu[layer_idx], sc["qkv_conv"]],
                            {"CONV_DIM": cd, "KERNEL": self._lin_conv_kernel, "WG_SIZE": 256},
