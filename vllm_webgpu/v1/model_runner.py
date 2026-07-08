@@ -144,7 +144,7 @@ class WebGPUModelRunner:
             num_kv_heads = hf.num_key_value_heads
             head_dim = getattr(hf, "head_dim", hf.hidden_size // hf.num_attention_heads)
             planner = WebGPUCachePlanner.from_runner(self.wgpu_device, self)
-            layer_types = getattr(hf, "layer_types", None)
+            layer_types = getattr(hf, "layer_types", None) or getattr(hf, "layers_block_type", None)
             planner.allocate_kv_pool_hybrid(
                 num_blocks=num_blocks,
                 num_layers=hf.num_hidden_layers,
@@ -184,7 +184,7 @@ class WebGPUModelRunner:
         # before load_model(), so self.model is still None. Mirrors the derivation
         # in Gemma4WebGPUModel.__init__() to ensure uniform and per-layer specs agree.
         if not lp_list:
-            layer_types = getattr(mc, "layer_types", None)
+            layer_types = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
             if layer_types and len(layer_types) == mc.num_hidden_layers:
                 default_hd = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
                 default_kv = getattr(mc, "num_key_value_heads", 1)
