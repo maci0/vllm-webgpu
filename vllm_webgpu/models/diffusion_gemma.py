@@ -241,26 +241,45 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        (sc["k_buf"], "k_proj", kv_dim)]:
                 wk = f"{p}.self_attn.{proj}.weight"
                 uq = self._uq_for_key(wk)
-                self._dispatch("matmul_quant",
-                               [sc["normed"], self.weights[wk],
-                                self._scales_buf(wk, uq, sc["normed"]), out_buf],
-                               {"K": hidden, "N": dim, "USE_QUANT": uq,
-                                **self._split_k_extra(uq),
-                                **self._quant_extra(wk[:-7], uq)},
-                               _gemv_wg(dim, uq))
+                if num_tokens > 1 and uq in (0, 3):
+                    _ex: dict = {"K": hidden, "N": dim, "M": num_tokens, "USE_QUANT": uq}
+                    if uq == 3:
+                        _ex["GROUP_K"] = self._quant_extra(wk[:-7], uq).get("GROUP_K", 128)
+                    self._dispatch("matmul_quant_mr4",
+                                   [sc["normed"], self.weights[wk],
+                                    self._scales_buf(wk, uq, sc["normed"]), out_buf],
+                                   _ex, (dim, num_tokens, 1))
+                else:
+                    self._dispatch("matmul_quant",
+                                   [sc["normed"], self.weights[wk],
+                                    self._scales_buf(wk, uq, sc["normed"]), out_buf],
+                                   {"K": hidden, "N": dim, "USE_QUANT": uq,
+                                    **self._split_k_extra(uq),
+                                    **self._quant_extra(wk[:-7], uq)},
+                                   _gemv_wg(dim, uq))
             # v_proj: global attention layers (no separate V; V=K) have no v_proj weight
             vw_key = f"{p}.self_attn.v_proj.weight"
             has_v_proj = vw_key in self.weights
             if has_v_proj:
                 uq = self._uq_for_key(vw_key)
-                self._dispatch("matmul_quant",
-                               [sc["normed"], self.weights[vw_key],
-                                self._scales_buf(vw_key, uq, sc["normed"]),
-                                sc["v_buf"]],
-                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                                **self._split_k_extra(uq),
-                                **self._quant_extra(vw_key[:-7], uq)},
-                               _gemv_wg(kv_dim, uq))
+                if num_tokens > 1 and uq in (0, 3):
+                    _ex_v: dict = {"K": hidden, "N": kv_dim, "M": num_tokens, "USE_QUANT": uq}
+                    if uq == 3:
+                        _ex_v["GROUP_K"] = self._quant_extra(vw_key[:-7], uq).get("GROUP_K", 128)
+                    self._dispatch("matmul_quant_mr4",
+                                   [sc["normed"], self.weights[vw_key],
+                                    self._scales_buf(vw_key, uq, sc["normed"]),
+                                    sc["v_buf"]],
+                                   _ex_v, (kv_dim, num_tokens, 1))
+                else:
+                    self._dispatch("matmul_quant",
+                                   [sc["normed"], self.weights[vw_key],
+                                    self._scales_buf(vw_key, uq, sc["normed"]),
+                                    sc["v_buf"]],
+                                   {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
+                                    **self._split_k_extra(uq),
+                                    **self._quant_extra(vw_key[:-7], uq)},
+                                   _gemv_wg(kv_dim, uq))
                 v_src = sc["v_buf"]
             else:
                 v_src = sc["k_buf"]  # global attention: V = K
@@ -323,14 +342,24 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             ow = f"{p}.self_attn.o_proj.weight"
             uq_ow = self._uq_for_key(ow)
-            self._dispatch("matmul_quant",
-                           [sc["attn_out"], self.weights[ow],
-                            self._scales_buf(ow, uq_ow, sc["attn_out"]),
-                            sc["o_proj_out"]],
-                           {"K": q_dim, "N": hidden, "USE_QUANT": uq_ow,
-                            **self._split_k_extra(uq_ow),
-                            **self._quant_extra(ow[:-7], uq_ow)},
-                           _gemv_wg(hidden, uq_ow))
+            if num_tokens > 1 and uq_ow in (0, 3):
+                _ex_ow: dict = {"K": q_dim, "N": hidden, "M": num_tokens, "USE_QUANT": uq_ow}
+                if uq_ow == 3:
+                    _ex_ow["GROUP_K"] = self._quant_extra(ow[:-7], uq_ow).get("GROUP_K", 128)
+                self._dispatch("matmul_quant_mr4",
+                               [sc["attn_out"], self.weights[ow],
+                                self._scales_buf(ow, uq_ow, sc["attn_out"]),
+                                sc["o_proj_out"]],
+                               _ex_ow, (hidden, num_tokens, 1))
+            else:
+                self._dispatch("matmul_quant",
+                               [sc["attn_out"], self.weights[ow],
+                                self._scales_buf(ow, uq_ow, sc["attn_out"]),
+                                sc["o_proj_out"]],
+                               {"K": q_dim, "N": hidden, "USE_QUANT": uq_ow,
+                                **self._split_k_extra(uq_ow),
+                                **self._quant_extra(ow[:-7], uq_ow)},
+                               _gemv_wg(hidden, uq_ow))
 
             # post_attention norm + residual add
             pan_w = self.weights.get(f"{p}.post_attention_layernorm.weight")
