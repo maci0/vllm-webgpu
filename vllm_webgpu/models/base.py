@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:
@@ -58,10 +59,10 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
         np.where(wavelengths > low_freq_len, inv_freq / factor, blended),
     )
 
-    # YaRN attention scale: mscale = 0.1 * ln(factor) + 1.0
+    # YaRN attention scale: mscale = 0.1 * ln(factor) + 1.0, clamped to 1.0 for factor <= 1.
     # Must be applied AFTER cos/sin in the shader (mscale * cos(pos * freq)),
     # not folded into inv_freq (which would compute cos(pos * freq * mscale) instead).
-    mscale = 0.1 * np.log(factor) + 1.0
+    mscale = yarn_get_mscale(factor)
     return scaled_inv_freq.astype(np.float32), float(mscale)
 
 
