@@ -825,7 +825,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                                    (n_heads, num_tokens, 1))
                 else:
                     self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                   {**self._rope_consts, "NUM_HEADS": n_heads},
+                                   {**_rope_base, "NUM_HEADS": n_heads},
                                    (num_tokens, n_heads, 1))
 
         # Fused K+V cache store. V always lives in its own sc["v_buf"] (no offset needed).
