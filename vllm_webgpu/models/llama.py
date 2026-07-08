@@ -139,7 +139,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return  # base-class dummy buffer is sufficient; _use_freq_buf stays False
 
         dev = self.wgpu_device.wgpu_device
-        freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling)
+        rotary_dim = int(rope_scaling.get("rotary_dim", self.head_dim))
+        freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling, rotary_dim)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale
         self._use_freq_buf = True

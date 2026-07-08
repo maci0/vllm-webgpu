@@ -36,16 +36,28 @@ logger = logging.getLogger(__name__)
 
 
 
-def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> tuple[np.ndarray, float]:
+def compute_yarn_freqs(
+    head_dim: int,
+    rope_theta: float,
+    rope_scaling: dict,
+    rotary_dim: int | None = None,
+) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    The pos_freqs/inv_freq_extrap/inv_freq_interp/mask assembly below is a
-    local reproduction of YaRNScalingRotaryEmbedding._compute_inv_freq in
-    vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope. If that
-    upstream formula changes, update this function in parallel.
+    Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq from
+    vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope.
+
+    Args:
+        head_dim:    Full attention head dimension.
+        rope_theta:  RoPE base frequency (e.g. 10000.0).
+        rope_scaling: rope_scaling config dict from the model config.
+        rotary_dim:  Number of head dimensions that receive RoPE. Defaults to
+                     head_dim (full rotation). Pass rope_scaling.get('rotary_dim',
+                     head_dim) for models that use partial RoPE; omitting it for
+                     those models would produce wrong frequencies.
 
     Returns:
-        freqs:  [head_dim // 2] float32 array of scaled inv_freq values.
+        freqs:  [rotary_dim // 2] float32 array of scaled inv_freq values.
         mscale: attention output scale factor (0.1 * ln(factor) + 1.0).
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies — cos(pos * freq * mscale) is wrong.
@@ -54,17 +66,20 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     from vllm.model_executor.layers.rotary_embedding.common import (
         yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask)
 
+    if rotary_dim is None:
+        rotary_dim = head_dim
+
     factor               = float(rope_scaling.get("factor", 1.0))
     beta_fast            = float(rope_scaling.get("beta_fast", 32.0))
     beta_slow            = float(rope_scaling.get("beta_slow", 1.0))
     orig_ctx             = int(rope_scaling.get("original_max_position_embeddings", 4096))
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
 
-    pos_freqs = rope_theta ** (torch.arange(0, head_dim, 2, dtype=torch.float) / head_dim)
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     inv_freq_extrap = 1.0 / pos_freqs
     inv_freq_interp = 1.0 / (factor * pos_freqs)
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx, True)
-    mask = (1 - yarn_linear_ramp_mask(low, high, head_dim // 2, dtype=torch.float)) * extrapolation_factor
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, True)
+    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
     scaled_inv_freq = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).numpy().astype(np.float32)
 
     # YaRN attention scale: mscale = (0.1 * ln(factor) + 1.0) * attn_factor.
