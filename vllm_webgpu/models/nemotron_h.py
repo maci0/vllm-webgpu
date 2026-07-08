@@ -880,7 +880,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                         tok_ctx, 1, rms_base,
                     )
 
-                if getattr(self, "_greedy_decode", True) and t == T - 1:
+                if t == T - 1:
                     self._dispatch(
                         "rms_norm",
                         [x_buf, self.weights["model.norm_f.weight"], pre["norm_out"]],
@@ -898,13 +898,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                         {"K": self.hidden_size, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                         ((vocab + 255) // 256, 1, 1),
                     )
-                    self._dispatch(
-                        "argmax_f16",
-                        [pre["logits"], self._ensure_sample_buf(vocab)],
-                        {"N": vocab},
-                        (1, 1, 1),
-                    )
-                    self._copy_sample_to_staging()
+                    if getattr(self, "_greedy_decode", True):
+                        self._dispatch(
+                            "argmax_f16",
+                            [pre["logits"], self._ensure_sample_buf(vocab)],
+                            {"N": vocab},
+                            (1, 1, 1),
+                        )
+                        self._copy_sample_to_staging()
 
         self._last_logit_buf = pre["logits"]
         self._last_vocab     = vocab
