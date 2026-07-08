@@ -722,6 +722,7 @@ def load_safetensors_weights(
                             if sc_dtype not in ("F32", "F16", "BF16"):
                                 logger.warning("Int8 scale %s has unsupported dtype %s",
                                                sc_key, sc_dtype)
+                                _i8_companion_skip.add(sc_key)  # guard before break
                                 break
                             sc_arr = _load_raw(sc_key).ravel().astype(np.float32)
                             _upload_f32(sc_arr, f"{name}.scales", weights)
