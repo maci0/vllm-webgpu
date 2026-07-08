@@ -6,14 +6,12 @@ import vllm_webgpu.envs as envs
 
 AUTO_MEMORY_FRACTION = -1.0
 VALID_POWER_PREFERENCES = frozenset({"high-performance", "low-power"})
-VALID_QUANTIZATIONS = frozenset({"q4_k_m", "f16", "auto"})
 
 
 @dataclass
 class WebGPUConfig:
     memory_fraction: float
     power_preference: str
-    quantization: str
     block_size: int
     debug: bool
 
@@ -27,11 +25,6 @@ class WebGPUConfig:
             raise ValueError(
                 f"VLLM_WEBGPU_POWER_PREFERENCE={self.power_preference!r}. "
                 f"Valid: {sorted(VALID_POWER_PREFERENCES)}"
-            )
-        if self.quantization not in VALID_QUANTIZATIONS:
-            raise ValueError(
-                f"VLLM_WEBGPU_QUANTIZATION={self.quantization!r}. "
-                f"Valid: {sorted(VALID_QUANTIZATIONS)}"
             )
 
     @property
@@ -53,7 +46,6 @@ class WebGPUConfig:
         return cls(
             memory_fraction=memory_fraction,
             power_preference=envs.VLLM_WEBGPU_POWER_PREFERENCE,
-            quantization=envs.VLLM_WEBGPU_QUANTIZATION,
             block_size=envs.VLLM_WEBGPU_BLOCK_SIZE,
             debug=envs.VLLM_WEBGPU_DEBUG,
         )

@@ -18,7 +18,6 @@ def test_defaults():
     cfg = WebGPUConfig.from_env()
     assert cfg.is_auto_memory
     assert cfg.power_preference == "high-performance"
-    assert cfg.quantization == "auto"
     assert cfg.block_size == 16
     assert cfg.debug is False
 
