@@ -180,12 +180,20 @@ if stats:
     print(f"\nBottleneck analysis:")
     hid = hf_cfg.hidden_size
     if hasattr(hf_cfg, 'num_attention_heads'):
-        inter_sz = hf_cfg.intermediate_size
+        raw_inter_sz = hf_cfg.intermediate_size
+        inter_sz = max(raw_inter_sz) if isinstance(raw_inter_sz, list) else raw_inter_sz
         # Estimate weight bytes per layer (Llama/Qwen/Mixtral style)
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
         attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
         # FFN weight bytes: SwiGLU uses gate+up+down (3 matrices); plain MLP uses up+down (2 matrices).
-        ffn_matrices = 3 if f'model.layers.0.mlp.gate_proj.weight' in getattr(model, 'weights', {}) else 2
+        # Check all candidate key prefixes so models that nest layers under a different path
+        # (e.g. DiffusionGemma uses model.decoder.layers.*) are still detected correctly.
+        weights_registry = getattr(model, 'weights', {})
+        gate_proj_prefixes = ('model.layers.0.mlp.gate_proj.weight',
+                              'model.decoder.layers.0.mlp.gate_proj.weight',
+                              'transformer.h.0.mlp.gate_proj.weight')
+        has_gate_proj = any(k in weights_registry for k in gate_proj_prefixes)
+        ffn_matrices = 3 if has_gate_proj else 2
         ffn_w = 2 * (hid * inter_sz * ffn_matrices)
         total_w_mb = (attn_w + ffn_w) * num_layers / 1e6
         bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
