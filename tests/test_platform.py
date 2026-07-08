@@ -19,8 +19,10 @@ def test_is_available_no_adapter():
 
 
 def test_is_available_with_adapter():
+    mock_info = MagicMock()
+    mock_info.is_fallback_adapter = False
     mock_adapter = MagicMock()
-    mock_adapter.info = {"adapter_type": "DiscreteGpu", "device": "NVIDIA GeForce RTX 4090"}
+    mock_adapter.info = mock_info
     mock_wgpu = MagicMock()
     mock_wgpu.gpu.request_adapter_sync.return_value = mock_adapter
     with patch.dict("sys.modules", {"wgpu": mock_wgpu}):
@@ -31,17 +33,16 @@ def test_is_available_with_adapter():
 
 def test_is_available_cpu_adapter_rejected():
     """SwiftShader/CPU software renderers must not cause is_available() to return True."""
-    for adapter_type in ("Cpu", "cpu", "CPU", "Software", "software"):
-        mock_adapter = MagicMock()
-        mock_adapter.info = {"adapter_type": adapter_type}
-        mock_wgpu = MagicMock()
-        mock_wgpu.gpu.request_adapter_sync.return_value = mock_adapter
-        with patch.dict("sys.modules", {"wgpu": mock_wgpu}):
-            from vllm_webgpu import platform as plat
-            plat._get_wgpu_adapter.cache_clear()
-            assert plat.WebGPUPlatform.is_available() is False, (
-                f"Expected False for adapter_type={adapter_type!r}"
-            )
+    mock_info = MagicMock()
+    mock_info.is_fallback_adapter = True
+    mock_adapter = MagicMock()
+    mock_adapter.info = mock_info
+    mock_wgpu = MagicMock()
+    mock_wgpu.gpu.request_adapter_sync.return_value = mock_adapter
+    with patch.dict("sys.modules", {"wgpu": mock_wgpu}):
+        from vllm_webgpu import platform as plat
+        plat._get_wgpu_adapter.cache_clear()
+        assert plat.WebGPUPlatform.is_available() is False
 
 
 def test_check_and_update_config_sets_worker():

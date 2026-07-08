@@ -49,11 +49,9 @@ class WebGPUPlatform(_Platform):
             return False
         try:
             info = adapter.info
-            adapter_type = info.get("adapter_type", "")
-            if adapter_type.lower() in ("cpu", "software"):
+            if info.is_fallback_adapter:
                 logger.debug(
-                    "WebGPU adapter is a CPU/software renderer (%s), not selecting WebGPU platform",
-                    adapter_type,
+                    "WebGPU adapter is a CPU/software renderer, not selecting WebGPU platform",
                 )
                 return False
         except Exception:
