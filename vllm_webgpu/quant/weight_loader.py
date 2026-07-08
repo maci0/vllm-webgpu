@@ -1266,6 +1266,9 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                 dtype_str = _DTYPE_MAP.get(arr.dtype.name, arr.dtype.name.upper())
                 raw_tensors[name] = (dtype_str, arr.shape, arr.tobytes())
 
+    import torch as _torch
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
     weights: dict = {}
     all_keys = set(raw_tensors.keys())
     processed: set = set()
@@ -1283,7 +1286,6 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                 _, s_shape, s_raw = raw_tensors[scales_key]
                 _, b_shape, b_raw = raw_tensors[biases_key]
                 processed.update({key, scales_key, biases_key})
-                import torch as _torch
                 w_u32 = np.frombuffer(raw, dtype=np.uint32).reshape(shape)
                 scales_f32 = _torch.frombuffer(s_raw, dtype=_torch.bfloat16).to(_torch.float32).numpy().reshape(s_shape)
                 biases_f32 = _torch.frombuffer(b_raw, dtype=_torch.bfloat16).to(_torch.float32).numpy().reshape(b_shape)
