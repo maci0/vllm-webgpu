@@ -666,6 +666,9 @@ class WebGPUModelRunner:
                     _sm,
                 )
 
+                if logits is None:
+                    continue
+
                 # Greedy path: model returns (1, 1) int32 with the argmax index.
                 # Non-greedy path: model returns (1, vocab) float32; sample here.
                 if logits.shape[-1] == 1:
