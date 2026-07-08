@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.model_executor.models.utils import WeightsMapper
 from vllm_webgpu.models.base import BaseWebGPUModel
 from vllm_webgpu.models.llama import _gemv_wg
 
@@ -220,25 +221,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     # ── Weight loading ────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _remap_weight_key(key: str) -> str:
-        """Map HuggingFace checkpoint keys to vLLM-canonical names.
-
-        Applied transformations (in order):
-          1. 'backbone.' prefix -> 'model.'
-          2. 'embeddings.' -> 'embed_tokens.'
-          3. '.A_log' -> '.A'
-        """
-        if key.startswith("backbone."):
-            key = "model." + key[len("backbone."):]
-        key = key.replace("embeddings.", "embed_tokens.")
-        key = key.replace(".A_log", ".A")
-        return key
+    _hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_prefix={"backbone": "model"},
+        orig_to_new_substr={"A_log": "A", "embeddings": "embed_tokens"},
+    )
 
     def load_weights(self, path: str) -> None:
         """Load weights with key remapping and Mamba-specific postprocessing."""
         super().load_weights(path)
-        self._remap_weights()
+        self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
         self._pack_attn_weights()
         self._postprocess_mamba_weights()
         self._init_mamba_states()
@@ -248,13 +239,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self._layer_types.count("mamba"),
             self._layer_types.count("attention"),
         )
-
-    def _remap_weights(self) -> None:
-        """Apply key remapping to all loaded weight entries in-place."""
-        remapped: dict[str, "WebGPUBuffer"] = {}
-        for key, val in self.weights.items():
-            remapped[self._remap_weight_key(key)] = val
-        self.weights = remapped
 
     def _pack_attn_weights(self) -> None:
         """Fuse separate q/k/v projection weights into a single qkv_proj buffer.
