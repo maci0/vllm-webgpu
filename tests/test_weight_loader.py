@@ -120,7 +120,7 @@ def test_load_bnb_nf4_old_format(wgpu_device, tmp_path):
     assert s_key in weights, f"{s_key} not in weights"
     assert weights[w_key].dtype == "u8"
     assert weights[w_key].shape == (N, K // 2)
-    assert weights[s_key].dtype == "f16"
+    assert weights[s_key].dtype == "f32"
     assert weights[s_key].shape == (N, K // 64)
 
     qmeta = weights.get("__quant_meta__", {})
@@ -148,7 +148,7 @@ def test_load_bnb_nf4_new_format(wgpu_device, tmp_path):
     assert s_key in weights
     assert weights[w_key].dtype == "u8"
     assert weights[w_key].shape == (N, K // 2)
-    assert weights[s_key].dtype == "f16"
+    assert weights[s_key].dtype == "f32"
     assert weights[s_key].shape == (N, K // 64)
 
     qmeta = weights.get("__quant_meta__", {})
@@ -240,7 +240,7 @@ def test_load_fp8_per_channel_scale(wgpu_device, tmp_path):
     assert w_key in weights, f"{w_key} not in weights"
     assert s_key in weights, f"{s_key} not in weights (per-channel scales must be uploaded)"
     assert weights[w_key].dtype == "u8"
-    assert weights[s_key].dtype == "f16"
+    assert weights[s_key].dtype == "f32"
     assert weights[s_key].shape == (N,)
 
     qmeta = weights.get("__quant_meta__", {})
@@ -249,9 +249,9 @@ def test_load_fp8_per_channel_scale(wgpu_device, tmp_path):
     assert entry.get("group_size") == 1, "group_size must be 1 for per-channel FP8"
     assert entry.get("global_scale") == 1.0
 
-    # Verify the uploaded scale values match the input (within f16 precision)
-    uploaded = weights[s_key].to_numpy().view(np.float16).astype(np.float32)
-    np.testing.assert_allclose(uploaded[:N], scale_per_ch, rtol=1e-3, atol=1e-3)
+    # Verify the uploaded scale values match the input (exact for f32)
+    uploaded = weights[s_key].to_numpy().view(np.float32)
+    np.testing.assert_allclose(uploaded[:N], scale_per_ch, rtol=1e-6, atol=1e-6)
 
 
 def test_load_int8_per_channel_scale(wgpu_device, tmp_path):
@@ -279,7 +279,7 @@ def test_load_int8_per_channel_scale(wgpu_device, tmp_path):
     assert w_key in weights, f"{w_key} not in weights"
     assert s_key in weights, f"{s_key} not in weights (per-channel int8 scale must be uploaded)"
     assert weights[w_key].dtype == "u8"
-    assert weights[s_key].dtype == "f16"
+    assert weights[s_key].dtype == "f32"
     assert weights[s_key].shape == (N,)
 
     qmeta = weights.get("__quant_meta__", {})
@@ -287,9 +287,9 @@ def test_load_int8_per_channel_scale(wgpu_device, tmp_path):
     assert entry.get("fmt") == "int8_gpu", f"expected int8_gpu, got {entry.get('fmt')}"
     assert entry.get("group_size") == 1, "group_size must be 1 for per-channel int8"
 
-    # Verify scale values round-trip correctly through f16
-    uploaded = weights[s_key].to_numpy().view(np.float16).astype(np.float32)
-    np.testing.assert_allclose(uploaded[:N], scale_per_ch, rtol=1e-3, atol=1e-4)
+    # Verify scale values round-trip correctly through f32 (exact)
+    uploaded = weights[s_key].to_numpy().view(np.float32)
+    np.testing.assert_allclose(uploaded[:N], scale_per_ch, rtol=1e-6, atol=1e-6)
 
 
 def test_load_int8_no_scale(wgpu_device, tmp_path):

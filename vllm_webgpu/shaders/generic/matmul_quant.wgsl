@@ -3,7 +3,7 @@ enable f16;
 // matmul_quant.wgsl — GEMV for decode (M=1)
 //
 // USE_QUANT=0: f16 weights — weights[N, K] packed as f16 in u32 (two f16 per u32)
-// USE_QUANT=1: simple Q4 — weights[N, K/2] packed nibbles (biased ±8), scales[N, K/BLOCK_K] f16
+// USE_QUANT=1: simple Q4 — weights[N, K/2] packed nibbles (biased ±8), scales[N, K/BLOCK_K] f32
 // USE_QUANT=2: GGUF Q4_K — weights in raw Q4_K block format (144 bytes per 256-weight block)
 //              Block layout: d(f16,2B) dmin(f16,2B) scales_mins(12B) nibbles(128B)
 //              Nibbles are unsigned 0-15; dequant = d*scale*nibble - dmin*min (asymmetric)
@@ -28,7 +28,7 @@ override HAS_BIAS: u32  = 0u;      // 1 = add bias[row] to output after matmul
 
 @group(0) @binding(0) var<storage, read>       x       : array<f16>;  // [K]
 @group(0) @binding(1) var<storage, read>       weights : array<u32>;  // raw bytes as u32
-@group(0) @binding(2) var<storage, read>       scales  : array<f16>;  // [N, K/BLOCK_K] for USE_QUANT=1
+@group(0) @binding(2) var<storage, read>       scales  : array<f32>;  // [N, K/BLOCK_K] for USE_QUANT=1
 @group(0) @binding(3) var<storage, read_write> output  : array<f16>;  // [N]
 @group(0) @binding(4) var<storage, read>       bias    : array<f16>;  // [N] bias vector (read when HAS_BIAS=1)
 
@@ -152,7 +152,7 @@ fn main(
             // Weight layout: [N, K//8] INT32 (original [K//8, N] TRANSPOSED at load time).
             // Coalesced: all threads in a workgroup read weights[row * K8 + t],
             // i.e. 256 consecutive INT32s per step → 256 cache-line-friendly reads.
-            // scales: [G, N] F16 where G = K // GROUP_K.
+            // scales: [G, N] F32 where G = K // GROUP_K.
             // zero_point = 8 (symmetric GPTQ).
             let K8 = K / 8u;
             var q_step = tid;
@@ -165,7 +165,7 @@ fn main(
 
                 // Scale for this K-group: scales[grp, row] in [G, N] layout
                 let grp = q_step / (GROUP_K / 8u);
-                let sc  = f32(scales[grp * N + row]);
+                let sc  = scales[grp * N + row];
 
                 // Unpack 8 nibbles and accumulate (zero_point = 8)
                 acc += (f32(i32( q        & 0xFu) - 8) * sc) * f32(x[k_base]);
@@ -184,7 +184,7 @@ fn main(
             // Weight layout: [K, N//8] INT32 stored as [K, N//8].
             // AWQ nibble order within each INT32: positions [0,4,1,5,2,6,3,7]
             // → bit shifts [0, 16, 4, 20, 8, 24, 12, 28].
-            // scales: [G, N] F16 where G = K // GROUP_K.
+            // scales: [G, N] F32 where G = K // GROUP_K.
             // zero_point = 8 (symmetric AWQ — asymmetric qzeros handled at load time).
             //
             // All 256 threads in workgroup process the SAME output row (split-K).
@@ -211,7 +211,7 @@ fn main(
             loop {
                 if (k_awq >= K) { break; }
                 let grp = k_awq / GROUP_K;
-                let sc  = f32(scales[grp * N + row]);
+                let sc  = scales[grp * N + row];
 
                 let q0  = weights[k_awq * N8 + row / 8u];
                 let n0  = f32(i32((q0 >> awq_shift) & 0xFu) - 8);
@@ -219,7 +219,7 @@ fn main(
 
                 if (k_awq + 1u < K) {
                     let q1 = weights[(k_awq + 1u) * N8 + row / 8u];
-                    let sc1 = f32(scales[(k_awq + 1u) / GROUP_K * N + row]);
+                    let sc1 = scales[(k_awq + 1u) / GROUP_K * N + row];
                     let n1  = f32(i32((q1 >> awq_shift) & 0xFu) - 8);
                     acc += n1 * sc1 * f32(x[k_awq + 1u]);
                 }
@@ -228,7 +228,7 @@ fn main(
         } else if (USE_QUANT == 5u) {
             // GPU FP8 E4M3 (split-K, coalesced).
             // weights: [N, K] raw F8 bytes packed 4-per-u32 in binding 1.
-            // GROUP_K == 1: per-channel mode — scales[row] (F16 in binding 2) is the scale.
+            // GROUP_K == 1: per-channel mode — scales[row] (F32 in binding 2) is the scale.
             // GROUP_K != 1: per-tensor mode — GLOBAL_SCALE override constant applies to all rows.
             // Coalesced: thread t reads bytes at row*K+t*2 and row*K+t*2+1.
             // Every 2 threads share one u32 → 128 u32 reads per step (coalesced).
@@ -236,7 +236,7 @@ fn main(
             var k_fp8 = tid * 2u;
             if (GROUP_K == 1u) {
                 // Per-channel: one scale per output row, read from the scales binding.
-                let ch_scale = f32(scales[row]);
+                let ch_scale = scales[row];
                 loop {
                     if (k_fp8 >= K) { break; }
                     let b0 = rd_byte_at(row_base + k_fp8);
@@ -263,7 +263,7 @@ fn main(
             // GPU NVFP4 (split-K, coalesced).
             // weights:  [N, K//2] packed FP4 bytes, 2 FP4 per byte (lo=k, hi=k+1).
             //           Uploaded as packed u32 in binding 1.
-            // scales:   [N, K//16] block scales stored as F16 in binding 2.
+            // scales:   [N, K//16] block scales stored as F32 in binding 2.
             //           Each F16 is one scale for a block of 16 K elements.
             // GLOBAL_SCALE: global F32 scale (override constant).
             // Coalesced: thread t reads weight_byte at row*(K//2)+t → 256 consecutive
@@ -275,7 +275,7 @@ fn main(
                 if (k_fp4 >= K) { break; }
                 // Block scale for this pair of k-elements
                 let blk = k_fp4 / 16u;
-                let sc  = f32(scales[row * K16 + blk]) * GLOBAL_SCALE;
+                let sc  = scales[row * K16 + blk] * GLOBAL_SCALE;
                 // Packed byte: lo nibble = fp4[k_fp4], hi nibble = fp4[k_fp4+1]
                 let byte_idx = row * K2 + k_fp4 / 2u;
                 let packed   = rd_byte_at(byte_idx);
@@ -288,8 +288,8 @@ fn main(
         } else if (USE_QUANT == 7u) {
             // Int8 per-channel (split-K, coalesced).
             // weights: [N, K] signed int8 bytes packed 4-per-u32, row-major.
-            // scales:  [N] f16 — one scale per output row (per-channel).
-            let scale    = f32(scales[row]);
+            // scales:  [N] f32 — one scale per output row (per-channel).
+            let scale    = scales[row];
             let row_base = row * K;
             var k_i8 = tid * 2u;
             loop {
@@ -303,7 +303,7 @@ fn main(
         } else if (USE_QUANT == 8u) {
             // NF4 (BitsAndBytes 4-bit Normal Float, split-K, coalesced).
             // weights: [N, K/2] packed NF4 codes (lo nibble = k, hi nibble = k+1), row-major.
-            // scales:  [N, K/GROUP_K] f16 — one absmax per group (GROUP_K = 64 for BnB default).
+            // scales:  [N, K/GROUP_K] f32 — one absmax per group (GROUP_K = 64 for BnB default).
             // val = nf4_table[code] * absmax
             let K2  = K / 2u;
             let GK  = GROUP_K;  // group size for absmax (typically 64)
@@ -311,7 +311,7 @@ fn main(
             loop {
                 if (k_nf4 >= K) { break; }
                 let blk     = k_nf4 / GK;
-                let sc      = f32(scales[row * (K / GK) + blk]);
+                let sc      = scales[row * (K / GK) + blk];
                 let byte_b  = rd_byte_at(row * K2 + k_nf4 / 2u);
                 acc += nf4_to_f32(byte_b & 0xFu) * sc * f32(x[k_nf4]);
                 if (k_nf4 + 1u < K) {
@@ -422,7 +422,7 @@ fn main(
         let row_bytes = K / 2u;
 
         for (var blk = 0u; blk < blocks; blk++) {
-            let scale     = f32(scales[row * blocks + blk]);
+            let scale     = scales[row * blocks + blk];
             let blk_start = row * row_bytes + blk * (BLOCK_K / 2u);
 
             var block_acc: f32 = 0.0;

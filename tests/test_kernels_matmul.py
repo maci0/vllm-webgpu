@@ -74,7 +74,7 @@ def test_matmul_quant_f16(wgpu_device):
     w_packed = np.ascontiguousarray(W).view(np.uint32)
     w_buf = WebGPUBuffer.from_numpy(dev, w_packed)
     # dummy scales (not used in f16 path)
-    scales_buf = WebGPUBuffer.from_numpy(dev, np.ones(N, dtype=np.float16))
+    scales_buf = WebGPUBuffer.from_numpy(dev, np.ones(N, dtype=np.float32))
     out_buf = WebGPUBuffer.empty(dev, N * 2, usage=rw)
     # dummy bias (binding 4 is always declared in matmul_quant; HAS_BIAS=0 so unused)
     bias_buf = WebGPUBuffer.from_numpy(dev, np.zeros(N, dtype=np.float16))
@@ -319,7 +319,7 @@ def test_matmul_fp8_per_channel_scale(wgpu_device):
 
     x_buf = WebGPUBuffer.from_numpy(dev, x)
     w_buf = WebGPUBuffer.from_numpy(dev, w_u32)
-    scales_buf = WebGPUBuffer.from_numpy(dev, ch_scales.astype(np.float16))
+    scales_buf = WebGPUBuffer.from_numpy(dev, ch_scales.astype(np.float32))
     out_buf = WebGPUBuffer.empty(dev, N * 2, usage=rw)
     # dummy bias (binding 4 always declared; HAS_BIAS=0 so unused)
     bias_buf = WebGPUBuffer.from_numpy(dev, np.zeros(N, dtype=np.float16))
@@ -417,9 +417,9 @@ def test_matmul_quant_mr4_gptq(wgpu_device):
     K, N, M, GROUP_K = 128, 32, 4, 64
     rng = np.random.default_rng(7)
 
-    # Scales: [G, N] f16 where G = K // GROUP_K.
+    # Scales: [G, N] f32 where G = K // GROUP_K.
     G = K // GROUP_K
-    scales = rng.uniform(0.05, 0.2, (G, N)).astype(np.float16)
+    scales = rng.uniform(0.05, 0.2, (G, N)).astype(np.float32)
 
     # Random nibble values 0-15 (before zero_point subtraction) for each (n, k).
     raw_nibbles = rng.integers(0, 16, size=(N, K), dtype=np.int32)

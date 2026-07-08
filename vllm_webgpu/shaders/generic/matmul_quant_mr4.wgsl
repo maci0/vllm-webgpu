@@ -24,7 +24,7 @@ override GROUP_K: u32  = 128u; // quantization group size for USE_QUANT=3 (GPTQ)
 
 @group(0) @binding(0) var<storage, read>       X       : array<f16>;  // [M, K]
 @group(0) @binding(1) var<storage, read>       weights : array<u32>;
-@group(0) @binding(2) var<storage, read>       scales  : array<f16>;
+@group(0) @binding(2) var<storage, read>       scales  : array<f32>;
 @group(0) @binding(3) var<storage, read_write> output  : array<f16>;  // [M, N]
 
 var<workgroup> sh_acc: array<f32, 256>;
@@ -43,7 +43,7 @@ fn main(
     var acc: f32 = 0.0;
 
     if (USE_QUANT == 3u) {
-        // GPTQ INT4 path: weights[N, K//8] INT32, scales[G, N] f16, zero_point=8.
+        // GPTQ INT4 path: weights[N, K//8] INT32, scales[G, N] f32, zero_point=8.
         // Mirrors the split-K GEMV path in matmul_quant.wgsl (USE_QUANT=3) but adds
         // the in_row dimension so all M input tokens are processed in one dispatch.
         let K8 = K / 8u;
@@ -57,7 +57,7 @@ fn main(
 
             // Scale for this K-group: scales[grp, out_col] in [G, N] layout.
             let grp = q_step / (GROUP_K / 8u);
-            let sc  = f32(scales[grp * N + out_col]);
+            let sc  = scales[grp * N + out_col];
 
             // Unpack 8 nibbles (zero_point = 8) and accumulate.
             acc += (f32(i32( q        & 0xFu) - 8) * sc) * f32(X[in_row * K + k_base      ]);
@@ -83,7 +83,7 @@ fn main(
         var blk = tid;
         loop {
             if (blk >= blocks) { break; }
-            let scale     = f32(scales[out_col * blocks + blk]);
+            let scale     = scales[out_col * blocks + blk];
             let blk_start = out_col * row_bytes + blk * (BLOCK_K / 2u);
             var block_acc: f32 = 0.0;
             for (var b = 0u; b < BLOCK_K / 8u; b++) {

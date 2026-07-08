@@ -610,7 +610,7 @@ def load_safetensors_weights(
                                          shape=tuple(arr.shape), dtype="i32")
 
         def _upload_f16(arr: np.ndarray, name: str, weights: dict) -> None:
-            """Upload an F16 array (scales/norms) directly to GPU."""
+            """Upload an F16 array (weights only) directly to GPU."""
             nonlocal _pending_bytes
             arr = np.ascontiguousarray(arr.astype(np.float16))
             data = _pad4(arr.tobytes())
@@ -620,6 +620,23 @@ def load_safetensors_weights(
             _maybe_flush()
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                          shape=tuple(arr.shape), dtype="f16")
+
+        def _upload_f32(arr: np.ndarray, name: str, weights: dict) -> None:
+            """Upload an F32 array (scales) directly to GPU.
+
+            Scales are stored as f32 to avoid silent precision loss for values outside
+            the f16 representable range (> 65504 or < ~6e-8). Both matmul_quant and
+            matmul_quant_mr4 declare the scales binding as array<f32>.
+            """
+            nonlocal _pending_bytes
+            arr = np.ascontiguousarray(arr.astype(np.float32))
+            data = _pad4(arr.tobytes())
+            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+            wgpu_device.queue.write_buffer(buf, 0, data)
+            _pending_bytes += len(data)
+            _maybe_flush()
+            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                         shape=tuple(arr.shape), dtype="f32")
 
         weights: dict = {}
 
@@ -701,14 +718,14 @@ def load_safetensors_weights(
                             sc_dtype = header[sc_key]["dtype"]
                             sc_t = sf.get_tensor(sc_key)
                             if sc_dtype in ("F32", "F16"):
-                                sc_arr = sc_t.numpy().ravel()
+                                sc_arr = sc_t.numpy().ravel().astype(np.float32)
                             elif sc_dtype == "BF16":
                                 sc_arr = sc_t.to(torch.float32).numpy().ravel()
                             else:
                                 logger.warning("Int8 scale %s has unsupported dtype %s",
                                                sc_key, sc_dtype)
                                 break
-                            _upload_f16(sc_arr, f"{name}.scales", weights)
+                            _upload_f32(sc_arr, f"{name}.scales", weights)
                             qmeta[base_key]["group_size"] = 1
                             logger.debug("Int8 per-channel: %s scale n=%d", base_key, sc_arr.size)
                         except Exception as exc:
@@ -763,9 +780,9 @@ def load_safetensors_weights(
                         K8, N_ = qw.shape
                         group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else 128
                         qw_t = np.ascontiguousarray(qw.T)  # [N, K//8]
-                        sc_gn = sc.astype(np.float16)      # [G, N] f16
+                        sc_gn = sc.astype(np.float32)      # [G, N] f32
                         _upload_int32(qw_t, f"{base}.weight", weights)
-                        _upload_f16(sc_gn, f"{base}.weight.scales", weights)
+                        _upload_f32(sc_gn, f"{base}.weight.scales", weights)
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
                     elif (fmt == "awq" and qz is not None and g_idx is None
@@ -778,9 +795,9 @@ def load_safetensors_weights(
                         group_size = K_ // G_ if G_ > 0 else 128
                         # GPU AWQ: store [K, N//8] INT32 directly (no transpose needed
                         # since AWQ access pattern is already per-k, per-output-group)
-                        sc_gn = sc.astype(np.float16) if sc.ndim == 2 else sc  # [G, N]
+                        sc_gn = sc.astype(np.float32)  # [G, N] f32
                         _upload_int32(qw, f"{base}.weight", weights)    # [K, N//8]
-                        _upload_f16(sc_gn, f"{base}.weight.scales", weights)  # [G, N]
+                        _upload_f32(sc_gn, f"{base}.weight.scales", weights)  # [G, N]
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "awq_sym", "group_size": group_size}
                         logger.debug("GPU AWQ: %s (K=%d, N=%d, G=%d)", base, K_, N_, G_)
                     else:
@@ -831,15 +848,15 @@ def load_safetensors_weights(
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
                     N_, K2_ = wp.shape
                     K_ = K2_ * 2
-                    # GPU NVFP4: upload raw weight_packed + F16-converted block scales.
+                    # GPU NVFP4: upload raw weight_packed + F32-converted block scales.
                     # The shader uses GLOBAL_SCALE as an override constant and
-                    # reads F8_E4M3 scales via the standard f16 scales binding.
-                    ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
+                    # reads F8_E4M3 scales via the standard f32 scales binding.
+                    ws_f32 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float32))
                     _upload_u8(wp, f"{base}.weight", weights)
-                    _upload_f16(ws_f16, f"{base}.weight.scales", weights)
+                    _upload_f32(ws_f32, f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nvfp4_gpu", "global_scale": wgs,
-                        "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
+                        "group_size": K_ // (ws_f32.shape[1] if ws_f32.ndim == 2 else 1)}
                     logger.debug("GPU NVFP4: %s (N=%d, K=%d, wgs=%.4f)", base, N_, K_, wgs)
                 except Exception as exc:
                     logger.warning("Failed to process NVFP4 %s: %s", base, exc)
@@ -874,12 +891,12 @@ def load_safetensors_weights(
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
                     N_, K2_ = wp.shape
                     K_ = K2_ * 2
-                    ws_f16 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float16))
+                    ws_f32 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws).astype(np.float32))
                     _upload_u8(wp, f"{base}.weight", weights)
-                    _upload_f16(ws_f16, f"{base}.weight.scales", weights)
+                    _upload_f32(ws_f32, f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nvfp4_gpu", "global_scale": wgs,
-                        "group_size": K_ // (ws_f16.shape[1] if ws_f16.ndim == 2 else 1)}
+                        "group_size": K_ // (ws_f32.shape[1] if ws_f32.ndim == 2 else 1)}
                 except Exception as exc:
                     logger.warning("Failed to process diffusion NVFP4 %s: %s", base, exc)
 
@@ -923,14 +940,14 @@ def load_safetensors_weights(
                             logger.debug("GPU FP8 (per-tensor): %s scale=%.6f", base, scale_val)
                         else:
                             # Per-channel scale: shape (N,) — one float per output channel.
-                            # Upload as F16 scales buffer; shader reads scales[row] when GROUP_K=1.
-                            scale_f16 = np.ascontiguousarray(
-                                scale_arr.ravel().astype(np.float16))
-                            _upload_f16(scale_f16, wname + ".scales", weights)
+                            # Upload as F32 scales buffer; shader reads scales[row] when GROUP_K=1.
+                            scale_f32 = np.ascontiguousarray(
+                                scale_arr.ravel().astype(np.float32))
+                            _upload_f32(scale_f32, wname + ".scales", weights)
                             weights["__quant_meta__"][base] = {
                                 "fmt": "fp8_gpu", "global_scale": 1.0, "group_size": 1}
                             logger.debug("GPU FP8 (per-channel): %s n_scales=%d",
-                                         base, scale_f16.size)
+                                         base, scale_f32.size)
                     else:
                         weights["__quant_meta__"][base] = {
                             "fmt": "fp8_gpu", "global_scale": 1.0}
@@ -960,13 +977,13 @@ def load_safetensors_weights(
                 try:
                     wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                    # Convert U8 exponents to F16: scale = 2^(u8 - 127)
-                    ws_f16 = np.ascontiguousarray(
-                        (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)).astype(np.float16))
+                    # Convert U8 exponents to F32: scale = 2^(u8 - 127)
+                    ws_f32 = np.ascontiguousarray(
+                        (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)).astype(np.float32))
                     N_, K2_ = wp.shape
                     K_ = K2_ * 2
                     _upload_u8(wp, f"{base}.weight", weights)
-                    _upload_f16(ws_f16, f"{base}.weight.scales", weights)
+                    _upload_f32(ws_f32, f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nvfp4_gpu", "global_scale": 1.0, "group_size": 32}
                     logger.debug("GPU MXFP4: %s (N=%d, K=%d)", base, N_, K_)
@@ -1120,10 +1137,10 @@ def load_safetensors_weights(
 
                     # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
                     absmax_2d = np.ascontiguousarray(
-                        absmax_arr.reshape(N, K // _BNB_GROUP_K).astype(np.float16))
+                        absmax_arr.reshape(N, K // _BNB_GROUP_K).astype(np.float32))
 
                     _upload_u8(shader_codes, f"{base}.weight", weights)
-                    _upload_f16(absmax_2d, f"{base}.weight.scales", weights)
+                    _upload_f32(absmax_2d, f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nf4_gpu",
                         "group_size": _BNB_GROUP_K,
@@ -1175,14 +1192,14 @@ def load_safetensors_weights(
                     qw = _load_raw(weight_key)                 # [N, K//8] I32
                     sc_raw = _load_raw(f"{base}.weight_scale") # [N, G] F16/BF16/F32
 
-                    sc = sc_raw.astype(np.float16)
+                    sc = sc_raw.astype(np.float32)
 
                     # Transpose scale [N, G] → [G, N] to match shader expectation.
                     if sc.ndim == 2:
                         sc = np.ascontiguousarray(sc.T)
 
                     _upload_int32(qw, f"{base}.weight", weights)
-                    _upload_f16(sc, f"{base}.weight.scales", weights)
+                    _upload_f32(sc, f"{base}.weight.scales", weights)
                     weights["__quant_meta__"][base] = {
                         "fmt": "gptq_sym",
                         "group_size": _ct_group_size,
