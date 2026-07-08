@@ -36,6 +36,9 @@ print(f"Model: {model_path}")
 from transformers import AutoConfig
 hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
+num_layers = hf_cfg.num_hidden_layers
+head_dim = getattr(hf_cfg, 'head_dim', hf_cfg.hidden_size // hf_cfg.num_attention_heads)
+num_kv_heads = hf_cfg.num_key_value_heads
 
 print(f"Architecture: {arch}")
 
