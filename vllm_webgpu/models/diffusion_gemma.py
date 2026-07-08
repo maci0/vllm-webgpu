@@ -61,12 +61,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WB
             _dev = wgpu_device.wgpu_device
             _rw = _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
-            self._shared_res_buf = _WB.empty(_dev, 1 * self.hidden_size * 4, usage=_rw)
+            # canvas_length is the max batch size during diffusion inference (default 256).
+            # All per-token scratch buffers must be sized for the full canvas to avoid
+            # out-of-bounds writes when num_tokens > 1.
+            max_canvas_len = getattr(model_config, "canvas_length", 256)
+            self._moe_max_tokens = max_canvas_len
+            self._shared_res_buf = _WB.empty(_dev, max_canvas_len * self.hidden_size * 4, usage=_rw)
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
-            self._topk_idx_buf     = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)  # [K] u32
-            self._topk_weight_buf  = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)  # [K] f32
-            self._router_logit_buf = _WB.empty(_dev, self.num_experts * 2, usage=_rw)     # [E] f16
-            self._moe_acc_buf      = _WB.empty(_dev, self.hidden_size * 2, usage=_rw)     # [H] f16 accumulator
+            self._topk_idx_buf     = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)          # [K] u32
+            self._topk_weight_buf  = _WB.empty(_dev, self.top_k_experts * 4, usage=_rw)          # [K] f32
+            self._router_logit_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2, usage=_rw)  # [T, E] f16
+            self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2, usage=_rw)  # [T, H] f16
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 
