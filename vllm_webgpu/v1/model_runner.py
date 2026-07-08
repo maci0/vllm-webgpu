@@ -481,7 +481,7 @@ class WebGPUModelRunner:
                     )
                 slots.append(blk_ids[blk_idx] * block_size + (abs_idx % block_size))
 
-            _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=T)
+            _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
             if hasattr(self.model, "_greedy_decode"):
                 self.model._greedy_decode = _is_greedy(sp)
