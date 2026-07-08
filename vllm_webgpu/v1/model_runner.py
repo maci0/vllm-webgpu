@@ -261,46 +261,30 @@ class WebGPUModelRunner:
 
         Returns (top_k_ids, top_k_log_probs, sampled_token_rank).
 
-        The sampled token is always placed at index 0, matching vLLM's
-        [sampled_token] + top_k convention (LogprobsLists columns are
-        num_logprobs + 1 wide: slot 0 = sampled, slots 1..k = top-k).
-        For greedy decoding the sampled token is the argmax and already
-        lands at index 0.  For non-greedy decoding it may not be in the
-        top-k at all; in that case it is prepended and the returned arrays
-        have length num_logprobs + 1.
+        Slot 0 is always the sampled token; slots 1..k are the top-k tokens
+        by log probability (num_logprobs+1 columns total), matching the layout
+        expected by LogprobsLists.
         """
-        x = logits_1d.astype(np.float32); x -= x.max()
-        log_probs = x - np.log(np.sum(np.exp(x)))
+        import torch
+        from vllm.v1.sample.sampler import Sampler
+
+        vocab_size = logits_1d.shape[0]
         if num_logprobs < 0:
             logger.warning(
                 "num_logprobs=%d will return full-vocab logprobs; this is very slow on CPU",
                 num_logprobs,
             )
-            num_logprobs = log_probs.size
-        k = min(num_logprobs, log_probs.size)
-        if k == 0:
-            top_ids = np.array([], dtype=np.int32)
-            top_lp = np.array([], dtype=np.float32)
-        else:
-            top_ids = np.argpartition(log_probs, -k)[-k:]
-            order = np.argsort(log_probs[top_ids])[::-1]
-            top_ids = top_ids[order].astype(np.int32)
-            top_lp = log_probs[top_ids].astype(np.float32)
-        rank = int((log_probs >= log_probs[sampled_tok]).sum())
+            num_logprobs = vocab_size
+        k = min(num_logprobs, vocab_size)
 
-        # Ensure the sampled token is at slot 0.  For non-greedy requests the
-        # sampled token may rank outside the top-k; prepend it so that
-        # vLLM's engine (which hardcodes sampled_token_logprob = logprobs[0])
-        # accumulates the correct cumulative_logprob.
-        if len(top_ids) == 0 or top_ids[0] != sampled_tok:
-            sampled_id_arr = np.array([sampled_tok], dtype=np.int32)
-            sampled_lp_arr = np.array([log_probs[sampled_tok]], dtype=np.float32)
-            # Drop any duplicate occurrence of the sampled token so it only
-            # appears once, in slot 0.
-            mask = top_ids != sampled_tok
-            top_ids = np.concatenate([sampled_id_arr, top_ids[mask]])[: num_logprobs + 1]
-            top_lp = np.concatenate([sampled_lp_arr, top_lp[mask]])[: num_logprobs + 1]
-
+        logits_t = torch.from_numpy(logits_1d.astype(np.float32)).unsqueeze(0)  # [1, vocab]
+        log_probs = Sampler.compute_logprobs(logits_t)  # [1, vocab]
+        result = Sampler.gather_logprobs(
+            log_probs, k, torch.tensor([sampled_tok], dtype=torch.int64)
+        )
+        top_ids = result.logprob_token_ids[0].numpy()
+        top_lp = result.logprobs[0].numpy()
+        rank = int(result.selected_token_ranks[0])
         return top_ids, top_lp, rank
 
     @staticmethod
@@ -323,34 +307,17 @@ class WebGPUModelRunner:
             return None
         try:
             import torch as _torch
+            from vllm.v1.sample.sampler import Sampler
         except ImportError:
             return None
 
         num_positions = T - 1
-        k = num_prompt_logprobs + 1  # +1: vLLM always has a slot for the sampled token
+        k = min(num_prompt_logprobs, full_logits.shape[-1])
 
-        tok_ids_arr = np.zeros((num_positions, k), dtype=np.int32)
-        logprobs_arr = np.full((num_positions, k), -np.inf, dtype=np.float32)
-        ranks_arr = np.zeros(num_positions, dtype=np.int32)
-
-        for i in range(num_positions):
-            top_ids, top_lp, rank = WebGPUModelRunner._compute_request_logprobs(
-                full_logits[i], tok_ids[i + 1], k
-            )
-            # Clamp to array width: _compute_request_logprobs may return up to
-            # num_logprobs+1 elements when the sampled token was not in the
-            # top-k; the pre-allocated arrays are k wide so we must not exceed
-            # that.
-            actual_k = min(len(top_ids), k)
-            tok_ids_arr[i, :actual_k] = top_ids[:actual_k]
-            logprobs_arr[i, :actual_k] = top_lp[:actual_k]
-            ranks_arr[i] = rank
-
-        return LogprobsTensors(
-            logprob_token_ids=_torch.from_numpy(tok_ids_arr),
-            logprobs=_torch.from_numpy(logprobs_arr),
-            selected_token_ranks=_torch.from_numpy(ranks_arr),
-        )
+        logits_t = _torch.from_numpy(full_logits[:num_positions].astype(np.float32))  # [T-1, vocab]
+        log_probs = Sampler.compute_logprobs(logits_t)  # [T-1, vocab]
+        token_ids_t = _torch.tensor(tok_ids[1:], dtype=_torch.int64)  # [T-1]
+        return Sampler.gather_logprobs(log_probs, k, token_ids_t)
 
     def _make_model_output(
         self,

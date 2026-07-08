@@ -32,11 +32,14 @@ def test_compute_request_logprobs():
 
     top_ids, top_lp, rank = WebGPUModelRunner._compute_request_logprobs(logits, sampled_tok=5, num_logprobs=3)
 
-    assert len(top_ids) == 3
-    assert len(top_lp) == 3
-    assert top_ids[0] == 5, "highest logit token should be first"
-    assert top_ids[1] == 3
-    assert top_ids[2] == 7
+    # gather_logprobs returns num_logprobs+1 columns: slot 0 = sampled token,
+    # slots 1..k = top-k tokens (no deduplication).
+    assert len(top_ids) == 4
+    assert len(top_lp) == 4
+    assert top_ids[0] == 5, "sampled token should be at slot 0"
+    assert top_ids[1] == 5, "top-1 token is also token 5 (highest logit)"
+    assert top_ids[2] == 3
+    assert top_ids[3] == 7
     assert (top_lp <= 0).all(), "log-probs must be non-positive"
     assert rank == 1, "sampled token 5 has the highest logit so rank should be 1 (1-based)"
 
@@ -62,7 +65,8 @@ def test_make_model_output_with_logprobs():
     out = WebGPUModelRunner._make_model_output(runner, ["req-1"], [2], [lp_data])
     assert out is not None
     assert out.logprobs is not None, "logprobs should be populated, not None"
-    assert out.logprobs.logprob_token_ids.shape == (1, 2)
+    # gather_logprobs returns num_logprobs+1 columns: slot 0 = sampled, slots 1..k = top-k.
+    assert out.logprobs.logprob_token_ids.shape == (1, 3)
     assert out.logprobs.logprob_token_ids[0, 0] == 2
     assert out.logprobs.sampled_token_ranks[0] == 1
 
