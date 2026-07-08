@@ -94,11 +94,9 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
     T = len(input_ids_list)
     block_table = np.zeros(num_blocks, dtype=np.uint32)
-    slots = []
-    for i in range(T):
-        bi = i // block_size
-        block_table[bi] = bi
-        slots.append(bi * block_size + (i % block_size))
+    n_blks = (T + block_size - 1) // block_size
+    block_table[:n_blks] = np.arange(n_blks, dtype=np.uint32)
+    slots = list(range(T))
 
     batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)
     logits = model.forward(

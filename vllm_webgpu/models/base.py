@@ -34,16 +34,15 @@ def _gemv_wg(N: int, uq: int) -> tuple:
 
 logger = logging.getLogger(__name__)
 
-# Shader names + expected binding count for RoPE shaders that need a dummy
-# inv_freq_buf appended when USE_FREQ_BUF=0. Defined at module level to avoid
-# allocating a new set on every _dispatch() call.
-_ROPE_SHADERS_BY_LEN = frozenset({
-    ("rope", 3), ("fused_per_head_norm_rope", 4), ("fused_qk_norm_rope", 7),
-})
 
 
 def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
+
+    The pos_freqs/inv_freq_extrap/inv_freq_interp/mask assembly below is a
+    local reproduction of YaRNScalingRotaryEmbedding._compute_inv_freq in
+    vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope. If that
+    upstream formula changes, update this function in parallel.
 
     Returns:
         freqs:  [head_dim // 2] float32 array of scaled inv_freq values.
@@ -168,7 +167,7 @@ class BaseWebGPUModel(ABC):
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
         rows = [(lbl, sum(t) / len(t), len(t)) for lbl, t in self._prof_stats.items()]
-        rows.sort(key=lambda r: -(r[1] * r[2]))
+        rows.sort(key=lambda r: r[1] * r[2], reverse=True)
         total = sum(r[1] * r[2] for r in rows)
         for label, avg, n in rows:
             label_total = avg * n
@@ -186,9 +185,7 @@ class BaseWebGPUModel(ABC):
         Uses block_tables[0] when present, falling back to a single-element [0]
         placeholder for warmup or metadata objects that lack a block table.
         """
-        return np.array(
-            attn_metadata.block_tables[0] if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32)
+        return np.array(getattr(attn_metadata, "block_tables", [[0]])[0], dtype=np.uint32)
 
     def load_weights(
         self, path: str, f32_keys: "frozenset[str] | None" = None
@@ -237,20 +234,6 @@ class BaseWebGPUModel(ABC):
 
     # ── GPU sampler helpers ───────────────────────────────────────────────────
 
-    def _ensure_gpu_sampler(self, vocab: int) -> None:
-        """Lazily allocate GPU sampler buffers sized for vocab."""
-        if self._gpu_sample_tok is not None and self._gpu_sample_vocab == vocab:
-            return
-        import wgpu as wgpu_lib
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-        dev = self.wgpu_device.wgpu_device
-        self._gpu_sample_tok   = WebGPUBuffer.empty(dev, 4)      # 1 × u32
-        self._gpu_sample_vocab = vocab
-        # MAP_READ staging buffer: copy argmax result here inside the MAIN command encoder,
-        # then map after the single main sync — eliminates the second GPU sync per token.
-        self._gpu_sample_staging = dev.create_buffer(
-            size=4,
-            usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
 
     def _copy_sample_to_staging(self) -> None:
         """Copy the 4-byte argmax result to the MAP_READ staging buffer.
@@ -276,8 +259,18 @@ class BaseWebGPUModel(ABC):
         return val
 
     def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
-        """Lazily allocate GPU sampler and return the token output buffer."""
-        self._ensure_gpu_sampler(vocab)
+        """Lazily allocate GPU sampler buffers sized for vocab and return the token output buffer."""
+        if self._gpu_sample_tok is None or self._gpu_sample_vocab != vocab:
+            import wgpu as wgpu_lib
+            from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+            dev = self.wgpu_device.wgpu_device
+            self._gpu_sample_tok   = WebGPUBuffer.empty(dev, 4)      # 1 × u32
+            self._gpu_sample_vocab = vocab
+            # MAP_READ staging buffer: copy argmax result here inside the MAIN command encoder,
+            # then map after the single main sync — eliminates the second GPU sync per token.
+            self._gpu_sample_staging = dev.create_buffer(
+                size=4,
+                usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
         return self._gpu_sample_tok  # type: ignore[return-value]
 
     def logit_readback(self) -> "np.ndarray":
@@ -356,16 +349,6 @@ class BaseWebGPUModel(ABC):
                 )
             bindings = list(bindings) + [self._dummy_bias_buf]
 
-        # rope/fused RoPE shaders always declare an inv_freq_buf binding for USE_FREQ_BUF=1.
-        # Callers that keep USE_FREQ_BUF=0 (no YaRN) must still satisfy the layout.
-        #   rope:                    3 bindings + dummy at slot 3
-        #   fused_per_head_norm_rope: 4 bindings + dummy at slot 4
-        #   fused_qk_norm_rope:      7 bindings + dummy at slot 7
-        if (shader_name, len(bindings)) in _ROPE_SHADERS_BY_LEN:
-            # Use the pre-allocated rope_freq_buf placeholder (initialized in __init__).
-            # When USE_FREQ_BUF=1 (YaRN), _init_rope_freq_buf() replaces it with real data.
-            bindings = list(bindings) + [self._rope_freq_buf]
-
         key = PipelineKey(
             shader_name=f"{shader_subdir}/{shader_name}",
             defines=tuple(sorted(constants.items())),
@@ -403,7 +386,11 @@ class BaseWebGPUModel(ABC):
         positions: np.ndarray,
         attn_metadata: object,
     ) -> np.ndarray:
-        """Returns logits as float32 numpy array [num_tokens, vocab_size]."""
+        """Run one forward pass and return output as a numpy array.
+
+        When logit_returns_token_id is False: returns float32 [num_tokens, vocab_size] logits.
+        When logit_returns_token_id is True:  returns int32 [1, 1] with the GPU-argmax token id.
+        """
         ...
 
     def warmup(self) -> None:

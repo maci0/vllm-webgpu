@@ -61,7 +61,7 @@ class WebGPUWorker(WorkerBase):
 
         self.device = torch.device("cpu")
 
-        pc = self.vllm_config.parallel_config
+        pc = self.parallel_config
         init_distributed_environment(pc.world_size, self.rank, self.distributed_init_method, self.local_rank, backend="gloo")
         ensure_model_parallel_initialized(pc.tensor_parallel_size, pc.pipeline_parallel_size, pc.prefill_context_parallel_size, pc.decode_context_parallel_size)
         set_random_seed(self.model_config.seed)

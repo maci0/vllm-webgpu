@@ -185,7 +185,7 @@ if stats:
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
         attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
         # FFN weight bytes: SwiGLU uses gate+up+down (3 matrices); plain MLP uses up+down (2 matrices).
-        ffn_matrices = 2 if getattr(hf_cfg, 'num_hidden_layers_mlp_only', None) else 3
+        ffn_matrices = 3 if f'model.layers.0.mlp.gate_proj.weight' in getattr(model, 'weights', {}) else 2
         ffn_w = 2 * (hid * inter_sz * ffn_matrices)
         total_w_mb = (attn_w + ffn_w) * num_layers / 1e6
         bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s

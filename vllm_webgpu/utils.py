@@ -32,7 +32,7 @@ def sample_token(
     if temperature <= 1e-5:
         return int(np.argmax(logits_1d))
 
-    logits_t = torch.from_numpy(logits_1d.astype(np.float32)).unsqueeze(0)
+    logits_t = torch.from_numpy(logits_1d.astype(np.float32, copy=False)).unsqueeze(0)
     logits_t = logits_t / temperature
     k_t = torch.tensor([top_k]) if top_k > 0 else None
     p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None

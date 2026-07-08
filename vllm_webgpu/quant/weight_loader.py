@@ -54,10 +54,11 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
     return sorted(
-        k.removesuffix(".weight")
+        base
         for k in header
         if k.endswith(".weight") and header[k].get("dtype") == "U8"
-        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+        and (base := k.removesuffix(".weight"))
+        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
     )
 
 
@@ -789,7 +790,7 @@ def load_safetensors_weights(
                         else:
                             w_f16 = _dequant_gptq(
                                 qw, sc,
-                                qz if qz is not None else np.zeros((sc.shape[0], qw.shape[1] // 8), dtype=np.int32),
+                                qz if qz is not None else np.full((sc.shape[0], qw.shape[1] // 8), 0x88888888, dtype=np.int32),
                                 g_idx)
                         _upload_f16(w_f16, f"{base}.weight", weights)
                 except Exception as exc:
@@ -1268,9 +1269,6 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
 
     import safetensors.torch as _sft
 
-    def _open_shard(path: str):
-        return _sft.safe_open(path, framework="pt")
-
     # Pass 2: process tensors shard-by-shard, opening each shard at most once per group.
     # Quantized triplets (weight + scales + biases) are loaded together from their
     # respective shards; non-quantized tensors are streamed one shard at a time.
@@ -1293,7 +1291,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
 
         # Open each required shard on demand.
         def _load_key(k: str):
-            with _open_shard(key_to_shard[k]) as sf:
+            with _sft.safe_open(key_to_shard[k], framework="pt") as sf:
                 return sf.get_tensor(k)
 
         t = _load_key(wk)

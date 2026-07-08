@@ -24,6 +24,7 @@ def make_qwen35_config(num_layers=4, vocab_size=32):
     # MoE fields — must be integers for comparison in __init__
     cfg.num_experts = 0
     cfg.num_experts_per_tok = 0
+    cfg.num_local_experts = 0   # read by MixtralWebGPUModel.__init__ (now in MRO)
     cfg.moe_intermediate_size = 0
     cfg.shared_expert_intermediate_size = 12288
     # Linear attention (GDN) architecture fields — must be integers

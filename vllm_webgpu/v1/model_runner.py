@@ -495,7 +495,8 @@ class WebGPUModelRunner:
                 self.model.reset_recurrent_states()
 
             raw_bids = req.block_ids
-            blk_ids = [b for s in raw_bids for b in s] if raw_bids else list(range((len(tok_ids) + block_size - 1) // block_size))
+            assert raw_bids, f"req {rid}: scheduler produced NewRequestData with empty block_ids"
+            blk_ids = [b for s in raw_bids for b in s]
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -609,9 +610,7 @@ class WebGPUModelRunner:
 
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.
-                cur_new_bids = (new_block_ids[i]
-                                if new_block_ids and i < len(new_block_ids) and new_block_ids[i]
-                                else None)
+                cur_new_bids = new_block_ids[i]
                 if cur_new_bids is not None:
                     flat_new = [b for s in cur_new_bids for b in s]
                     if rid in resumed_req_ids:

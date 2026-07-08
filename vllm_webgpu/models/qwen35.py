@@ -27,7 +27,7 @@ _LIN_CONV_KERNEL = 4
 
 
 
-class Qwen35WebGPUModel(LlamaWebGPUModel):
+class Qwen35WebGPUModel(MixtralWebGPUModel):
     """
     Qwen3.5-9B hybrid inference model — all compute on WebGPU.
 
@@ -116,9 +116,11 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # then calls self._init_scratch_buffers() and self._init_rope_freq_buf().
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
-        # Plain instance attributes aliasing _moe_* fields; expected by MixtralWebGPUModel._moe_ffn_layer.
+        # Mixtral.__init__ reads num_local_experts (0 for Qwen35) and overwrites _is_moe.
+        # Re-assert the correct values from Qwen35-specific config fields.
         self._num_experts = self._moe_num_experts
         self._top_k = self._moe_k
+        self._is_moe = self._moe_num_experts > 0 and self._moe_k > 0
 
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
@@ -294,12 +296,10 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
     def reset_recurrent_states(self) -> None:
         """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
         dev = self.wgpu_device.wgpu_device
-        for buf in self._ssm_gpu:
-            if buf is not None:
-                dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
-        for buf in self._conv_gpu:
-            if buf is not None:
-                dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
+        for lst in (self._ssm_gpu, self._conv_gpu):
+            for buf in lst:
+                if buf is not None:
+                    dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
 
     def _gdn_layer_gpu(
         self,
@@ -444,6 +444,23 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         self._hstate = (self._hstate + 2) % 3
         return sc["normed"], out
 
+    def _transformer_layer(
+        self,
+        layer_idx: int,
+        normed_x: "WebGPUBuffer",
+        x_buf: "WebGPUBuffer",
+        pos_buf: "WebGPUBuffer",
+        slot_map: "WebGPUBuffer",
+        bt_buf: "WebGPUBuffer",
+        ctx_len: int,
+        num_tokens: int,
+    ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
+        """Route to GDN or full-attention based on layer type."""
+        if self._is_full_attn(layer_idx):
+            return super()._transformer_layer(
+                layer_idx, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+        return self._gdn_layer_gpu(layer_idx, normed_x, x_buf, num_tokens)
+
     def _moe_ffn_layer(
         self,
         normed_x: "WebGPUBuffer",
@@ -466,81 +483,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
             shared_expert_prefix="shared_expert",
             shared_expert_inter=self._moe_shared_inter,
         )
-
-    def _forward_moe(
-        self,
-        input_ids: np.ndarray,
-        positions: np.ndarray,
-        attn_metadata: object,
-    ) -> np.ndarray:
-        """MoE forward pass — manages command encoders explicitly.
-
-        Unlike the standard forward(), this does NOT use an outer _batched_dispatch
-        context manager. Instead, self._active_encoder is set manually so that
-        layer methods behave re-entrantly (their inner _batched_dispatch calls are
-        no-ops when _active_encoder is already set).
-
-        _moe_ffn_layer() flushes and replaces _active_encoder mid-layer to
-        handle the CPU readback required for expert index selection.
-        """
-        dev = self.wgpu_device.wgpu_device
-        num_tokens = len(input_ids)
-        hidden = self.hidden_size
-        self._hstate = 0
-        sc = self._sc
-
-        if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
-            raise RuntimeError("multi-sequence batching not supported in this build")
-
-        if num_tokens > 1:
-            raise NotImplementedError(
-                "MoE prefill not supported; only decode is implemented")
-
-        ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len = \
-            self._decode_setup(input_ids, positions, attn_metadata)
-        vocab = self.vocab_size
-
-        _rms_base = self._rms_consts
-
-        # Start the first command encoder manually.
-        # Layer methods see _active_encoder is not None → their _batched_dispatch
-        # calls become re-entrant no-ops, recording into this encoder.
-        self._active_encoder = dev.create_command_encoder()
-        try:
-            self._dispatch(
-                "embedding_lookup",
-                [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
-                {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
-            self._dispatch(
-                "rms_norm",
-                [x_buf, self.weights["model.layers.0.input_layernorm.weight"], sc["normed"]],
-                _rms_base, (num_tokens, 1, 1))
-
-            normed_x = sc["normed"]
-            for i in range(self.num_layers):
-                if self._is_full_attn(i):
-                    normed_x, x_buf = self._transformer_layer(
-                        i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
-                else:
-                    normed_x, x_buf = self._gdn_layer_gpu(i, normed_x, x_buf, num_tokens)
-
-            self._dispatch(
-                "rms_norm",
-                [x_buf, self.weights["model.norm.weight"], norm_out],
-                _rms_base, (num_tokens, 1, 1))
-
-            greedy = getattr(self, "_greedy_decode", True)
-            self._decode_teardown(norm_out, logits_buf, vocab, greedy)
-
-            # Submit the final encoder and release it.
-            dev.queue.submit([self._active_encoder.finish()])
-        finally:
-            self._active_encoder = None
-
-        if greedy:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
 
     def _prefill_chunked_forward(
         self,
@@ -659,7 +601,9 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         attn_metadata: object,
     ) -> np.ndarray:
         if self._is_moe:
-            return self._forward_moe(input_ids, positions, attn_metadata)
+            if len(input_ids) > 1:
+                raise NotImplementedError("Qwen35 MoE prefill not supported; only decode is implemented")
+            return self._moe_decode_forward(input_ids, positions, attn_metadata)
 
         num_tokens = len(input_ids)
         hidden = self.hidden_size

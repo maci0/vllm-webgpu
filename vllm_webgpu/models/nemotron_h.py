@@ -126,6 +126,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "USE_FREQ_BUF": 0,
         }
         self._init_scratch_buffers()
+        self._hstate: int = 0
 
     # ── Scratch buffer allocation ─────────────────────────────────────────────
 
@@ -199,7 +200,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Prevents a live computation buffer from aliasing the scales slot (read-read,
         # but architecturally wrong). Matches the pattern in LlamaWebGPUModel.
         self._dummy_scales_buf: "WebGPUBuffer" = mk(4)
-        self._hstate = 0
 
     # ── Mamba state management ────────────────────────────────────────────────
 
@@ -377,7 +377,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             cw_key = f"{p}.conv1d.weight"
             if cw_key in self.weights:
                 expected = self.conv_dim * self.conv_kernel
-                actual = self.weights[cw_key].nbytes // 2  # f16 = 2 bytes
+                _ELEM_BYTES = {"f16": 2, "f32": 4, "u8": 1, "i32": 4}
+                elem_size = _ELEM_BYTES.get(getattr(self.weights[cw_key], "dtype", "f16"), 2)
+                actual = self.weights[cw_key].nbytes // elem_size
                 if actual != expected:
                     raise ValueError(
                         f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"
