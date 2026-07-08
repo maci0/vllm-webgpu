@@ -174,6 +174,9 @@ class WebGPUWorker(WorkerBase):
         except Exception as e:
             raise RuntimeError(f"WebGPU device health check failed: {e}") from e
 
+    def reset_encoder_cache(self) -> None:
+        self.model_runner.reset_encoder_cache()
+
     def shutdown(self) -> None:
         if hasattr(self, "model_runner") and self.model_runner is not None:
             del self.model_runner
