@@ -297,7 +297,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
 
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
-        self._postprocess_weights()
         self._alloc_lin_states()
         # Confirm MoE detection against actual weight keys.
         has_moe_gate = "model.layers.0.mlp.gate.weight" in self.weights
