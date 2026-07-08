@@ -492,12 +492,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             lm_head_w = self.weights.get(
                 "lm_head.weight", self.weights["model.embed_tokens.weight"]
             )
+            uq = self._uq_for_key("lm_head.weight")
             self._dispatch(
                 "matmul_quant",
                 [pre["norm_out"], lm_head_w,
-                 self.weights.get("lm_head.scales", self._dummy_scales_buf),
+                 self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
                  pre["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0,
+                 **self._quant_extra("lm_head", uq)},
                 ((vocab + 255) // 256, 1, 1),
             )
             if getattr(self, "_greedy_decode", True):
@@ -901,12 +903,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     lm_head_w = self.weights.get(
                         "lm_head.weight", self.weights["model.embed_tokens.weight"]
                     )
+                    uq = self._uq_for_key("lm_head.weight")
                     self._dispatch(
                         "matmul_quant",
                         [pre["norm_out"], lm_head_w,
-                         self.weights.get("lm_head.scales", self._dummy_scales_buf),
+                         self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
                          pre["logits"]],
-                        {"K": self.hidden_size, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+                        {"K": self.hidden_size, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0,
+                         **self._quant_extra("lm_head", uq)},
                         ((vocab + 255) // 256, 1, 1),
                     )
                     if getattr(self, "_greedy_decode", True):
