@@ -103,7 +103,7 @@ class WebGPUCachePlanner:
         model = getattr(self._worker.model_runner, "model", None)
         if model is None:
             return 0
-        return sum(buf.nbytes for buf in model.weights.values())
+        return sum(buf.nbytes for buf in model.weights.values() if hasattr(buf, "nbytes"))
 
     def determine_available_memory(self) -> int:
         """
