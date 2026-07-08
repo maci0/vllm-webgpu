@@ -263,15 +263,34 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # Already packed or checkpoint uses a different layout.
                 continue
 
+            # Preserve the source weight dtype so _uq_for_key resolves the
+            # correct USE_QUANT for GPU-quantized formats (GPTQ i32, FP8/INT8
+            # u8 with fmt tag).  to_numpy() always returns raw u8 bytes, so
+            # the dtype must be carried forward explicitly after concatenation.
+            src_dtype = self.weights[q_key].dtype
+
             q_bytes = self.weights[q_key].to_numpy()
             k_bytes = self.weights[k_key].to_numpy()
             v_bytes = self.weights[v_key].to_numpy()
             qkv_bytes = np.concatenate([q_bytes, k_bytes, v_bytes])
 
             qkv_key = f"{p}.qkv_proj.weight"
-            self.weights[qkv_key] = WebGPUBuffer.from_numpy(
+            packed_buf = WebGPUBuffer.from_numpy(
                 dev, np.ascontiguousarray(qkv_bytes), usage=rw
             )
+            # Override the dtype that from_numpy() inferred from the uint8
+            # concatenation; the underlying GPU bytes are correct already.
+            packed_buf.dtype = src_dtype
+            self.weights[qkv_key] = packed_buf
+
+            # Propagate quant_meta from q_proj to qkv_proj so _uq_for_key
+            # and _quant_extra find the correct fmt / group_size / global_scale.
+            qmeta = self.weights.get("__quant_meta__")
+            if qmeta is not None:
+                q_base = q_key[:-7]        # strip ".weight" -> "{p}.q_proj"
+                qkv_base = f"{p}.qkv_proj"
+                if q_base in qmeta:
+                    qmeta[qkv_base] = dict(qmeta[q_base])
 
             # Also pack per-weight scales (GPU quant formats store them
             # alongside the weight at w_key + ".scales").
@@ -279,14 +298,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             k_s = f"{k_key}.scales"
             v_s = f"{v_key}.scales"
             if q_s in self.weights and k_s in self.weights and v_s in self.weights:
-                packed = np.concatenate([
+                scales_dtype = self.weights[q_s].dtype
+                packed_scales = np.concatenate([
                     self.weights[q_s].to_numpy(),
                     self.weights[k_s].to_numpy(),
                     self.weights[v_s].to_numpy(),
                 ])
-                self.weights[f"{qkv_key}.scales"] = WebGPUBuffer.from_numpy(
-                    dev, np.ascontiguousarray(packed), usage=rw
+                scales_buf = WebGPUBuffer.from_numpy(
+                    dev, np.ascontiguousarray(packed_scales), usage=rw
                 )
+                scales_buf.dtype = scales_dtype
+                self.weights[f"{qkv_key}.scales"] = scales_buf
                 del self.weights[q_s], self.weights[k_s], self.weights[v_s]
 
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
