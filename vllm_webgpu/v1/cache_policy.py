@@ -32,7 +32,7 @@ class WebGPUCachePlanner:
     def determine_available_memory(self) -> int:
         """
         Available memory for KV cache = GPU memory limit - model weights - overhead.
-        Falls back to reporting one max-length sequence if memory config is auto.
+        When `is_auto_memory` is False, applies `memory_fraction` to the device total instead.
         """
         from vllm_webgpu.config import get_config
 
