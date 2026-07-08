@@ -316,7 +316,32 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 v_base = v_key.removesuffix(".weight")
                 qkv_base = f"{p}.qkv_proj"
                 if q_base in qmeta:
-                    qmeta[qkv_base] = dict(qmeta[q_base])
+                    q_meta_entry = qmeta[q_base]
+                    # Verify that k and v share the same metadata as q before
+                    # fusing. For FP8 per-tensor quantization each projection
+                    # carries an independently calibrated global_scale; copying
+                    # only q's entry would silently dequantize k and v rows with
+                    # the wrong scale, corrupting every attention layer.
+                    for proj_base, proj_label in (
+                        (k_base, "k_proj"), (v_base, "v_proj")
+                    ):
+                        if proj_base in qmeta:
+                            proj_entry = qmeta[proj_base]
+                            mismatched = {
+                                field: (q_meta_entry.get(field), proj_entry.get(field))
+                                for field in set(q_meta_entry) | set(proj_entry)
+                                if q_meta_entry.get(field) != proj_entry.get(field)
+                            }
+                            if mismatched:
+                                raise ValueError(
+                                    f"{p}: q_proj and {proj_label} have mismatched "
+                                    f"quant_meta ({mismatched!r}). Fusing them into "
+                                    f"a single qkv_proj dispatch would dequantize "
+                                    f"{proj_label} rows with q_proj's scale. "
+                                    f"Per-tensor FP8 with differing scales is not "
+                                    f"supported for fused qkv dispatch."
+                                )
+                    qmeta[qkv_base] = dict(q_meta_entry)
                 # Remove stale entries for k_proj and v_proj; those weight
                 # tensors no longer exist after packing into qkv_proj.
                 qmeta.pop(k_base, None)
