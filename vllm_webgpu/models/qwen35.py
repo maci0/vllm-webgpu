@@ -561,7 +561,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         rw_k = f"{p}.gate.weight"
         uq_r = self._uq_for_key(rw_k)
         qi_r = self._quant_extra(f"{p}.gate", uq_r)
-        extra_r: dict = {"SPLIT_K": 0} if uq_r not in (0, 3, 4, 5, 6, 7, 8) else {}
+        extra_r = self._split_k_extra(uq_r)
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[rw_k],
@@ -617,7 +617,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             )
             uq_sd = self._uq_for_key(sdw_k)
             qi_sd = self._quant_extra(f"{sp}.down_proj", uq_sd)
-            extra_sd: dict = {"SPLIT_K": 0} if uq_sd not in (0, 3, 4, 5, 6, 7, 8) else {}
+            extra_sd = self._split_k_extra(uq_sd)
             self._dispatch(
                 "matmul_quant",
                 [sc["moe_expert_act"], self.weights[sdw_k],
@@ -655,7 +655,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             # Down projection → moe_expert_down
             uq_ed = self._uq_for_key(edw_k)
             qi_ed = self._quant_extra(f"{ep}.down_proj", uq_ed)
-            extra_ed: dict = {"SPLIT_K": 0} if uq_ed not in (0, 3, 4, 5, 6, 7, 8) else {}
+            extra_ed = self._split_k_extra(uq_ed)
             self._dispatch(
                 "matmul_quant",
                 [sc["moe_expert_act"], self.weights[edw_k],
@@ -1042,7 +1042,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                [normed_x, self.weights[w_key],
                                 self._scales_buf(w_key, uq, normed_x), out_buf],
                                {"K": hidden, "N": dim, "USE_QUANT": uq,
-                                **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi},
+                                **self._split_k_extra(uq), **qi},
                                _gemv_wg(dim, uq))
 
             # When attn_output_gate=True, q_proj.weight was split at load time.
@@ -1058,8 +1058,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                     self._scales_buf(gate_wk, uq_gate, normed_x),
                                     sc["q_gate_buf"]],
                                    {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate,
-                                    **({"SPLIT_K": 0} if uq_gate not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                                    **qi_gate},
+                                    **self._split_k_extra(uq_gate), **qi_gate},
                                    _gemv_wg(q_dim, uq_gate))
 
             # Fused per-head RMSNorm + RoPE for Q and K.
@@ -1146,7 +1145,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            [o_proj_in, self.weights[w_key],
                             self._scales_buf(w_key, uq, o_proj_in), sc["o_proj_out"]],
                            {"K": q_dim, "N": hidden, "USE_QUANT": uq,
-                            **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi_o},
+                            **self._split_k_extra(uq), **qi_o},
                            _gemv_wg(hidden, uq))
 
             # Fused: add(x, attn_out, residual) + rms_norm(residual, post_attn_w) → ffn_normed
@@ -1178,8 +1177,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                        [sc["ffn_normed"], self.weights[w_k],
                                         self._scales_buf(w_k, uq2, sc["ffn_normed"]), out_b],
                                        {"K": hidden, "N": inter, "USE_QUANT": uq2,
-                                        **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
-                                        **qi2},
+                                        **self._split_k_extra(uq2), **qi2},
                                        _gemv_wg(inter, uq2))
                     self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                    {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
@@ -1191,7 +1189,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                [sc["ffn_act"], self.weights[w_k],
                                 self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
                                {"K": inter, "N": hidden, "USE_QUANT": uq,
-                                **({"SPLIT_K": 0} if uq not in (0, 3, 4, 5, 6, 7, 8) else {}), **qi_d},
+                                **self._split_k_extra(uq), **qi_d},
                                _gemv_wg(hidden, uq))
 
             if layer_idx < self.num_layers - 1:
