@@ -10,6 +10,9 @@ override USE_FREQ_BUF: u32  = 0u;
 // ATTN_SCALE: applied as (ATTN_SCALE * cos(angle), ATTN_SCALE * sin(angle)).
 // Set to YaRN mscale (0.1 * ln(factor) + 1.0) when USE_FREQ_BUF=1; leave at 1.0 otherwise.
 override ATTN_SCALE: f32    = 1.0;
+// INPUT_OFFSET: element offset into the input buffer. Set to Q_DIM when reading K
+// from a fused QKV buffer, 0 for standalone Q or K buffers.
+override INPUT_OFFSET: u32  = 0u;
 
 @group(0) @binding(0) var<storage, read>       input        : array<f16>;
 @group(0) @binding(1) var<storage, read>       positions    : array<u32>;
@@ -27,7 +30,7 @@ fn main(
     let half     = HEAD_DIM / 2u;
     let tid      = lid.x;   // iterates over [0, half)
 
-    let base = (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
+    let base = INPUT_OFFSET + (seq_idx * NUM_HEADS + head_idx) * HEAD_DIM;
     let pos  = f32(positions[seq_idx]);
 
     // Loop so HEAD_DIM > 2*WG_SIZE is handled correctly (e.g. HEAD_DIM=256 with WG_SIZE=64).

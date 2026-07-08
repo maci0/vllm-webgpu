@@ -811,7 +811,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         else:
             for src, dst, n_heads, norm_w, in_off in [
                 (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
-                (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, 0),
+                (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, q_dim if _use_fused_qkv else 0),
             ]:
                 if norm_w is not None:
                     # Binding 4 (inv_freq_buf): always provided.
@@ -823,7 +823,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 else:
                     # Binding 3 (inv_freq_buf): always provided.
                     self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                   {**_rope_consts, "NUM_HEADS": n_heads},
+                                   {**_rope_consts, "NUM_HEADS": n_heads,
+                                    "INPUT_OFFSET": in_off},
                                    (num_tokens, n_heads, 1))
 
         # Fused K+V cache store.
