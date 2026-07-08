@@ -244,8 +244,15 @@ class WebGPUModelRunner:
     ) -> "tuple[np.ndarray, np.ndarray, int]":
         """Compute top-N logprobs from a 1-D float32 logits vector.
 
-        Returns (top_k_ids, top_k_log_probs, sampled_token_rank) where arrays
-        have shape (num_logprobs,) with dtype int32 / float32 respectively.
+        Returns (top_k_ids, top_k_log_probs, sampled_token_rank).
+
+        The sampled token is always placed at index 0, matching vLLM's
+        [sampled_token] + top_k convention (LogprobsLists columns are
+        num_logprobs + 1 wide: slot 0 = sampled, slots 1..k = top-k).
+        For greedy decoding the sampled token is the argmax and already
+        lands at index 0.  For non-greedy decoding it may not be in the
+        top-k at all; in that case it is prepended and the returned arrays
+        have length num_logprobs + 1.
         """
         lp = logits_1d.astype(np.float32)
         shifted = lp - lp.max()
@@ -256,6 +263,20 @@ class WebGPUModelRunner:
         top_ids = top_ids[order].astype(np.int32)
         top_lp = log_probs[top_ids].astype(np.float32)
         rank = int((log_probs >= log_probs[sampled_tok]).sum())
+
+        # Ensure the sampled token is at slot 0.  For non-greedy requests the
+        # sampled token may rank outside the top-k; prepend it so that
+        # vLLM's engine (which hardcodes sampled_token_logprob = logprobs[0])
+        # accumulates the correct cumulative_logprob.
+        if len(top_ids) == 0 or top_ids[0] != sampled_tok:
+            sampled_id_arr = np.array([sampled_tok], dtype=np.int32)
+            sampled_lp_arr = np.array([log_probs[sampled_tok]], dtype=np.float32)
+            # Drop any duplicate occurrence of the sampled token so it only
+            # appears once, in slot 0.
+            mask = top_ids != sampled_tok
+            top_ids = np.concatenate([sampled_id_arr, top_ids[mask]])[: num_logprobs + 1]
+            top_lp = np.concatenate([sampled_lp_arr, top_lp[mask]])[: num_logprobs + 1]
+
         return top_ids, top_lp, rank
 
     @staticmethod
@@ -292,9 +313,13 @@ class WebGPUModelRunner:
             top_ids, top_lp, rank = WebGPUModelRunner._compute_request_logprobs(
                 full_logits[i], tok_ids[i + 1], k
             )
-            actual_k = len(top_ids)
-            tok_ids_arr[i, :actual_k] = top_ids
-            logprobs_arr[i, :actual_k] = top_lp
+            # Clamp to array width: _compute_request_logprobs may return up to
+            # num_logprobs+1 elements when the sampled token was not in the
+            # top-k; the pre-allocated arrays are k wide so we must not exceed
+            # that.
+            actual_k = min(len(top_ids), k)
+            tok_ids_arr[i, :actual_k] = top_ids[:actual_k]
+            logprobs_arr[i, :actual_k] = top_lp[:actual_k]
             ranks_arr[i] = rank
 
         return LogprobsTensors(
