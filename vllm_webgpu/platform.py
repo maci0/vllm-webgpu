@@ -73,11 +73,8 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
-        try:
-            from vllm.utils.mem_utils import get_cpu_memory
-            return get_cpu_memory()
-        except Exception:
-            return 0
+        import psutil
+        return psutil.virtual_memory().total
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
