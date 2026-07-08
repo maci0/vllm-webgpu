@@ -38,6 +38,42 @@ def _is_mlx_quantized_dir(p: Path) -> bool:
 
 _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
+# Module-level caches to avoid re-reading the same JSON files during a model load.
+# Both dicts are keyed by the absolute file path string.
+_config_json_cache: dict[str, dict] = {}
+_index_json_cache: dict[str, dict] = {}
+
+
+def _read_json_cached(path: Path, cache: dict) -> dict:
+    """Read and parse a JSON file, returning a cached result on subsequent calls."""
+    key = str(path)
+    if key not in cache:
+        try:
+            with open(path) as f:
+                cache[key] = json.load(f)
+        except Exception:
+            cache[key] = {}
+    return cache[key]
+
+
+def _read_quant_cfg_from_json(config_path: Path) -> dict:
+    """Read quantization config from config.json using the standard three-key cascade.
+
+    Tries quantization_config, then text_config.quantization_config (multimodal
+    models), then compression_config. Returns {} on any read or parse error.
+    """
+    try:
+        with open(config_path) as f:
+            raw = json.load(f)
+        return (
+            raw.get("quantization_config")
+            or (raw.get("text_config") or {}).get("quantization_config")
+            or raw.get("compression_config")
+            or {}
+        )
+    except Exception:
+        return {}
+
 
 def _check_unsupported_quant(model_dir: Path) -> None:
     """Raise ValueError if config.json names an unsupported quantization scheme.
@@ -55,18 +91,8 @@ def _check_unsupported_quant(model_dir: Path) -> None:
     try:
         from compressed_tensors import get_quantization_config as _get_ct_config
         qcfg = _get_ct_config(str(config_json)) or {}
-    except (ImportError, Exception):
-        try:
-            with open(config_json) as f:
-                raw = json.load(f)
-            qcfg = (
-                raw.get("quantization_config")
-                or (raw.get("text_config") or {}).get("quantization_config")
-                or raw.get("compression_config")
-                or {}
-            )
-        except Exception:
-            return
+    except ImportError:
+        qcfg = _read_quant_cfg_from_json(config_json)
     qt = (qcfg.get("quant_type") or qcfg.get("quant_method") or "").lower().strip()
     if qt in _UNSUPPORTED_QUANT_TYPES:
         raise ValueError(
@@ -74,6 +100,26 @@ def _check_unsupported_quant(model_dir: Path) -> None:
             f"Supported formats: safetensors (fp16/bf16), GPTQ, AWQ, FP8, INT8, NF4, MLX-int4. "
             f"For {qt!r}, use a dedicated plugin or dequantize the model first."
         )
+
+
+def _apply_multimodal_remap(weights: dict) -> int:
+    """Remap language_model key prefixes for multimodal checkpoints.
+
+    Gemma3 multimodal: 'language_model.X' -> 'X'
+    Qwen3.5 multimodal: 'model.language_model.X' -> 'model.X'
+
+    Adds remapped keys without removing originals (freeing non-LM GPU buffers
+    causes Metal memory corruption on adjacent embeddings).
+    Returns the number of keys added.
+    """
+    remapped = {}
+    for k, v in weights.items():
+        if k.startswith("model.language_model."):
+            remapped["model." + k[len("model.language_model."):]] = v
+        elif k.startswith("language_model."):
+            remapped[k[len("language_model."):]] = v
+    weights.update(remapped)
+    return len(remapped)
 
 
 def detect_weight_format(path: str) -> str:
@@ -150,18 +196,8 @@ def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
         weights.update(shard_weights)
 
     if is_multimodal:
-        # Add remapped keys WITHOUT removing originals — freeing non-LM GPU buffers
-        # causes Metal memory corruption on adjacent embeddings.
-        remapped = {}
-        for k, v in weights.items():
-            if is_gemma_mm and k.startswith("language_model."):
-                # "language_model.model.layers.0.X" → "model.layers.0.X"
-                remapped[k[len("language_model."):]] = v
-            elif is_qwen35_mm and k.startswith("model.language_model."):
-                # "model.language_model.layers.0.X" → "model.layers.0.X"
-                remapped["model." + k[len("model.language_model."):]] = v
-        weights.update(remapped)
-        logger.info("Added %d remapped language_model keys", len(remapped))
+        n_remapped = _apply_multimodal_remap(weights)
+        logger.info("Added %d remapped language_model keys", n_remapped)
 
     # Apply compressed-tensors quant_meta to any weight layers not already tagged
     # (I8 dtype handling in _upload_plain already sets fmt="int8_gpu" for those layers).
@@ -361,18 +397,8 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
     try:
         from compressed_tensors import get_quantization_config as _get_ct_config
         quant_cfg = _get_ct_config(str(p)) or {}
-    except (ImportError, Exception):
-        try:
-            with open(p) as _f:
-                _raw = json.load(_f)
-            quant_cfg = (
-                _raw.get("quantization_config")
-                or (_raw.get("text_config") or {}).get("quantization_config")
-                or _raw.get("compression_config")
-                or {}
-            )
-        except Exception:
-            return {}
+    except ImportError:
+        quant_cfg = _read_quant_cfg_from_json(p)
     config_groups = quant_cfg.get("config_groups")
     if not config_groups:
         return {}
@@ -552,14 +578,15 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
         # Metal silently drops write_buffer operations when the pending write queue
         # exceeds the GPU staging buffer capacity (~1-2GB). For large single-file
         # models (e.g. Gemma4-12B at 22GB), we must flush periodically.
-        _pending_bytes: list = [0]
+        _pending_bytes = 0
         _FLUSH_THRESHOLD = 512 * 1024 * 1024  # flush every 512MB of pending writes
 
         def _maybe_flush() -> None:
-            if _pending_bytes[0] >= _FLUSH_THRESHOLD:
+            nonlocal _pending_bytes
+            if _pending_bytes >= _FLUSH_THRESHOLD:
                 wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
                 wgpu_device.queue.on_submitted_work_done_sync()
-                _pending_bytes[0] = 0
+                _pending_bytes = 0
 
         def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
             """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
@@ -567,6 +594,7 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
             Used for FP8 E4M3 and NVFP4 packed weights. The shader reads via
             rd_byte_at() which unpacks individual bytes from the u32 array.
             """
+            nonlocal _pending_bytes
             arr_flat = np.ascontiguousarray(arr.ravel().view(np.uint8))
             # Pad to multiple of 4 bytes so u32 reinterpretation is clean.
             r = len(arr_flat) % 4
@@ -575,29 +603,31 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
             data = arr_flat.tobytes()
             buf = wgpu_device.create_buffer(size=len(data), usage=usage)
             wgpu_device.queue.write_buffer(buf, 0, data)
-            _pending_bytes[0] += len(data)
+            _pending_bytes += len(data)
             _maybe_flush()
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                          shape=tuple(arr.shape), dtype="u8")
 
         def _upload_int32(arr: np.ndarray, name: str, weights: dict) -> None:
             """Upload an INT32 array (quantized weights) directly to GPU without conversion."""
+            nonlocal _pending_bytes
             arr = np.ascontiguousarray(arr.astype(np.int32))
             data = _pad4(arr.tobytes())
             buf = wgpu_device.create_buffer(size=len(data), usage=usage)
             wgpu_device.queue.write_buffer(buf, 0, data)
-            _pending_bytes[0] += len(data)
+            _pending_bytes += len(data)
             _maybe_flush()
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                          shape=tuple(arr.shape), dtype="i32")
 
         def _upload_f16(arr: np.ndarray, name: str, weights: dict) -> None:
             """Upload an F16 array (scales/norms) directly to GPU."""
+            nonlocal _pending_bytes
             arr = np.ascontiguousarray(arr.astype(np.float16))
             data = _pad4(arr.tobytes())
             buf = wgpu_device.create_buffer(size=len(data), usage=usage)
             wgpu_device.queue.write_buffer(buf, 0, data)
-            _pending_bytes[0] += len(data)
+            _pending_bytes += len(data)
             _maybe_flush()
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                          shape=tuple(arr.shape), dtype="f16")
@@ -605,7 +635,8 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
         weights: dict = {}
 
         # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
-        def _upload_plain(name: str, weights: dict) -> bool:
+        def _upload_plain(name: str, weights: dict) -> bool:  # noqa: E501
+            nonlocal _pending_bytes
             meta = header.get(name)
             if meta is None:
                 return False
@@ -627,7 +658,7 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
                     data_u32 = _pad4(arr_u32.tobytes())
                     buf_bf16 = wgpu_device.create_buffer(size=len(data_u32), usage=usage)
                     wgpu_device.queue.write_buffer(buf_bf16, 0, data_u32)
-                    _pending_bytes[0] += len(data_u32)
+                    _pending_bytes += len(data_u32)
                     _maybe_flush()
                     weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
                                                             shape=tuple(shape), dtype="u32")
@@ -677,7 +708,7 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
             data = _pad4(arr.tobytes())
             buf = wgpu_device.create_buffer(size=len(data), usage=usage)
             wgpu_device.queue.write_buffer(buf, 0, data)
-            _pending_bytes[0] += len(data)
+            _pending_bytes += len(data)
             _maybe_flush()
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                          shape=tuple(arr.shape), dtype="f16")
@@ -1160,20 +1191,10 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
         # Gemma4 unified: model.language_model.X → model.X
         # Gemma3 multimodal (rare single-file): language_model.X → X
         keys = list(weights.keys())
-        if any(k.startswith("model.language_model.") for k in keys):
-            remapped = {}
-            for k, v in weights.items():
-                if k.startswith("model.language_model."):
-                    remapped["model." + k[len("model.language_model."):]] = v
-            weights.update(remapped)
-            logger.info("Remapped %d model.language_model.* keys", len(remapped))
-        elif any(k.startswith("language_model.") for k in keys):
-            remapped = {}
-            for k, v in weights.items():
-                if k.startswith("language_model."):
-                    remapped[k[len("language_model."):]] = v
-            weights.update(remapped)
-            logger.info("Remapped %d language_model.* keys", len(remapped))
+        if any(k.startswith("model.language_model.") or k.startswith("language_model.") for k in keys):
+            n_remapped = _apply_multimodal_remap(weights)
+            if n_remapped:
+                logger.info("Remapped %d language_model.* keys", n_remapped)
 
         # Commit all pending write_buffer calls before returning.
         wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
