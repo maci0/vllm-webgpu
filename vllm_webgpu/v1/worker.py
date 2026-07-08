@@ -109,7 +109,10 @@ class WebGPUWorker(WorkerBase):
         )
 
     def get_model_inspection(self) -> str:
-        return repr(self.get_model())
+        raise NotImplementedError(
+            "WebGPU models are not nn.Module instances; "
+            "get_model_inspection is not supported."
+        )
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.model_config.max_model_len = max_model_len
