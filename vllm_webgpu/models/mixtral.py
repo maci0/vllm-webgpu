@@ -1,6 +1,5 @@
 from __future__ import annotations
 import logging
-import struct
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -488,7 +487,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # Write softmax weights into the combined weight buffer so moe_accumulate
         # can read w_buf[K_IDX] without a per-dispatch CPU roundtrip.
         dev.queue.write_buffer(msc["moe_w_buf"].buf, 0,
-                               struct.pack(f"<{K}f", *expert_weights))
+                               np.array(expert_weights, dtype=np.float32).tobytes())
         # Zero-initialize the accumulation buffer (no shared expert in Mixtral).
         dev.queue.write_buffer(msc["expert_out"].buf, 0, b"\x00" * (hidden * 2))
 
