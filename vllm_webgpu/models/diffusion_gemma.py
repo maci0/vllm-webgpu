@@ -340,18 +340,16 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                             **self._quant_extra(dw[:-7], uq_dw)},
                            _gemv_wg(hidden, uq_dw))
 
-            pfn1_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
+            # MoE layers use post_feedforward_layernorm_1 for the shared MLP stream;
+            # non-MoE layers only have the no-suffix key.
+            pfn1_w = (self.weights.get(f"{p}.post_feedforward_layernorm_1.weight") or
+                      self.weights.get(f"{p}.post_feedforward_layernorm.weight"))
             if pfn1_w is not None:
-                self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, sc["o_proj_out"]], _rms,
+                self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
                                (num_tokens, 1, 1))
-                shared_out = sc["o_proj_out"]
+                hidden_states_1 = self._shared_res_buf
             else:
-                shared_out = sc["ffn_out"]
-
-            # Accumulate shared expert into dedicated shared_res_buf (avoids h-rotation conflicts).
-            self._dispatch("add_f32", [residual, shared_out, self._shared_res_buf],
-                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
-            shared_residual = self._shared_res_buf
+                hidden_states_1 = sc["ffn_out"]
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe and f"{p}.router.proj.weight" in self.weights:
@@ -455,23 +453,38 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    {"N": add_n, "K_IDX": idx},
                                    ((add_n + 255) // 256, 1, 1))
 
-            # Post-MoE norm + residual add
+            # Post-MoE norm + single residual add (vLLM Gemma4 pattern)
             with self._batched_dispatch(label=f"L{layer_idx:02d}P"):
                 pfn2_out_w = self.weights.get(f"{p}.post_feedforward_layernorm_2.weight")
                 if pfn2_out_w is not None:
                     self._dispatch("rms_norm", [moe_acc, pfn2_out_w, sc["o_proj_out"]], _rms,
                                    (num_tokens, 1, 1))
-                    moe_out = sc["o_proj_out"]
+                    hidden_states_2 = sc["o_proj_out"]
                 else:
-                    moe_out = moe_acc
+                    hidden_states_2 = moe_acc
+
+                # Combine shared-MLP and MoE streams (f16 + f16 -> f16)
+                self._dispatch("add", [hidden_states_1, hidden_states_2, sc["normed"]],
+                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+
+                # Combined post-FFN norm before residual add
+                pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
+                if pfn_w is not None:
+                    self._dispatch("rms_norm", [sc["normed"], pfn_w, sc["ffn_out"]], _rms,
+                                   (num_tokens, 1, 1))
+                    combined_normed = sc["ffn_out"]
+                else:
+                    combined_normed = sc["normed"]
+
                 layer_scalar = self._layer_scales[layer_idx]
-                self._dispatch("add_f32", [shared_residual, moe_out, out],
+                self._dispatch("add_f32", [residual, combined_normed, out],
                                {"N": add_n},
                                ((add_n // 4 + 255) // 256, 1, 1))
         else:
-            # No MoE: out = shared_residual
-            out = shared_residual
+            # No MoE: hidden_states_1 has post_feedforward_layernorm applied (via fallback key).
             layer_scalar = self._layer_scales[layer_idx]
+            self._dispatch("add_f32", [residual, hidden_states_1, out],
+                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
 
         if abs(layer_scalar - 1.0) > 1e-6:
             self._dispatch("f32_scale_inplace", [out],
