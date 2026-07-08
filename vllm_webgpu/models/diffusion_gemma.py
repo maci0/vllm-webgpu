@@ -403,6 +403,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             top_k_idx = self._topk_idx_buf.to_numpy().view(np.uint32)[:self.top_k_experts]
             rw_vals   = self._topk_weight_buf.to_numpy().view(np.float32)[:self.top_k_experts]
 
+            # Apply per-expert learned scale (vLLM gemma4_routing_function_torch:
+            # topk_weights *= per_expert_scale[topk_ids]).  The HF checkpoint key is
+            # {layer}.router.per_expert_scale; shape [num_experts], dtype bfloat16/float32.
+            pes_w = self.weights.get(f"{p}.router.per_expert_scale")
+            if pes_w is not None:
+                pes = pes_w.to_numpy().astype(np.float32)
+                rw_vals = rw_vals * pes[top_k_idx]
+                # Write scaled weights back so moe_accumulate reads correct values.
+                dev.queue.write_buffer(self._topk_weight_buf.buf, 0,
+                                       rw_vals.astype(np.float32).tobytes())
+
             # GPU: run top-K expert FFNs
             gelu_n_moe = num_tokens * inter_moe
             moe_acc = self._moe_acc_buf
