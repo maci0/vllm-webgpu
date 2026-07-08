@@ -633,11 +633,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 _rms, (T, 1, 1))
                             ffn_normed = b["normed"]
                         else:
-                            self._dispatch(
-                                "add_f32", [x_res, attn_delta, residual],
-                                {"N": add_n},
-                                ((add_n // 4 + 255) // 256, 1, 1))
-                            ffn_normed = residual
+                            raise ValueError(
+                                f"Layer {i} missing pre_feedforward_layernorm.weight "
+                                "— f32 residual cannot be fed to f16 FFN projection"
+                            )
 
                     # FFN gate + up projections (batch GEMM) + tanh-GELU activation
                     gw_k = f"{p}.mlp.gate_proj.weight"
