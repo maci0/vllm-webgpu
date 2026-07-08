@@ -43,7 +43,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         if self._layer_types and layer_idx < len(self._layer_types):
             if self._layer_types[layer_idx] == "full_attention":
                 return ctx_len
-        return self._effective_ctx(ctx_len)
+        return min(ctx_len, self._sw) if self._sw else ctx_len
 
     def _attn_block(
         self,

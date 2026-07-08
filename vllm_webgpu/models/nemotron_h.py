@@ -110,16 +110,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._conv_states: dict[int, "WebGPUBuffer"] = {}
         self._ssm_states: dict[int, "WebGPUBuffer"] = {}
 
-        max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         self._rms_base: dict = {
             "HIDDEN_DIM": self.hidden_size,
             "VALS_PER_THREAD": self._vals_per_thread(self.hidden_size),
         }
-        self._init_scratch_buffers(max_ctx)
+        self._init_scratch_buffers()
 
     # ── Scratch buffer allocation ─────────────────────────────────────────────
 
-    def _init_scratch_buffers(self, max_ctx: int) -> None:
+    def _init_scratch_buffers(self) -> None:
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
@@ -400,10 +399,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         ctx_len = int(
             attn_metadata.max_decode_seq_len
             if getattr(attn_metadata, "max_decode_seq_len", None) is not None
-            else num_tokens
+            else int(positions[-1]) + 1
         )
         if ctx_len <= 0:
-            ctx_len = num_tokens
+            ctx_len = int(positions[-1]) + 1
 
         vocab = self.vocab_size
 
@@ -781,7 +780,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         H   = self.hidden_size
         if self._intermediate_sizes is not None:
             mlp_idx = self._mlp_rank[layer_idx]
-            I = self._intermediate_sizes[0] if len(self._intermediate_sizes) == 1 else self._intermediate_sizes[mlp_idx]
+            I = self._intermediate_sizes[mlp_idx % len(self._intermediate_sizes)]
         else:
             I = self.intermediate_size
 

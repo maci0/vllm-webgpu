@@ -118,9 +118,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         max_q_dim = max(lp["q_dim"] for lp in self._lp)
         max_kv_dim = max(lp["kv_dim"] for lp in self._lp)
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
-        self._max_q_dim = max_q_dim
-        self._max_kv_dim = max_kv_dim
-
         self._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
 
         _vpt = self._vals_per_thread(self.hidden_size)
@@ -278,9 +275,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         ctx_len = int(attn_metadata.max_decode_seq_len
                       if attn_metadata.max_decode_seq_len is not None
-                      else num_tokens)
+                      else int(positions[-1]) + 1)
         if ctx_len <= 0:
-            ctx_len = num_tokens
+            ctx_len = int(positions[-1]) + 1
 
         # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
         pre = self._pre

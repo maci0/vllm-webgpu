@@ -332,7 +332,7 @@ class WebGPUModelRunner:
     @staticmethod
     def _flat_block_ids(ids) -> list[int]:
         """Flatten block IDs from vLLM's block_ids: tuple[list[int], ...] format."""
-        return list(itertools.chain.from_iterable(ids)) if ids else []
+        return list(itertools.chain.from_iterable(ids))
 
     def _make_model_output(
         self,

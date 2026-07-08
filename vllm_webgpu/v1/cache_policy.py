@@ -86,7 +86,7 @@ def allocate_kv_pool_per_layer(
       num_kv_heads, head_dim
     """
     if model is None:
-        return
+        raise RuntimeError("model must not be None during KV cache allocation")
     model.kv_pool.clear()
     logger.info("KV cache (per-layer): %d layers, mixed dims", len(layer_params))
     for lp in layer_params:
@@ -99,7 +99,7 @@ def allocate_kv_pool_per_layer(
 
 def _get_model_memory_usage(worker: "WebGPUWorker") -> int:
     """Sum of all weight buffer sizes in bytes."""
-    model = getattr(worker.model_runner, "model", None)
+    model = getattr(getattr(worker, "model_runner", None), "model", None)
     if model is None:
         return 0
     return sum(buf.nbytes for buf in model.weights.values() if hasattr(buf, "nbytes"))

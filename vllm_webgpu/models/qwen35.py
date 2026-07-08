@@ -139,7 +139,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
 
         dev = self.wgpu_device.wgpu_device
         rw = self._rw_flags()
-        T = 1
         Q = self.num_q_heads * self.head_dim
 
         def mk(n: int) -> "WebGPUBuffer":
@@ -153,7 +152,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # Attention output gate: silu(gate)*attn_out before o_proj.
         # Not present in the parent; added only for models with attn_output_gate=True,
         # but always allocated so dispatch bindings are stable.
-        self._sc["q_gate_buf"] = mk(T * Q * 2)
+        self._sc["q_gate_buf"] = mk(Q * 2)
 
         # GDN linear-attention scratch buffers (sized from config, not hardcoded).
         self._sc.update({
@@ -314,10 +313,10 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         for buf in self._ssm_gpu:
             if buf is not None:
-                dev.queue.write_buffer(buf.buf, 0, bytes(buf.buf.size))
+                dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
         for buf in self._conv_gpu:
             if buf is not None:
-                dev.queue.write_buffer(buf.buf, 0, bytes(buf.buf.size))
+                dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
 
     def _gdn_layer_gpu(
         self,
@@ -695,9 +694,9 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
 
         ctx_len = int(attn_metadata.max_decode_seq_len
                       if attn_metadata.max_decode_seq_len is not None
-                      else num_tokens)
+                      else int(positions[-1]) + 1)
         if ctx_len <= 0:
-            ctx_len = num_tokens
+            ctx_len = int(positions[-1]) + 1
 
         # Prefill (num_tokens > 1): process tokens sequentially but batch CHUNK
         # tokens per command encoder to avoid Metal's per-command-buffer GPU timeout.

@@ -5,10 +5,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm_webgpu.config import get_config
 from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -55,7 +56,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # so hidden//heads=80 but actual Q dim per head is 128).
         self.head_dim: int = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
-        from vllm_webgpu.config import get_config
         self.block_size: int = get_config().block_size
         # matmul_quant f16 path packs two f16 values per u32. Row boundaries only
         # align to u32 boundaries when K is even; odd K silently produces wrong results.
@@ -90,8 +90,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Eliminates 17 GPU buffer allocations per layer per decode token.
         Decode path only (num_tokens=1). Sizes are fixed by model dimensions.
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self.wgpu_device.wgpu_device
         rw = self._rw_flags()
         T = 1  # decode: num_tokens == 1
@@ -146,8 +144,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         When rope_type == 'yarn', replaces the base-class dummy buffer with actual
         YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         rope_scaling = getattr(self.model_config, "rope_scaling", None) or {}
         rope_type = (rope_scaling.get("rope_type", "") or
                      rope_scaling.get("type", ""))
@@ -176,7 +172,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Our fused_per_head_norm_rope shader indexes weight[head_idx * HEAD_DIM + i],
         expecting shape (num_heads * head_dim,). Tile if the loaded shape is just (head_dim,).
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
         rw = self._rw_flags()
 
@@ -225,9 +220,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         ctx_len = int(
             attn_metadata.max_decode_seq_len
             if attn_metadata.max_decode_seq_len is not None
-            else len(input_ids))
+            else int(positions[-1]) + 1)
         if ctx_len <= 0:
-            ctx_len = len(input_ids)
+            ctx_len = int(positions[-1]) + 1
         return (
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
@@ -374,12 +369,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Last-token prediction extracted via GPU copy_buffer_to_buffer.
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev  = self.wgpu_device.wgpu_device
         rw   = self._rw_flags()
 
-        def alloc(n_f16: int) -> "WebGPUBuffer":
+        def alloc(n_f16: int) -> WebGPUBuffer:
             return WebGPUBuffer.empty(dev, max(n_f16 * 2, 8), usage=rw)
 
         q_dim  = self.num_q_heads  * self.head_dim

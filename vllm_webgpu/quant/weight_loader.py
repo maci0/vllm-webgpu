@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 _GGUF_MAGIC = b"GGUF"
 
+# Flush every 512 MB of pending write_buffer calls. Metal silently drops
+# write_buffer operations when the GPU staging buffer queue is saturated
+# (~1-2 GB). Periodic flushes prevent this for large single-file models.
+_FLUSH_THRESHOLD = 512 * 1024 * 1024
+
 
 from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
@@ -562,15 +567,13 @@ def load_safetensors_weights(
 
         def _pad4(data: bytes) -> bytes:
             """Pad to 4-byte boundary — WebGPU write_buffer requires 4-byte-aligned size."""
-            r = len(data) % 4
-            return data if r == 0 else data + b"\x00" * (4 - r)
+            return data + b"\x00" * (-len(data) % 4)
 
         # Track pending write_buffer bytes to flush periodically.
         # Metal silently drops write_buffer operations when the pending write queue
         # exceeds the GPU staging buffer capacity (~1-2GB). For large single-file
         # models (e.g. Gemma4-12B at 22GB), we must flush periodically.
         _pending_bytes = 0
-        _FLUSH_THRESHOLD = 512 * 1024 * 1024  # flush every 512MB of pending writes
 
         def _maybe_flush() -> None:
             nonlocal _pending_bytes

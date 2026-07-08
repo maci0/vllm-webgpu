@@ -122,9 +122,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             raise RuntimeError("multi-sequence batching not supported in this build")
 
         ctx_len = int(attn_metadata.max_decode_seq_len
-                      if attn_metadata.max_decode_seq_len is not None else num_tokens)
+                      if attn_metadata.max_decode_seq_len is not None else int(positions[-1]) + 1)
         if ctx_len <= 0:
-            ctx_len = num_tokens
+            ctx_len = int(positions[-1]) + 1
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds 65535")
 
@@ -155,8 +155,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            self._rms_consts,
                            (num_tokens, 1, 1))
 
-            lm_head_w = self.weights.get(self._lm_head_key(),
-                                         self.weights[self._embed_key()])
+            lm_head_w = self.weights[self._lm_head_key()]
             if num_tokens > 1:
                 # Batched path: matmul_quant_mr4 reads all M rows of norm_out.
                 # Dispatch (vocab, num_tokens, 1) so every token gets its logits.
@@ -542,16 +541,15 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        {"N": gelu_n_moe},
                                        ((gelu_n_moe // 4 + 255) // 256, 1, 1),
                                        shader_subdir="gemma")
-                        uq_dk2 = self._uq_for_key(dk)
                         self._dispatch("matmul_quant",
                                        [sc["ffn_act"], self.weights[dk],
-                                        self._scales_buf(dk, uq_dk2, sc["ffn_act"]),
+                                        self._scales_buf(dk, uq_dk, sc["ffn_act"]),
                                         sc["ffn_out"]],
                                        {"K": inter_moe, "N": hidden,
-                                        "USE_QUANT": uq_dk2,
-                                        **self._split_k_extra(uq_dk2),
-                                        **self._quant_extra(dk[:-7], uq_dk2)},
-                                       _gemv_wg(hidden, uq_dk2))
+                                        "USE_QUANT": uq_dk,
+                                        **self._split_k_extra(uq_dk),
+                                        **self._quant_extra(dk[:-7], uq_dk)},
+                                       _gemv_wg(hidden, uq_dk))
                         # K_IDX=0: w_per_token[0] is the scalar weight for this expert.
                         self._dispatch("moe_accumulate",
                                        [moe_acc, sc["ffn_out"],

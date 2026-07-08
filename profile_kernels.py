@@ -181,7 +181,7 @@ if stats:
     inter_sz = hf_cfg.intermediate_size
     # Estimate weight bytes per layer
     q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
-    attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + hid * hid)  # qkvo in f16 bytes
+    attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
     ffn_w = 2 * (hid * inter_sz * 3)  # gate, up, down
     total_w_mb = (attn_w + ffn_w) * num_layers / 1e6
     bw_util_gb_s = total_w_mb * 1000 / total  # GB/s

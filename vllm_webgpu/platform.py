@@ -93,16 +93,14 @@ class WebGPUPlatform(_Platform):
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = "vllm_webgpu.v1.worker.WebGPUWorker"
         existing_backend = parallel_config.distributed_executor_backend
-        if existing_backend in (None, "auto"):
-            parallel_config.distributed_executor_backend = "uni"
-        elif existing_backend != "uni":
+        if existing_backend not in (None, "auto", "uni"):
             logger.warning(
                 "WebGPU platform only supports the 'uni' executor backend, "
                 "but distributed_executor_backend was explicitly set to %r. "
                 "Overriding to 'uni'; multi-node backends are not supported.",
                 existing_backend,
             )
-            parallel_config.distributed_executor_backend = "uni"
+        parallel_config.distributed_executor_backend = "uni"
         parallel_config.disable_custom_all_reduce = True
         vllm_config.scheduler_config.enable_chunked_prefill = False
 

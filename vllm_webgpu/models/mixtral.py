@@ -68,12 +68,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 "dummy_scales": mk(8),                           # fallback scales binding
             }
 
-    def _effective_ctx(self, ctx_len: int) -> int:
+    def _effective_ctx_len(self, ctx_len: int) -> int:
         """Cap ctx_len at the sliding window size when SWA is configured."""
         return min(ctx_len, self._sw) if self._sw else ctx_len
-
-    def _effective_ctx_len(self, ctx_len: int) -> int:
-        return self._effective_ctx(ctx_len)
 
     def _ffn_dispatch(
         self,

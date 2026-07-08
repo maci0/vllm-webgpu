@@ -198,7 +198,7 @@ def test_mixtral_moe_forward(wgpu_device):
 
 @pytest.mark.integration
 def test_mistral_swa_window(wgpu_device):
-    """Verify _effective_ctx clips correctly at the sliding_window boundary."""
+    """Verify _effective_ctx_len clips correctly at the sliding_window boundary."""
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.models.mixtral import MixtralWebGPUModel
     from vllm_webgpu.utils import SHADERS_DIR
@@ -223,8 +223,8 @@ def test_mistral_swa_window(wgpu_device):
 
     assert model._sw == 16
     # ctx_len > window: clips to window
-    assert model._effective_ctx(32) == 16
+    assert model._effective_ctx_len(32) == 16
     # ctx_len <= window: returns ctx_len unchanged
-    assert model._effective_ctx(8) == 8
+    assert model._effective_ctx_len(8) == 8
     # ctx_len == window: no clip
-    assert model._effective_ctx(16) == 16
+    assert model._effective_ctx_len(16) == 16
