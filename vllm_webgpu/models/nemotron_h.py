@@ -807,7 +807,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         H   = self.hidden_size
         if self._intermediate_sizes is not None:
             mlp_idx = sum(1 for j in range(layer_idx) if self._layer_types[j] == "mlp")
-            I = self._intermediate_sizes[mlp_idx]
+            I = self._intermediate_sizes[0] if len(self._intermediate_sizes) == 1 else self._intermediate_sizes[mlp_idx]
         else:
             I = self.intermediate_size
 
