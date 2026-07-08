@@ -5,8 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import BaseWebGPUModel
-from vllm_webgpu.models.llama import _gemv_wg
+from vllm_webgpu.models.llama import LlamaWebGPUModel, _gemv_wg
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -34,7 +33,7 @@ def _is_full_attn(layer_idx: int, layer_types: list | None = None) -> bool:
     return (layer_idx + 1) % _FULL_ATTN_INTERVAL == 0
 
 
-class Qwen35WebGPUModel(BaseWebGPUModel):
+class Qwen35WebGPUModel(LlamaWebGPUModel):
     """
     Qwen3.5-9B hybrid inference model — all compute on WebGPU.
 
@@ -56,20 +55,20 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
     logit_returns_token_id: bool = True
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
-        super().__init__(model_config, wgpu_device, pipeline_cache)
-        self.num_layers: int = model_config.num_hidden_layers
-        self.num_q_heads: int = model_config.num_attention_heads
-        self.num_kv_heads: int = model_config.num_key_value_heads
-        self.hidden_size: int = model_config.hidden_size
-        self.intermediate_size: int = model_config.intermediate_size
-        self.vocab_size: int = model_config.vocab_size
-        self.head_dim: int = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
-        self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
+        # Set GDN + MoE + other Qwen3.5-specific attributes BEFORE calling
+        # super().__init__(). LlamaWebGPUModel.__init__() calls
+        # self._init_scratch_buffers() via Python's dynamic dispatch, which
+        # resolves to Qwen35's override. That override uses these values, so they
+        # must exist before the super() call returns.
+
         self._layer_types: list | None = getattr(model_config, "layer_types", None)
         # Partial RoPE: some models only rotate a fraction of head dimensions.
         # partial_rotary_factor=0.25 → rotary_dim = head_dim * 0.25.
         _prf = getattr(model_config, "partial_rotary_factor", 1.0) or 1.0
-        self._rotary_dim: int = max(2, int(self.head_dim * _prf))
+        # Read head_dim from model_config directly — self.head_dim not set yet.
+        _head_dim_raw = getattr(model_config, "head_dim",
+                                model_config.hidden_size // model_config.num_attention_heads)
+        self._rotary_dim: int = max(2, int(_head_dim_raw * _prf))
         if self._rotary_dim % 2 != 0:
             self._rotary_dim -= 1
         # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
@@ -100,7 +99,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         self._moe_k: int           = getattr(model_config, "num_experts_per_tok", 0)
         self._moe_inter: int       = getattr(model_config, "moe_intermediate_size", 0)
         self._moe_shared_inter: int = getattr(
-            model_config, "shared_expert_intermediate_size", self.intermediate_size)
+            model_config, "shared_expert_intermediate_size", model_config.intermediate_size)
         # _is_moe is set from config here and may be overridden in load_weights
         # once we can verify against actual weight keys.
         self._is_moe: bool = self._moe_num_experts > 0 and self._moe_k > 0
@@ -114,30 +113,22 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         # the __bf16 buffer is absent (model not BF16 or flag off).
         self._gdn_bf16: bool = os.environ.get("GDN_BF16", "0") == "1"
 
-        from vllm_webgpu.config import get_config
-        self.block_size: int = get_config().block_size
-
-        for name, val in [("hidden_size", self.hidden_size),
-                          ("intermediate_size", self.intermediate_size),
-                          ("head_dim", self.head_dim)]:
-            if val % 2 != 0:
-                raise ValueError(f"{name}={val} must be even for f16 GEMV")
-        for name, val in [("hidden_size", self.hidden_size),
-                          ("intermediate_size", self.intermediate_size)]:
-            if val % 4 != 0:
-                raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
-
-        max_ctx = getattr(model_config, "max_position_embeddings", 8192)
-        self._vpt: int = min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0
-        self._rms_consts: dict = {}  # populated in _postprocess_weights after _gemma_norm is known
-        self._lm_head_w = None  # resolved in load_weights after weights are available
-        self._init_scratch_buffers(max_ctx)
-
         # Persistent GPU buffers for recurrent state (allocated after load_weights).
         # SSM state:  [NUM_V_HEADS, K_DIM, V_DIM] f32 = 2MB per linear-attn layer
         # Conv state: [CONV_KERNEL-1, CONV_DIM] f16 = 49KB per linear-attn layer
         self._ssm_gpu: list = []   # one WebGPUBuffer per layer (or None for full-attn)
         self._conv_gpu: list = []  # one WebGPUBuffer per layer
+
+        # LlamaWebGPUModel.__init__() sets: num_layers, num_q_heads, num_kv_heads,
+        # hidden_size, intermediate_size, vocab_size, head_dim, rope_theta, block_size,
+        # _ln_rope_theta, _rms_consts (without GEMMA_NORM), runs dimension validation,
+        # then calls self._init_scratch_buffers() and self._init_rope_freq_buf().
+        super().__init__(model_config, wgpu_device, pipeline_cache)
+
+        # _vpt is stored for _postprocess_weights, which rebuilds _rms_consts with GEMMA_NORM.
+        # Formula matches LlamaWebGPUModel (wg_size=256, cap=16).
+        self._vpt: int = min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0
+        self._lm_head_w = None  # resolved in load_weights after weights are available
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
 
@@ -746,7 +737,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         normed_x = sc["normed"]
         for i in range(self.num_layers):
             if self._is_full_attn(i):
-                normed_x, x_buf = self._full_attn_layer(
+                normed_x, x_buf = self._transformer_layer(
                     i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
             else:
                 normed_x, x_buf = self._gdn_layer_gpu(i, normed_x, x_buf, num_tokens)
@@ -865,7 +856,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
                 for i in range(self.num_layers):
                     if self._is_full_attn(i):
-                        normed_x, x_buf = self._full_attn_layer(
+                        normed_x, x_buf = self._transformer_layer(
                             i, normed_x, x_buf, pos_buf, slot_map, bt_buf,
                             ctx_t, 1)
                     else:
@@ -970,7 +961,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             normed_x = sc["normed"]
             for i in range(self.num_layers):
                 if self._is_full_attn(i):
-                    normed_x, x_buf = self._full_attn_layer(
+                    normed_x, x_buf = self._transformer_layer(
                         i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
                 else:
                     normed_x, x_buf = self._gdn_layer_gpu(
@@ -996,7 +987,19 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         tok = self._read_sample_tok()
         return np.array([[tok]], dtype=np.int32)
 
-    def _full_attn_layer(
+    def _ffn_dispatch(
+        self,
+        normed_x: "WebGPUBuffer",
+        layer_idx: int,
+        num_tokens: int,
+    ) -> "WebGPUBuffer":
+        """Route to MoE or dense FFN based on model config."""
+        if self._is_moe:
+            self._moe_ffn_dispatch(layer_idx, normed_x, self._sc["ffn_out"], num_tokens)
+            return self._sc["ffn_out"]
+        return super()._ffn_dispatch(normed_x, layer_idx, num_tokens)
+
+    def _transformer_layer(
         self,
         layer_idx: int,
         normed_x: "WebGPUBuffer",
@@ -1007,16 +1010,18 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         ctx_len: int,
         num_tokens: int,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
-        """Standard full-attention transformer layer. Receives pre-normed input."""
-        import math
+        """Standard full-attention transformer layer. Receives pre-normed input.
 
+        Adds Qwen3.5-specific behaviour on top of the Llama scaffold:
+          - attn_output_gate: sigmoid-gated attention output before o_proj.
+          - GEMMA_NORM, ROTARY_DIM, INTERLEAVED passed to per-head norm+rope shaders.
+          - MoE FFN routed through _ffn_dispatch() override.
+        """
         sc = self._sc
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}"
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
-        inter = self.intermediate_size
-        ln_rope = math.log(self.rope_theta)
 
         # Per-weight quantization detection: Q4_K (type 12) → GPU block decoder.
         _uq = self._uq_for_key
@@ -1025,7 +1030,6 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
         residual = sc[h_names[(self._hstate + 1) % 3]]
         out = sc[h_names[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
-        gelu_n = num_tokens * inter
 
         _rms_h = self._rms_consts
         k_cache, v_cache = self.kv_pool[layer_idx]
@@ -1047,7 +1051,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
 
             # When attn_output_gate=True, q_proj.weight was split at load time.
             # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].
-            # The gate is applied as silu(gate)*attn_out before o_proj (step below).
+            # The gate is applied as sigmoid(gate)*attn_out before o_proj (step below).
             if self._attn_output_gate:
                 gate_wk = f"{p}.self_attn.q_gate_proj.weight"
                 if self.weights.get(gate_wk) is not None:
@@ -1066,15 +1070,15 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
             _q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
             _k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
             _freq_buf = self._rope_freq_buf
-            _q35_rope_base = {"ROPE_BASE": float(self.rope_theta),
-                              "LN_ROPE_BASE": ln_rope,
-                              "USE_FREQ_BUF": int(self._use_freq_buf)}
+            _rope_base = {"ROPE_BASE": float(self.rope_theta),
+                          "LN_ROPE_BASE": self._ln_rope_theta,
+                          "USE_FREQ_BUF": int(self._use_freq_buf)}
             if _q_norm_w is not None and _k_norm_w is not None:
                 # Binding 7 (inv_freq_buf): always provided.
                 self._dispatch("fused_qk_norm_rope",
                                [sc["q_buf"], _q_norm_w, _k_norm_w, pos_buf,
                                 sc["q_rope"], sc["k_rope"], sc["k_buf"], _freq_buf],
-                               {**_q35_rope_base,
+                               {**_rope_base,
                                 "HEAD_DIM": self.head_dim,
                                 "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": self.num_kv_heads,
@@ -1095,7 +1099,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                         # Binding 4 (inv_freq_buf): always provided.
                         self._dispatch("fused_per_head_norm_rope",
                                        [src, norm_w, pos_buf, dst, _freq_buf],
-                                       {**_q35_rope_base, "HEAD_DIM": self.head_dim,
+                                       {**_rope_base, "HEAD_DIM": self.head_dim,
                                         "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
                                         "GEMMA_NORM": self._gemma_norm,
                                         "ROTARY_DIM": self._rotary_dim,
@@ -1104,7 +1108,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                     else:
                         # Binding 3 (inv_freq_buf): always provided.
                         self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                       {**_q35_rope_base, "HEAD_DIM": self.head_dim,
+                                       {**_rope_base, "HEAD_DIM": self.head_dim,
                                         "NUM_HEADS": n_heads},
                                        (num_tokens, n_heads, 1))
 
@@ -1122,14 +1126,13 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                            [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                            "CTX_LEN": ctx_len},
+                            "CTX_LEN": self._effective_ctx_len(ctx_len)},
                            (self.num_q_heads, 1, 1))
 
-            # Apply attention output gate if enabled: gated = silu(q_gate_buf) * attn_out.
+            # Apply attention output gate if enabled: gated = sigmoid(gate) * attn_out.
             # q_buf is free at this point (written in q_proj, last read in RoPE), so
             # reuse it as the output buffer for the gated result.
             if self._attn_output_gate and self.weights.get(f"{p}.self_attn.q_gate_proj.weight") is not None:
-                # HF: attn_output * sigmoid(gate), not silu(gate)*attn_output.
                 gate_n = num_tokens * q_dim
                 self._dispatch("sigmoid_gate",
                                [sc["q_gate_buf"], sc["attn_out"], sc["q_buf"]],
@@ -1155,50 +1158,15 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                             residual, sc["ffn_normed"]],
                            _rms_h, (num_tokens, 1, 1))
 
-            # FFN (MoE or dense)
-            if self._is_moe:
-                self._moe_ffn_dispatch(layer_idx, sc["ffn_normed"], sc["ffn_out"],
-                                       num_tokens)
-            else:
-                gw_k2 = f"{p}.mlp.gate_proj.weight"
-                uw_k2 = f"{p}.mlp.up_proj.weight"
-                uq_g2 = _uq(gw_k2); uq_u2 = _uq(uw_k2)
-                if uq_g2 == 0 and uq_u2 == 0:
-                    self._dispatch("fused_gate_act",
-                                   [sc["ffn_normed"], self.weights[gw_k2], self.weights[uw_k2],
-                                    sc["ffn_act"]],
-                                   {"K": hidden, "N": inter, "GELU": 0}, (inter, 1, 1))
-                else:
-                    for out_b, proj2, w_k, uq2 in [
-                            (sc["gate_buf"], "gate_proj", gw_k2, uq_g2),
-                            (sc["up_buf"],   "up_proj",   uw_k2, uq_u2)]:
-                        qi2 = self._quant_extra(f"{p}.mlp.{proj2}", uq2)
-                        self._dispatch("matmul_quant",
-                                       [sc["ffn_normed"], self.weights[w_k],
-                                        self._scales_buf(w_k, uq2, sc["ffn_normed"]), out_b],
-                                       {"K": hidden, "N": inter, "USE_QUANT": uq2,
-                                        **self._split_k_extra(uq2), **qi2},
-                                       _gemv_wg(inter, uq2))
-                    self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                                   {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
-
-                w_k = f"{p}.mlp.down_proj.weight"
-                uq = _uq(w_k)
-                qi_d = self._quant_extra(f"{p}.mlp.down_proj", uq)
-                self._dispatch("matmul_quant",
-                               [sc["ffn_act"], self.weights[w_k],
-                                self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
-                               {"K": inter, "N": hidden, "USE_QUANT": uq,
-                                **self._split_k_extra(uq), **qi_d},
-                               _gemv_wg(hidden, uq))
+            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx, num_tokens)
 
             if layer_idx < self.num_layers - 1:
                 next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
                 self._dispatch("add_rms_norm",
-                               [residual, sc["ffn_out"], next_w, out, sc["normed"]],
+                               [residual, ffn_out, next_w, out, sc["normed"]],
                                _rms_h, (num_tokens, 1, 1))
             else:
-                self._dispatch("add", [residual, sc["ffn_out"], out],
+                self._dispatch("add", [residual, ffn_out, out],
                                {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
