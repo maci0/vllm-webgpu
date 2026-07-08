@@ -200,7 +200,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         q_dim = lp["q_dim"]
         kv_dim = lp["kv_dim"]
         num_kv_heads = lp["num_kv_heads"]
-        ln_rope = math.log(self.rope_theta)
+        ln_rope = self._ln_rope_theta
         p = self._pk(layer_idx)
 
         h_names = ["h0", "h1", "h2"]

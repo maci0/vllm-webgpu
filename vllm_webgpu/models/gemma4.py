@@ -127,6 +127,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _vpt = min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
+        self._ln_rope_theta: float = math.log(self.rope_theta)
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Pre-allocate scratch buffers at maximum layer dimensions."""
@@ -373,7 +374,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         num_kv_heads = lp["num_kv_heads"]
         has_v = lp["has_v_proj"]
         inter = self.intermediate_size
-        ln_rope = math.log(self.rope_theta)
+        ln_rope = self._ln_rope_theta
         # Per-layer scalar from GGUF (layer_scalar weight, e.g. ~0.97 or ~0.053 depending on model).
         # Applied to the full residual once after both attn and FFN sublayers, matching vLLM:
         #   hidden_states = hidden_states * self.layer_scalar
