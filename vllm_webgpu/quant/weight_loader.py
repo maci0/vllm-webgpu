@@ -75,6 +75,20 @@ def _read_quant_cfg_from_json(config_path: Path) -> dict:
         return {}
 
 
+def _load_quant_cfg(config_path: Path) -> dict:
+    """Return the quantization config dict for a model, trying two sources in order.
+
+    First attempts compressed_tensors.get_quantization_config, which handles nested
+    locations (text_config, compression_config) and multimodal variants. Falls back to
+    the plain JSON three-key cascade when compressed_tensors is not installed.
+    """
+    try:
+        from compressed_tensors import get_quantization_config as _get_ct_config
+        return _get_ct_config(str(config_path)) or {}
+    except ImportError:
+        return _read_quant_cfg_from_json(config_path)
+
+
 def _check_unsupported_quant(model_dir: Path) -> None:
     """Raise ValueError if config.json names an unsupported quantization scheme.
 
@@ -88,11 +102,7 @@ def _check_unsupported_quant(model_dir: Path) -> None:
     config_json = model_dir / "config.json"
     if not config_json.exists():
         return
-    try:
-        from compressed_tensors import get_quantization_config as _get_ct_config
-        qcfg = _get_ct_config(str(config_json)) or {}
-    except ImportError:
-        qcfg = _read_quant_cfg_from_json(config_json)
+    qcfg = _load_quant_cfg(config_json)
     qt = (qcfg.get("quant_type") or qcfg.get("quant_method") or "").lower().strip()
     if qt in _UNSUPPORTED_QUANT_TYPES:
         raise ValueError(
@@ -394,11 +404,7 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
     p = Path(config_path)
     if not p.exists():
         return {}
-    try:
-        from compressed_tensors import get_quantization_config as _get_ct_config
-        quant_cfg = _get_ct_config(str(p)) or {}
-    except ImportError:
-        quant_cfg = _read_quant_cfg_from_json(p)
+    quant_cfg = _load_quant_cfg(p)
     config_groups = quant_cfg.get("config_groups")
     if not config_groups:
         return {}
