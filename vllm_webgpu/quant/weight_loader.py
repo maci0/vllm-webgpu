@@ -719,15 +719,11 @@ def load_safetensors_weights(
                     if sc_key in header:
                         try:
                             sc_dtype = header[sc_key]["dtype"]
-                            sc_t = sf.get_tensor(sc_key)
-                            if sc_dtype in ("F32", "F16"):
-                                sc_arr = sc_t.numpy().ravel().astype(np.float32)
-                            elif sc_dtype == "BF16":
-                                sc_arr = sc_t.to(torch.float32).numpy().ravel()
-                            else:
+                            if sc_dtype not in ("F32", "F16", "BF16"):
                                 logger.warning("Int8 scale %s has unsupported dtype %s",
                                                sc_key, sc_dtype)
                                 break
+                            sc_arr = _load_raw(sc_key).ravel().astype(np.float32)
                             _upload_f32(sc_arr, f"{name}.scales", weights)
                             qmeta[base_key]["group_size"] = 1
                             logger.debug("Int8 per-channel: %s scale n=%d", base_key, sc_arr.size)

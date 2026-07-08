@@ -168,11 +168,12 @@ class WebGPUWorker(WorkerBase):
         self.model_runner.reset_encoder_cache()
 
     def shutdown(self) -> None:
-        # Release the GPU device; model_runner holds a reference to wgpu_device
-        # so the Python GC will collect it once wgpu_device is cleared.
-        # Do not null model_runner here: any post-shutdown delegate call (e.g.
+        # Release the GPU device. Both the worker and model_runner hold a
+        # reference to wgpu_device; clearing only one leaves the object alive.
+        # Do not null model_runner itself: any post-shutdown delegate call (e.g.
         # reset_encoder_cache, get_supported_tasks) would raise AttributeError
-        # on NoneType instead of giving a clear error.
+        # on NoneType instead of a clear error.
+        self.model_runner.wgpu_device = None
         self.wgpu_device = None
         gc.collect()
         logger.info("WebGPU worker shutdown complete")

@@ -94,12 +94,19 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         if isinstance(_raw_int, list):
             _sizes = _raw_int
             if len(_sizes) == 1:
-                _sizes_iter = iter(_sizes * sum(1 for t in self._layer_types if t == "mlp"))
+                self._layer_int_size: list[int] = [
+                    _sizes[0] if lt == "mlp" else 0 for lt in self._layer_types
+                ]
             else:
-                _sizes_iter = iter(_sizes)
-            self._layer_int_size: list[int] = [
-                next(_sizes_iter) if lt == "mlp" else 0 for lt in self._layer_types
-            ]
+                _mlp_idx = 0
+                _result: list[int] = []
+                for lt in self._layer_types:
+                    if lt == "mlp":
+                        _result.append(_sizes[_mlp_idx])
+                        _mlp_idx += 1
+                    else:
+                        _result.append(0)
+                self._layer_int_size = _result
         else:
             self._layer_int_size = [
                 _raw_int if lt == "mlp" else 0

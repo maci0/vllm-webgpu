@@ -406,8 +406,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                 "USE_QUANT": uq, **self._quant_extra(w_key.removesuffix('.weight'), uq)},
                                (N_out, T, 1))
             else:
-                # f16 path (uq == 0); _rep_keys guard above ensures no other value reaches here
-                assert uq == 0
+                # uq is 0 (f16) here; _rep_keys guard above excludes all other formats.
                 self._dispatch("matmul_quant_mr4",
                                [x_buf, self.weights[w_key], self._dummy_scales_buf, out_buf],
                                {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
@@ -617,8 +616,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         bt_arr = self._bt_arr(attn_metadata)
         bt_bytes = bt_arr.tobytes()
-
-        x_buf: "WebGPUBuffer" = pre["x"]
 
         for t in range(T):
             self._hstate = 0

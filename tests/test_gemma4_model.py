@@ -31,8 +31,8 @@ def test_gemma4_model_instantiates(wgpu_device):
     assert model.softcap == 30.0
     assert model.num_layers == 2
     assert model.num_q_heads == 4
-    assert model.num_kv_heads == 2
-    assert model.head_dim == 16
+    assert model._lp[0]["num_kv_heads"] == 2
+    assert model._lp[0]["head_dim"] == 16
 
 
 @pytest.mark.integration

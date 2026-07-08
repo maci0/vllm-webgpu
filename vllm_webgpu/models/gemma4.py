@@ -119,16 +119,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
         self._ln_rope_theta: float = math.log(float(self.rope_theta))
 
-    @property
-    def num_kv_heads(self) -> int:
-        """KV head count from the first layer params (representative value)."""
-        return self._lp[0]["num_kv_heads"]
-
-    @property
-    def head_dim(self) -> int:
-        """Head dimension from the first layer params (representative value)."""
-        return self._lp[0]["head_dim"]
-
     def _scratch_token_count(self) -> int:
         """Number of tokens to size T-dependent scratch buffers for. Override in subclasses."""
         return 1
@@ -478,9 +468,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "USE_FREQ_BUF": int(self._use_freq_buf),
         }
 
-        chunks = [list(c) for c in itertools.batched(range(self.num_layers), _CHUNK)]
-
-        for chunk_idx, chunk_layers in enumerate(chunks):
+        for chunk_idx, chunk_layers in enumerate(itertools.batched(range(self.num_layers), _CHUNK)):
             with self._batched_dispatch():
                 if chunk_idx == 0:
                     self._dispatch("embedding_lookup_f32",
