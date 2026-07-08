@@ -126,33 +126,13 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         vocab = self.vocab_size
         self._hstate = 0
         sc = self._sc
-        pre = self._pre
-
-        ctx_len = int(
-            attn_metadata.max_decode_seq_len
-            if attn_metadata.max_decode_seq_len is not None
-            else num_tokens
-        )
-        if ctx_len <= 0:
-            ctx_len = num_tokens
 
         _rms_base = self._rms_consts
 
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(
-            pre["slot_map"].buf, 0,
-            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = self._bt_arr(attn_metadata)
-        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+        ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len = \
+            self._decode_setup(input_ids, positions, attn_metadata)
 
-        ids_buf    = pre["ids"]
-        pos_buf    = pre["pos"]
-        slot_map   = pre["slot_map"]
-        bt_buf     = pre["bt"]
-        x_buf      = pre["x"]
-        norm_out   = pre["norm_out"]
-        logits_buf = pre["logits"]
+        greedy = getattr(self, "_greedy_decode", True)
 
         # Start first encoder manually. Layer methods see _active_encoder is not None
         # and their _batched_dispatch calls become re-entrant no-ops, recording into
@@ -182,27 +162,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             _rms_base, (num_tokens, 1, 1),
         )
 
-        lm_head_w = (self.weights.get("lm_head.weight")
-                     or self.weights["model.embed_tokens.weight"])
-        self._dispatch(
-            "matmul_quant",
-            [norm_out, lm_head_w, self.weights.get("lm_head.scales", norm_out), logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
-            ((vocab + 255) // 256, 1, 1),
-        )
-
-        if getattr(self, "_greedy_decode", True):
-            self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
-                           {"N": vocab}, (1, 1, 1))
-            self._copy_sample_to_staging()
+        self._decode_teardown(norm_out, logits_buf, vocab, greedy)
 
         dev.queue.submit([self._active_encoder.finish()])
         self._active_encoder = None
 
-        self._last_logit_buf = logits_buf
-        self._last_vocab     = vocab
-
-        if getattr(self, "_greedy_decode", True):
+        if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()

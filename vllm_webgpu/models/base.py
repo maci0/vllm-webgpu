@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask
+from vllm.model_executor.layers.rotary_embedding.common import yarn_find_correction_range, yarn_get_mscale
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:
@@ -49,8 +49,9 @@ def compute_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> 
     # space, matching YaRNScalingRotaryEmbedding._compute_inv_freq exactly.
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
     low, high = yarn_find_correction_range(beta_fast, beta_slow, head_dim, rope_theta, orig_ctx)
-    import torch as _torch
-    ramp_mask = yarn_linear_ramp_mask(low, high, head_dim // 2, _torch.float64).numpy()
+    n = head_dim // 2
+    denom = (high - low) if high != low else (high - low + 0.001)
+    ramp_mask = np.clip((np.arange(n, dtype=np.float64) - low) / denom, 0.0, 1.0)
     inv_freq_mask = (1.0 - ramp_mask) * extrapolation_factor
     scaled_inv_freq = inv_freq_interpolation * (1.0 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
@@ -100,9 +101,8 @@ class BaseWebGPUModel(ABC):
         # every dispatch must provide a buffer at the slot. Initialised here as a
         # 1-element dummy; LlamaWebGPUModel._init_rope_freq_buf() replaces it with
         # actual YaRN frequencies when rope_scaling.rope_type == "yarn".
-        import wgpu as _wgpu
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WGPUBuf
-        _rw = _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
+        _rw = BaseWebGPUModel._rw_flags()
         self._rope_freq_buf: "WebGPUBuffer" = _WGPUBuf.empty(
             wgpu_device.wgpu_device, 4, usage=_rw)  # 1-element f32 placeholder
         self._use_freq_buf: bool = False
@@ -113,6 +113,19 @@ class BaseWebGPUModel(ABC):
         """Return the standard STORAGE|COPY_SRC|COPY_DST buffer usage flags."""
         import wgpu as _wgpu
         return _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
+
+    @staticmethod
+    def _vals_per_thread(hidden_size: int) -> int:
+        """Return the VALS_PER_THREAD constant for rms_norm shaders.
+
+        Each workgroup covers 256 threads. When hidden_size fits within
+        256*16 elements, each thread handles ceil(hidden/256) values (capped
+        at 16). Larger hidden sizes require a different shader path (0 signals
+        the caller to fall back).
+        """
+        if hidden_size <= 256 * 16:
+            return min((hidden_size + 255) // 256, 16)
+        return 0
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):
@@ -216,7 +229,7 @@ class BaseWebGPUModel(ABC):
         import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
         self._gpu_sample_tok   = WebGPUBuffer.empty(dev, 4, usage=rw)      # 1 × u32
         self._gpu_sample_vocab = vocab
         # MAP_READ staging buffer: copy argmax result here inside the MAIN command encoder,
@@ -306,7 +319,7 @@ class BaseWebGPUModel(ABC):
         if w is not None:
             dtype = getattr(w, "dtype", "f16")
             qmeta = self.weights.get("__quant_meta__", {})
-            meta = qmeta.get(key[:-7], {}) if isinstance(qmeta, dict) else {}
+            meta = qmeta.get(key[:-7], {})
             fmt = meta.get("fmt", "")
             if dtype == "i32":
                 return 4 if fmt == "awq_sym" else 3

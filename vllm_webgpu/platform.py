@@ -11,6 +11,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+try:
+    from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE_RT
+    _CPU_ATTN_PATH = _ABE_RT.CPU_ATTN.get_path()
+except ImportError:
+    _CPU_ATTN_PATH = ""
+
 
 @functools.cache
 def _get_wgpu_adapter():
@@ -72,7 +78,9 @@ class WebGPUPlatform(_Platform):
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
         from vllm.utils.mem_utils import get_cpu_memory
-        return get_cpu_memory()
+        adapter = _get_wgpu_adapter()
+        limit = adapter.limits.get("max-buffer-size", 4 * 1024**3) if adapter else 4 * 1024**3
+        return min(get_cpu_memory(), limit)
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
@@ -108,11 +116,7 @@ class WebGPUPlatform(_Platform):
         attn_selector_config: AttentionSelectorConfig,
         num_heads: int | None = None,
     ) -> str:
-        try:
-            from vllm.v1.attention.backends.registry import AttentionBackendEnum
-            return AttentionBackendEnum.CPU_ATTN.get_path()
-        except Exception:
-            return ""
+        return _CPU_ATTN_PATH
 
     @classmethod
     def is_pin_memory_available(cls) -> bool:

@@ -21,7 +21,7 @@ except ImportError:
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, WebGPUCachePlanner, _alloc_rw_buffer, allocate_kv_pool_hybrid
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, _alloc_rw_buffer, allocate_kv_pool_hybrid
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 if TYPE_CHECKING:

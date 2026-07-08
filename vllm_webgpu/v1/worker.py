@@ -73,7 +73,7 @@ class WebGPUWorker(WorkerBase):
             is_driver_worker=is_driver_worker,
         )
         self.webgpu_config = get_config()
-        if hasattr(self, "parallel_config"):
+        if getattr(self, "parallel_config", None) is not None:
             self.parallel_config.disable_custom_all_reduce = True
         self.wgpu_device: "WebGPUDevice | None" = None
 

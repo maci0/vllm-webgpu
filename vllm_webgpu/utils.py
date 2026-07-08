@@ -30,7 +30,7 @@ def sample_token(
     if temperature <= 1e-5:
         return int(np.argmax(logits_1d))
 
-    raw = logits_1d.astype(np.float64)
+    raw = logits_1d.astype(np.float32)
 
     # Temperature scaling with numerically stable softmax.
     raw -= raw.max()
@@ -41,12 +41,10 @@ def sample_token(
     if top_k > 0:
         k = min(top_k, len(probs))
         top_k_idx = np.argpartition(probs, -k)[-k:]
-        mask = np.zeros_like(probs)
-        mask[top_k_idx] = 1.0
-        probs = probs * mask
-        s = probs.sum()
-        if s > 0:
-            probs /= s
+        out = np.zeros_like(probs)
+        out[top_k_idx] = probs[top_k_idx]
+        s = out.sum()
+        probs = out / s if s > 0 else out
 
     # Top-p (nucleus): keep the smallest set whose cumulative probability exceeds top_p.
     if 0.0 < top_p < 1.0:
@@ -54,11 +52,9 @@ def sample_token(
         cumsum = np.cumsum(probs[sorted_idx])
         cutoff = max(1, int(np.searchsorted(cumsum, top_p, side="left")) + 1)
         keep = sorted_idx[:cutoff]
-        mask = np.zeros_like(probs)
-        mask[keep] = 1.0
-        probs = probs * mask
-        s = probs.sum()
-        if s > 0:
-            probs /= s
+        out = np.zeros_like(probs)
+        out[keep] = probs[keep]
+        s = out.sum()
+        probs = out / s if s > 0 else out
 
     return int(np.random.choice(len(probs), p=probs))

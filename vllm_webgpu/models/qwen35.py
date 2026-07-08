@@ -48,9 +48,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
     hot path.
     """
 
-    # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
-    logit_returns_token_id: bool = True
-
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
         # Set GDN + MoE + other Qwen3.5-specific attributes BEFORE calling
         # super().__init__(). LlamaWebGPUModel.__init__() calls
@@ -551,8 +548,8 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # .to_numpy() creates an internal staging buffer, submits a copy, and maps.
         raw_idx = sc["moe_topk_idx"].to_numpy().view(np.uint32)
         raw_w   = sc["moe_topk_w"].to_numpy().view(np.float32)
-        expert_indices = [int(raw_idx[k]) for k in range(K)]
-        expert_weights = [float(raw_w[k]) for k in range(K)]
+        expert_indices = raw_idx[:K].tolist()
+        expert_weights = raw_w[:K].tolist()
 
         logger.debug("L%02d MoE experts: %s  weights: %s",
                      layer_idx, expert_indices,

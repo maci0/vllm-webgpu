@@ -1,4 +1,8 @@
-"""Standalone inference script for vllm-webgpu. No vLLM required."""
+"""Standalone inference script for vllm-webgpu.
+
+Requires vLLM for model-path resolution (get_model_path) when invoked from
+__main__. The run() function itself only requires transformers and wgpu.
+"""
 import math
 import os
 import sys

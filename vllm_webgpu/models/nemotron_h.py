@@ -113,7 +113,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         self._rms_base: dict = {
             "HIDDEN_DIM": self.hidden_size,
-            "VALS_PER_THREAD": min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0,
+            "VALS_PER_THREAD": self._vals_per_thread(self.hidden_size),
         }
         self._init_scratch_buffers(max_ctx)
 
@@ -294,7 +294,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     def _postprocess_mamba_weights(self) -> None:
         """Convert A_log -> A and ensure D / dt_bias are stored as f32.
 
-        The vLLM weight loader applies -exp(x) to A_log before storing A.
+        HF checkpoints store A as A_log (raw log values). Apply -exp() here to
+        match what vLLM's composed_weight_loader does in the CUDA path
+        (mamba_mixer2.py line 461). The WebGPU loader does not run PyTorch
+        weight-loaders, so this transformation must be applied manually.
         D and dt_bias need f32 for numerical precision in the SSM shader.
         The conv1d.weight may have an extra dim [conv_dim, 1, kernel] which
         we flatten to [conv_dim, kernel].
@@ -385,12 +388,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes(),
         )
-        bt_arr = np.array(
-            attn_metadata.block_tables[0]
-            if hasattr(attn_metadata, "block_tables")
-            else [0],
-            dtype=np.uint32,
-        )
+        bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         with self._batched_dispatch():
@@ -810,11 +808,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         pre = self._pre
         sc  = self._sc
-        bt_arr = np.array(
-            attn_metadata.block_tables[0]
-            if hasattr(attn_metadata, "block_tables") else [0],
-            dtype=np.uint32,
-        )
+        bt_arr = self._bt_arr(attn_metadata)
 
         for t in range(T):
             self._hstate = 0

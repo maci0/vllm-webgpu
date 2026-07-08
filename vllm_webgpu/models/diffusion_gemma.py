@@ -57,10 +57,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Extra scratch buffer: shared-expert residual (F32 like h0/h1/h2).
             # Needed because the 3-buffer h-rotation doesn't accommodate 4 distinct
             # tensor states (x_buf, post-attn, post-shared-expert, post-moe).
-            import wgpu as _wgpu
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WB
             _dev = wgpu_device.wgpu_device
-            _rw = _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
+            _rw = self._rw_flags()
             # canvas_length is the max batch size during diffusion inference (default 256).
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
@@ -78,14 +77,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Override: size all T-dependent scratch buffers for the full canvas length.
 
-        The parent uses T=1 for single-token decode. DiffusionGemma operates on
-        up to canvas_length tokens at once during denoising, so all per-token
-        scratch buffers must fit the full canvas to prevent silent out-of-bounds
-        writes when num_tokens > 1.
+        Allocates _pre and _sc directly with T=canvas_length from the start,
+        skipping the parent's T=1 allocation to avoid wasted GPU memory.
         """
-        super()._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
-
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         T = getattr(self.model_config, "canvas_length", 256)
@@ -94,40 +88,49 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         moe_inter = getattr(self.model_config, "moe_intermediate_size", I_shared)
         I = max(I_shared, moe_inter)
         V = self.vocab_size
+        NQ = self.num_q_heads
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
 
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, n, usage=rw)
 
-        # Resize _pre buffers for up to T tokens
-        self._pre["ids"]      = mk(T * 4)
-        self._pre["pos"]      = mk(T * 4)
-        self._pre["slot_map"] = mk(T * 4)
-        self._pre["x"]        = mk(T * H * 4)
-        self._pre["norm_out"] = mk(T * H * 2)
-        self._pre["logits"]   = mk(T * V * 2)
-        self._pre["capped"]   = mk(T * V * 2)
+        # Initialize _pre buffers sized for the full canvas (T tokens)
+        self._pre: dict = {
+            "ids":      mk(T * 4),
+            "pos":      mk(T * 4),
+            "slot_map": mk(T * 4),
+            "bt":       mk(4096 * 4),
+            "x":        mk(T * H * 4),
+            "norm_out": mk(T * H * 2),
+            "logits":   mk(T * V * 2),
+            "capped":   mk(T * V * 2),
+        }
 
-        # Resize _sc buffers; parent allocated T=1 for all of these
-        self._sc["normed"]     = mk(T * H * 2)
-        self._sc["qkv_buf"]    = mk(T * (max_q_dim + 2 * max_kv_dim) * 2)
-        self._sc["q_buf"]      = mk(T * max_q_dim * 2)
-        self._sc["k_buf"]      = mk(T * max_kv_dim * 2)
-        self._sc["v_buf"]      = mk(T * max_kv_dim * 2)
-        self._sc["v_normed"]   = mk(T * max_kv_dim * 2)
-        self._sc["q_rope"]     = mk(T * max_q_dim * 2)
-        self._sc["k_rope"]     = mk(T * max_kv_dim * 2)
-        self._sc["attn_out"]   = mk(T * max_q_dim * 2)
-        self._sc["o_proj_out"] = mk(T * H * 2)
-        self._sc["ffn_normed"] = mk(T * H * 2)
-        self._sc["gate_buf"]   = mk(T * I * 2)
-        self._sc["up_buf"]     = mk(T * I * 2)
-        self._sc["ffn_act"]    = mk(T * I * 2)
-        self._sc["ffn_out"]    = mk(T * H * 2)
-        self._sc["h0"]         = mk(T * H * 4)
-        self._sc["h1"]         = mk(T * H * 4)
-        self._sc["h2"]         = mk(T * H * 4)
+        # Initialize _sc buffers sized for the full canvas (T tokens)
+        self._sc: dict = {
+            "normed":     mk(T * H * 2),
+            "qkv_buf":    mk(T * (max_q_dim + 2 * max_kv_dim) * 2),
+            "q_buf":      mk(T * max_q_dim * 2),
+            "k_buf":      mk(T * max_kv_dim * 2),
+            "v_buf":      mk(T * max_kv_dim * 2),
+            "v_normed":   mk(T * max_kv_dim * 2),
+            "q_rope":     mk(T * max_q_dim * 2),
+            "k_rope":     mk(T * max_kv_dim * 2),
+            "scores_buf": mk(NQ * max_ctx * 2),
+            "sm_buf":     mk(NQ * max_ctx * 2),
+            "attn_out":   mk(T * max_q_dim * 2),
+            "o_proj_out": mk(T * H * 2),
+            "ffn_normed": mk(T * H * 2),
+            "gate_buf":   mk(T * I * 2),
+            "up_buf":     mk(T * I * 2),
+            "ffn_act":    mk(T * I * 2),
+            "ffn_out":    mk(T * H * 2),
+            "h0":         mk(T * H * 4),
+            "h1":         mk(T * H * 4),
+            "h2":         mk(T * H * 4),
+        }
+        self._hstate: int = 0
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 

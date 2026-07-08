@@ -25,9 +25,12 @@ logger = logging.getLogger(__name__)
 _GGUF_MAGIC = b"GGUF"
 
 
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+
+
 def _is_mlx_quantized_dir(p: Path) -> bool:
     """Return True if directory contains MLX affine int4 weights (has .biases keys)."""
-    index_path = p / "model.safetensors.index.json"
+    index_path = p / _SAFE_WEIGHTS_INDEX_NAME
     try:
         with open(index_path) as f:
             index = json.load(f)
@@ -50,37 +53,18 @@ def _collect_mx_bases(header: dict) -> list:
     ))
 
 
-def _read_quant_cfg_from_json(config_path: Path) -> dict:
-    """Read quantization config from config.json using the standard three-key cascade.
-
-    Tries quantization_config, then text_config.quantization_config (multimodal
-    models), then compression_config. Returns {} on any read or parse error.
-    """
-    try:
-        with open(config_path) as f:
-            raw = json.load(f)
-        return (
-            raw.get("quantization_config")
-            or (raw.get("text_config") or {}).get("quantization_config")
-            or raw.get("compression_config")
-            or {}
-        )
-    except Exception:
-        return {}
-
-
 def _load_quant_cfg(config_path: Path) -> dict:
-    """Return the quantization config dict for a model, trying two sources in order.
+    """Return the quantization config dict for a model.
 
-    First attempts compressed_tensors.get_quantization_config, which handles nested
-    locations (text_config, compression_config) and multimodal variants. Falls back to
-    the plain JSON three-key cascade when compressed_tensors is not installed.
+    Uses compressed_tensors.get_quantization_config, which handles nested
+    locations (text_config, compression_config) and multimodal variants.
+    Returns {} on any failure.
     """
     try:
         from compressed_tensors import get_quantization_config as _get_ct_config
         return _get_ct_config(str(config_path)) or {}
     except Exception:
-        return _read_quant_cfg_from_json(config_path)
+        return {}
 
 
 def _check_unsupported_quant(model_dir: Path) -> None:
@@ -157,7 +141,7 @@ def detect_weight_format(path: str) -> str:
 
 def load_safetensors_weights_sharded(model_dir: str, wgpu_device) -> dict:
     """Load multi-shard safetensors from a directory with model.safetensors.index.json."""
-    index_path = Path(model_dir) / "model.safetensors.index.json"
+    index_path = Path(model_dir) / _SAFE_WEIGHTS_INDEX_NAME
     with open(index_path) as f:
         index = json.load(f)
     shard_files = sorted(set(index["weight_map"].values()))
@@ -1192,9 +1176,13 @@ def load_safetensors_weights(path: str, wgpu_device, ct_meta: dict | None = None
 
 
 def _bf16_raw_to_f32(raw: bytes, shape: tuple) -> "np.ndarray":
-    """Convert raw BF16 bytes to float32 numpy array."""
-    import torch
-    return torch.frombuffer(bytearray(raw), dtype=torch.bfloat16).float().numpy().reshape(shape)
+    """Convert raw BF16 bytes to float32 numpy array.
+
+    BF16 bit layout is the upper 16 bits of IEEE float32, so shifting left
+    by 16 and reinterpreting as float32 gives the correct value.
+    """
+    arr = np.frombuffer(raw, dtype=np.uint16).astype(np.uint32) << 16
+    return arr.view(np.float32).reshape(shape)
 
 
 def _dequant_mlx_int4(

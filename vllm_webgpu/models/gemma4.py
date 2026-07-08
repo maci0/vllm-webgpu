@@ -125,17 +125,16 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         self._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
 
-        _vpt = min((self.hidden_size + 255) // 256, 16) if self.hidden_size <= 4096 else 0
+        _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._gemma_norm_const}
         self._ln_rope_theta: float = math.log(self.rope_theta)
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Pre-allocate scratch buffers at maximum layer dimensions."""
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
         T = 1
         H = self.hidden_size
         I = self.intermediate_size
@@ -191,10 +190,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         fused_per_head_norm_rope shader indexes weight[head_idx * HEAD_DIM + i],
         requiring shape (num_heads * head_dim). Tile to match, using per-layer params.
         """
-        import wgpu as wgpu_lib
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
-        rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+        rw = self._rw_flags()
 
         for i, lp in enumerate(self._lp):
             p = self._layer_key_prefix(i)

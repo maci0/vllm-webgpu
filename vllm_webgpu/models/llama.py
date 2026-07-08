@@ -1,6 +1,5 @@
 from __future__ import annotations
 import logging
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -13,6 +12,8 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 logger = logging.getLogger(__name__)
+
+_H_NAMES = ("h0", "h1", "h2")
 
 
 def _gemv_wg(N: int, uq: int) -> tuple:
@@ -69,9 +70,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         # Precompute constants that are used every forward pass.
-        self._ln_rope_theta: float = math.log(self.rope_theta)
-        _wg_size = 256
-        _vpt = min((self.hidden_size + _wg_size - 1) // _wg_size, 16) if self.hidden_size <= _wg_size * 16 else 0
+        self._ln_rope_theta: float = float(np.log(self.rope_theta))
+        _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts: dict = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt}
         self._init_scratch_buffers(max_ctx)
         self._init_rope_freq_buf()
@@ -199,6 +199,68 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                         f"expected {expected} or ({self.head_dim},)"
                     )
 
+    def _decode_setup(
+        self,
+        input_ids: "np.ndarray",
+        positions: "np.ndarray",
+        attn_metadata: object,
+    ) -> tuple:
+        """Write per-step input buffers and return pre-allocated buffer aliases + ctx_len.
+
+        Shared between LlamaWebGPUModel.forward() and MixtralWebGPUModel._moe_decode_forward().
+        Returns (ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len).
+        """
+        pre = self._pre
+        dev = self.wgpu_device.wgpu_device
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(
+            pre["slot_map"].buf, 0,
+            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
+        bt_arr = self._bt_arr(attn_metadata)
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+        ctx_len = int(
+            attn_metadata.max_decode_seq_len
+            if attn_metadata.max_decode_seq_len is not None
+            else len(input_ids))
+        if ctx_len <= 0:
+            ctx_len = len(input_ids)
+        return (
+            pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
+            pre["x"], pre["norm_out"], pre["logits"], ctx_len,
+        )
+
+    def _decode_teardown(
+        self,
+        norm_out: "WebGPUBuffer",
+        logits_buf: "WebGPUBuffer",
+        vocab: int,
+        greedy: bool,
+    ) -> None:
+        """Dispatch the LM-head and optionally the GPU argmax + copy-to-staging.
+
+        Must be called inside an active encoder context (either _batched_dispatch
+        or a manually managed encoder in MixtralWebGPUModel._moe_decode_forward).
+        Sets _last_logit_buf and _last_vocab. The caller is responsible for
+        submitting the encoder and reading back the result.
+        """
+        hidden = self.hidden_size
+        self._dispatch(
+            "matmul_quant",
+            [norm_out,
+             self.weights.get("lm_head.weight", self.weights["model.embed_tokens.weight"]),
+             self.weights.get("lm_head.scales", norm_out),
+             logits_buf],
+            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
+            ((vocab + 255) // 256, 1, 1),
+        )
+        if greedy:
+            self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
+                           {"N": vocab}, (1, 1, 1))
+            self._copy_sample_to_staging()
+        self._last_logit_buf = logits_buf
+        self._last_vocab = vocab
+
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
         self._postprocess_weights()
@@ -252,23 +314,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             )
 
         # Decode path (num_tokens=1): use pre-allocated buffers for zero-alloc hot path.
-        pre = self._pre
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(
-            pre["slot_map"].buf, 0,
-            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = self._bt_arr(attn_metadata)
-        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+        ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len = \
+            self._decode_setup(input_ids, positions, attn_metadata)
 
-        ids_buf   = pre["ids"]
-        pos_buf   = pre["pos"]
-        slot_map  = pre["slot_map"]
-        bt_buf    = pre["bt"]
-        x_buf     = pre["x"]
-        norm_out  = pre["norm_out"]
-        logits_buf = pre["logits"]
-
+        greedy = getattr(self, "_greedy_decode", True)
         with self._batched_dispatch():
             # Embed (single dispatch; removed the duplicate standalone dispatch)
             self._dispatch(
@@ -299,28 +348,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 (num_tokens, 1, 1),
             )
 
-            # LM head: vocab_size (e.g. 151936) exceeds the WebGPU
-            # maxComputeWorkgroupsPerDimension limit of 65535, so the split-K path
-            # (one workgroup per output row) is unusable. Force SPLIT_K=0 to use the
-            # row-per-thread path, which dispatches ceil(vocab/256) workgroups instead.
-            self._dispatch(
-                "matmul_quant",
-                [norm_out, self.weights.get("lm_head.weight", self.weights["model.embed_tokens.weight"]),
-                 self.weights.get("lm_head.scales", norm_out),  # unused for f16
-                 logits_buf],
-                {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
-                ((vocab + 255) // 256, 1, 1),
-            )
-            # GPU argmax only when the caller has confirmed greedy decoding.
-            # For non-greedy sampling the model runner reads full logits on CPU.
-            if getattr(self, "_greedy_decode", True):
-                self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
-                               {"N": vocab}, (1, 1, 1))
-                self._copy_sample_to_staging()
+            self._decode_teardown(norm_out, logits_buf, vocab, greedy)
 
-        self._last_logit_buf = logits_buf
-        self._last_vocab     = vocab
-        if getattr(self, "_greedy_decode", True):
+        if greedy:
             # Greedy path: 4-byte readback from staging buffer (mapped during main sync).
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)  # shape (1, 1)
@@ -434,7 +464,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # exceeds the ~4-8 s per-command-buffer limit. 4 layers at a time stays safe.
         _CHUNK = 4
         _hstate = 0
-        h_names = ["h0", "h1", "h2"]
         normed_x = b["normed"]
         x_res    = b["x"]
 
@@ -517,8 +546,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     gemm_batch(b["attn_out"], ow, b["o_proj"], q_dim, hidden)
 
                     # ── Fused post-attn add + FFN pre-norm ───────────────────────
-                    residual = b[h_names[(_hstate + 1) % 3]]
-                    out_h    = b[h_names[(_hstate + 2) % 3]]
+                    residual = b[_H_NAMES[(_hstate + 1) % 3]]
+                    out_h    = b[_H_NAMES[(_hstate + 2) % 3]]
                     self._dispatch("add_rms_norm",
                                    [x_res, b["o_proj"],
                                     self.weights[f"{p}.post_attention_layernorm.weight"],
@@ -556,8 +585,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # no CPU roundtrip. Recorded into this encoder alongside norm and LM head.
         with self._batched_dispatch():
             last_token_byte_offset = (T - 1) * hidden * 2  # f16 bytes
-            if self._active_encoder is None:
-                raise RuntimeError("_active_encoder is None inside _batched_dispatch")
+            assert self._active_encoder is not None
             self._active_encoder.copy_buffer_to_buffer(
                 x_res.buf, last_token_byte_offset,
                 b["last_tok"].buf, 0,
@@ -714,9 +742,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         ln_rope = self._ln_rope_theta
         _rms_c = self._rms_consts
 
-        h_names = ["h0", "h1", "h2"]
-        residual = sc[h_names[(self._hstate + 1) % 3]]
-        out = sc[h_names[(self._hstate + 2) % 3]]
+        residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
+        out = sc[_H_NAMES[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
 
         k_cache, v_cache = self.kv_pool[layer_idx]
