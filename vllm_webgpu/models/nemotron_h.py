@@ -367,15 +367,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 assert len(arr) == expected, (
                     f"conv1d.weight layer {i}: got {len(arr)} elements, expected {expected}"
                 )
-                if len(arr) == expected:
-                    self.weights[cw_key] = WebGPUBuffer.from_numpy(
-                        dev, np.ascontiguousarray(arr), usage=rw
-                    )
-                else:
-                    logger.warning(
-                        "conv1d.weight for layer %d has %d elements, expected %d",
-                        i, len(arr), expected,
-                    )
+                self.weights[cw_key] = WebGPUBuffer.from_numpy(
+                    dev, np.ascontiguousarray(arr), usage=rw
+                )
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 
