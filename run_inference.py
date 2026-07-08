@@ -73,6 +73,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.config import get_config
+    from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES
 
     block_size = get_config().block_size
     max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
@@ -94,7 +95,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         kv_bytes = num_blocks * block_size * kv_h * hd * 2
         layer_types = getattr(model, "_layer_types", None)
         if layer_types:
-            attn_count = sum(1 for lt in layer_types if lt == "attention")
+            attn_count = sum(1 for lt in layer_types if lt in KV_ATTN_TYPES)
             print(f"\nAllocating KV cache: {attn_count}/{cfg.num_hidden_layers} attention layers "
                   f"× {num_blocks} blocks × {block_size} × {kv_h} heads × {hd} dim")
             _dummy = (
@@ -102,7 +103,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
                 WebGPUBuffer.empty(device.wgpu_device, 8, usage=rw),
             )
             for i in range(cfg.num_hidden_layers):
-                if layer_types[i] == "attention":
+                if layer_types[i] in KV_ATTN_TYPES:
                     model.kv_pool.append((
                         WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
                         WebGPUBuffer.empty(device.wgpu_device, kv_bytes, usage=rw),
