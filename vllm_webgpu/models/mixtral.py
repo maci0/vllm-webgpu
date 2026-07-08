@@ -128,10 +128,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         this encoder. _moe_ffn_layer flushes and replaces _active_encoder mid-layer
         to handle the CPU readback required for expert index selection.
         """
-        assert not self.profiling, (
-            "profiling=True is not supported for MoE decode; "
-            "disable profiling before calling forward() on a Mixtral MoE model"
-        )
+        if self.profiling:
+            raise RuntimeError(
+                "profiling=True is not supported for MoE decode; "
+                "disable profiling before calling forward() on a Mixtral MoE model"
+            )
         dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
         hidden = self.hidden_size
