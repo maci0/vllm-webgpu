@@ -1206,7 +1206,7 @@ class Qwen35WebGPUModel(BaseWebGPUModel):
                                        [sc["ffn_normed"], self.weights[w_k],
                                         self._scales_buf(w_k, uq2, sc["ffn_normed"]), out_b],
                                        {"K": hidden, "N": inter, "USE_QUANT": uq2,
-                                        **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6) else {}),
+                                        **({"SPLIT_K": 0} if uq2 not in (0, 3, 4, 5, 6, 7, 8) else {}),
                                         **qi2},
                                        _gemv_wg(inter, uq2))
                     self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
