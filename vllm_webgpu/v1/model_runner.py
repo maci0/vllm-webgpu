@@ -21,7 +21,7 @@ except ImportError:
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, _alloc_rw_buffer, allocate_kv_pool_hybrid
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_pool_hybrid, allocate_kv_pool_per_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 if TYPE_CHECKING:
@@ -132,14 +132,9 @@ class WebGPUModelRunner:
         )
 
         if lp_list:
-            dev = self.wgpu_device.wgpu_device
-            pool = []
-            for lp in lp_list:
-                kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2
-                pool.append((_alloc_rw_buffer(dev, kv_bytes), _alloc_rw_buffer(dev, kv_bytes)))
-            if self.model is not None:
-                self.model.kv_pool = pool
-            logger.info("Per-layer KV pool: %d layers with mixed dims", len(pool))
+            allocate_kv_pool_per_layer(
+                self.wgpu_device.wgpu_device, self.model, num_blocks, block_size, lp_list
+            )
         else:
             num_kv_heads = hf.num_key_value_heads
             head_dim = getattr(hf, "head_dim", hf.hidden_size // hf.num_attention_heads)

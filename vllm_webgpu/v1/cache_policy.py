@@ -84,6 +84,8 @@ def allocate_kv_pool_per_layer(
     layer_params is a list of dicts (one per layer) each with keys:
       num_kv_heads, head_dim
     """
+    if model is None:
+        return
     model.kv_pool.clear()
     logger.info("KV cache (per-layer): %d layers, mixed dims", len(layer_params))
     for lp in layer_params:
