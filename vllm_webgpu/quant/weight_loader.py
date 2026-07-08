@@ -594,15 +594,7 @@ def load_safetensors_weights(path: str, wgpu_device) -> dict:
                 # Upload raw bytes; shader does sign extension via int8_to_f32().
                 # dtype="u8" so _uq_weight() detects it via fmt="int8_gpu".
                 arr_u8 = sf.get_tensor(name).numpy().view(np.uint8).reshape(shape)
-                r = len(arr_u8.ravel()) % 4
-                arr_pad = np.concatenate([arr_u8.ravel(), np.zeros(4 - r if r else 0, dtype=np.uint8)])
-                data_u8 = _pad4(arr_pad.tobytes())
-                buf = wgpu_device.create_buffer(size=len(data_u8), usage=usage)
-                wgpu_device.queue.write_buffer(buf, 0, data_u8)
-                _pending_bytes[0] += len(data_u8)
-                _maybe_flush()
-                weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                             shape=shape, dtype="u8")
+                _upload_u8(arr_u8, name, weights)
                 # Record int8 format in quant_meta for _uq() detection.
                 qmeta = weights.setdefault("__quant_meta__", {})
                 base_key = name[:-7] if name.endswith(".weight") else name
