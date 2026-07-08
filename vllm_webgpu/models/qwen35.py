@@ -801,7 +801,7 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                 qi_gate = self._quant_extra(f"{p}.self_attn.q_gate_proj", uq_gate)
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[gate_wk],
-                                self._scales_buf(gate_wk, uq_gate, normed_x),
+                                self._scales_buf(gate_wk, uq_gate, self._dummy_scales_buf),
                                 sc["q_gate_buf"]],
                                {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate,
                                 **self._split_k_extra(uq_gate), **qi_gate},
