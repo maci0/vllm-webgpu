@@ -325,6 +325,22 @@ class WebGPUModelRunner:
             return None
 
         num_positions = T - 1
+
+        # Guard: the model may return only the last token's logits (shape
+        # [1, vocab]) even during a multi-token prefill.  In that case we
+        # cannot reconstruct per-position distributions and must bail out
+        # rather than letting the subsequent row-index into a 1-row array
+        # raise IndexError.
+        if full_logits.shape[0] < num_positions:
+            logger.warning(
+                "prompt_logprobs: logits buffer has %d rows but %d prompt "
+                "positions need coverage; skipping (model returns "
+                "last-token-only logits for this prefill length)",
+                full_logits.shape[0],
+                num_positions,
+            )
+            return None
+
         if num_prompt_logprobs < 0:
             logger.warning(
                 "num_prompt_logprobs=%d will return full-vocab logprobs; this is very slow on CPU",
