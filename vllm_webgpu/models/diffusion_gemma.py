@@ -385,7 +385,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # non-MoE layers only have the no-suffix key.
             pfn1_w = (self.weights.get(f"{p}.post_feedforward_layernorm_1.weight") or
                       self.weights.get(f"{p}.post_feedforward_layernorm.weight"))
-            if pfn1_w is not None:
+            if self.is_moe and pfn1_w is not None:
                 self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
                                (num_tokens, 1, 1))
                 hidden_states_1 = self._shared_res_buf
