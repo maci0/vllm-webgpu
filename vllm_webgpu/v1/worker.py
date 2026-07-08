@@ -110,7 +110,7 @@ class WebGPUWorker(WorkerBase):
         )
 
     def get_model_inspection(self) -> str:
-        model = self.model_runner.model
+        model = self.get_model()
         return repr(model)
 
     def update_max_model_len(self, max_model_len: int) -> None:

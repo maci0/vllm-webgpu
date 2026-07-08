@@ -116,6 +116,10 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
         # then calls self._init_scratch_buffers() and self._init_rope_freq_buf().
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
+        # Plain instance attributes aliasing _moe_* fields; expected by MixtralWebGPUModel._moe_ffn_layer.
+        self._num_experts = self._moe_num_experts
+        self._top_k = self._moe_k
+
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
 
@@ -182,16 +186,6 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                 "expert_tmp":   mk(H * 2),                      # [hidden] f16 per-expert temp
                 "dummy_scales": mk(8),                          # fallback scales binding
             }
-
-    @property
-    def _num_experts(self) -> int:
-        """Alias expected by MixtralWebGPUModel._moe_ffn_layer."""
-        return self._moe_num_experts
-
-    @property
-    def _top_k(self) -> int:
-        """Alias expected by MixtralWebGPUModel._moe_ffn_layer."""
-        return self._moe_k
 
     def _postprocess_weights(self) -> None:
         """Post-load weight transformations for full-attn layers:
@@ -656,24 +650,12 @@ class Qwen35WebGPUModel(LlamaWebGPUModel):
                                    [x_buf, self.weights["model.norm.weight"],
                                     pre["norm_out"]],
                                    _rms_base, (1, 1, 1))
-                    self._dispatch("matmul_quant",
-                                   [pre["norm_out"], self._lm_head_weight,
-                                    pre["norm_out"], pre["logits"]],
-                                   {"K": hidden, "N": vocab,
-                                    "USE_QUANT": 0, "SPLIT_K": 0},
-                                   ((vocab + 255) // 256, 1, 1))
-                    if greedy:
-                        self._dispatch("argmax_f16",
-                                       [pre["logits"], self._gpu_sample_tok],
-                                       {"N": vocab}, (1, 1, 1))
-                        self._copy_sample_to_staging()
+                    self._decode_teardown(pre["norm_out"], pre["logits"], vocab, greedy)
 
             # Submit all dispatches for this chunk.
             dev.queue.submit([self._active_encoder.finish()])
             self._active_encoder = None
 
-        self._last_logit_buf = pre["logits"]
-        self._last_vocab = vocab
         if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)

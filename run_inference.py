@@ -58,10 +58,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # Build model
     print("\nBuilding model...")
-    from vllm_webgpu.v1.model_runner import ARCH_MAP, _build_model
-    if arch not in ARCH_MAP:
-        raise NotImplementedError(
-            f"Architecture {arch!r} not supported. Supported: {sorted(ARCH_MAP)}")
+    from vllm_webgpu.v1.model_runner import _build_model
     model = _build_model(arch, cfg, device, pipeline_cache)
 
     # Load weights
@@ -106,7 +103,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         block_table[bi] = bi
         slots.append(bi * block_size + (i % block_size))
 
-    batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table.copy()], max_decode_seq_len=T)
+    batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)
     logits = model.forward(
         np.array(input_ids_list, dtype=np.uint32),
         np.arange(T, dtype=np.uint32),
@@ -144,7 +141,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             break
         block_table[bi] = bi
 
-        meta   = SimpleNamespace(slot_mapping=[slot], block_tables=[block_table.copy()], max_decode_seq_len=len(input_ids_list) + step + 1)
+        meta   = SimpleNamespace(slot_mapping=[slot], block_tables=[block_table], max_decode_seq_len=len(input_ids_list) + step + 1)
         logits = model.forward(
             np.array([last_token], dtype=np.uint32),
             np.array([slot], dtype=np.uint32),

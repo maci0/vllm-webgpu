@@ -586,10 +586,7 @@ def load_safetensors_weights(
             nonlocal _pending_bytes
             arr_flat = np.ascontiguousarray(arr.ravel().view(np.uint8))
             # Pad to multiple of 4 bytes so u32 reinterpretation is clean.
-            r = len(arr_flat) % 4
-            if r:
-                arr_flat = np.concatenate([arr_flat, np.zeros(4 - r, dtype=np.uint8)])
-            data = arr_flat.tobytes()
+            data = _pad4(arr_flat.tobytes())
             buf = wgpu_device.create_buffer(size=len(data), usage=usage)
             wgpu_device.queue.write_buffer(buf, 0, data)
             _pending_bytes += len(data)

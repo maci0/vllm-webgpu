@@ -391,9 +391,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr)
         pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
         ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
-        # Small dummy scales buffer for USE_QUANT=0 f16 path (binding 2 not read).
-        _dummy = alloc(4)
-
         def gemm_batch(x_buf: "WebGPUBuffer", w_key: str, out_buf: "WebGPUBuffer",
                        K_in: int, N_out: int) -> None:
             """Batch GEMM: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T.
@@ -402,7 +399,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             """
             uq = self._uq_for_key(w_key)
             if uq == 3:
-                sc_buf = self._scales_buf(w_key, uq, _dummy)
+                sc_buf = self._scales_buf(w_key, uq, self._dummy_scales_buf)
                 self._dispatch("matmul_quant_mr4",
                                [x_buf, self.weights[w_key], sc_buf, out_buf],
                                {"K": K_in, "N": N_out, "M": T,
@@ -411,7 +408,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             else:
                 # f16 path (uq == 0)
                 self._dispatch("matmul_quant_mr4",
-                               [x_buf, self.weights[w_key], _dummy, out_buf],
+                               [x_buf, self.weights[w_key], self._dummy_scales_buf, out_buf],
                                {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
                                (N_out, T, 1))
 
@@ -573,7 +570,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # LM head (SPLIT_K=0: row-per-thread for large vocab)
             self._dispatch("matmul_quant",
                            [b["last_norm"], self._lm_head_weight,
-                            self.weights.get("lm_head.scales", _dummy),
+                            self.weights.get("lm_head.scales", self._dummy_scales_buf),
                             b["logits"]],
                            {"K": hidden, "N": vocab, "USE_QUANT": 0, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
@@ -706,7 +703,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
             self._dispatch(
                 "matmul_quant",
-                [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, normed_x), out_buf],
+                [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, self._dummy_scales_buf), out_buf],
                 {"K": hidden, "N": dim, "USE_QUANT": uq, **self._split_k_extra(uq), **qi},
                 _gemv_wg(dim, uq),
             )
@@ -825,7 +822,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         uq = self._uq_for_key(w_key)
         qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
         self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
-                                        self._scales_buf(w_key, uq, sc["attn_out"]), sc["o_proj_out"]],
+                                        self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
                        {"K": q_dim, "N": hidden, "USE_QUANT": uq,
                         **self._split_k_extra(uq), **qi},
                        _gemv_wg(hidden, uq))
@@ -931,7 +928,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 qi2 = self._quant_extra(f"{p}.mlp.{mlp_proj}", uq2)
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[w_k],
-                                self._scales_buf(w_k, uq2, normed_x), out_b],
+                                self._scales_buf(w_k, uq2, self._dummy_scales_buf), out_b],
                                {"K": hidden, "N": inter, "USE_QUANT": uq2,
                                 **self._split_k_extra(uq2), **qi2},
                                _gemv_wg(inter, uq2))
@@ -944,7 +941,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         qi3 = self._quant_extra(f"{p}.mlp.down_proj", uq)
         self._dispatch("matmul_quant",
                        [sc["ffn_act"], self.weights[w_k],
-                        self._scales_buf(w_k, uq, sc["ffn_act"]), sc["ffn_out"]],
+                        self._scales_buf(w_k, uq, self._dummy_scales_buf), sc["ffn_out"]],
                        {"K": inter, "N": hidden, "USE_QUANT": uq,
                         **self._split_k_extra(uq), **qi3},
                        _gemv_wg(hidden, uq))

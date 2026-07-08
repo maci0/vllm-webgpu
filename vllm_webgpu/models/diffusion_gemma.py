@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -486,12 +487,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Build unique-expert -> per-token-weight mapping.
             # expert_token_weights[eid][t] = routing weight for token t to expert eid
             # (0.0 for tokens that do not route to eid).
-            expert_token_weights: dict = {}
+            expert_token_weights: dict = defaultdict(lambda: np.zeros(num_tokens, dtype=np.float32))
             for t in range(num_tokens):
                 for k in range(self.top_k_experts):
                     eid = int(top_k_idx[t, k])
-                    if eid not in expert_token_weights:
-                        expert_token_weights[eid] = np.zeros(num_tokens, dtype=np.float32)
                     expert_token_weights[eid][t] += float(rw_vals[t, k])
 
             # GPU: run selected expert FFNs

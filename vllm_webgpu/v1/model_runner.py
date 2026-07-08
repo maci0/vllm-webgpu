@@ -1,5 +1,4 @@
 from __future__ import annotations
-import itertools
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -331,11 +330,6 @@ class WebGPUModelRunner:
             selected_token_ranks=_torch.from_numpy(ranks_arr),
         )
 
-    @staticmethod
-    def _flat_block_ids(ids) -> list[int]:
-        """Flatten block IDs from vLLM's block_ids: tuple[list[int], ...] format."""
-        return list(itertools.chain.from_iterable(ids))
-
     def _make_model_output(
         self,
         req_ids: list[str],
@@ -462,7 +456,7 @@ class WebGPUModelRunner:
                 self.model.reset_recurrent_states()
 
             raw_bids = req.block_ids
-            blk_ids = self._flat_block_ids(raw_bids) if raw_bids else list(range((len(tok_ids) + block_size - 1) // block_size))
+            blk_ids = [b for s in raw_bids for b in s] if raw_bids else list(range((len(tok_ids) + block_size - 1) // block_size))
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -580,7 +574,7 @@ class WebGPUModelRunner:
                                 if new_block_ids and i < len(new_block_ids) and new_block_ids[i]
                                 else None)
                 if cur_new_bids is not None:
-                    flat_new = self._flat_block_ids(cur_new_bids)
+                    flat_new = [b for s in cur_new_bids for b in s]
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.

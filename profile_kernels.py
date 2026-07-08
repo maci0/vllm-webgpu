@@ -45,10 +45,8 @@ else:
 
 print(f"Architecture: {arch}")
 
-from vllm_webgpu.v1.model_runner import ARCH_MAP, _build_model
+from vllm_webgpu.v1.model_runner import _build_model
 from vllm_webgpu.v1.cache_policy import allocate_kv_pool_hybrid, allocate_kv_pool_per_layer
-if arch not in ARCH_MAP:
-    raise ValueError(f"Architecture {arch!r} not supported. Supported: {sorted(ARCH_MAP)}")
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache)
 
 print("Loading weights...")
@@ -92,12 +90,12 @@ else:
 # ── Run prefill ───────────────────────────────────────────────────────────────
 # Allocate enough blocks for prompt + warmup + profiling steps
 total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
-blk_ids = list(range((total_toks + block_size - 1) // block_size))
-bt = np.array(blk_ids, dtype=np.uint32)
+num_blocks = (total_toks + block_size - 1) // block_size
+bt = np.arange(num_blocks, dtype=np.uint32)
 
 print("Running prefill...")
 t0 = time.perf_counter()
-slots = [blk_ids[i // block_size] * block_size + (i % block_size) for i in range(len(tok_ids))]
+slots = [i for i in range(len(tok_ids))]
 _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
 logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
@@ -117,7 +115,7 @@ print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode toke
 print(f"Warming up ({args.warmup_steps} steps)...")
 prod_times = []
 for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra for production timing
-    slot = blk_ids[pos // block_size] * block_size + (pos % block_size)
+    slot = pos
 
     _dm = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=pos + 1)
     t0 = time.perf_counter()
@@ -138,7 +136,7 @@ model.profile_reset()
 
 decode_times = []
 for step in range(args.decode_steps):
-    slot = blk_ids[pos // block_size] * block_size + (pos % block_size)
+    slot = pos
 
     _dm2 = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=pos + 1)
     t0 = time.perf_counter()

@@ -421,7 +421,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         if num_tokens > 1:
             return self._prefill_forward(
                 input_ids, positions, attn_metadata,
-                num_tokens, ctx_len, vocab, self._rms_base,
+                num_tokens, vocab, self._rms_base,
             )
 
         # Decode path (T=1): zero-alloc hot path via pre-allocated buffers.
@@ -527,7 +527,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             if lt == "mamba":
-                self._mamba_layer(layer_idx, normed_x, num_tokens)
+                self._mamba_layer(layer_idx, normed_x)
             elif lt == "attention":
                 self._attn_layer(
                     layer_idx, normed_x, pos_buf, slot_map, bt_buf, ctx_len, num_tokens
@@ -573,7 +573,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self,
         layer_idx: int,
         normed_x: "WebGPUBuffer",
-        num_tokens: int,
     ) -> None:
         """Mamba-2 SSM layer.
 
@@ -838,7 +837,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         positions: np.ndarray,
         attn_metadata: object,
         T: int,
-        ctx_len: int,
         vocab: int,
         rms_base: dict,
     ) -> np.ndarray:

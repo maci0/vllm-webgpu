@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import functools
-import logging
 from typing import TYPE_CHECKING
+
+from vllm.logger import init_logger
+from vllm.utils.mem_utils import get_cpu_memory
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE
     from vllm.v1.attention.selector import AttentionSelectorConfig
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 try:
     from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE_RT
@@ -76,8 +78,7 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
-        import psutil
-        return psutil.virtual_memory().total
+        return get_cpu_memory()
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:

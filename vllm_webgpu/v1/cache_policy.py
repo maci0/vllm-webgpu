@@ -1,9 +1,8 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-import psutil
-
 from vllm.logger import init_logger
+from vllm.utils.mem_utils import get_cpu_memory
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import _OVERHEAD_BYTES
 
@@ -122,8 +121,8 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     model_mem = _get_model_memory_usage(worker)
 
     try:
-        total: int | None = psutil.virtual_memory().total
-    except (OSError, psutil.Error):
+        total: int | None = get_cpu_memory()
+    except (OSError, Exception):
         total = None
 
     if config.is_auto_memory:
