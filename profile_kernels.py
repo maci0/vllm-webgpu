@@ -66,7 +66,7 @@ except Exception as e:
 
 # ── Setup fake KV pool ────────────────────────────────────────────────────────
 dev = wgpu_dev.wgpu_device
-block_size = 16
+from vllm_webgpu.config import get_config; block_size = get_config().block_size
 num_blocks = 512  # enough for profiling
 num_layers = hf_cfg.num_hidden_layers
 
