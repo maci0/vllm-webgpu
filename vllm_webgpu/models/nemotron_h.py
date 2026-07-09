@@ -163,6 +163,20 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _fallback = _raw_int
             if _get_layer_cfg is not None:
                 _lcfg = _get_layer_cfg(_li)
+                # Per-layer bias check for puzzle (heterogeneous) models.
+                # The global guard above only inspects the top-level config;
+                # individual layers can carry mlp_bias=True even when the
+                # global value is False. vLLM reads the per-layer config at
+                # line 299 of its nemotron_h.py (bias=config.mlp_bias after
+                # config=layer_config), so we must mirror that here.
+                if getattr(_lcfg, 'mlp_bias', False):
+                    raise NotImplementedError(
+                        f"NemotronHWebGPUModel does not support mlp_bias=True "
+                        f"(found on layer {_li}). The WebGPU _mlp_layer path "
+                        f"omits the up_proj and down_proj bias additions. "
+                        f"Implement bias-add dispatches before using a puzzle "
+                        f"checkpoint with per-layer mlp_bias=True."
+                    )
                 _isize = getattr(_lcfg, 'intermediate_size', _fallback)
                 if isinstance(_isize, list):
                     _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_idx]
