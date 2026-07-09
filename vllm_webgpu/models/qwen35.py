@@ -94,7 +94,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # the standard gate/up/down weights are replaced by a router + per-expert weights.
         self._moe_num_experts: int = getattr(model_config, "num_experts", 0)
         self._moe_k: int           = getattr(model_config, "num_experts_per_tok", 0)
-        self._moe_inter: int       = getattr(model_config, "moe_intermediate_size", model_config.intermediate_size)
+        self._moe_inter: int       = (
+            getattr(model_config, "moe_intermediate_size", None)
+            or model_config.intermediate_size)
         self._moe_shared_inter: int = (
             getattr(model_config, "shared_expert_intermediate_size", None)
             or model_config.intermediate_size)
