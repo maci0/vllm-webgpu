@@ -40,12 +40,11 @@ arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
 num_layers = hf_cfg.num_hidden_layers
 print(f"Architecture: {arch}")
 
-from vllm_webgpu.config import get_config
 from vllm_webgpu.v1.model_runner import _build_model
 from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config, get_num_kv_heads, get_head_size_from_config
 head_dim = get_head_size_from_config(hf_cfg)
 num_kv_heads = get_num_kv_heads(hf_cfg)
-block_size = get_config().block_size
+block_size = int(os.getenv('VLLM_WEBGPU_BLOCK_SIZE', '16'))
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
 
 print("Loading weights...")
