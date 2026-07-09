@@ -145,6 +145,8 @@ def allocate_kv_from_hf_config(
     if model_config is not None:
         num_kv_heads = model_config.get_total_num_kv_heads()
         head_dim = model_config.get_head_size()
+        # ModelConfig normalizes hf_config, so num_hidden_layers is safe here.
+        _num_layers = hf_config.num_hidden_layers
     else:
         # Fallback for standalone scripts (run_inference.py, profile_kernels.py)
         # that call allocate_kv_from_hf_config without a vLLM ModelConfig.
@@ -162,6 +164,10 @@ def allocate_kv_from_hf_config(
         _conv = _convertor_cls(hf_config, _hf_text)
         num_kv_heads = _conv.get_total_num_kv_heads()
         head_dim = _conv.get_head_size()
+        # For multimodal configs, hf_config.num_hidden_layers is the outer
+        # wrapper's count, which may differ from the text model. Use the
+        # convertor (which reads from _hf_text) to get the correct value.
+        _num_layers = _conv.get_num_hidden_layers()
     # model._layer_types wins; fall back to hf_config fields used by different
     # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
     layer_types = (
@@ -177,7 +183,7 @@ def allocate_kv_from_hf_config(
         wgpu_device,
         model,
         num_blocks=num_blocks,
-        num_layers=hf_config.num_hidden_layers,
+        num_layers=_num_layers,
         block_size=block_size,
         num_kv_heads=num_kv_heads,
         head_dim=head_dim,
