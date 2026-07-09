@@ -240,7 +240,16 @@ def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
     Only bytes 0x7F and 0xFF are NaN; exp=15 with mant<7 (0x78-0x7E, 0xF8-0xFE)
     are valid normals (256-448 and their negatives). Use torch's native conversion
     to get the correct result for all 256 byte values.
+
+    This function only handles F8_E4M3 (OCP float8_e4m3fn). Calling it with
+    bytes from F8_E5M2 or F8_E4M3FNUZ would produce silently wrong float32 values
+    because those formats use different exponent/mantissa splits or NaN encodings.
     """
+    if data.dtype != np.uint8:
+        raise ValueError(
+            f"_fp8_e4m3_to_f32 expects raw uint8 bytes from F8_E4M3 tensors, "
+            f"got dtype={data.dtype}"
+        )
     import torch
     return (
         torch.from_numpy(np.ascontiguousarray(data))
@@ -578,9 +587,10 @@ def load_safetensors_weights(
             t = sf.get_tensor(name)        # torch.Tensor on CPU
             if dtype_str == "BF16":
                 return t.to(torch.float32).numpy()
-            if "F8_" in dtype_str:
-                # FP8 variants (F8_E4M3, F8_E4M3FN, …): return raw uint8 bytes for
-                # the LUT-based decoder in _fp8_e4m3_to_f32.
+            if dtype_str == "F8_E4M3":
+                # Only OCP float8_e4m3fn is handled by _fp8_e4m3_to_f32.
+                # Other FP8 variants (E5M2, FNUZ) have different bit layouts and
+                # must not be passed through this path.
                 return t.view(torch.uint8).numpy()
             return t.numpy()
 
