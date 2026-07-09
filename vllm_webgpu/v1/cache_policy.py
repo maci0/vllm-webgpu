@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from vllm.config.utils import getattr_iter
 from vllm.logger import init_logger
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm_webgpu.utils import OVERHEAD_BYTES
@@ -153,7 +152,8 @@ def allocate_kv_from_hf_config(
         # reports for architectures with TP-remapped or MLA-style heads.
         # Pass model_config when possible to get the canonical values.
         num_kv_heads = get_num_kv_heads(hf_config)
-        head_dim = getattr_iter(hf_config, ('head_dim', 'hidden_size_per_head'), default_factory=lambda: hf_config.hidden_size // hf_config.num_attention_heads)
+        from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigConvertorBase
+        head_dim = ModelArchConfigConvertorBase(hf_config, hf_config).get_head_size()
     # model._layer_types wins; fall back to hf_config fields used by different
     # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
     layer_types = (
