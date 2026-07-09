@@ -28,7 +28,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     arch = (cfg.architectures or ["LlamaForCausalLM"])[0]
     print(f"Architecture: {arch}")
     print(f"  hidden={cfg.hidden_size}, layers={cfg.num_hidden_layers}, "
-          f"heads={cfg.num_attention_heads}, kv_heads={cfg.num_key_value_heads}")
+          f"heads={cfg.num_attention_heads}, kv_heads={getattr(cfg, 'num_key_value_heads', cfg.num_attention_heads)}")
 
     # AutoTokenizer handles chat templates, special tokens, and all tokenizer variants.
     print("\nLoading tokenizer...")
