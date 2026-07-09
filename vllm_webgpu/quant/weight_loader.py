@@ -27,7 +27,7 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     import torch as _torch
     if t.dtype == _torch.float16:
         return t.numpy()
-    return np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
+    return t.to(_torch.float32).clamp(-_F16_MAX, _F16_MAX).to(_torch.float16).numpy()
 
 def _is_gdn_weight_key(key: str) -> bool:
     """True for GDN linear-attention projection weights that benefit from bf16 storage."""
@@ -50,15 +50,13 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
-    bases = {
-        base
-        for k in header
-        if k.endswith(".weight")
-        and header[k].get("dtype") == "U8"
-        and (base := k.removesuffix(".weight"))
-        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
-    }
-    return sorted(bases)
+    bases = []
+    for k in header:
+        if k.endswith(".weight") and header[k].get("dtype") == "U8":
+            base = k.removesuffix(".weight")
+            if header.get(base + ".weight_scale", {}).get("dtype") == "U8":
+                bases.append(base)
+    return sorted(set(bases))
 
 
 def _load_quant_cfg(config_path: Path) -> dict:
@@ -239,30 +237,6 @@ def load_safetensors_weights_sharded(
     logger.info("Loaded %d tensors from %d shards in %s", len(weights), len(shard_files), model_dir)
     return weights
 
-
-def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
-    """Convert FP8 E4M3 (OCP float8_e4m3fn) to float32.
-
-    Only bytes 0x7F and 0xFF are NaN; exp=15 with mant<7 (0x78-0x7E, 0xF8-0xFE)
-    are valid normals (256-448 and their negatives). Use torch's native conversion
-    to get the correct result for all 256 byte values.
-
-    This function only handles F8_E4M3 (OCP float8_e4m3fn). Calling it with
-    bytes from F8_E5M2 or F8_E4M3FNUZ would produce silently wrong float32 values
-    because those formats use different exponent/mantissa splits or NaN encodings.
-    """
-    if data.dtype != np.uint8:
-        raise ValueError(
-            f"_fp8_e4m3_to_f32 expects raw uint8 bytes from F8_E4M3 tensors, "
-            f"got dtype={data.dtype}"
-        )
-    import torch
-    return (
-        torch.from_numpy(data)
-        .view(torch.float8_e4m3fn)
-        .to(torch.float32)
-        .numpy()
-    )
 
 
 def _qzeros_symmetric(qzeros: np.ndarray) -> bool:
@@ -1038,8 +1012,8 @@ def load_safetensors_weights(
 
             for base in mxfp8_bases:
                 try:
-                    w_raw = _load_raw(f"{base}.weight")  # (N, K) U8 — raw FP8 E4M3 bytes
-                    w_f32 = _fp8_e4m3_to_f32(w_raw)    # decode to float32
+                    w_t = sf.get_tensor(f"{base}.weight")
+                    w_f32 = w_t.view(torch.float8_e4m3fn).to(torch.float32).numpy()
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                     N_, K_ = w_f32.shape
                     block_scale = np.exp2(ws_u8.astype(np.float32) - 127.0)  # E8M0: 2^(u8-127)

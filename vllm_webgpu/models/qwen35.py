@@ -82,12 +82,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: K + K + V heads (Q_heads = K_heads for GDN)
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        self._lin_key_dim: int  = self._lin_k_heads * self._lin_k_dim   # total key dim (= Q dim)
-        self._lin_conv_dim: int = 2 * self._lin_key_dim + self._lin_val_dim  # QKV (Q_dim == K_dim)
+        _lin_key_dim: int       = self._lin_k_heads * self._lin_k_dim   # total key dim (= Q dim)
+        self._lin_conv_dim: int = 2 * _lin_key_dim + self._lin_val_dim  # QKV (Q_dim == K_dim)
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0 (leading element in packed QKV buffer).
-        self._gdn_k_base: int = self._lin_key_dim
-        self._gdn_v_base: int = 2 * self._lin_key_dim
+        self._gdn_k_base: int = _lin_key_dim
+        self._gdn_v_base: int = 2 * _lin_key_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
@@ -678,9 +678,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         tok_slot_bufs: list = []
         for tc in range(num_tokens):
             tok_ids_bufs.append(WebGPUBuffer.from_numpy(
-                dev, input_ids[tc:tc+1].astype(np.uint32)))
+                dev, input_ids[tc:tc+1].astype(np.uint32, copy=False)))
             tok_pos_bufs.append(WebGPUBuffer.from_numpy(
-                dev, positions[tc:tc+1].astype(np.uint32)))
+                dev, positions[tc:tc+1].astype(np.uint32, copy=False)))
             tok_slot_bufs.append(WebGPUBuffer.from_numpy(
                 dev, np.array([attn_metadata.slot_mapping[tc]], dtype=np.uint32)))
 

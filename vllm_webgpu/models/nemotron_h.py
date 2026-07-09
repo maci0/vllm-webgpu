@@ -153,13 +153,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
 
         # Build per-layer intermediate sizes in a single O(num_layers) pass.
-        # MLP index is the count of "mlp" entries up to and including this layer, minus 1.
+        # MLP index is the running count of "mlp" entries seen so far.
         _layer_int_sizes: list[int] = []
+        _mlp_counter = 0
         for _li, _lt in enumerate(self._layer_types):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = self._layer_types[:_li + 1].count("mlp") - 1
+            _mlp_idx = _mlp_counter
+            _mlp_counter += 1
             if isinstance(_raw_int, list):
                 _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
             else:

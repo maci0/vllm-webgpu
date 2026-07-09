@@ -31,6 +31,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
     # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
     logit_returns_token_id: bool = True
 
+    # Sliding-window size (set by MixtralWebGPUModel); None means full attention.
+    _sw: int | None = None
+    # Force sequential prefill without changing _effective_ctx_len semantics (set by GptOssWebGPUModel).
+    _force_sequential_prefill: bool = False
+
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
         self.num_layers: int = model_config.num_hidden_layers
@@ -423,7 +428,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # _force_sequential_prefill is a separate flag (set by GptOssWebGPUModel)
         # that requests the sequential path without touching _sw, keeping
         # _effective_ctx_len semantics correct.
-        if getattr(self, "_force_sequential_prefill", False) or getattr(self, "_sw", None) is not None:
+        if self._force_sequential_prefill or self._sw is not None:
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T,
             )
@@ -592,6 +597,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         bt_arr = self._bt_arr(attn_metadata)
         bt_bytes = bt_arr.tobytes()
+        slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
 
         for t in range(T):
             self._hstate = 0
@@ -600,7 +606,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
             ids_t  = input_ids[t : t + 1]
             pos_t  = positions[t : t + 1]
-            self._write_token_bufs(ids_t, pos_t, np.asarray(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32).tobytes(), bt_bytes)
+            self._write_token_bufs(ids_t, pos_t, slot_arr[t : t + 1].tobytes(), bt_bytes)
 
             with self._batched_dispatch():
                 self._dispatch(

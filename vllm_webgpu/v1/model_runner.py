@@ -1,10 +1,11 @@
 from __future__ import annotations
+import itertools
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F  # F.pad used for logprob stacking in _make_model_output
+from torch.nn.functional import pad as _fpad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
@@ -294,19 +295,6 @@ class WebGPUModelRunner:
         return None
 
     @staticmethod
-    def _gather_logprobs_i32(
-        logprobs: "torch.Tensor", k: int, token_ids: "torch.Tensor"
-    ) -> "LogprobsTensors":
-        """Call Sampler.gather_logprobs and coerce selected_token_ranks to int32.
-
-        Sampler.gather_logprobs returns token_ranks as int64 (from
-        batched_count_greater_than); LogprobsTensors.empty_cpu documents int32.
-        Both call sites require the same coercion, so it is factored out here.
-        """
-        lp = Sampler.gather_logprobs(logprobs, k, token_ids)
-        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
-
-    @staticmethod
     def _compute_request_logprobs(
         logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
     ) -> "LogprobsTensors | None":
@@ -321,9 +309,8 @@ class WebGPUModelRunner:
         """
         k = min(num_logprobs, logits_1d.shape[0])
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
-        return WebGPUModelRunner._gather_logprobs_i32(
-            lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64)
-        )
+        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
+        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
 
     @staticmethod
     def _compute_prompt_logprobs(
@@ -365,9 +352,8 @@ class WebGPUModelRunner:
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
-        return WebGPUModelRunner._gather_logprobs_i32(
-            lp_t, k, torch.tensor(tok_ids[1:num_positions + 1], dtype=torch.int64)
-        )
+        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor(tok_ids[1:num_positions + 1], dtype=torch.int64))
+        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
 
     def _make_model_output(
         self,
@@ -396,8 +382,8 @@ class WebGPUModelRunner:
                 if d is not None:
                     pad = max_k - d.logprob_token_ids.shape[1]
                     pieces.append(LogprobsTensors(
-                        F.pad(d.logprob_token_ids, (0, pad), value=0),
-                        F.pad(d.logprobs, (0, pad), value=-float("inf")),
+                        _fpad(d.logprob_token_ids, (0, pad), value=0),
+                        _fpad(d.logprobs, (0, pad), value=-float("inf")),
                         d.selected_token_ranks,
                     ))
                 else:
@@ -505,7 +491,7 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            num_logprobs = sp.num_logprobs if sp is not None else None
+            num_logprobs = sp.logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -529,7 +515,7 @@ class WebGPUModelRunner:
 
             raw_bids = req.block_ids
             assert raw_bids, f"req {rid}: scheduler produced NewRequestData with empty block_ids"
-            blk_ids = [bid for group in raw_bids for bid in group]
+            blk_ids = list(itertools.chain.from_iterable(raw_bids))
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -649,7 +635,7 @@ class WebGPUModelRunner:
                 # block table entirely; others append newly allocated blocks.
                 cur_new_bids = new_block_ids[i]
                 if cur_new_bids is not None:
-                    flat_new = [bid for group in cur_new_bids for bid in group]
+                    flat_new = list(itertools.chain.from_iterable(cur_new_bids))
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.
