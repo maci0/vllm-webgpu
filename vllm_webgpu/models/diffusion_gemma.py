@@ -345,8 +345,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            [x_buf, self.weights[f"{p}.input_layernorm.weight"], sc["normed"]],
                            _rms, (num_tokens, 1, 1))
 
-            for out_buf, proj, dim in [(sc["q_buf"], "q_proj", q_dim),
-                                       (sc["k_buf"], "k_proj", kv_dim)]:
+            # Q projection: unconditional (KV-shared layers still need Q).
+            # K and V projections: skip for KV-shared layers; they reuse the
+            # target layer's already-populated cache and never consume these outputs.
+            _qk_list = [(sc["q_buf"], "q_proj", q_dim)]
+            if not is_kv_shared:
+                _qk_list.append((sc["k_buf"], "k_proj", kv_dim))
+            for out_buf, proj, dim in _qk_list:
                 wk = f"{p}.self_attn.{proj}.weight"
                 uq = self._uq_for_key(wk)
                 if num_tokens > 1 and uq in (0, 3):
@@ -363,30 +368,31 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    {"K": hidden, "N": dim, "USE_QUANT": uq,
                                     **self._quant_extra(wk.removesuffix(".weight"), uq)},
                                    _gemv_wg(dim))
-            # v_proj: global attention layers (no separate V; V=K) have no v_proj weight
-            vw_key = f"{p}.self_attn.v_proj.weight"
-            has_v_proj = vw_key in self.weights
-            if has_v_proj:
-                uq = self._uq_for_key(vw_key)
-                if num_tokens > 1 and uq in (0, 3):
-                    _ex_v: dict = {"K": hidden, "N": kv_dim, "M": num_tokens, "USE_QUANT": uq}
-                    _ex_v.update(self._quant_extra(vw_key.removesuffix(".weight"), uq))
-                    self._dispatch("matmul_quant_mr4",
-                                   [sc["normed"], self.weights[vw_key],
-                                    self._scales_buf(vw_key, uq, self._dummy_scales_buf),
-                                    sc["v_buf"]],
-                                   _ex_v, (kv_dim, num_tokens, 1))
+            if not is_kv_shared:
+                # v_proj: global attention layers (no separate V; V=K) have no v_proj weight
+                vw_key = f"{p}.self_attn.v_proj.weight"
+                has_v_proj = vw_key in self.weights
+                if has_v_proj:
+                    uq = self._uq_for_key(vw_key)
+                    if num_tokens > 1 and uq in (0, 3):
+                        _ex_v: dict = {"K": hidden, "N": kv_dim, "M": num_tokens, "USE_QUANT": uq}
+                        _ex_v.update(self._quant_extra(vw_key.removesuffix(".weight"), uq))
+                        self._dispatch("matmul_quant_mr4",
+                                       [sc["normed"], self.weights[vw_key],
+                                        self._scales_buf(vw_key, uq, self._dummy_scales_buf),
+                                        sc["v_buf"]],
+                                       _ex_v, (kv_dim, num_tokens, 1))
+                    else:
+                        self._dispatch("matmul_quant",
+                                       [sc["normed"], self.weights[vw_key],
+                                        self._scales_buf(vw_key, uq, self._dummy_scales_buf),
+                                        sc["v_buf"]],
+                                       {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
+                                        **self._quant_extra(vw_key.removesuffix(".weight"), uq)},
+                                       _gemv_wg(kv_dim))
+                    v_src = sc["v_buf"]
                 else:
-                    self._dispatch("matmul_quant",
-                                   [sc["normed"], self.weights[vw_key],
-                                    self._scales_buf(vw_key, uq, self._dummy_scales_buf),
-                                    sc["v_buf"]],
-                                   {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                                    **self._quant_extra(vw_key.removesuffix(".weight"), uq)},
-                                   _gemv_wg(kv_dim))
-                v_src = sc["v_buf"]
-            else:
-                v_src = sc["k_buf"]  # global attention: V = K
+                    v_src = sc["k_buf"]  # global attention: V = K
 
             _freq_buf = self._rope_freq_buf
             _dg_rope_base = {"ROPE_BASE": float(self.rope_theta), "LN_ROPE_BASE": ln_rope,
