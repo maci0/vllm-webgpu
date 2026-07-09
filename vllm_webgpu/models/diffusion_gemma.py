@@ -349,6 +349,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [src, self.weights[wk], sc_buf, out_b],
                                _ex, (N, num_tokens, 1))
             else:
+                if num_tokens > 1:
+                    raise RuntimeError(
+                        f"_gemm_adaptive: multi-token requires uq in (0,3), got uq={uq} for {wk}"
+                    )
                 self._dispatch("matmul_quant",
                                [src, self.weights[wk], sc_buf, out_b],
                                {"K": K, "N": N, "USE_QUANT": uq, **self._quant_extra(base, uq)},
