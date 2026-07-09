@@ -56,7 +56,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         self.num_experts: int = getattr(model_config, "num_experts", 0)
         self.top_k_experts: int = getattr(model_config, "top_k_experts", 8)
         self.moe_intermediate_size: int = getattr(model_config, "moe_intermediate_size",
-                                                   self.intermediate_size)
+                                                   getattr(model_config, "expert_intermediate_size",
+                                                           self.intermediate_size))
         if self.moe_intermediate_size % 4 != 0:
             raise ValueError(
                 f"moe_intermediate_size={self.moe_intermediate_size} must be divisible by 4 "
@@ -103,7 +104,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def _scratch_inter_size(self) -> int:
         return max(
             self.intermediate_size,
-            getattr(self.model_config, "moe_intermediate_size", self.intermediate_size),
+            getattr(self.model_config, "moe_intermediate_size",
+                    getattr(self.model_config, "expert_intermediate_size", self.intermediate_size)),
         )
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
