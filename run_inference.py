@@ -1,7 +1,7 @@
 """Standalone inference script for vllm-webgpu.
 
-Requires vLLM for model-path resolution (get_model_path) when invoked from
-__main__. The run() function itself only requires transformers and wgpu.
+The run() function requires transformers and wgpu. When invoked from __main__,
+huggingface_hub.snapshot_download is used to resolve a repo ID to a local path.
 """
 import os
 import time
@@ -179,6 +179,6 @@ if __name__ == "__main__":
     if args.gdn_bf16:
         os.environ["GDN_BF16"] = "1"
 
-    from vllm.transformers_utils.repo_utils import get_model_path
-    model_path = str(get_model_path(args.model))
+    from huggingface_hub import snapshot_download
+    model_path = args.model if os.path.isdir(args.model) else snapshot_download(args.model)
     run(model_path, args.prompt, args.max_tokens, args.temperature, args.top_p)
