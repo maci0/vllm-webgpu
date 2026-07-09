@@ -89,6 +89,15 @@ def allocate_kv_pool_per_layer(
     model.kv_pool.clear()
     logger.info("KV cache (per-layer): %d layers, mixed dims", len(layer_params))
     for lp in layer_params:
+        if lp["num_kv_heads"] == 0:
+            # Non-attention layer (e.g. SSM/MLP in Nemotron-H). A zero-byte
+            # buffer violates the WebGPU spec (size must be > 0), so use the
+            # same 16-byte placeholder that allocate_kv_pool_hybrid uses.
+            model.kv_pool.append((
+                WebGPUBuffer.empty(dev, 16),
+                WebGPUBuffer.empty(dev, 16),
+            ))
+            continue
         kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2  # f16
         model.kv_pool.append((
             WebGPUBuffer.empty(dev, kv_bytes),
