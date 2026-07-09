@@ -1311,20 +1311,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
             index = json.load(f)
         weight_map = index["weight_map"]
 
-    config_path = p / "config.json"
-    try:
-        with open(config_path) as _f:
-            _raw = json.load(_f)
-        quant_cfg = (
-            _raw.get("quantization_config")
-            or (_raw.get("text_config") or {}).get("quantization_config")
-            or _raw.get("compression_config")
-            or _raw.get("quantization")
-            or {}
-        )
-    except Exception:
-        quant_cfg = {}
-    group_size = int((quant_cfg or {}).get("group_size") or 64)
+    group_size = int(_load_quant_cfg(p / "config.json").get("group_size") or 64)
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
     key_to_shard: dict[str, str] = {k: str(p / v) for k, v in weight_map.items()}
