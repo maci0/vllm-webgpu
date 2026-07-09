@@ -88,6 +88,18 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Length invariant is enforced by NemotronHConfig.__init__ asserting
         # len(hybrid_override_pattern) == num_hidden_layers.
 
+        # The WebGPU MLP path does not implement bias addition. All known
+        # NemotronH checkpoints ship with mlp_bias=False (the default), so
+        # this is latent. Fail fast rather than silently produce wrong outputs
+        # if a checkpoint with mlp_bias=True is ever loaded.
+        if getattr(model_config, "mlp_bias", False):
+            raise NotImplementedError(
+                "NemotronHWebGPUModel does not support mlp_bias=True. "
+                "The WebGPU _mlp_layer path omits the up_proj and down_proj "
+                "bias additions. Implement bias-add dispatches before using "
+                "a checkpoint with mlp_bias=True."
+            )
+
         # Precomputed per-layer intermediate size for heterogeneous MLP configs.
         # Index by layer_idx; 0 for non-MLP layers. Avoids O(num_layers) slice-
         # and-count inside _mlp_layer on every forward pass.
