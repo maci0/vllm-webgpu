@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from transformers.utils import SAFE_WEIGHTS_NAME as _SAFE_WEIGHTS_NAME
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -53,7 +53,7 @@ logger = init_logger(__name__)
 
 
 
-@functools.lru_cache(maxsize=1)
+@functools.cache
 def _check_yarn_formula_unchanged() -> None:
     """Verify that the vLLM YaRN formula has not drifted from our local copy.
 

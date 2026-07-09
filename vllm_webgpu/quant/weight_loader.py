@@ -51,11 +51,12 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
     bases = {
-        k.removesuffix(".weight")
+        base
         for k in header
         if k.endswith(".weight")
         and header[k].get("dtype") == "U8"
-        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+        and (base := k.removesuffix(".weight")) is not None
+        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
     }
     return sorted(bases)
 
@@ -1353,6 +1354,8 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                     processed.discard(bk)
                     arr = _torch_to_f16_numpy(t)
                     local_key = wk.removeprefix("language_model.")
+                    if weight_transforms and local_key in weight_transforms:
+                        arr = weight_transforms[local_key](arr)
                     weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
                     continue
 

@@ -430,7 +430,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # _force_sequential_prefill is a separate flag (set by GptOssWebGPUModel)
         # that requests the sequential path without touching _sw, keeping
         # _effective_ctx_len semantics correct.
-        if getattr(self, "_force_sequential_prefill", False) or getattr(self, "_sw", None):
+        if getattr(self, "_force_sequential_prefill", False) or getattr(self, "_sw", None) is not None:
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T,
             )
@@ -607,9 +607,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
             ids_t  = input_ids[t : t + 1]
             pos_t  = positions[t : t + 1]
-            slot_t = np.array(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32)
-
-            self._write_token_bufs(ids_t, pos_t, slot_t.tobytes(), bt_bytes)
+            self._write_token_bufs(ids_t, pos_t, np.asarray(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32).tobytes(), bt_bytes)
 
             with self._batched_dispatch():
                 self._dispatch(

@@ -1,9 +1,12 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+import torch
+
 from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_utils import get_cpu_memory
+from vllm.utils.torch_utils import get_dtype_size
 
 from vllm_webgpu.utils import OVERHEAD_BYTES
 
@@ -13,8 +16,6 @@ if TYPE_CHECKING:
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
-
-_F16_BYTES: int = 2
 
 # Layer type strings that carry KV state and require cache allocation.
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
@@ -42,7 +43,7 @@ def _allocate_kv_pool_hybrid(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
-    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * _F16_BYTES
+    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * get_dtype_size(torch.float16)
 
     if layer_types is not None and len(layer_types) != num_layers:
         raise ValueError(
@@ -107,7 +108,7 @@ def _allocate_kv_pool_per_layer(
             raise ValueError(
                 f"num_kv_heads={lp['num_kv_heads']} but head_dim=0; invalid KV spec"
             )
-        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * _F16_BYTES
+        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * get_dtype_size(torch.float16)
         model.kv_pool.append((
             WebGPUBuffer.empty(dev, kv_bytes),
             WebGPUBuffer.empty(dev, kv_bytes),
@@ -138,6 +139,10 @@ def allocate_kv_from_tensors(
         if tensor.block_stride > 0:
             raise NotImplementedError(
                 f"Packed KV cache layout (block_stride={tensor.block_stride}) is not supported by the WebGPU backend"
+            )
+        if len(tensor.shared_by) > 1:
+            raise NotImplementedError(
+                f"Shared-block-table KV cache (shared_by={tensor.shared_by}) is not supported by the WebGPU backend"
             )
         per_buf = tensor.size // 2
         for layer_name in tensor.shared_by:

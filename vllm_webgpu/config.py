@@ -5,18 +5,17 @@ from dataclasses import dataclass
 
 import vllm_webgpu.envs as envs
 
-AUTO_MEMORY_FRACTION = -1.0
 # WebGPU spec power preference values (stable since the spec was published).
 VALID_POWER_PREFERENCES = frozenset({"low-power", "high-performance"})
 
 
 @dataclass
 class WebGPUConfig:
-    memory_fraction: float
+    memory_fraction: float | None
     power_preference: str
 
     def __post_init__(self) -> None:
-        if not self.is_auto_memory and not (0 < self.memory_fraction <= 1):
+        if self.memory_fraction is not None and not (0 < self.memory_fraction <= 1):
             raise ValueError(
                 f"VLLM_WEBGPU_MEMORY_FRACTION={self.memory_fraction!r} must be "
                 "'auto' or a value in (0, 1]."
@@ -29,13 +28,13 @@ class WebGPUConfig:
 
     @property
     def is_auto_memory(self) -> bool:
-        return self.memory_fraction == AUTO_MEMORY_FRACTION
+        return self.memory_fraction is None
 
     @classmethod
     def from_env(cls) -> "WebGPUConfig":
         raw = envs.VLLM_WEBGPU_MEMORY_FRACTION
         if raw.lower() == "auto":
-            memory_fraction = AUTO_MEMORY_FRACTION
+            memory_fraction = None
         else:
             try:
                 memory_fraction = float(raw)

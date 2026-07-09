@@ -88,7 +88,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
     def _effective_ctx_len(self, ctx_len: int) -> int:
         """Cap ctx_len at the sliding window size when SWA is configured."""
-        return min(ctx_len, self._sw) if self._sw else ctx_len
+        return min(ctx_len, self._sw) if self._sw is not None else ctx_len
 
     def _ffn_dispatch(
         self,

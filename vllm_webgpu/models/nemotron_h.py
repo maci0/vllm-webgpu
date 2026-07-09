@@ -36,16 +36,6 @@ del _mapper
 _UQ_AWQ: int = 4
 
 
-def _mlp_layer_index(pattern: str, layer_idx: int) -> int:
-    """Return the 0-based MLP index for a given layer_idx within hybrid_override_pattern.
-
-    Mirrors NemotronHMLPDecoderLayer.__init__ lines 279-280 in vLLM's
-    vllm/model_executor/models/nemotron_h.py. If that file changes its
-    mlp_index formula, update this function to match.
-    """
-    return pattern[: layer_idx + 1].count("-") - 1
-
-
 
 class NemotronHWebGPUModel(BaseWebGPUModel):
     """
@@ -169,7 +159,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = _mlp_layer_index(_hybrid_pat, _li)
+            _mlp_idx = _hybrid_pat[: _li + 1].count("-") - 1
             if isinstance(_raw_int, list):
                 _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
             else:

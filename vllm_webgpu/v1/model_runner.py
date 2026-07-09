@@ -304,7 +304,8 @@ class WebGPUModelRunner:
         k = min(num_logprobs, logits_1d.shape[0])
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
-        return Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
+        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
+        return LogprobsTensors(lp.logprob_token_ids, lp.logprobs, lp.selected_token_ranks.to(torch.int32))
 
     @staticmethod
     def _compute_prompt_logprobs(
@@ -346,11 +347,12 @@ class WebGPUModelRunner:
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
-        return Sampler.gather_logprobs(
+        lp = Sampler.gather_logprobs(
             lp_t,
             k,
             torch.tensor(tok_ids[1:num_positions + 1], dtype=torch.int64),
         )
+        return LogprobsTensors(lp.logprob_token_ids, lp.logprobs, lp.selected_token_ranks.to(torch.int32))
 
     def _make_model_output(
         self,
@@ -387,12 +389,7 @@ class WebGPUModelRunner:
                     pieces.append(LogprobsTensors(
                         torch.zeros((1, max_k), dtype=torch.int32),
                         torch.full((1, max_k), -float("inf"), dtype=torch.float32),
-                        # int64 matches gather_logprobs output (batched_count_greater_than
-                        # returns int64 via .sum(-1) on a bool tensor).
-                        # Do NOT use LogprobsTensors.empty_cpu() here — it uses int32 for
-                        # selected_token_ranks and would break torch.cat when mixed with the
-                        # int64 tensors produced by real gather_logprobs calls.
-                        torch.zeros(1, dtype=torch.int64),
+                        torch.zeros(1, dtype=torch.int32),
                     ))
             stacked = LogprobsTensors(
                 torch.cat([p.logprob_token_ids for p in pieces]),

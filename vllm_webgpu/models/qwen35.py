@@ -20,8 +20,7 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
-# Qwen3.5-9B fixed architecture constants
-_FULL_ATTN_INTERVAL = 4
+# Qwen3.5 linear attention layer constants
 _LIN_K_HEADS = 16
 _LIN_V_HEADS = 32
 _LIN_K_DIM = 128
@@ -153,7 +152,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def _is_full_attn(self, i: int) -> bool:
         if self._layer_types is not None and i < len(self._layer_types):
             return self._layer_types[i] == "full_attention"
-        return (i + 1) % _FULL_ATTN_INTERVAL == 0
+        raise ValueError(
+            f"Layer {i} has no layer_types entry; Qwen3_5Config should always "
+            "populate layer_types from full_attention_interval at init time."
+        )
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         # Inherit standard _pre (7 keys), _sc (17 keys), and _hstate from parent.
@@ -848,6 +850,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                         "HEAD_DIM": self.head_dim, "V_IN_OFFSET": 0},
                        (num_tokens, self.num_kv_heads, 1))
 
+        # Pass ctx_len raw (not through _effective_ctx_len) because this path is
+        # only dispatched for full-attention layers. Full-attention layers must
+        # attend to the entire context even on models that also have sliding-window
+        # layers, so capping by _sw would be incorrect here.
         self._dispatch("flash_attn_decode",
                        [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
                        {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,

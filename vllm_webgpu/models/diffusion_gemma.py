@@ -704,7 +704,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # would leave only the last expert's weights visible to every dispatch. The
             # expert_slot index passed as an override constant lets each shader read its
             # own row without a re-entrant write.
-            packed_w = np.stack([dense_w[e] for e in unique_eids], axis=0)  # [num_unique, T]
+            packed_w = dense_w[unique_eids]  # [num_unique, T]
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
             for expert_slot, eid in enumerate(unique_eids):
