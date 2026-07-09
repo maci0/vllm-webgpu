@@ -180,6 +180,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Our fused_per_head_norm_rope shader indexes weight[head_idx * HEAD_DIM + i],
         expecting shape (num_heads * head_dim,). Tile if the loaded shape is just (head_dim,).
         """
+        if not any('q_norm.weight' in k for k in self.weights):
+            return
+
         dev = self.wgpu_device.wgpu_device
 
         for i in range(self.num_layers):
@@ -230,7 +233,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
-        ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len is not None else 1
+        ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len is not None else int(positions[-1]) + 1
         return (
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,

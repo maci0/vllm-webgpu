@@ -281,7 +281,7 @@ def _awq_qzeros_symmetric(qzeros: np.ndarray) -> bool:
     Any other value means the checkpoint uses per-group asymmetric zeros
     and must also fall back to CPU dequantisation.
     """
-    return bool(np.all(np.asarray(qzeros, dtype=np.int32) == _SYM_ZEROS_INT32))
+    return bool(np.all(qzeros == _SYM_ZEROS_INT32))
 
 
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
@@ -803,7 +803,7 @@ def load_safetensors_weights(
                     # GPU dequant path: upload raw quantized data directly.
                     # GPTQ qweight [K//8, N] is transposed to [N, K//8] so all 256
                     # threads in split-K read consecutive INT32s (coalesced access).
-                    if fmt == "gptq" and qz is None and g_idx is None:
+                    if fmt == "gptq" and g_idx is None and (qz is None or _awq_qzeros_symmetric(qz)):
                         # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
                         K8, N_ = qw.shape
                         group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else 128

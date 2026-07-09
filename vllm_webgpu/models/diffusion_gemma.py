@@ -44,11 +44,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                  pipeline_cache: "PipelineCache") -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
-        # DiffusionGemma always applies per-head V normalization (DiffusionGemmaRMSNorm,
-        # no weight, no scale). The parent flag is keyed on "Gemma4" in the architecture
-        # name, which does not match "DiffusionGemmaForBlockDiffusion", so force it here.
-        self._apply_v_norm = True
-
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
@@ -174,26 +169,22 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def _layer_key_prefix(self, layer_idx: int) -> str:
         return f"model.decoder.layers.{layer_idx}"
 
-    def _first_key(self, candidates: tuple, default: str) -> str:
-        """Return the first candidate key present in self.weights, or default."""
-        return next((k for k in candidates if k in self.weights), default)
-
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
-        return self._first_key(
-            ("model.decoder.embed_tokens.weight", "model.embed_tokens.weight"),
+        return next(
+            (k for k in ("model.decoder.embed_tokens.weight", "model.embed_tokens.weight") if k in self.weights),
             "model.embed_tokens.weight",
         )
 
     def _norm_key(self) -> str:
-        return self._first_key(
-            ("model.decoder.norm.weight", "model.norm.weight"),
+        return next(
+            (k for k in ("model.decoder.norm.weight", "model.norm.weight") if k in self.weights),
             "model.norm.weight",
         )
 
     def _lm_head_key(self) -> str:
-        return self._first_key(
-            ("lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight"),
+        return next(
+            (k for k in ("lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight") if k in self.weights),
             self._embed_key(),  # tied weights fallback
         )
 

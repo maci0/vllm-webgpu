@@ -259,11 +259,7 @@ class WebGPUModelRunner:
         if self.model is None:
             self._last_model_output = EMPTY_MODEL_RUNNER_OUTPUT
             return None
-        try:
-            self._last_model_output = self._execute_model_v2(scheduler_output)
-        except Exception as e:
-            logger.exception("execute_model failed: %s", e)
-            raise
+        self._last_model_output = self._execute_model_v2(scheduler_output)
         return None
 
     @staticmethod

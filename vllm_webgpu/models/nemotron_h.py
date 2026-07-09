@@ -53,9 +53,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Attention layer parameters
         self.num_q_heads: int = model_config.num_attention_heads
         self.num_kv_heads: int = model_config.num_key_value_heads
-        self.head_dim: int = getattr(
-            model_config, "head_dim", self.hidden_size // self.num_q_heads
-        )
+        hd = getattr(model_config, "head_dim", None)
+        self.head_dim: int = hd if hd is not None else self.hidden_size // self.num_q_heads
         # MLP parameters (used in '-' layers).
         # intermediate_size may be a list for heterogeneous (puzzle) configs;
         # store the per-layer list and use the max for scratch buffer sizing.
@@ -358,13 +357,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # GPTQ weights are [N, K//8] (N-major after the load-time transpose),
             # so byte concat along the flat sequence is equivalent to axis=0
             # concat and is correct without any special handling.
-            _qmeta_early = self.weights.get("__quant_meta__")
-            _q_base_early = q_key.removesuffix(".weight")
-            _is_awq = (
-                _qmeta_early is not None
-                and _q_base_early in _qmeta_early
-                and _qmeta_early[_q_base_early].get("fmt") == "awq_sym"
-            )
+            _is_awq = self._uq_for_key(q_key) == 4
 
             if _is_awq:
                 # CPU-side axis=1 concat produces [K, N_total//8] so every row
