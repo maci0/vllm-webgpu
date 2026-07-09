@@ -33,12 +33,6 @@ from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_hf_confi
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
-def _slot(blk_ids, pos: int, block_size: int) -> int:
-    """Compute the flat KV cache slot index for absolute token position `pos`."""
-    return int(blk_ids[pos // block_size]) * block_size + pos % block_size
-
-
-
 
 if TYPE_CHECKING:
     from vllm.tasks import SupportedTask
@@ -369,7 +363,7 @@ class WebGPUModelRunner:
         # prompt_logprobs_dict either, since the scheduler reads that field only
         # as prompt logprobs. Drop them with a warning.
         built_logprobs = None
-        merged_prompt_logprobs: dict = dict(prompt_logprobs_dict) if prompt_logprobs_dict else {}
+        merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = (
             logprobs_data
             and any(d is not None and d[0] is not None for d in logprobs_data)
@@ -518,7 +512,7 @@ class WebGPUModelRunner:
                         f"block table too short for req {rid}: token {abs_idx} needs block "
                         f"{blk_idx} but only {len(blk_ids)} blocks allocated"
                     )
-                slots.append(_slot(blk_ids, abs_idx, block_size))
+                slots.append(int(blk_ids[abs_idx // block_size]) * block_size + abs_idx % block_size)
 
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
@@ -624,7 +618,7 @@ class WebGPUModelRunner:
                         f"block table too short for req {rid}: pos={pos} needs block "
                         f"{pos // block_size} but only {len(blk_ids)} blocks allocated"
                     )
-                slot = _slot(blk_ids, pos, block_size)
+                slot = int(blk_ids[pos // block_size]) * block_size + pos % block_size
 
                 _sm = SimpleNamespace(slot_mapping=[slot], block_tables=[np.array(blk_ids, dtype=np.uint32)], max_decode_seq_len=pos + 1)
 

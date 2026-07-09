@@ -118,8 +118,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         # LlamaWebGPUModel.__init__() sets: num_layers, num_q_heads, num_kv_heads,
         # hidden_size, intermediate_size, vocab_size, head_dim, rope_theta, block_size,
-        # _ln_rope_theta, _rms_consts (without GEMMA_NORM), runs dimension validation,
-        # then calls self._init_scratch_buffers() and self._init_rope_freq_buf().
+        # _rope_consts (containing LN_ROPE_BASE), _rms_consts (without GEMMA_NORM), runs
+        # dimension validation, then calls self._init_scratch_buffers() and
+        # self._init_rope_freq_buf().
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
         # Mixtral.__init__ reads num_local_experts (0 for Qwen35) and overwrites _is_moe.
@@ -204,8 +205,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def _postprocess_weights(self) -> None:
         """Post-load weight transformations for full-attn layers:
 
-        0. Detect GEMMA_NORM format: deviation (safetensors, mean≈0) vs absolute (MLX, mean≈1).
-        1. Tile q_norm/k_norm via super()._postprocess_weights() (handles all layers gracefully).
+        0. Tile q_norm/k_norm via super()._postprocess_weights() (handles all layers gracefully).
+        1. Detect GEMMA_NORM format: deviation (safetensors, mean≈0) vs absolute (MLX, mean≈1).
         2. When attn_output_gate=True: split q_proj.weight [2*q_dim, hidden] into
            q_proj.weight [q_dim, hidden] (Q part) and q_gate_proj.weight [q_dim, hidden]
            (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
@@ -666,7 +667,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         # QKV projections (always separate; fused_qkv is incompatible with attn_output_gate).
-        _ = self._qkv_proj(normed_x, layer_idx)
+        self._qkv_proj(normed_x, layer_idx)
 
         # When attn_output_gate=True, q_proj.weight was split at load time.
         # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].

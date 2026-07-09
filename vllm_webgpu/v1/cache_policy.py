@@ -32,9 +32,9 @@ def allocate_kv_pool_hybrid(
 ) -> None:
     """Allocate KV pool for all layers.
 
-    When layer_types is None (or all entries are "full_attention"), every layer
-    gets a full KV cache buffer.  When layer_types is provided, non-full-attention
-    layers get 16-byte placeholder buffers (never accessed during inference).
+    When layer_types is None, or all entries are in KV_ATTN_TYPES, every layer
+    gets a full KV cache buffer. When layer_types is provided, layers whose type
+    is not in KV_ATTN_TYPES get 16-byte placeholder buffers.
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
@@ -150,11 +150,7 @@ def allocate_kv_from_hf_config(
         # hf_config.num_key_value_heads may diverge from what ModelConfig
         # reports for architectures with TP-remapped or MLA-style heads.
         # Pass model_config when possible to get the canonical values.
-        num_kv_heads = next(
-            (v for a in ('num_key_value_heads', 'num_kv_heads', 'n_head_kv')
-             if (v := getattr(hf_config, a, None)) is not None),
-            hf_config.num_attention_heads,
-        )
+        num_kv_heads = _get_num_kv_heads(hf_config)
         head_dim = getattr(hf_config, 'head_dim', None)
         if head_dim is None:
             head_dim = hf_config.hidden_size // hf_config.num_attention_heads
@@ -178,6 +174,15 @@ def allocate_kv_from_hf_config(
         num_kv_heads=num_kv_heads,
         head_dim=head_dim,
         layer_types=layer_types,
+    )
+
+
+def _get_num_kv_heads(hf_cfg) -> int:
+    """Read num_kv_heads from an hf_config, handling architecture-specific attribute names."""
+    return next(
+        (v for a in ('num_key_value_heads', 'num_kv_heads', 'n_head_kv')
+         if (v := getattr(hf_cfg, a, None)) is not None),
+        hf_cfg.num_attention_heads,
     )
 
 
@@ -205,16 +210,12 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
 
     total: int = get_cpu_memory()
 
-    if config.is_auto_memory:
-        available = max(total - model_mem - OVERHEAD_BYTES, 0)
-        logger.info(
-            "WebGPU memory: total=%dMB model=%dMB available=%dMB",
-            total // 2**20, model_mem // 2**20, available // 2**20,
-        )
-        return available
-
-    # Explicit fraction: scale the free memory (after model weights and overhead)
-    # by memory_fraction. A value of 1.0 is equivalent to the auto path.
-    available = int((total - model_mem - OVERHEAD_BYTES) * config.memory_fraction)
-    return max(available, 0)
+    base = total - model_mem - OVERHEAD_BYTES
+    fraction = 1.0 if config.is_auto_memory else config.memory_fraction
+    available = max(int(base * fraction), 0)
+    logger.info(
+        "WebGPU memory: total=%dMB model=%dMB available=%dMB",
+        total // 2**20, model_mem // 2**20, available // 2**20,
+    )
+    return available
 

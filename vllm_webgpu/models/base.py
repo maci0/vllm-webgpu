@@ -32,10 +32,10 @@ def _gemv_wg(N: int) -> tuple:
 def _vec4_wg(N: int) -> tuple:
     """Workgroup count for element-wise vec4 dispatches (gelu_mul, add, ...).
 
-    Each thread handles 4 elements packed as vec4<f16>.  The formula rounds N
-    up to the nearest multiple of 4 then divides by the workgroup size (256).
+    Each thread handles 4 elements packed as vec4<f16>. The formula rounds the
+    thread count up to fill complete workgroups of 256.
     """
-    return ((N // 4 + 255) // 256, 1, 1)
+    return (((N + 3) // 4 + 255) // 256, 1, 1)
 
 logger = logging.getLogger(__name__)
 

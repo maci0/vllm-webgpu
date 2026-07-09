@@ -117,12 +117,29 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Precomputed per-layer intermediate size for heterogeneous MLP configs.
         # Index by layer_idx; 0 for non-MLP layers. Avoids O(num_layers) slice-
         # and-count inside _mlp_layer on every forward pass.
+        # Per-layer config override: some NemotronH variants (puzzle-style heterogeneous
+        # checkpoints) expose get_nemotron_h_config_for_layer() on the model_config
+        # to return per-layer overrides, including a different intermediate_size.
         _sizes = _raw_int if isinstance(_raw_int, list) else [_raw_int]
         _it = iter(_sizes)
         _last = _sizes[-1]
-        self._layer_int_size: list[int] = [
-            next(_it, _last) if lt == "mlp" else 0 for lt in self._layer_types
-        ]
+        _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
+        _layer_int_size_list: list[int] = []
+        _mlp_idx = 0
+        for _li, _lt in enumerate(self._layer_types):
+            if _lt != "mlp":
+                _layer_int_size_list.append(0)
+            else:
+                _fallback = next(_it, _last)
+                if _get_layer_cfg is not None:
+                    _lcfg = _get_layer_cfg(_li)
+                    _layer_int_size_list.append(
+                        getattr(_lcfg, 'intermediate_size', _fallback)
+                    )
+                else:
+                    _layer_int_size_list.append(_fallback)
+                _mlp_idx += 1
+        self._layer_int_size: list[int] = _layer_int_size_list
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).

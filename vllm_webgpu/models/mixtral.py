@@ -148,7 +148,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len = \
             self._decode_setup(input_ids, positions, attn_metadata)
 
-        greedy = getattr(self, "_greedy_decode", True)
+        greedy = self._greedy_decode
 
         # Start first encoder manually. Layer methods see _active_encoder is not None
         # and their _batched_dispatch calls become re-entrant no-ops, recording into

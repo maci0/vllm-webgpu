@@ -204,7 +204,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
-        ctx_len = int(attn_metadata.max_decode_seq_len)
+        ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len is not None else 1
         return (
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
@@ -310,7 +310,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len = \
             self._decode_setup(input_ids, positions, attn_metadata)
 
-        greedy = getattr(self, "_greedy_decode", True)
+        greedy = self._greedy_decode
         with self._batched_dispatch():
             # Embed (single dispatch; removed the duplicate standalone dispatch)
             self._dispatch(
@@ -587,7 +587,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra("lm_head", uq)},
                            ((vocab + 255) // 256, 1, 1))
 
-            greedy = getattr(self, "_greedy_decode", True)
+            greedy = self._greedy_decode
             if greedy:
                 self._dispatch("argmax_f16", [b["logits"], self._ensure_sample_buf(vocab)],
                                {"N": vocab}, (1, 1, 1))
@@ -679,7 +679,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra("lm_head", uq)},
                 ((vocab + 255) // 256, 1, 1),
             )
-            greedy = getattr(self, "_greedy_decode", True)
+            greedy = self._greedy_decode
             if greedy:
                 self._dispatch("argmax_f16", [pre["logits"], self._ensure_sample_buf(vocab)],
                                {"N": vocab}, (1, 1, 1))

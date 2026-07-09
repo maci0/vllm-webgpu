@@ -338,7 +338,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
                            [norm_out, lm_head_w,
-                            self._scales_buf(_lm_key, uq_lm, norm_out), logits_buf],
+                            self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), logits_buf],
                            {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
 
@@ -385,7 +385,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         def _batch_path_supported() -> bool:
             for _i in range(self.num_layers):
                 _p  = self._layer_key_prefix(_i)
-                _lp = self._lp[_i] if isinstance(self._lp, list) else self._lp
+                _lp = self._lp[_i]
                 _keys = [
                     f"{_p}.self_attn.q_proj.weight",
                     f"{_p}.self_attn.k_proj.weight",
@@ -475,8 +475,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _CHUNK   = 4
         _hstate  = 0
-        normed_x = b["normed"]
-        x_res    = b["x"]
         _freq_buf = self._rope_freq_buf
         _g4_rope_base = {
             "ROPE_BASE":    float(self.rope_theta),
@@ -825,7 +823,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [pre["norm_out"], lm_head_w,
-                 self._scales_buf(_lm_key, uq_lm, pre["norm_out"]), pre["logits"]],
+                 self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), pre["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1))
 

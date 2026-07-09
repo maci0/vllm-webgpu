@@ -220,7 +220,7 @@ def load_safetensors_weights_sharded(
                 buf = weights.get(wkey)
                 if buf is not None and getattr(buf, "dtype", None) == "f16":
                     continue
-                base = wkey[:-len(".weight")]
+                base = wkey.removesuffix(".weight")
                 if base not in qmeta:
                     entry: dict = {"fmt": global_ct["fmt"]}
                     if global_ct.get("group_size") is not None:
@@ -480,8 +480,8 @@ def load_safetensors_weights(
         # DiffusionGemma NVFP4: *.weight is U8 AND *.weight_scale is F8_E4M3 (ModelOpt format)
         has_diffusion_nvfp4 = any(
             header[k].get("dtype") == "U8" and k.endswith(".weight")
-            and k[:-len(".weight")] + ".weight_scale" in header
-            and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "F8_E4M3"
+            and k.removesuffix(".weight") + ".weight_scale" in header
+            and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "F8_E4M3"
             for k in header
         )
         has_fp8_weight = any(
@@ -491,8 +491,8 @@ def load_safetensors_weights(
         # MXFP4/MXFP8: *.weight U8 + *.weight_scale U8 (exponent bytes, not F8_E4M3 like diffusion_nvfp4)
         has_mx_u8_pair = any(
             header[k].get("dtype") == "U8" and k.endswith(".weight")
-            and k[:-len(".weight")] + ".weight_scale" in header
-            and header.get(k[:-len(".weight")] + ".weight_scale", {}).get("dtype") == "U8"
+            and k.removesuffix(".weight") + ".weight_scale" in header
+            and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
             for k in header
         )
         # BnB NF4: companion keys {base}.weight_quantized_stats (older BnB) or
@@ -502,7 +502,7 @@ def load_safetensors_weights(
             or any("quant_state.bitsandbytes__nf4" in k for k in header)
             or any(
                 k.endswith(".weight.absmax")
-                and header.get(k[:-len(".absmax")], {}).get("dtype") == "U8"
+                and header.get(k.removesuffix(".absmax"), {}).get("dtype") == "U8"
                 for k in header
             )
         )
@@ -517,8 +517,8 @@ def load_safetensors_weights(
                 header[k].get("dtype") == "I32"
                 and (k.endswith(".weight") or k.endswith(".weight_packed"))
                 and (
-                    (k.endswith(".weight") and k[:-len(".weight")] + ".weight_scale" in header)
-                    or (k.endswith(".weight_packed") and k[:-len(".weight_packed")] + ".weight_scale" in header)
+                    (k.endswith(".weight") and k.removesuffix(".weight") + ".weight_scale" in header)
+                    or (k.endswith(".weight_packed") and k.removesuffix(".weight_packed") + ".weight_scale" in header)
                 )
                 for k in header
             )
@@ -536,7 +536,7 @@ def load_safetensors_weights(
                 if _qw_key == "__metadata__" or not _qw_key.endswith(".qweight"):
                     continue
                 _qw_shape = tuple(header[_qw_key]["shape"])
-                _base = _qw_key[:-len(".qweight")]
+                _base = _qw_key.removesuffix(".qweight")
                 _sc_key = f"{_base}.scales"
                 if _sc_key in header:
                     _sc_shape = tuple(header[_sc_key]["shape"])
@@ -735,7 +735,7 @@ def load_safetensors_weights(
         if fmt in ("awq", "gptq"):
             # Collect quantized bases
             quant_bases = sorted(set(
-                k[:-len(".qweight")] for k in header if k.endswith(".qweight")
+                k.removesuffix(".qweight") for k in header if k.endswith(".qweight")
             ))
             quant_set = set()
             for base in quant_bases:
@@ -812,7 +812,7 @@ def load_safetensors_weights(
         elif fmt == "nvfp4":
             # NVFP4: weight_packed (U8) + weight_scale (F8_E4M3) + weight_global_scale (F32)
             nvfp4_bases = sorted(set(
-                k[:-len(".weight_packed")] for k in header if k.endswith(".weight_packed")
+                k.removesuffix(".weight_packed") for k in header if k.endswith(".weight_packed")
             ))
             nvfp4_set = set()
             for base in nvfp4_bases:
@@ -854,9 +854,9 @@ def load_safetensors_weights(
             # DiffusionGemma ModelOpt NVFP4: *.weight (U8) + *.weight_scale (F8_E4M3) + *.weight_scale_2 (F32)
             # Used for quantized expert weights. Non-expert weights (BF16) uploaded normally.
             dnvfp4_bases = sorted(set(
-                k[:-len(".weight")] for k in header
+                k.removesuffix(".weight") for k in header
                 if k.endswith(".weight") and header[k].get("dtype") == "U8"
-                and k[:-len(".weight")] + ".weight_scale" in header
+                and k.removesuffix(".weight") + ".weight_scale" in header
             ))
             dnvfp4_set = set()
             for base in dnvfp4_bases:
@@ -897,7 +897,7 @@ def load_safetensors_weights(
                 and header[k].get("dtype") == "F8_E4M3"
             }
             fp8_scale_names = {
-                k[:-len(".weight")] + ".weight_scale"
+                k.removesuffix(".weight") + ".weight_scale"
                 for k in fp8_names
             }
             fp8_set = fp8_names | fp8_scale_names
@@ -911,7 +911,7 @@ def load_safetensors_weights(
                         logger.warning("Skipping %s (dtype=%s)", name, dt)
 
             for wname in fp8_names:
-                base = wname[:-len(".weight")]
+                base = wname.removesuffix(".weight")
                 try:
                     w_fp8 = _load_raw(wname)   # uint8 array (F8_E4M3 bytes), shape (N, K)
                     scale_key = f"{base}.weight_scale"
@@ -1038,16 +1038,16 @@ def load_safetensors_weights(
 
             for k in header:
                 if k.endswith(".weight_quantized_stats"):
-                    base = k[:-len(".weight_quantized_stats")]
+                    base = k.removesuffix(".weight_quantized_stats")
                     bnb_bases.add(base)
                     bnb_set.add(k)
                     wk = f"{base}.weight"
                     if wk in header:
                         bnb_set.add(wk)
                 elif k.endswith(".weight.absmax"):
-                    w_key = k[:-len(".absmax")]          # "{base}.weight"
+                    w_key = k.removesuffix(".absmax")     # "{base}.weight"
                     if header.get(w_key, {}).get("dtype") == "U8":
-                        base = w_key[:-len(".weight")]
+                        base = w_key.removesuffix(".weight")
                         bnb_bases.add(base)
                         bnb_set.add(k)
                         bnb_set.add(w_key)
@@ -1149,11 +1149,11 @@ def load_safetensors_weights(
                 if header[_k].get("dtype") != "I32":
                     continue
                 if _k.endswith(".weight_packed"):
-                    _base = _k[:-len(".weight_packed")]
+                    _base = _k.removesuffix(".weight_packed")
                     if _base + ".weight_scale" in header:
                         _ct_base_map.setdefault(_base, _k)
                 elif _k.endswith(".weight"):
-                    _base = _k[:-len(".weight")]
+                    _base = _k.removesuffix(".weight")
                     if _base + ".weight_scale" in header:
                         _ct_base_map.setdefault(_base, _k)
             ct_bases = sorted(_ct_base_map)
@@ -1291,7 +1291,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     quant_bases: list[str] = []
     for key in sorted(all_keys):
         if key.endswith(".weight"):
-            base = key[:-len(".weight")]
+            base = key.removesuffix(".weight")
             if base + ".scales" in all_keys and base + ".biases" in all_keys:
                 quant_bases.append(base)
 

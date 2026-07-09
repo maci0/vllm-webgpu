@@ -38,13 +38,13 @@ hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
 num_layers = hf_cfg.num_hidden_layers
 head_dim = getattr(hf_cfg, 'head_dim', hf_cfg.hidden_size // hf_cfg.num_attention_heads)
-num_kv_heads = next((getattr(hf_cfg, a, None) for a in ('num_key_value_heads', 'num_kv_heads', 'n_head_kv') if getattr(hf_cfg, a, None) is not None), hf_cfg.num_attention_heads)
 
 print(f"Architecture: {arch}")
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.v1.model_runner import _build_model
-from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config
+from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config, _get_num_kv_heads
+num_kv_heads = _get_num_kv_heads(hf_cfg)
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache)
 
 print("Loading weights...")
