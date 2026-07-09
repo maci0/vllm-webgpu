@@ -367,6 +367,7 @@ def _detect_mx_quant(model_dir: Path) -> str:
             algo = cfg.get("quant_algo", "")
             if not algo and isinstance(cfg.get("quantization"), dict):
                 algo = cfg["quantization"].get("quant_algo", "")
+            algo = algo.upper()
             if "MXFP4" in algo:
                 return "mxfp4"
             if "MXFP8" in algo:
