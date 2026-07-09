@@ -1,7 +1,6 @@
 from __future__ import annotations
 import gc
 import time
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -11,6 +10,7 @@ import torch
 # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
 # Update this comment and pyproject.toml when bumping the vLLM version.
 from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
+from vllm.distributed.utils import get_cpu_distributed_timeout_or_none
 from vllm.logger import init_logger
 from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
 from vllm.v1.worker.worker_base import CompilationTimes, WorkerBase   # vllm>=0.24
@@ -66,11 +66,7 @@ class WebGPUWorker(WorkerBase):
         self.device = torch.device("cpu")
 
         pc = self.parallel_config
-        distributed_timeout = (
-            timedelta(seconds=pc.distributed_timeout_seconds)
-            if pc.distributed_timeout_seconds is not None
-            else None
-        )
+        distributed_timeout = get_cpu_distributed_timeout_or_none()
         init_distributed_environment(pc.world_size, self.rank, self.distributed_init_method, self.local_rank, backend="gloo", timeout=distributed_timeout)
         ensure_model_parallel_initialized(pc.tensor_parallel_size, pc.pipeline_parallel_size, pc.prefill_context_parallel_size, pc.decode_context_parallel_size)
         set_random_seed(self.model_config.seed)
