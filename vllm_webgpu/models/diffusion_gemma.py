@@ -77,6 +77,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2)    # [T, H] f16
             # Per-expert scratch: [T] f32 routing weight for one expert across all tokens.
             self._moe_per_expert_weight_buf = _WB.empty(_dev, max_canvas_len * 4)
+            # Tiny f16 dummy for the NO_SCALE=1 router_norm_f32in path: binding 1
+            # is declared but never read when NO_SCALE=1; pass this instead of an
+            # unrelated weight buffer to make the intent clear.
+            self._router_dummy_buf = _WB.empty(_dev, 8)  # 4 x f16
 
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
@@ -526,7 +530,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 else:
                     logger.warning("L%d: router.scale missing, routing will be suboptimal (no learned scale)", layer_idx)
                     self._dispatch("router_norm_f32in",
-                                   [residual, pfn2_w, router_in],
+                                   [residual, self._router_dummy_buf, router_in],
                                    {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": self._rms_consts["VALS_PER_THREAD"],
                                     "ROOT_SIZE": self._router_root_size, "NO_SCALE": 1},
                                    (num_tokens, 1, 1))

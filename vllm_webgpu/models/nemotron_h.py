@@ -7,7 +7,6 @@ import numpy as np
 
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _H_NAMES
-from vllm_webgpu.webgpu.buffer import _ELEM_BYTES
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -396,8 +395,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             cw_key = f"{p}.conv1d.weight"
             if cw_key in self.weights:
                 expected = self.conv_dim * self.conv_kernel
-                elem_size = _ELEM_BYTES.get(getattr(self.weights[cw_key], "dtype", "f16"), 2)
-                actual = self.weights[cw_key].nbytes // elem_size
+                actual = math.prod(self.weights[cw_key].shape)
                 if actual != expected:
                     raise ValueError(
                         f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"
@@ -596,8 +594,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     {"N": add_n},
                     ((add_n // 4 + 255) // 256, 1, 1),
                 )
-                _stale_normed = sc["normed"]  # noqa: F841 — stale ref, unused after last layer
-                normed_out = None
+                normed_out = None  # stale after last layer; norm_f applied in forward()
 
         self._hstate = (self._hstate + 2) % 3
         return normed_out, out

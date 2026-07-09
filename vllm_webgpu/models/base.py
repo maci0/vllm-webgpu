@@ -188,7 +188,8 @@ class BaseWebGPUModel(ABC):
         self._active_encoder = encoder
         try:
             yield
-            t0 = time.perf_counter() if (self.profiling and label) else 0.0
+            if self.profiling and label:
+                t0 = time.perf_counter()
             dev.queue.submit([encoder.finish()])
             if self.profiling and label:
                 dev.queue.on_submitted_work_done_sync()
@@ -310,8 +311,10 @@ class BaseWebGPUModel(ABC):
 
     def logit_readback(self) -> "np.ndarray":
         """Full vocab logits GPU->CPU (only for temperature sampling or analysis)."""
+        if self._last_logit_buf is None:
+            raise RuntimeError("logit_readback() called before forward()")
         return (
-            self._last_logit_buf.to_numpy()  # type: ignore[union-attr]
+            self._last_logit_buf.to_numpy()
             .view(np.float16)
             .reshape(1, self._last_vocab)
             .astype(np.float32)
@@ -341,6 +344,10 @@ class BaseWebGPUModel(ABC):
             elif gs == 1:
                 # Per-channel FP8: GROUP_K=1 signals the shader to read scales[row].
                 d["GROUP_K"] = 1
+            elif gs is not None:
+                raise ValueError(
+                    f"fp8_gpu with group_size={gs} > 1 is not supported by this shader path"
+                )
             return d
         if uq == 8:
             # NF4: GROUP_K = absmax block size (BnB default 64).

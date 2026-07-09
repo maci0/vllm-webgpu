@@ -142,7 +142,12 @@ def allocate_kv_from_hf_config(
         # hf_config.num_key_value_heads may diverge from what ModelConfig
         # reports for architectures with TP-remapped or MLA-style heads.
         # Pass model_config when possible to get the canonical values.
-        num_kv_heads = hf_config.num_key_value_heads
+        num_kv_heads = getattr(
+            hf_config, "num_key_value_heads",
+            getattr(hf_config, "num_kv_heads",
+                    getattr(hf_config, "n_head_kv",
+                            hf_config.num_attention_heads))
+        )
         head_dim = getattr(
             hf_config, "head_dim",
             hf_config.hidden_size // hf_config.num_attention_heads,

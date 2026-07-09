@@ -276,7 +276,7 @@ class WebGPUModelRunner:
             num_logprobs = vocab_size
         k = min(num_logprobs, vocab_size)
 
-        lp_t = torch.from_numpy(logits_1d.astype(np.float32)).unsqueeze(0).log_softmax(dim=-1)
+        lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d.astype(np.float32)).unsqueeze(0))
         result = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
         return (
             result.logprob_token_ids[0].numpy(),
@@ -328,7 +328,7 @@ class WebGPUModelRunner:
             num_prompt_logprobs = full_logits.shape[-1]
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
-        lp_t = torch.from_numpy(full_logits[:num_positions].astype(np.float32)).log_softmax(dim=-1)
+        lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions].astype(np.float32)))
         return Sampler.gather_logprobs(
             lp_t,
             k,

@@ -421,6 +421,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _rep_keys = [
             k for k in self.weights
             if k.endswith(".weight") and "model.layers." in k
+            and any(p in k for p in ("_proj", "gate_proj", "up_proj", "down_proj"))
         ]
         if any(self._uq_for_key(k) not in (0, 3) for k in _rep_keys):
             return self._prefill_sequential_fallback(
@@ -743,9 +744,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         k_wk = f"{p}.self_attn.k_proj.weight"
         v_wk = f"{p}.self_attn.v_proj.weight"
         uq_q, uq_k, uq_v = self._uq_for_key(q_wk), self._uq_for_key(k_wk), self._uq_for_key(v_wk)
-        _has_qnorm = self.weights.get(f"{p}.self_attn.q_norm.weight") is not None
-
-        _use_fused_qkv = uq_q == 0 and uq_k == 0 and uq_v == 0 and _has_qnorm
+        q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
+        k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
+        _use_fused_qkv = uq_q == 0 and uq_k == 0 and uq_v == 0 and q_norm_w is not None
 
         if _use_fused_qkv:
             # All f16 + per-head norms: single fused_qkv -> qkv_buf[Q|K|V].
@@ -765,8 +766,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Per-head norm + RoPE for Q and K.
         # When using fused QKV (f16 + per-head norms): single fused_qk_norm_rope dispatch.
         # Otherwise: two separate fused_per_head_norm_rope (or plain rope) calls.
-        q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
-        k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
         _freq_buf = self._rope_freq_buf
         _rope_consts = self._rope_consts
 
