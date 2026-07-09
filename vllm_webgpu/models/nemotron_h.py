@@ -170,7 +170,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         CD  = self.conv_dim
         IPD = self.in_proj_dim
         MNH = self.mamba_num_heads
-        I   = self.intermediate_size
+        _mlp_sizes = [s for s in self._layer_int_size if s > 0]
+        I   = max(_mlp_sizes) if _mlp_sizes else self.intermediate_size
         V   = self.vocab_size
         qd  = self.num_q_heads * self.head_dim
         kd  = self.num_kv_heads * self.head_dim
