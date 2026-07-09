@@ -99,6 +99,12 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         print(f"  Last prefill logit: argmax={last_token}, value={float(logits[-1][last_token]):.2f}, "
               f"std={float(logits[-1].std()):.2f}")
 
+    # When sampling, disable the GPU argmax path so model.forward() returns full
+    # (1, vocab) logits directly. The prefill above ran with _greedy_decode=True
+    # (the default), so last_token was obtained correctly from logits[0, 0].
+    if temperature > 0.0 and hasattr(model, '_greedy_decode'):
+        model._greedy_decode = False
+
     # Decode
     print(f"\nDecoding (max {max_tokens} tokens)...")
 
@@ -128,8 +134,9 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         if temperature == 0.0:
             last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
         else:
-            full = model.logit_readback() if has_gpu_argmax else logits
-            last_token = sample_token(full[0], temperature=temperature, top_p=top_p)
+            # _greedy_decode=False: forward() already returned full (1, vocab) logits.
+            # No logit_readback() call needed.
+            last_token = sample_token(logits[0], temperature=temperature, top_p=top_p)
 
         if (step + 1) % 5 == 0:
             print(f"  [{step+1} tokens]: {repr(tok.decode(generated)[-60:])}", flush=True)
