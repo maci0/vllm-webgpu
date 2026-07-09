@@ -844,3 +844,16 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # (model.layers.* vs model.decoder.layers.*) and would silently produce
     # wrong results or KeyErrors.
 
+    def _prefill_batch_forward(self, *args, **kwargs):
+        raise NotImplementedError(
+            "DiffusionGemma prefill runs through forward() / _decoder_layer, not "
+            "_prefill_batch_forward. Parent's implementation uses model.layers.* keys "
+            "which are wrong for this model (model.decoder.layers.*)."
+        )
+
+    def _prefill_sequential_fallback(self, *args, **kwargs):
+        raise NotImplementedError(
+            "DiffusionGemma prefill runs through forward() / _decoder_layer, not "
+            "_prefill_sequential_fallback."
+        )
+
