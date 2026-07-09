@@ -488,7 +488,7 @@ def load_safetensors_weights(
         # order below, which may shadow the intended format for the other layers.
         # All currently supported checkpoints are single-format, so this is safe.
         has_qweight   = any(k.endswith(".qweight")      for k in header)
-        has_wp        = any(k.endswith(".weight_packed") for k in header)   # standard NVFP4
+        has_wp        = any(k.endswith(".weight_packed") and header[k].get("dtype") == "U8" for k in header)   # standard NVFP4
         # DiffusionGemma NVFP4: *.weight is U8 AND *.weight_scale is F8_E4M3 (ModelOpt format)
         has_diffusion_nvfp4 = any(
             header[k].get("dtype") == "U8" and k.endswith(".weight")
