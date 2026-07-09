@@ -40,6 +40,16 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or self.intermediate_size
         self._clamp_extra: dict = {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
 
+        # gate_buf is sized to intermediate_size, not hidden_size. Using it for
+        # the O-proj bias output would silently truncate writes if
+        # intermediate_size < hidden_size (WebGPU discards out-of-bounds stores
+        # without error, corrupting the tail of the bias vector). Allocate a
+        # dedicated buffer that is guaranteed to fit hidden_size f16 elements.
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WebGPUBuffer
+        self._o_bias_buf: "_WebGPUBuffer" = _WebGPUBuffer.empty(
+            wgpu_device.wgpu_device, max(self.hidden_size * 2, 8)
+        )
+
     def _attn_block(
         self,
         layer_idx: int,
@@ -55,9 +65,9 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         GPT-OSS has no q_norm/k_norm weights so the fused_qkv path is never
         taken. Bias vectors are added after each projection and before RoPE,
         using scratch buffers to avoid the WebGPU STORAGE_READ / STORAGE_READ_WRITE
-        aliasing restriction. The O-projection bias uses gate_buf as its destination
-        (free once the Q bias phase is done). Per-layer context length respects the
-        layer_types list: full_attention layers ignore the sliding window cap.
+        aliasing restriction. The O-projection bias uses _o_bias_buf (a dedicated
+        hidden_size buffer) as its destination. Per-layer context length respects
+        the layer_types list: full_attention layers ignore the sliding window cap.
         """
         eff = (ctx_len if (self._layer_types and layer_idx < len(self._layer_types)
                and self._layer_types[layer_idx] == "full_attention")
@@ -148,20 +158,23 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             _gemv_wg(hidden),
         )
 
-        # O-projection bias: write to gate_buf (free now — Q bias phase is done).
-        # Using gate_buf avoids the STORAGE_READ vs STORAGE_READ_WRITE conflict
-        # that would occur if we tried to add bias in-place to o_proj_out.
+        # O-projection bias: write to the dedicated _o_bias_buf.
+        # Cannot add in-place to o_proj_out: WebGPU forbids a buffer appearing
+        # as both STORAGE_READ (binding 0) and STORAGE_READ_WRITE (binding 2)
+        # in the same dispatch. gate_buf is intermediate_size elements wide and
+        # would silently truncate the write if intermediate_size < hidden_size,
+        # so a dedicated hidden_size buffer is used instead.
         _o_proj_src = sc["o_proj_out"]
         if self._attn_bias:
             o_bias = self.weights.get(f"{p}.self_attn.o_proj.bias")
             if o_bias is not None:
                 self._dispatch(
                     "add",
-                    [sc["o_proj_out"], o_bias, sc["gate_buf"]],
+                    [sc["o_proj_out"], o_bias, self._o_bias_buf],
                     {"N": hidden},
                     ((hidden // 4 + 255) // 256, 1, 1),
                 )
-                _o_proj_src = sc["gate_buf"]
+                _o_proj_src = self._o_bias_buf
 
         return _o_proj_src
 
