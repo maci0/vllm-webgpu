@@ -263,7 +263,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             _lm_base = _lm_key.removesuffix(".weight")
             lm_head_w = self.weights[_lm_key]
             uq_lm = self._uq_for_key(_lm_key)
-            sc_lm = self._scales_buf(_lm_key, uq_lm, norm_out)
+            sc_lm = self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf)
             if num_tokens > 1:
                 # Batched LM head: vocab_size (256128) exceeds the WebGPU 65535
                 # per-dimension dispatch limit, so (vocab, num_tokens, 1) is
@@ -352,12 +352,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     _ex.update(self._quant_extra(wk.removesuffix(".weight"), uq))
                     self._dispatch("matmul_quant_mr4",
                                    [sc["normed"], self.weights[wk],
-                                    self._scales_buf(wk, uq, sc["normed"]), out_buf],
+                                    self._scales_buf(wk, uq, self._dummy_scales_buf), out_buf],
                                    _ex, (dim, num_tokens, 1))
                 else:
                     self._dispatch("matmul_quant",
                                    [sc["normed"], self.weights[wk],
-                                    self._scales_buf(wk, uq, sc["normed"]), out_buf],
+                                    self._scales_buf(wk, uq, self._dummy_scales_buf), out_buf],
                                    {"K": hidden, "N": dim, "USE_QUANT": uq,
                                     **self._quant_extra(wk.removesuffix(".weight"), uq)},
                                    _gemv_wg(dim))
@@ -371,13 +371,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     _ex_v.update(self._quant_extra(vw_key.removesuffix(".weight"), uq))
                     self._dispatch("matmul_quant_mr4",
                                    [sc["normed"], self.weights[vw_key],
-                                    self._scales_buf(vw_key, uq, sc["normed"]),
+                                    self._scales_buf(vw_key, uq, self._dummy_scales_buf),
                                     sc["v_buf"]],
                                    _ex_v, (kv_dim, num_tokens, 1))
                 else:
                     self._dispatch("matmul_quant",
                                    [sc["normed"], self.weights[vw_key],
-                                    self._scales_buf(vw_key, uq, sc["normed"]),
+                                    self._scales_buf(vw_key, uq, self._dummy_scales_buf),
                                     sc["v_buf"]],
                                    {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
                                     **self._quant_extra(vw_key.removesuffix(".weight"), uq)},
@@ -458,13 +458,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 _ex_ow.update(self._quant_extra(ow.removesuffix(".weight"), uq_ow))
                 self._dispatch("matmul_quant_mr4",
                                [sc["attn_out"], self.weights[ow],
-                                self._scales_buf(ow, uq_ow, sc["attn_out"]),
+                                self._scales_buf(ow, uq_ow, self._dummy_scales_buf),
                                 sc["o_proj_out"]],
                                _ex_ow, (hidden, num_tokens, 1))
             else:
                 self._dispatch("matmul_quant",
                                [sc["attn_out"], self.weights[ow],
-                                self._scales_buf(ow, uq_ow, sc["attn_out"]),
+                                self._scales_buf(ow, uq_ow, self._dummy_scales_buf),
                                 sc["o_proj_out"]],
                                {"K": q_dim, "N": hidden, "USE_QUANT": uq_ow,
                                 **self._quant_extra(ow.removesuffix(".weight"), uq_ow)},
@@ -508,7 +508,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     _ex_mr4.update(self._quant_extra(wk.removesuffix(".weight"), uq))
                     self._dispatch("matmul_quant_mr4",
                                    [ffn_in, self.weights[wk],
-                                    self._scales_buf(wk, uq, ffn_in), out_b],
+                                    self._scales_buf(wk, uq, self._dummy_scales_buf), out_b],
                                    _ex_mr4, (inter_shared, num_tokens, 1))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                {"N": gelu_n_shared}, ((gelu_n_shared // 4 + 255) // 256, 1, 1),
@@ -527,7 +527,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         (sc["up_buf"],   "up_proj",   uw_k, uq_u)]:
                     self._dispatch("matmul_quant",
                                    [ffn_in, self.weights[wk],
-                                    self._scales_buf(wk, uq, ffn_in), out_b],
+                                    self._scales_buf(wk, uq, self._dummy_scales_buf), out_b],
                                    {"K": hidden, "N": inter_shared, "USE_QUANT": uq,
                                     **self._quant_extra(wk.removesuffix(".weight"), uq)},
                                    _gemv_wg(inter_shared))
@@ -543,12 +543,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 _ex_dw.update(self._quant_extra(dw.removesuffix(".weight"), uq_dw))
                 self._dispatch("matmul_quant_mr4",
                                [sc["ffn_act"], self.weights[dw],
-                                self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
+                                self._scales_buf(dw, uq_dw, self._dummy_scales_buf), sc["ffn_out"]],
                                _ex_dw, (hidden, num_tokens, 1))
             else:
                 self._dispatch("matmul_quant",
                                [sc["ffn_act"], self.weights[dw],
-                                self._scales_buf(dw, uq_dw, sc["ffn_act"]), sc["ffn_out"]],
+                                self._scales_buf(dw, uq_dw, self._dummy_scales_buf), sc["ffn_out"]],
                                {"K": inter_shared, "N": hidden, "USE_QUANT": uq_dw,
                                 **self._quant_extra(dw.removesuffix(".weight"), uq_dw)},
                                _gemv_wg(hidden))
@@ -608,7 +608,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = self._uq_for_key(rw_)
-                _rw_sc = self._scales_buf(rw_, uq_rw, router_in)
+                _rw_sc = self._scales_buf(rw_, uq_rw, self._dummy_scales_buf)
                 if num_tokens > 1 and uq_rw in (0, 3):
                     # Batched router projection: [T, hidden] x [num_experts, hidden]^T -> [T, E]
                     _rw_extra: dict = {"K": hidden, "N": self.num_experts,
@@ -714,7 +714,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                             (sc["gate_buf"], f"{ep}.gate_proj.weight", uq_g),
                             (sc["up_buf"],   f"{ep}.up_proj.weight",   uq_u),
                         ]:
-                            _sc_e = self._scales_buf(ew_key, uq, moe_in)
+                            _sc_e = self._scales_buf(ew_key, uq, self._dummy_scales_buf)
                             _ex_e: dict = {"K": hidden, "N": inter_moe,
                                            "M": num_tokens, "USE_QUANT": uq}
                             _ex_e.update(self._quant_extra(ew_key.removesuffix(".weight"), uq))
@@ -728,7 +728,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        ((gelu_n_moe // 4 + 255) // 256, 1, 1),
                                        shader_subdir="gemma")
                         # down: [T, inter_moe] x [hidden, inter_moe]^T -> [T, hidden]
-                        _sc_dk = self._scales_buf(dk, uq_dk, sc["ffn_act"])
+                        _sc_dk = self._scales_buf(dk, uq_dk, self._dummy_scales_buf)
                         _ex_dk: dict = {"K": inter_moe, "N": hidden,
                                         "M": num_tokens, "USE_QUANT": uq_dk}
                         _ex_dk.update(self._quant_extra(dk.removesuffix(".weight"), uq_dk))
@@ -749,7 +749,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                             uq = self._uq_for_key(ew_key)
                             self._dispatch("matmul_quant",
                                            [moe_in, self.weights[ew_key],
-                                            self._scales_buf(ew_key, uq, moe_in), ob],
+                                            self._scales_buf(ew_key, uq, self._dummy_scales_buf), ob],
                                            {"K": hidden, "N": inter_moe,
                                             "USE_QUANT": uq,
                                             **self._quant_extra(ew_key.removesuffix(".weight"), uq)},
@@ -761,7 +761,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        shader_subdir="gemma")
                         self._dispatch("matmul_quant",
                                        [sc["ffn_act"], self.weights[dk],
-                                        self._scales_buf(dk, uq_dk, sc["ffn_act"]),
+                                        self._scales_buf(dk, uq_dk, self._dummy_scales_buf),
                                         sc["ffn_out"]],
                                        {"K": inter_moe, "N": hidden,
                                         "USE_QUANT": uq_dk,
