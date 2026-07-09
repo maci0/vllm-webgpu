@@ -113,9 +113,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Applied during load_weights before GPU upload, eliminating a per-layer
         # GPU readback+re-upload that _validate_mamba_weights would otherwise
         # require. The transform uses the HF checkpoint key name (backbone. prefix).
+        _neg_exp = lambda x: -np.exp(x)
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "mamba":
-                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = lambda x: -np.exp(x)
+                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _neg_exp
 
         # The WebGPU MLP path does not implement bias addition. All known
         # NemotronH checkpoints ship with mlp_bias=False (the default), so
@@ -818,7 +819,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         conv_w = f"{p}.conv1d.weight"
         conv_b = f"{p}.conv1d.bias"
         has_bias = int(conv_b in self.weights)
-        bias_buf = self.weights.get(conv_b, self._dummy_scales_buf)  # dummy when absent
+        bias_buf = self.weights.get(conv_b, self._dummy_bias_buf)  # dummy when absent
         self._dispatch(
             "mamba2_causal_conv",
             [sc["mamba_conv_in"], self.weights[conv_w], bias_buf,

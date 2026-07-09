@@ -5,6 +5,7 @@ import torch
 
 from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
+from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
 
@@ -65,13 +66,13 @@ def _allocate_kv_pool_hybrid(
         model.kv_pool.append((k_buf, v_buf))
 
     if layer_types is None:
-        total_mb = (bytes_per_layer * num_layers * 2) // 2**20
+        total_mb = (bytes_per_layer * num_layers * 2) // MiB_bytes
         logger.info(
             "KV cache: %d blocks × %d tokens/block × %d layers × %d KV heads × %d head_dim (f16, K+V) = %dMB",
             num_blocks, block_size, num_layers, num_kv_heads, head_dim, total_mb,
         )
     else:
-        total_mb = (bytes_per_layer * kv_layer_count * 2) // 2**20
+        total_mb = (bytes_per_layer * kv_layer_count * 2) // MiB_bytes
         logger.info(
             "KV cache (hybrid): %d kv-attn × %d blocks × %d tokens/block × %d KV heads × %d head_dim (f16, K+V) = %dMB",
             kv_layer_count, num_blocks, block_size, num_kv_heads, head_dim, total_mb,
@@ -171,7 +172,7 @@ def allocate_kv_from_tensors(
 
     logger.info(
         "KV cache: %d blocks, %d kv-attn layers, total=%dMB",
-        num_blocks, len(layer_kv_bytes), total_bytes // 2**20,
+        num_blocks, len(layer_kv_bytes), total_bytes // MiB_bytes,
     )
 
 
@@ -316,7 +317,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     available = max(int(base * fraction), 0)
     logger.info(
         "WebGPU memory: total=%dMB model=%dMB available=%dMB",
-        total // 2**20, model_mem // 2**20, available // 2**20,
+        total // MiB_bytes, model_mem // MiB_bytes, available // MiB_bytes,
     )
     return available
 

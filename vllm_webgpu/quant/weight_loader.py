@@ -55,7 +55,7 @@ def _collect_mx_bases(header: dict) -> list:
         for k in header
         if k.endswith(".weight")
         and header[k].get("dtype") == "U8"
-        and (base := k.removesuffix(".weight")) is not None
+        and (base := k.removesuffix(".weight"))
         and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
     }
     return sorted(bases)
@@ -353,11 +353,14 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
 
 
-def _detect_mx_quant(model_dir: Path) -> str:
+def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
 
     Checks hf_quant_config.json (Nvidia/ModelOpt format) first, then
     config.json quantization_config.quant_type. Returns 'mxfp4', 'mxfp8', or ''.
+
+    Pass quant_cfg to skip re-reading config.json (avoids a redundant disk read
+    when the caller already loaded it via _load_quant_cfg or detect_compressed_tensors_fmt).
     """
     hf_quant = model_dir / "hf_quant_config.json"
     if hf_quant.exists():
@@ -374,13 +377,14 @@ def _detect_mx_quant(model_dir: Path) -> str:
                 return "mxfp8"
         except Exception:
             pass
-    config_json = model_dir / "config.json"
-    if config_json.exists():
-        qt = _load_quant_cfg(config_json).get("quant_type", "").lower()
-        if qt == "mxfp4":
-            return "mxfp4"
-        if qt == "mxfp8":
-            return "mxfp8"
+    if quant_cfg is None:
+        config_json = model_dir / "config.json"
+        quant_cfg = _load_quant_cfg(config_json) if config_json.exists() else {}
+    qt = quant_cfg.get("quant_type", "").lower()
+    if qt == "mxfp4":
+        return "mxfp4"
+    if qt == "mxfp8":
+        return "mxfp8"
     return ""
 
 
@@ -484,8 +488,10 @@ def load_safetensors_weights(
         # Detect compressed-tensors config from the model directory (needed for
         # pack-quantized INT4 format where weight dtype alone is insufficient).
         # Use the caller-supplied ct_meta when available to avoid re-parsing per shard.
+        _config_json = Path(path).parent / "config.json"
+        _raw_quant_cfg = _load_quant_cfg(_config_json) if _config_json.exists() else {}
         if ct_meta is None:
-            ct_meta = detect_compressed_tensors_fmt(Path(path).parent / "config.json")
+            ct_meta = detect_compressed_tensors_fmt(_config_json)
 
         # Detect quantization format from header.
         # NOTE: detection is file-level, not per-layer. A checkpoint that mixes
@@ -575,7 +581,7 @@ def load_safetensors_weights(
             fmt = "bnb_nf4"
         elif has_mx_u8_pair:
             # MXFP4 or MXFP8: U8 weight + U8 exponent scale. Distinguish via config files.
-            _mx = _detect_mx_quant(Path(path).parent)
+            _mx = _detect_mx_quant(Path(path).parent, quant_cfg=_raw_quant_cfg)
             fmt = _mx if _mx in ("mxfp4", "mxfp8") else "plain"
         elif has_ct_pack_int4:
             fmt = "ct_pack_int4"

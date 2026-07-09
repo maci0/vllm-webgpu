@@ -199,7 +199,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         super().load_weights(path, f32_keys=f32_keys)
         # Cache per_expert_scale for each MoE layer. Each to_numpy() is a blocking
         # GPU-CPU sync (~100 µs); caching once at load time avoids N syncs per step.
-        self._pes_cache: list[np.ndarray | None] = []
+        self._pes_cache = []
         if self.is_moe:
             for i in range(self.num_layers):
                 p = self._layer_key_prefix(i)
@@ -208,8 +208,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     self._pes_cache.append(pes_w.to_numpy().view(np.float16).astype(np.float32))
                 else:
                     self._pes_cache.append(None)
-        else:
-            self._pes_cache = [None] * self.num_layers
 
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 

@@ -312,7 +312,7 @@ class BaseWebGPUModel(ABC):
         """Derive the decode context length from attn_metadata, falling back to position."""
         ctx_len = int(attn_metadata.max_decode_seq_len
                       if attn_metadata.max_decode_seq_len is not None
-                      else int(positions[-1]) + 1)
+                      else positions[-1] + 1)
         if ctx_len <= 0:
             ctx_len = int(positions[-1]) + 1
         return ctx_len
@@ -439,7 +439,7 @@ class BaseWebGPUModel(ABC):
             return 0
         import wgpu as wgpu_lib
         self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
-        val = int(np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32).item())
+        val = np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32).item()
         self._gpu_sample_staging.unmap()
         return val
 

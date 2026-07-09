@@ -113,7 +113,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # When sampling, disable the GPU argmax path so model.forward() returns full
     # (1, vocab) logits directly. The prefill above ran with _greedy_decode=True
     # (the default), so last_token was obtained correctly from logits[0, 0].
-    if temperature > 0.0 and hasattr(model, '_greedy_decode'):
+    if temperature > 0.0:
         model._greedy_decode = False
 
     # Decode

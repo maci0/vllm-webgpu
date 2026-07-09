@@ -238,7 +238,12 @@ class WebGPUModelRunner:
         if lp_list:
             head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
             num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)
-        return 2 * block_size * num_kv_heads * head_dim * get_dtype_size(torch.float16)
+        return FullAttentionSpec(
+            block_size=block_size,
+            num_kv_heads=num_kv_heads,
+            head_size=head_dim,
+            dtype=torch.float16,
+        ).page_size_bytes
 
     def warm_up(self) -> None:
         if self.model is not None:
@@ -305,7 +310,7 @@ class WebGPUModelRunner:
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
         lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
-        return LogprobsTensors(lp.logprob_token_ids, lp.logprobs, lp.selected_token_ranks.to(torch.int32))
+        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
 
     @staticmethod
     def _compute_prompt_logprobs(
@@ -352,7 +357,7 @@ class WebGPUModelRunner:
             k,
             torch.tensor(tok_ids[1:num_positions + 1], dtype=torch.int64),
         )
-        return LogprobsTensors(lp.logprob_token_ids, lp.logprobs, lp.selected_token_ranks.to(torch.int32))
+        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
 
     def _make_model_output(
         self,
