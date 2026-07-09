@@ -190,7 +190,7 @@ class WebGPUModelRunner:
                 default_hd = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
                 default_kv = getattr(mc, "num_key_value_heads", 1)
                 global_hd = getattr(mc, "global_head_dim", default_hd)
-                global_kv = getattr(mc, "num_global_key_value_heads", 1)
+                global_kv = getattr(mc, "num_global_key_value_heads", None) or default_kv
                 for i, lt in enumerate(layer_types):
                     if lt not in KV_ATTN_TYPES:
                         continue
