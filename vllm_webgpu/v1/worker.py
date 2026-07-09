@@ -1,6 +1,7 @@
 from __future__ import annotations
 import gc
 import time
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from vllm.config import VllmConfig
@@ -65,7 +66,12 @@ class WebGPUWorker(WorkerBase):
         self.device = torch.device("cpu")
 
         pc = self.parallel_config
-        init_distributed_environment(pc.world_size, self.rank, self.distributed_init_method, self.local_rank, backend="gloo")
+        distributed_timeout = (
+            timedelta(seconds=pc.distributed_timeout_seconds)
+            if pc.distributed_timeout_seconds is not None
+            else None
+        )
+        init_distributed_environment(pc.world_size, self.rank, self.distributed_init_method, self.local_rank, backend="gloo", timeout=distributed_timeout)
         ensure_model_parallel_initialized(pc.tensor_parallel_size, pc.pipeline_parallel_size, pc.prefill_context_parallel_size, pc.decode_context_parallel_size)
         set_random_seed(self.model_config.seed)
 
