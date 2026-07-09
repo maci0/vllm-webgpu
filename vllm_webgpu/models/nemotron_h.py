@@ -545,14 +545,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 
     def _validate_mamba_weights(self) -> None:
-        """Validate conv1d.weight element count for all Mamba layers.
+        """Validate weights for all Mamba layers.
 
-        The A_log → -exp(A) transform is registered as a CPU-side weight_transform
-        in __init__ and applied before GPU upload, so no GPU round-trip is needed here.
+        Checks:
+        1. conv1d.weight element count (shape may be [conv_dim, 1, kernel] or
+           [conv_dim, kernel]; both are row-major identical).
+        2. Presence and f32 dtype for A, D, and dt_bias. The mamba2_ssm_step
+           shader binds all three as array<f32>; a missing key or f16 upload
+           produces silent garbage with no GPU-side error.
 
-        conv1d.weight validation: the checkpoint may store shape [conv_dim, 1, kernel]
-        or [conv_dim, kernel]. Both are row-major identical in memory; no reshape is
-        needed. This method only checks that the element count matches conv_dim * kernel.
+        The A_log to -exp(A) transform is a CPU-side weight_transform applied
+        before GPU upload, so no GPU round-trip is needed here.
         """
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -570,6 +573,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     raise ValueError(
                         f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"
                     )
+
+            # SSM parameters: verify presence and f32 dtype.
+            # The mamba2_ssm_step shader binds A, D, and dt_bias as array<f32>;
+            # a missing key or f16 upload would produce silent garbage.
+            for wk in ("A", "D", "dt_bias"):
+                key = f"{p}.{wk}"
+                assert key in self.weights, f"{key} missing from loaded weights"
+                assert self.weights[key].dtype == "f32", (
+                    f"{key} must be f32 (shader reads array<f32>), got {self.weights[key].dtype}"
+                )
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 
