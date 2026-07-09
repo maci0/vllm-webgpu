@@ -623,58 +623,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             return super().forward(input_ids, positions, attn_metadata)
 
         num_tokens = len(input_ids)
-        hidden = self.hidden_size
-        self._hstate = 0
 
         if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
             raise RuntimeError("multi-sequence batching not supported in this build")
 
-        # Prefill (num_tokens > 1): process tokens sequentially but batch CHUNK
-        # tokens per command encoder to avoid Metal's per-command-buffer GPU timeout.
-        # GDN SSM state is updated in-place on the GPU; sequential order is preserved
-        # because dispatches within an encoder execute in submission order.
         if num_tokens > 1:
             return self._prefill_chunked_forward(
                 input_ids, positions, attn_metadata, num_tokens)
 
-        ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len = \
-            self._decode_setup(input_ids, positions, attn_metadata)
-        vocab = self.vocab_size
-        greedy = getattr(self, "_greedy_decode", True)
-
-        # Single outer encoder for the entire forward pass — one queue.submit().
-        # Inner _batched_dispatch() calls in layer methods are re-entrant no-ops
-        # when profiling=False (default), recording all dispatches here.
-        _rms_base = self._rms_consts
-        sc = self._sc
-
-        with self._batched_dispatch():
-            self._dispatch("embedding_lookup",
-                           [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
-                           {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
-
-            # Initial pre-norm for layer 0; subsequent pre-norms are fused into each
-            # layer's final add_rms_norm dispatch.
-            self._dispatch("rms_norm",
-                           [x_buf, self.weights["model.layers.0.input_layernorm.weight"],
-                            sc["normed"]],
-                           _rms_base, (num_tokens, 1, 1))
-
-            normed_x = sc["normed"]
-            for i in range(self.num_layers):
-                normed_x, x_buf = self._transformer_layer(
-                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
-
-            self._dispatch("rms_norm",
-                           [x_buf, self.weights["model.norm.weight"], norm_out],
-                           _rms_base, (num_tokens, 1, 1))
-
-            self._decode_teardown(norm_out, logits_buf, vocab, greedy)
-
-        if greedy:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return super().forward(input_ids, positions, attn_metadata)
 
     def _attn_block(
         self,
