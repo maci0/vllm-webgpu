@@ -5,6 +5,8 @@ from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
+from vllm.utils.torch_utils import get_dtype_size
+from vllm.v1.kv_cache_interface import FullAttentionSpec
 
 from vllm_webgpu.utils import OVERHEAD_BYTES
 
@@ -144,9 +146,9 @@ def allocate_kv_from_tensors(
             for name in group.layer_names:
                 layer_spec_map[name] = group.kv_cache_spec
 
-    # Build layer_index -> per-buffer bytes from the tensors vLLM already computed.
+    # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
-    layer_kv_bytes: dict[int, int] = {}
+    layer_kv_bytes: dict[int, tuple[int, int]] = {}
     for tensor in kv_cache_tensors:
         if tensor.block_stride > 0:
             raise NotImplementedError(
@@ -156,24 +158,47 @@ def allocate_kv_from_tensors(
             raise NotImplementedError(
                 f"Shared-block-table KV cache (shared_by={tensor.shared_by}) is not supported by the WebGPU backend"
             )
-        # Prefer spec.real_page_size_bytes over tensor.size // 2. The latter
-        # includes per-token-head scale bytes that inflate the allocation beyond
-        # what the K or V data actually occupies.
+        # Prefer spec fields over tensor.size // 2. The latter includes
+        # per-token-head scale bytes that inflate the allocation beyond what
+        # the K or V data actually occupies, and also averages head_size and
+        # head_size_v instead of allocating each buffer at its correct size.
         first_name = tensor.shared_by[0] if tensor.shared_by else None
         spec = layer_spec_map.get(first_name) if first_name is not None else None
-        if spec is not None and hasattr(spec, "real_page_size_bytes"):
-            per_buf = spec.real_page_size_bytes * num_blocks // 2
+        if spec is not None and isinstance(spec, FullAttentionSpec):
+            # Compute K and V sizes independently so that asymmetric head
+            # dimensions (e.g. MLA-style models where head_size != head_size_v)
+            # get correctly sized buffers instead of an averaged size.
+            dtype_bytes = get_dtype_size(spec.dtype)
+            k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * dtype_bytes
+            v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * dtype_bytes
             naive = tensor.size // 2
-            if per_buf != naive:
+            if k_bytes != naive or v_bytes != naive:
+                logger.warning(
+                    "KV buffer sizes differ from tensor.size//2=%d B "
+                    "(layer %r): k_bytes=%d B, v_bytes=%d B. "
+                    "Using spec-derived values; scale bytes are not "
+                    "accessible to WebGPU shaders.",
+                    naive, first_name, k_bytes, v_bytes,
+                )
+        elif spec is not None and hasattr(spec, "real_page_size_bytes"):
+            # Symmetric head dims or non-FullAttentionSpec: fall back to
+            # halving the combined page size.
+            half = spec.real_page_size_bytes * num_blocks // 2
+            k_bytes = half
+            v_bytes = half
+            naive = tensor.size // 2
+            if half != naive:
                 logger.warning(
                     "KV tensor size contains non-data bytes (per-token-head scale "
                     "overhead): spec-derived per_buf=%d B, tensor.size//2=%d B "
                     "(layer %r). Using spec-derived value; scale bytes are not "
                     "accessible to WebGPU shaders.",
-                    per_buf, naive, first_name,
+                    half, naive, first_name,
                 )
         else:
-            per_buf = tensor.size // 2
+            half = tensor.size // 2
+            k_bytes = half
+            v_bytes = half
             if kv_cache_groups is not None:
                 logger.warning(
                     "No spec found for layer %r; falling back to tensor.size // 2. "
@@ -186,18 +211,18 @@ def allocate_kv_from_tensors(
             except Exception:
                 logger.warning("Cannot parse layer index from KVCacheTensor.shared_by entry %r", layer_name)
                 continue
-            layer_kv_bytes[idx] = per_buf
+            layer_kv_bytes[idx] = (k_bytes, v_bytes)
 
     model.kv_pool.clear()
     total_bytes = 0
     for i in range(num_total_layers):
         if i in layer_kv_bytes:
-            per_buf = layer_kv_bytes[i]
+            k_bytes, v_bytes = layer_kv_bytes[i]
             model.kv_pool.append((
-                WebGPUBuffer.empty(wgpu_device, per_buf),
-                WebGPUBuffer.empty(wgpu_device, per_buf),
+                WebGPUBuffer.empty(wgpu_device, k_bytes),
+                WebGPUBuffer.empty(wgpu_device, v_bytes),
             ))
-            total_bytes += per_buf * 2
+            total_bytes += k_bytes + v_bytes
         else:
             model.kv_pool.append((
                 WebGPUBuffer.empty(wgpu_device, 16),
