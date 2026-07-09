@@ -187,7 +187,7 @@ class WebGPUModelRunner:
         if not lp_list:
             layer_types = _layer_types
             if layer_types and len(layer_types) == mc.num_hidden_layers:
-                default_hd = getattr(mc, "head_dim", mc.hidden_size // mc.num_attention_heads)
+                default_hd = self.vllm_config.model_config.get_head_size()
                 default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
                 global_hd = getattr(mc, "global_head_dim", default_hd)
                 global_kv = getattr(mc, "num_global_key_value_heads", None) or default_kv
