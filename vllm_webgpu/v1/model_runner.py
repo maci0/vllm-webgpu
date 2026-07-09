@@ -8,11 +8,12 @@ import torch
 
 try:
     from vllm.v1.kv_cache_interface import FullAttentionSpec
-    from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
+    from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 except ImportError:
     FullAttentionSpec = None  # type: ignore[assignment,misc]
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
     LogprobsLists = None  # type: ignore[assignment,misc]
+    LogprobsTensors = None  # type: ignore[assignment,misc]
     EMPTY_MODEL_RUNNER_OUTPUT = None  # type: ignore[assignment,misc]
 
 try:
@@ -267,34 +268,30 @@ class WebGPUModelRunner:
     @staticmethod
     def _compute_request_logprobs(
         logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
-    ) -> "tuple[np.ndarray | None, np.ndarray | None, int] | None":
+    ) -> "LogprobsTensors | None":
         """Compute top-N logprobs from a 1-D float32 logits vector.
 
-        Returns (top_k_ids, top_k_log_probs, sampled_token_rank) for top-k
-        requests, or (None, full_vocab_log_probs, 0) when num_logprobs == -1
-        (full-vocab distribution, vLLM convention).
-
-        Slot 0 is always the sampled token; slots 1..k are the top-k tokens
-        by log probability (num_logprobs+1 columns total), matching the layout
-        expected by LogprobsLists.
+        Returns a LogprobsTensors of shape [1, num_logprobs+1] for top-k
+        requests (slot 0 is always the sampled token; slots 1..k are the
+        top-k tokens by log probability, matching the layout expected by
+        LogprobsLists), or None when logprobs cannot be computed.
         """
         if Sampler is None:
             return None
         vocab_size = logits_1d.shape[0]
         if num_logprobs == -1:
-            # vLLM convention for -1: unsorted full-vocab distribution with
-            # empty token-ID and rank tensors. The downstream _make_model_output
-            # path discards this tuple (else: pass), so skip the log-softmax.
-            return (None, None, 0)
+            # vLLM convention for -1: unsorted full-vocab distribution.
+            # LogprobsLists has fixed width and cannot represent this; drop it
+            # with a warning rather than silently returning wrong data.
+            logger.warning(
+                "full-vocab sampled logprobs (num_logprobs=-1) are not supported "
+                "for decode steps and will be dropped; use a finite num_logprobs value"
+            )
+            return None
         k = min(num_logprobs, vocab_size)
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
-        result = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
-        return (
-            result.logprob_token_ids[0].numpy(),
-            result.logprobs[0].numpy(),
-            int(result.selected_token_ranks[0]),
-        )
+        return Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
 
     @staticmethod
     def _compute_prompt_logprobs(
@@ -357,48 +354,31 @@ class WebGPUModelRunner:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
         # Build LogprobsLists for top-k sampled-token logprob entries.
-        # Full-vocab decode logprobs (num_logprobs == -1, d[0] is None) cannot
-        # be stored in LogprobsLists (fixed width) and must not be routed into
-        # prompt_logprobs_dict either, since the scheduler reads that field only
-        # as prompt logprobs. Drop them with a warning.
+        # Each non-None entry in logprobs_data is a LogprobsTensors of shape
+        # [1, k+1]. Stack them (preserving req alignment with placeholder rows
+        # for requests that did not ask for logprobs), then call tolists() once.
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
-        has_topk = (
-            logprobs_data
-            and any(d is not None and d[0] is not None for d in logprobs_data)
-        )
-        if LogprobsLists is not None and has_topk:
-            n = len(req_ids)
-            max_k = max(
-                len(d[0])
-                for d in logprobs_data
-                if d is not None and d[0] is not None
-            )
-            tok_ids_arr = np.zeros((n, max_k), dtype=np.int32)
-            logprobs_arr = np.full((n, max_k), -float("inf"), dtype=np.float32)
-            ranks_arr = np.zeros(n, dtype=np.int32)
-            for i, d in enumerate(logprobs_data):
-                if d is None:
-                    continue
-                ids, lp, rank = d
-                if ids is not None:
-                    # top-k entry: pack into the fixed-width arrays
-                    k = len(ids)
-                    tok_ids_arr[i, :k] = ids
-                    logprobs_arr[i, :k] = lp
-                    ranks_arr[i] = rank
+        has_topk = logprobs_data and any(d is not None for d in logprobs_data)
+        if LogprobsLists is not None and LogprobsTensors is not None and has_topk:
+            non_none = [d for d in logprobs_data if d is not None]
+            max_k = max(d.logprob_token_ids.shape[1] for d in non_none)
+            pieces = []
+            for d in logprobs_data:
+                if d is not None:
+                    pieces.append(d)
                 else:
-                    # full-vocab decode logprob: unsupported, drop silently per
-                    # the mixed-batch warning issued below.
-                    pass
-            built_logprobs = LogprobsLists(tok_ids_arr, logprobs_arr, ranks_arr)
-        if logprobs_data and any(
-            d is not None and d[0] is None for d in logprobs_data
-        ):
-            logger.warning(
-                "full-vocab sampled logprobs (num_logprobs=-1) are not supported "
-                "for decode steps and will be dropped; use a finite num_logprobs value"
+                    pieces.append(LogprobsTensors(
+                        torch.zeros((1, max_k), dtype=torch.int32),
+                        torch.full((1, max_k), -float("inf"), dtype=torch.float32),
+                        torch.zeros(1, dtype=torch.int32),
+                    ))
+            stacked = LogprobsTensors(
+                torch.cat([p.logprob_token_ids for p in pieces]),
+                torch.cat([p.logprobs for p in pieces]),
+                torch.cat([p.selected_token_ranks for p in pieces]),
             )
+            built_logprobs = stacked.tolists()
 
         out = ModelRunnerOutput(
             req_ids=req_ids,
@@ -416,7 +396,7 @@ class WebGPUModelRunner:
         tok: int,
         num_logprobs: "int | None",
         rid: str,
-    ) -> "tuple | None":
+    ) -> "LogprobsTensors | None":
         """Extract logprob data for one request from a logits array.
 
         Args:
@@ -426,7 +406,7 @@ class WebGPUModelRunner:
             num_logprobs: Number of top logprobs requested, or None to skip.
             rid: Request id (used only for the warning message).
 
-        Returns a (top_ids, top_lp, rank) tuple or None when logprobs cannot be computed.
+        Returns a LogprobsTensors of shape [1, k+1] or None when logprobs cannot be computed.
         """
         if num_logprobs is None:
             return None

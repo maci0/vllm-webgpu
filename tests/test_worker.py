@@ -21,7 +21,7 @@ def test_worker_instantiates():
 
 
 def test_compute_request_logprobs():
-    """_compute_request_logprobs returns top-N tokens sorted by log-prob."""
+    """_compute_request_logprobs returns a LogprobsTensors with top-N tokens sorted by log-prob."""
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
 
     vocab = 32
@@ -30,17 +30,22 @@ def test_compute_request_logprobs():
     logits[3] = 5.0    # second highest
     logits[7] = 2.0    # third
 
-    top_ids, top_lp, rank = WebGPUModelRunner._compute_request_logprobs(logits, sampled_tok=5, num_logprobs=3)
+    result = WebGPUModelRunner._compute_request_logprobs(logits, sampled_tok=5, num_logprobs=3)
+    assert result is not None, "should return LogprobsTensors, not None"
 
     # gather_logprobs returns num_logprobs+1 columns: slot 0 = sampled token,
-    # slots 1..k = top-k tokens (no deduplication).
+    # slots 1..k = top-k tokens (no deduplication). Shape is [1, 4].
+    top_ids = result.logprob_token_ids[0]
+    top_lp = result.logprobs[0]
+    rank = int(result.selected_token_ranks[0])
+
     assert len(top_ids) == 4
     assert len(top_lp) == 4
     assert top_ids[0] == 5, "sampled token should be at slot 0"
     assert top_ids[1] == 5, "top-1 token is also token 5 (highest logit)"
     assert top_ids[2] == 3
     assert top_ids[3] == 7
-    assert (top_lp <= 0).all(), "log-probs must be non-positive"
+    assert (top_lp.numpy() <= 0).all(), "log-probs must be non-positive"
     assert rank == 1, "sampled token 5 has the highest logit so rank should be 1 (1-based)"
 
 
