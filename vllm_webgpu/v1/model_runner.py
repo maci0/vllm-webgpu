@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 try:
     from vllm.v1.kv_cache_interface import FullAttentionSpec
@@ -285,7 +284,7 @@ class WebGPUModelRunner:
             )
             return LogprobsTensors(
                 torch.empty(0, dtype=torch.int32),
-                lp_t.squeeze(0),
+                lp_t,
                 torch.empty(0, dtype=torch.int64),
             )
         k = min(num_logprobs, vocab_size)
@@ -374,8 +373,8 @@ class WebGPUModelRunner:
                     if d is not None:
                         pad = max_k - d.logprob_token_ids.shape[1]
                         pieces.append(LogprobsTensors(
-                            F.pad(d.logprob_token_ids, (0, pad), value=0),
-                            F.pad(d.logprobs, (0, pad), value=-float("inf")),
+                            torch.nn.functional.pad(d.logprob_token_ids, (0, pad), value=0),
+                            torch.nn.functional.pad(d.logprobs, (0, pad), value=-float("inf")),
                             d.selected_token_ranks,
                         ))
                     else:

@@ -38,7 +38,9 @@ from transformers import AutoConfig
 hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
 num_layers = hf_cfg.num_hidden_layers
-head_dim = getattr(hf_cfg, 'head_dim', hf_cfg.hidden_size // hf_cfg.num_attention_heads)
+from vllm.config.utils import getattr_iter as _getattr_iter
+head_dim = _getattr_iter(hf_cfg, ('head_dim', 'hidden_size_per_head'),
+                         default_factory=lambda: hf_cfg.hidden_size // hf_cfg.num_attention_heads)
 
 print(f"Architecture: {arch}")
 
@@ -189,6 +191,7 @@ if stats:
                 + 2 * cd * ck       # conv1d  (f16)
                 + 4 * mnh * 3       # A_log + D + dt_bias (f32 each)
                 + 2 * mi * hid      # out_proj (f16)
+                + 2 * mi            # norm.weight (f16, shape [mamba_int])
             ) if (mnh and mhd) else 0
 
             # Use per-layer intermediate sizes from the loaded model when available,

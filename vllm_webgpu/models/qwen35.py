@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -282,8 +283,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        ssm_bytes  = np.prod(ssm_shape) * 4   # f32
-        conv_bytes = np.prod(conv_shape) * 2   # f16
+        ssm_bytes  = math.prod(ssm_shape) * 4   # f32
+        conv_bytes = math.prod(conv_shape) * 2   # f16
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers
@@ -504,12 +505,14 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 self._dispatch("add_rms_norm",
                                [residual, ffn_out, next_w, out, sc["normed"]],
                                _rms_h, (num_tokens, 1, 1))
+                normed_out = sc["normed"]
             else:
                 self._dispatch("add", [residual, ffn_out, out],
                                {"N": add_n}, _vec4_wg(add_n))
+                normed_out = out  # safe placeholder; callers discard first return on last layer
 
         self._hstate = (self._hstate + 2) % 3
-        return sc["normed"], out
+        return normed_out, out
 
     def _transformer_layer(
         self,

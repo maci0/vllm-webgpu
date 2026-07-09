@@ -183,8 +183,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         if not any('q_norm.weight' in k for k in self.weights):
             return
 
-        dev = self.wgpu_device.wgpu_device
-
         for i in range(self.num_layers):
             p = f"model.layers.{i}"
             for norm_key, num_heads in [
@@ -200,6 +198,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 # Fallback: weight arrived with unexpected shape (e.g. after MLX load
                 # which bypasses the transform path). Re-tile via GPU roundtrip.
                 if buf.shape == (self.head_dim,):
+                    dev = self.wgpu_device.wgpu_device
                     raw = buf.to_numpy()
                     assert buf.dtype == 'f16', (
                         f"{norm_key}: expected f16 buffer, got {buf.dtype}; "

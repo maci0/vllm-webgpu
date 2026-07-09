@@ -88,11 +88,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 kv_shared_target = -1
                 if is_kv_shared:
                     # Find the last non-shared layer with the same layer_type (matches vLLM).
-                    prev_types = layer_types[:first_kv_shared]
-                    for j in range(len(prev_types) - 1, -1, -1):
-                        if prev_types[j] == lt:
-                            kv_shared_target = j
-                            break
+                    kv_shared_target = next(
+                        (j for j in range(len(layer_types[:first_kv_shared]) - 1, -1, -1)
+                         if layer_types[:first_kv_shared][j] == lt),
+                        -1,
+                    )
                 if lt == "full_attention":
                     hd_l  = global_hd
                     nkv_l = global_kv if _k_eq_v else default_kv

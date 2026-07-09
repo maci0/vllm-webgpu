@@ -178,10 +178,16 @@ def allocate_kv_from_hf_config(
 
 
 def get_num_kv_heads(hf_cfg) -> int:
-    """Read num_kv_heads from an hf_config, handling architecture-specific attribute names."""
+    """Read num_kv_heads from an hf_config, handling architecture-specific attribute names.
+
+    Attribute order mirrors DefaultArchConfig.get_total_num_kv_heads() in
+    vllm.transformers_utils.model_arch_config_convertor, which is the
+    authoritative source. Align with that list when bumping vLLM to catch
+    newly added architecture aliases early.
+    """
     return getattr_iter(
         hf_cfg,
-        ('num_key_value_heads', 'num_kv_heads', 'n_head_kv',
+        ('n_head_kv', 'num_kv_heads', 'num_key_value_heads',
          'multi_query_group_num', 'num_attention_groups'),
         default_factory=lambda: hf_cfg.num_attention_heads,
     )

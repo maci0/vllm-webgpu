@@ -91,13 +91,14 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     has_gpu_argmax = getattr(model, "logit_returns_token_id", False)
     if has_gpu_argmax:
-        _real = model.logit_readback()
         if temperature > 0.0:
+            _real = model.logit_readback()
             last_token = sample_token(_real[0], temperature=temperature, top_p=top_p)
+            print(f"  Last prefill logit: argmax={int(logits[0, 0])}, value={float(_real[0][int(logits[0, 0])]):.2f}, "
+                  f"std={float(_real[0].std()):.2f}")
         else:
             last_token = int(logits[0, 0])
-        print(f"  Last prefill logit: argmax={int(logits[0, 0])}, value={float(_real[0][int(logits[0, 0])]):.2f}, "
-              f"std={float(_real[0].std()):.2f}")
+            print(f"  Last prefill logit: argmax={last_token}")
     else:
         _logits_last = logits[-1]
         last_token = (

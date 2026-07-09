@@ -151,10 +151,10 @@ class BaseWebGPUModel(ABC):
         self._last_logit_buf: "WebGPUBuffer | None" = None
         self._last_vocab: int = 0
         self._prof_stats: dict[str, list[float]] = defaultdict(list)  # shader -> [ms, ...]
-        # Dummy bias buffer for matmul_quant binding 4 (allocated on first use).
+        # Dummy bias buffer for matmul_quant binding 4.
         # The shader always declares binding 4; callers that don't use HAS_BIAS
         # must still provide a buffer so the bind group layout matches.
-        self._dummy_bias_buf: "WebGPUBuffer | None" = None
+        self._dummy_bias_buf: "WebGPUBuffer" = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
         # Precomputed RoPE inverse frequencies for USE_FREQ_BUF=1 (YaRN and similar).
         # All rope/fused-rope shaders declare an inv_freq_buf binding unconditionally
         # (wgpu-native does not eliminate dead bindings even at USE_FREQ_BUF=0), so
@@ -431,13 +431,6 @@ class BaseWebGPUModel(ABC):
         # matmul_quant always declares binding 4 (bias). Callers that don't set
         # HAS_BIAS=1 still need to provide a buffer so the bind group layout matches.
         if shader_name == "matmul_quant" and len(bindings) == 4:
-            if self._dummy_bias_buf is None:
-                import wgpu as wgpu_lib
-                dev = self.wgpu_device.wgpu_device
-                self._dummy_bias_buf = WebGPUBuffer.empty(
-                    dev, 4,
-                    usage=wgpu_lib.BufferUsage.STORAGE,
-                )
             bindings = list(bindings) + [self._dummy_bias_buf]
 
         key = PipelineKey(

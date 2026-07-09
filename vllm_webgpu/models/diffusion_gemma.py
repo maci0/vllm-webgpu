@@ -61,8 +61,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         self.is_moe: bool = self.num_experts > 0
 
         if self.is_moe:
-            # Initialized here for the case where forward() is called without load_weights().
-            # load_weights() resets and rebuilds this list with real per-expert scale arrays.
+            # _pes_cache is populated by load_weights(); initialize here so that
+            # forward() is safe when weights are injected directly (e.g. in tests).
             self._pes_cache: list[np.ndarray | None] = [None] * self.num_layers
             logger.info("DiffusionGemma MoE: %d experts, top-%d, moe_inter=%d",
                         self.num_experts, self.top_k_experts, self.moe_intermediate_size)

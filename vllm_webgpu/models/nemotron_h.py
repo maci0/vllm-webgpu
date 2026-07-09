@@ -125,12 +125,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # tracking the running MLP count to look up the correct entry in the
         # (possibly heterogeneous) intermediate_size list.
         _layer_int_sizes: list[int] = []
-        _mlp_count = 0
         for _li, _lt in enumerate(self._layer_types):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = _mlp_count
+            _mlp_idx = model_config.hybrid_override_pattern[:_li + 1].count("-") - 1
             if isinstance(_raw_int, list):
                 _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
             else:
@@ -143,8 +142,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _layer_int_sizes.append(_isize)
             else:
                 _layer_int_sizes.append(_fallback)
-            _mlp_count += 1
         self._layer_int_size: list[int] = _layer_int_sizes
+
+        # Register A_log → -exp(A) transform so load_weights applies it on the
+        # CPU numpy array before the GPU upload, avoiding a GPU roundtrip per layer.
+        # HF checkpoint keys use 'backbone.' prefix (remapped to 'model.' after load).
+        for _i, _lt in enumerate(self._layer_types):
+            if _lt == "mamba":
+                _key = f"backbone.layers.{_i}.mixer.A_log"
+                self._weight_transforms[_key] = lambda a: -np.exp(a.view(np.float32))
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
@@ -384,7 +390,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # scales[grp * N_total + row], which requires row-interleaved [G, N_total].
                 # For G > 1 (e.g. K=4096, group_size=128 -> G=32) every grp > 0 lookup
                 # would land in the wrong projection's data. Stack on axis=1 on the CPU.
-                scales_dtype = self.weights[q_s].dtype
                 q_sc = self.weights[q_s].to_numpy().view(np.float32).reshape(self.weights[q_s].shape)
                 k_sc = self.weights[k_s].to_numpy().view(np.float32).reshape(self.weights[k_s].shape)
                 v_sc = self.weights[v_s].to_numpy().view(np.float32).reshape(self.weights[v_s].shape)
@@ -398,7 +403,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 scales_buf = WebGPUBuffer.from_numpy(dev, packed_sc)
 
             qkv_key = f"{p}.qkv_proj.weight"
-            packed_buf = qkv_raw_buf if _is_awq else WebGPUBuffer(buf=qkv_raw, device=dev, shape=(total_nb,), dtype=src_dtype)
+            _ebs = {"f16": 2, "i32": 4, "f32": 4, "u8": 1}
+            packed_buf = qkv_raw_buf if _is_awq else WebGPUBuffer(
+                buf=qkv_raw, device=dev,
+                shape=(total_nb // _ebs.get(src_dtype, 1),),
+                dtype=src_dtype,
+            )
             self.weights[qkv_key] = packed_buf
 
             # Propagate quant_meta from q_proj to qkv_proj so _uq_for_key
@@ -478,22 +488,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         No reshape is performed: both shapes are row-major identical in memory, so
         the GPU shader reads the same byte sequence either way (see comment below).
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
-        dev = self.wgpu_device.wgpu_device
-
-
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
                 continue
             p = f"model.layers.{i}.mixer"
 
-            # A: checkpoint stores as A_log; apply -exp() to get actual A.
-            a_key = f"{p}.A"
-            if a_key in self.weights:
-                raw = self.weights[a_key].to_numpy().view(np.float32)
-                a_f32 = -np.exp(raw)
-                self.weights[a_key] = WebGPUBuffer.from_numpy(dev, a_f32)
+            # A_log → -exp(A) is now applied via _weight_transforms at upload time
+            # (registered in __init__). No GPU roundtrip needed here.
 
             # conv1d.weight: validate element count.
             # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements

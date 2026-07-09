@@ -13,7 +13,7 @@ OVERHEAD_BYTES = 512 * MiB_bytes  # 512 MiB buffer for driver overhead + activat
 
 
 def sample_token(
-    logits_1d: "np.ndarray",
+    logits_1d: np.ndarray,
     temperature: float,
     top_p: float = 1.0,
     top_k: int = 0,
