@@ -852,7 +852,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                        [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
                        {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                         "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-                        "CTX_LEN": self._effective_ctx_len(ctx_len)},
+                        "CTX_LEN": ctx_len},
                        (self.num_q_heads, 1, 1))
 
         # Apply attention output gate: gated = sigmoid(gate) * attn_out.
