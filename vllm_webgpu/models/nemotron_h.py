@@ -467,17 +467,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self._rms_base,
             (num_tokens, 1, 1),
         )
-        lm_head_w = self.weights.get(
-            "lm_head.weight", self.weights["model.embed_tokens.weight"]
-        )
-        uq = self._uq_for_key("lm_head.weight")
+        lm_key = "lm_head.weight" if "lm_head.weight" in self.weights else "model.embed_tokens.weight"
+        lm_head_w = self.weights[lm_key]
+        uq = self._uq_for_key(lm_key)
         self._dispatch(
             "matmul_quant",
             [pre["norm_out"], lm_head_w,
-             self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
+             self._scales_buf(lm_key, uq, self._dummy_scales_buf),
              pre["logits"]],
             {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0,
-             **self._quant_extra("lm_head", uq)},
+             **self._quant_extra(lm_key.removesuffix(".weight"), uq)},
             ((vocab + 255) // 256, 1, 1),
         )
         greedy = self._greedy_decode

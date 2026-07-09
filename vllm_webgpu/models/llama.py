@@ -209,9 +209,19 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
         )
 
+    def _lm_head_key(self) -> str:
+        """Return the actual weight key for the LM head.
+
+        When the model uses tied embeddings there is no separate lm_head.weight
+        tensor in the checkpoint. Fall back to the embedding key so that quant
+        lookups (_uq_for_key, _scales_buf) operate on the correct key and do not
+        silently treat a quantized weight as raw f16.
+        """
+        return "lm_head.weight" if "lm_head.weight" in self.weights else "model.embed_tokens.weight"
+
     @property
     def _lm_head_weight(self) -> "WebGPUBuffer":
-        return self.weights.get("lm_head.weight") or self.weights["model.embed_tokens.weight"]
+        return self.weights[self._lm_head_key()]
 
     def _decode_teardown(
         self,
@@ -228,15 +238,16 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         submitting the encoder and reading back the result.
         """
         hidden = self.hidden_size
-        uq = self._uq_for_key("lm_head.weight")
+        lm_key = self._lm_head_key()
+        uq = self._uq_for_key(lm_key)
         workgroups = ((vocab + 255) // 256, 1, 1)
         self._dispatch(
             "matmul_quant",
             [norm_out,
              self._lm_head_weight,
-             self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
+             self._scales_buf(lm_key, uq, self._dummy_scales_buf),
              logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra("lm_head", uq)},
+            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra(lm_key.removesuffix(".weight"), uq)},
             workgroups,
         )
         if greedy:
