@@ -237,6 +237,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         hidden = self.hidden_size
         uq = self._uq_for_key("lm_head.weight")
+        if split_k == 1:
+            if vocab > 65535:
+                raise ValueError(
+                    f"split_k=1 requires vocab <= 65535, got {vocab}"
+                )
+            workgroups = (vocab, 1, 1)
+        else:
+            workgroups = ((vocab + 255) // 256, 1, 1)
         self._dispatch(
             "matmul_quant",
             [norm_out,
@@ -244,7 +252,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
              self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
              logits_buf],
             {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": split_k, **self._quant_extra("lm_head", uq)},
-            ((vocab + 255) // 256, 1, 1),
+            workgroups,
         )
         if greedy:
             self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
