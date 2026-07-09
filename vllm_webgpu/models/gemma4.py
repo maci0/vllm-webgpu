@@ -1099,7 +1099,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Fused gate+up (f16 only); Gemma uses tanh-GELU.
             gw_k = f"{p}.mlp.gate_proj.weight"
             uw_k = f"{p}.mlp.up_proj.weight"
-            uq_g = self._uq_for_key(gw_k); uq_u = self._uq_for_key(uw_k)
+            uq_g = self._uq_for_key(gw_k)
+            uq_u = self._uq_for_key(uw_k)
             if uq_g == 0 and uq_u == 0:
                 self._dispatch("fused_gate_act",
                                [ffn_normed, self.weights[gw_k], self.weights[uw_k],

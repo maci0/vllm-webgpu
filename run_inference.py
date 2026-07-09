@@ -104,7 +104,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             if temperature > 0.0
             else int(np.argmax(_logits_last))
         )
-        print(f"  Last prefill logit: argmax={int(np.argmax(_logits_last))}, value={float(_logits_last[int(np.argmax(_logits_last))]):.2f}, "
+        _best = int(np.argmax(_logits_last))
+        print(f"  Last prefill logit: argmax={_best}, value={float(_logits_last[_best]):.2f}, "
               f"std={float(_logits_last.std()):.2f}")
 
     # When sampling, disable the GPU argmax path so model.forward() returns full

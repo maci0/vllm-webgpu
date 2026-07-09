@@ -157,6 +157,7 @@ def load_safetensors_weights_sharded(
     model_dir: str,
     wgpu_device,
     f32_keys: "frozenset[str] | None" = None,
+    weight_transforms: "dict | None" = None,
 ) -> dict:
     """Load multi-shard safetensors from a directory with model.safetensors.index.json.
 
@@ -176,7 +177,7 @@ def load_safetensors_weights_sharded(
             raise ValueError("f32_keys is not supported for mlx_int4 format")
         return load_mlx_weights(model_dir, wgpu_device)
 
-    shard_files = sorted(set(index["weight_map"].values()))
+    shard_files = sorted(set(weight_map.values()))
     weights: dict = {}
     # IMPORTANT: keep shard_weights as a local variable (not inline with update()).
     # Inlining as weights.update(load_safetensors_weights(...)) causes Python's GC
@@ -204,7 +205,7 @@ def load_safetensors_weights_sharded(
         logger.info("Loading shard %s", shard)
         shard_weights = load_safetensors_weights(
             shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys,
-            skip_remap=True)
+            skip_remap=True, weight_transforms=weight_transforms)
 
         # Commit all pending write_buffer operations by submitting a dummy command encoder.
         # queue.write_buffer() is only committed before the NEXT queue.submit(), not by
@@ -443,6 +444,7 @@ def load_safetensors_weights(
     ct_meta: dict | None = None,
     f32_keys: "frozenset[str] | None" = None,
     skip_remap: bool = False,
+    weight_transforms: "dict | None" = None,
 ) -> dict:
     """Load safetensors weights and upload to GPU as F16.
 
@@ -747,6 +749,9 @@ def load_safetensors_weights(
                 return True
             else:
                 return False  # not a plain dtype
+            # Apply per-key transform (e.g. tiling shared norm weights) before upload.
+            if weight_transforms and name in weight_transforms:
+                arr = weight_transforms[name](arr)
             arr = np.ascontiguousarray(arr)
             data = _pad4(arr.tobytes())
             buf = wgpu_device.create_buffer(size=len(data), usage=usage)

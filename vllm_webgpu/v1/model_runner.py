@@ -18,11 +18,6 @@ except ImportError:
     EMPTY_MODEL_RUNNER_OUTPUT = None  # type: ignore[assignment,misc]
 
 try:
-    from vllm.sampling_params import SamplingType
-except ImportError:
-    SamplingType = None  # type: ignore[assignment,misc]
-
-try:
     from vllm.v1.sample.sampler import Sampler
 except ImportError:
     Sampler = None  # type: ignore[assignment,misc]
@@ -46,7 +41,7 @@ logger = init_logger(__name__)
 
 def _is_greedy(sp) -> bool:
     """Return True when sampling params request greedy (argmax) decoding."""
-    return sp is None or (SamplingType is not None and sp.sampling_type == SamplingType.GREEDY)
+    return sp is None or sp.temperature < 1e-5
 
 
 def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
@@ -367,7 +362,7 @@ class WebGPUModelRunner:
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = logprobs_data and any(d is not None for d in logprobs_data)
-        if LogprobsLists is not None and LogprobsTensors is not None and has_topk:
+        if LogprobsTensors is not None and has_topk:
             non_none = [d for d in logprobs_data if d is not None]
             max_k = max(d.logprob_token_ids.shape[1] for d in non_none)
             pieces = []

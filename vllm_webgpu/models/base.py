@@ -38,6 +38,15 @@ def _vec4_wg(N: int) -> tuple:
     """
     return (((N + 3) // 4 + 255) // 256, 1, 1)
 
+
+def _rows_wg(N: int) -> tuple:
+    """Workgroup count for SPLIT_K=0 row-parallel dispatches (LM head, matmul rows).
+
+    Each workgroup covers 256 output rows. Used for lm_head and other matmuls
+    where SPLIT_K=0 assigns one workgroup per output tile of 256 rows.
+    """
+    return ((N + 255) // 256, 1, 1)
+
 logger = init_logger(__name__)
 
 
@@ -75,7 +84,6 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    import types
     import torch
     from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
         YaRNScalingRotaryEmbedding,
@@ -104,7 +112,7 @@ def compute_yarn_freqs(
     # Call _compute_inv_freq as an unbound method on a duck-typed namespace.
     # The namespace provides exactly the instance attributes that _compute_inv_freq
     # reads; no CustomOp/vLLM config context is needed.
-    _self = types.SimpleNamespace(
+    _self = SimpleNamespace(
         base=rope_theta,
         rotary_dim=rotary_dim,
         beta_fast=beta_fast,
@@ -162,6 +170,11 @@ class BaseWebGPUModel(ABC):
         # for temperature sampling. Initialized True so hasattr() returns True,
         # allowing the model runner to flip it to False for non-greedy requests.
         self._greedy_decode: bool = True
+        # Per-key weight transforms applied during load_weights before GPU upload.
+        # Keys are checkpoint key names; values are callables (np.ndarray) -> np.ndarray.
+        # Populated by subclasses (e.g. LlamaWebGPUModel tiles shared norm weights)
+        # to avoid a GPU roundtrip (to_numpy → tile → re-upload) in _postprocess_weights.
+        self._weight_transforms: dict = {}
 
     @staticmethod
     def _vals_per_thread(hidden_size: int) -> int:
@@ -249,18 +262,21 @@ class BaseWebGPUModel(ABC):
             load_safetensors_weights_sharded,
         )
         fmt = detect_weight_format(path)
+        transforms = self._weight_transforms or None
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             p = Path(path)
             actual = str(p / _SAFE_WEIGHTS_NAME) if p.is_dir() else path
             self.weights = load_safetensors_weights(
-                actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys)
+                actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
+                weight_transforms=transforms)
         elif fmt == "safetensors_sharded":
             # MLX affine int4 directories also return "safetensors_sharded" from
             # detect_weight_format; load_safetensors_weights_sharded detects the
             # .biases keys in the already-loaded index and dispatches accordingly.
             self.weights = load_safetensors_weights_sharded(
-                path, self.wgpu_device.wgpu_device, f32_keys=f32_keys)
+                path, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
+                weight_transforms=transforms)
         elif fmt == "gguf":
             raise ValueError(
                 f"GGUF format not supported by this plugin — use the vllm-gguf plugin: {path}"

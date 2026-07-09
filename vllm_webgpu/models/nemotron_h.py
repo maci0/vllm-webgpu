@@ -170,8 +170,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         CD  = self.conv_dim
         IPD = self.in_proj_dim
         MNH = self.mamba_num_heads
-        _mlp_sizes = [s for s in self._layer_int_size if s > 0]
-        I   = max(_mlp_sizes) if _mlp_sizes else self.intermediate_size
+        I   = max((s for s in self._layer_int_size if s > 0), default=self.intermediate_size)
         V   = self.vocab_size
         qd  = self.num_q_heads * self.head_dim
         kd  = self.num_kv_heads * self.head_dim
@@ -445,11 +444,22 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                                     f"supported for fused qkv dispatch."
                                 )
                     qmeta[qkv_base] = dict(q_meta_entry)
-                # Remove stale entries for k_proj and v_proj; those weight
-                # tensors no longer exist after packing into qkv_proj.
-                qmeta.pop(k_base, None)
-                qmeta.pop(v_base, None)
-                qmeta.pop(q_base, None)
+                    # Remove stale entries for q/k/v_proj; those weight tensors no
+                    # longer exist after packing into qkv_proj. Only clean up when
+                    # the propagation to qkv_base actually occurred to avoid silently
+                    # dropping metadata when q_base is absent (partial quantization).
+                    qmeta.pop(k_base, None)
+                    qmeta.pop(v_base, None)
+                    qmeta.pop(q_base, None)
+                else:
+                    # q_proj metadata absent; fall back to k or v if available so
+                    # _quant_extra gets a valid global_scale / group_size for the
+                    # fused qkv_proj dispatch.
+                    fallback = qmeta.get(k_base) or qmeta.get(v_base)
+                    if fallback is not None:
+                        qmeta[qkv_base] = dict(fallback)
+                    qmeta.pop(k_base, None)
+                    qmeta.pop(v_base, None)
 
             # Register the packed scales buffer created above (if present).
             if has_scales:

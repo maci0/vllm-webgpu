@@ -1,9 +1,11 @@
 from __future__ import annotations
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -268,8 +270,16 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         dev = self.wgpu_device.wgpu_device
 
-        ssm_bytes  = self._lin_v_heads * self._lin_k_dim * self._lin_v_dim * 4   # f32
-        conv_bytes = (self._lin_conv_kernel - 1) * self._lin_conv_dim * 2        # f16
+        conv_shape, ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads,
+            num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim,
+            head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel,
+        )
+        conv_bytes = math.prod(conv_shape) * 2   # f16
+        ssm_bytes  = math.prod(ssm_shape)  * 4  # f32
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers

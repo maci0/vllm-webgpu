@@ -198,8 +198,7 @@ if stats:
                 + 2 * mi * hid      # out_proj (f16)
             ) if (mnh and mhd) else 0
 
-            raw_inter = hf_cfg.intermediate_size
-            inter_list = raw_inter if isinstance(raw_inter, list) else None
+            inter_list = raw_inter_sz if isinstance(raw_inter_sz, list) else None
 
             total_w_bytes = 0
             _mlp_idx = 0

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import _gemv_wg, _vec4_wg
+from vllm_webgpu.models.base import _gemv_wg, _rows_wg, _vec4_wg
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -457,5 +457,5 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     "moe_accumulate",
                     [msc["expert_out"], msc["expert_tmp"], msc["topk_w"]],
                     {"N": hidden, "K_IDX": k_idx},
-                    ((hidden + 255) // 256, 1, 1),
+                    _rows_wg(hidden),
                 )

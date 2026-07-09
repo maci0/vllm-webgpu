@@ -6,7 +6,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm_webgpu.config import get_config
-from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _vec4_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
@@ -69,6 +69,27 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
+        # Pre-register norm tiling transforms so load_weights can tile q_norm/k_norm
+        # weights at upload time, avoiding a GPU roundtrip (to_numpy → tile → re-upload).
+        # Qwen3 checkpoints store shared norm as (head_dim,); the shader expects
+        # (num_heads * head_dim,) with each head using the same values.
+        head_dim = self.head_dim
+        num_q = self.num_q_heads
+        num_kv = self.num_kv_heads
+
+        def _tile_if_shared(arr: "np.ndarray", num_heads: int) -> "np.ndarray":
+            if arr.shape == (head_dim,):
+                return np.tile(arr.view(np.float16), num_heads)
+            return arr
+
+        for _i in range(self.num_layers):
+            _p = f"model.layers.{_i}"
+            self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = (
+                lambda a, n=num_q: _tile_if_shared(a, n)
+            )
+            self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
+                lambda a, n=num_kv: _tile_if_shared(a, n)
+            )
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Pre-allocate all intermediate scratch buffers used in _transformer_layer.
@@ -172,9 +193,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     continue
                 expected = (num_heads * self.head_dim,)
                 if buf.shape == expected:
-                    continue
+                    continue  # already tiled at load time via _weight_transforms
+                # Fallback: weight arrived with unexpected shape (e.g. after MLX load
+                # which bypasses the transform path). Re-tile via GPU roundtrip.
                 if buf.shape == (self.head_dim,):
-                    # Shared norm: tile to (num_heads * head_dim,) so each head uses same weights.
                     tiled = np.tile(buf.to_numpy().view(np.float16), num_heads)
                     self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled)
                 else:
@@ -236,7 +258,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         hidden = self.hidden_size
         lm_key = self._lm_head_key()
         uq = self._uq_for_key(lm_key)
-        workgroups = ((vocab + 255) // 256, 1, 1)
+        workgroups = _rows_wg(vocab)
         self._dispatch(
             "matmul_quant",
             [norm_out,
