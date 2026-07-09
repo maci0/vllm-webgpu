@@ -196,6 +196,23 @@ class BaseWebGPUModel(ABC):
         Re-entrant when not profiling: if an outer _batched_dispatch is already active,
         inner calls simply record into the existing encoder (no extra submit).
         When profiling=True, each named block gets its own encoder + GPU sync for timing.
+
+        Nested profiling and data-dependency ordering
+        ---------------------------------------------
+        When profiling=True, forward() wraps the entire pass in an unlabeled outer
+        _batched_dispatch() and each transformer layer in a labeled inner one.  Without
+        special handling the GPU would receive all inner-layer commands before the
+        embedding and initial-norm commands that produce their inputs, because the outer
+        encoder is only submitted after all inner blocks finish.
+
+        Fix: when a labeled inner block is entered while an outer encoder is already
+        active, we submit the outer encoder's accumulated commands immediately (so the
+        GPU executes them first), then create a fresh replacement encoder.  That
+        replacement becomes the new "outer" encoder: commands recorded between inner
+        blocks (and after the last one) are captured there and submitted when the outer
+        context manager exits.  At exit, each level submits self._active_encoder rather
+        than the original encoder local, so the outer CM picks up the replacement
+        encoder that holds the post-layer commands (final norm, LM head).
         """
         dev = self.wgpu_device.wgpu_device
 
@@ -204,13 +221,26 @@ class BaseWebGPUModel(ABC):
             yield
             return
 
-        # Create a new encoder; save/restore the outer encoder for profiling re-entrancy.
-        encoder = dev.create_command_encoder()
         saved_encoder = self._active_encoder
+
+        if self.profiling and saved_encoder is not None:
+            # Flush the outer encoder's pending commands (e.g. embedding lookup,
+            # initial RMSNorm) before this inner block starts, so the GPU
+            # executes them in dependency order.  A replacement encoder is created
+            # so that commands recorded after this inner block exits are captured
+            # and submitted when the outer context manager exits.
+            dev.queue.submit([saved_encoder.finish()])
+            saved_encoder = dev.create_command_encoder()
+
+        encoder = dev.create_command_encoder()
         self._active_encoder = encoder
         try:
             yield
-            dev.queue.submit([encoder.finish()])
+            # Submit the currently active encoder for this level.  For inner CMs,
+            # self._active_encoder is still `encoder`.  For the outer CM, inner
+            # blocks may have replaced self._active_encoder with a fresh
+            # replacement encoder that holds post-layer commands; submit that one.
+            dev.queue.submit([self._active_encoder.finish()])
             if self.profiling and label:
                 t0 = time.perf_counter()
                 dev.queue.on_submitted_work_done_sync()
