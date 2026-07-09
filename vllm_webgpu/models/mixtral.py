@@ -234,12 +234,19 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         rw_k = f"{p}.{router_subkey}.weight"
         uq_r = self._uq_for_key(rw_k)
         qi_r = self._quant_extra(f"{p}.{router_subkey}", uq_r)
+        rb_k = f"{p}.{router_subkey}.bias"
+        router_bias = self.weights.get(rb_k)
+        router_bindings = [normed_x, self.weights[rw_k],
+                           self._scales_buf(rw_k, uq_r, self._dummy_scales_buf),
+                           msc["router_out"]]
+        router_consts: dict = {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **qi_r}
+        if router_bias is not None:
+            router_bindings.append(router_bias)
+            router_consts["HAS_BIAS"] = 1
         self._dispatch(
             "matmul_quant",
-            [normed_x, self.weights[rw_k],
-             self._scales_buf(rw_k, uq_r, self._dummy_scales_buf),
-             msc["router_out"]],
-            {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **qi_r},
+            router_bindings,
+            router_consts,
             _gemv_wg(N_E),
         )
         self._dispatch(
