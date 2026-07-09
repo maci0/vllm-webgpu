@@ -392,10 +392,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             _freq_buf = self._rope_freq_buf
             _dg_rope_base = {"ROPE_BASE": float(self.rope_theta), "LN_ROPE_BASE": ln_rope,
                              "USE_FREQ_BUF": int(self._use_freq_buf)}
-            for src, dst, n_heads, wk in [
-                (sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight"),
-                (sc["k_buf"], sc["k_rope"], num_kv_heads, f"{p}.self_attn.k_norm.weight"),
-            ]:
+            # Q: norm+RoPE unconditionally (KV-shared layers still project and use Q).
+            # K: norm+RoPE only for non-shared layers; shared layers read K from cache directly.
+            _heads_specs = [(sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight")]
+            if not is_kv_shared:
+                _heads_specs.append((sc["k_buf"], sc["k_rope"], num_kv_heads, f"{p}.self_attn.k_norm.weight"))
+            for src, dst, n_heads, wk in _heads_specs:
                 nw = self.weights.get(wk)
                 if nw is not None:
                     # Binding 4 (inv_freq_buf): always provided.
@@ -414,11 +416,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Per-head RMSNorm (no weight) on V before caching — required for DiffusionGemma.
             # Matches DiffusionGemmaTextAttention.forward which calls self.v_norm(value_states)
             # unconditionally (DiffusionGemmaRMSNorm, dim=head_dim, with_scale=False).
-            self._dispatch("per_head_rms_norm_no_weight", [v_src, sc["v_normed"]],
-                           {"HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads,
-                            "WG_SIZE": min(head_dim, 128),
-                            "V_IN_OFFSET": 0},
-                           (num_kv_heads, num_tokens, 1), shader_subdir="gemma")
+            # KV-shared layers skip this: V comes from the target layer's cache, not a fresh projection.
+            if not is_kv_shared:
+                self._dispatch("per_head_rms_norm_no_weight", [v_src, sc["v_normed"]],
+                               {"HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads,
+                                "WG_SIZE": min(head_dim, 128),
+                                "V_IN_OFFSET": 0},
+                               (num_kv_heads, num_tokens, 1), shader_subdir="gemma")
             v_to_cache = sc["v_normed"]
             # Write all T tokens' KV to cache before the attention loop.
             # Each query token then attends to the full ctx_len cache (all T tokens),

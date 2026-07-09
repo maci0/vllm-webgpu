@@ -274,20 +274,7 @@ class WebGPUModelRunner:
         """
         if Sampler is None:
             return None
-        vocab_size = logits_1d.shape[0]
-        if num_logprobs == -1:
-            # vLLM convention for -1: return full unsorted log-softmax with
-            # empty dummy tensors for token IDs and ranks (matches
-            # vllm/v1/sample/sampler.py:122-125).
-            lp_t = Sampler.compute_logprobs(
-                torch.from_numpy(logits_1d).unsqueeze(0)
-            )
-            return LogprobsTensors(
-                torch.empty(0, dtype=torch.int32),
-                lp_t,
-                torch.empty(0, dtype=torch.int64),
-            )
-        k = min(num_logprobs, vocab_size)
+        k = min(num_logprobs, logits_1d.shape[0])
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
         return Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
@@ -361,34 +348,28 @@ class WebGPUModelRunner:
         has_topk = logprobs_data and any(d is not None for d in logprobs_data)
         if LogprobsTensors is not None and has_topk:
             non_none = [d for d in logprobs_data if d is not None]
-            # Full-vocab sentinel: logprob_token_ids is 1D (torch.empty(0)).
-            # The stacking path requires 2D token-id tensors, so skip it and
-            # leave built_logprobs=None rather than crashing on .shape[1].
-            if any(d.logprob_token_ids.ndim < 2 for d in non_none):
-                pass  # full-vocab sentinel; built_logprobs stays None
-            else:
-                max_k = max(d.logprob_token_ids.shape[1] for d in non_none)
-                pieces = []
-                for d in logprobs_data:
-                    if d is not None:
-                        pad = max_k - d.logprob_token_ids.shape[1]
-                        pieces.append(LogprobsTensors(
-                            torch.nn.functional.pad(d.logprob_token_ids, (0, pad), value=0),
-                            torch.nn.functional.pad(d.logprobs, (0, pad), value=-float("inf")),
-                            d.selected_token_ranks,
-                        ))
-                    else:
-                        pieces.append(LogprobsTensors(
-                            torch.zeros((1, max_k), dtype=torch.int32),
-                            torch.full((1, max_k), -float("inf"), dtype=torch.float32),
-                            torch.zeros(1, dtype=torch.int64),
-                        ))
-                stacked = LogprobsTensors(
-                    torch.cat([p.logprob_token_ids for p in pieces]),
-                    torch.cat([p.logprobs for p in pieces]),
-                    torch.cat([p.selected_token_ranks for p in pieces]),
-                )
-                built_logprobs = stacked.tolists()
+            max_k = max(d.logprob_token_ids.shape[1] for d in non_none)
+            pieces = []
+            for d in logprobs_data:
+                if d is not None:
+                    pad = max_k - d.logprob_token_ids.shape[1]
+                    pieces.append(LogprobsTensors(
+                        torch.nn.functional.pad(d.logprob_token_ids, (0, pad), value=0),
+                        torch.nn.functional.pad(d.logprobs, (0, pad), value=-float("inf")),
+                        d.selected_token_ranks,
+                    ))
+                else:
+                    pieces.append(LogprobsTensors(
+                        torch.zeros((1, max_k), dtype=torch.int32),
+                        torch.full((1, max_k), -float("inf"), dtype=torch.float32),
+                        torch.zeros(1, dtype=torch.int64),
+                    ))
+            stacked = LogprobsTensors(
+                torch.cat([p.logprob_token_ids for p in pieces]),
+                torch.cat([p.logprobs for p in pieces]),
+                torch.cat([p.selected_token_ranks for p in pieces]),
+            )
+            built_logprobs = stacked.tolists()
 
         out = ModelRunnerOutput(
             req_ids=req_ids,

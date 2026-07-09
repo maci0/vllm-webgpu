@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -464,19 +464,16 @@ def load_safetensors_weights(
     import safetensors.torch as sft
     import torch
     import wgpu as wgpu_lib
-    from vllm.transformers_utils.utils import parse_safetensors_file_metadata
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
-    # Build header for format detection by reading the binary header directly,
-    # without opening a safe_open handle.
-    raw_meta = parse_safetensors_file_metadata(path)
-    header = {
-        k: {"dtype": v["dtype"], "shape": v["shape"]}
-        for k, v in raw_meta.items()
-        if k != "__metadata__"
-    }
-
     with sft.safe_open(path, framework="pt") as sf:
+        # Build header from the already-open safe_open handle instead of opening
+        # the file again via parse_safetensors_file_metadata.
+        header = {
+            k: {"dtype": sf.get_slice(k).get_dtype(), "shape": list(sf.get_slice(k).get_shape())}
+            for k in sf.keys()
+        }
+
         usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
         # Detect compressed-tensors config from the model directory (needed for
@@ -1314,7 +1311,16 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
 
     config_path = p / "config.json"
     raw_cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
-    quant_section = _load_quant_cfg(config_path) or raw_cfg.get("quantization") or {}
+    # Extract the quantization section without re-reading config.json via _load_quant_cfg.
+    # Mirrors the cascade that compressed_tensors.get_quantization_config implements,
+    # plus the MLX-specific "quantization" fallback that follows in the chain.
+    quant_section = (
+        raw_cfg.get("quantization_config")
+        or raw_cfg.get("text_config", {}).get("quantization_config")
+        or raw_cfg.get("compression_config")
+        or raw_cfg.get("quantization")
+        or {}
+    )
     group_size = int(quant_section.get("group_size") or 64)
 
     # Pass 1: build key -> shard_path index without loading any tensor data.

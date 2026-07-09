@@ -10,8 +10,9 @@ from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
 
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
 if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -153,8 +154,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         return (i + 1) % _FULL_ATTN_INTERVAL == 0
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         # Inherit standard _pre (7 keys), _sc (17 keys), and _hstate from parent.
         super()._init_scratch_buffers(max_ctx)
 
@@ -206,7 +205,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
            q_proj.weight [q_dim, hidden] (Q part) and q_gate_proj.weight [q_dim, hidden]
            (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
         dev = self.wgpu_device.wgpu_device
 
         # Tile q_norm/k_norm weights via the parent implementation. Linear-attn layers
@@ -264,8 +262,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         identically for both [CONV_DIM, 1, KERNEL] and [CONV_DIM, KERNEL], so no
         reshape is needed.
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self.wgpu_device.wgpu_device
 
         # Use vLLM's canonical shape calculator (same pattern as nemotron_h.py).
@@ -572,8 +568,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         write_buffer calls do not race with encoder dispatches that reference the
         same buffer from a prior token.
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self.wgpu_device.wgpu_device
 
         hidden = self.hidden_size

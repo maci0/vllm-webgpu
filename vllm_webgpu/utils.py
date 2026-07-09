@@ -35,6 +35,10 @@ def sample_token(
             the draw is deterministic and reproducible across runs.
     """
     import torch
+    # apply_top_k_top_p_pytorch is not in the stable vLLM public API, but the
+    # public apply_top_k_top_p does not propagate allow_cpu_sync=True for OOT
+    # platforms. We call the impl directly to get O(n) topk instead of O(n log n)
+    # sort for large vocabs at batch=1.
     from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
 
     if temperature < 1e-5:

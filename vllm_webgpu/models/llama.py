@@ -77,18 +77,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         num_q = self.num_q_heads
         num_kv = self.num_kv_heads
 
-        def _tile_if_shared(arr: "np.ndarray", num_heads: int) -> "np.ndarray":
-            if arr.shape == (head_dim,):
-                return np.tile(arr, num_heads)
-            return arr
-
         for _i in range(self.num_layers):
             _p = f"model.layers.{_i}"
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = (
-                lambda a, n=num_q: _tile_if_shared(a, n)
+                lambda a, n=num_q: np.tile(a, n) if a.shape == (head_dim,) else a
             )
             self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
-                lambda a, n=num_kv: _tile_if_shared(a, n)
+                lambda a, n=num_kv: np.tile(a, n) if a.shape == (head_dim,) else a
             )
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:

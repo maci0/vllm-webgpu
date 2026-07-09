@@ -1,5 +1,5 @@
 from __future__ import annotations
-import itertools
+from itertools import batched
 import math
 from typing import TYPE_CHECKING
 
@@ -88,11 +88,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 kv_shared_target = -1
                 if is_kv_shared:
                     # Find the last non-shared layer with the same layer_type (matches vLLM).
-                    kv_shared_target = next(
-                        (j for j in range(len(layer_types[:first_kv_shared]) - 1, -1, -1)
-                         if layer_types[:first_kv_shared][j] == lt),
-                        -1,
-                    )
+                    _prev = layer_types[:first_kv_shared]
+                    kv_shared_target = (len(_prev) - 1 - _prev[::-1].index(lt)) if lt in _prev else -1
                 if lt == "full_attention":
                     hd_l  = global_hd
                     nkv_l = global_kv if _k_eq_v else default_kv
@@ -509,7 +506,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "USE_FREQ_BUF": int(self._use_freq_buf),
         }
 
-        for chunk_idx, chunk_layers in enumerate(itertools.batched(range(self.num_layers), _CHUNK)):
+        for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), _CHUNK)):
             with self._batched_dispatch():
                 if chunk_idx == 0:
                     self._dispatch("embedding_lookup_f32",
@@ -546,15 +543,18 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     kw = f"{p}.self_attn.k_proj.weight"
 
                     # QKV projections (always separate in batch path — no fused_qkv).
-                    # For KV-shared layers the projected K and V are not used; Q is used.
+                    # For KV-shared layers only Q is used; K and V come from the target cache.
                     gemm_batch(normed_x, qw, b["q_buf"], hidden, q_dim)
-                    gemm_batch(normed_x, kw, b["k_buf"], hidden, kv_dim)
-                    if has_v:
-                        gemm_batch(normed_x, f"{p}.self_attn.v_proj.weight",
-                                   b["v_buf"], hidden, kv_dim)
-                        v_src = b["v_buf"]
+                    if not is_kv_shared:
+                        gemm_batch(normed_x, kw, b["k_buf"], hidden, kv_dim)
+                        if has_v:
+                            gemm_batch(normed_x, f"{p}.self_attn.v_proj.weight",
+                                       b["v_buf"], hidden, kv_dim)
+                            v_src = b["v_buf"]
+                        else:
+                            v_src = b["k_buf"]   # global attention: V = K (pre-RoPE)
                     else:
-                        v_src = b["k_buf"]   # global attention: V = K (pre-RoPE)
+                        v_src = b["k_buf"]   # unused for KV-shared; satisfies type checker
 
                     # Resolve which KV pool slot to read/write.
                     # KV-shared layers use the target layer's cache; non-shared use their own.

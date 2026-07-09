@@ -130,7 +130,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = model_config.hybrid_override_pattern[:_li + 1].count("-") - 1
+            _mlp_idx = self._layer_types[:_li + 1].count("mlp") - 1
             if isinstance(_raw_int, list):
                 _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
             else:
@@ -466,19 +466,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 
     def _postprocess_mamba_weights(self) -> None:
-        """Convert A_log -> A and validate conv1d.weight element count.
+        """Apply A_log transform and validate conv1d.weight element count.
 
-        HF checkpoints store A as A_log (raw log values). Apply -exp() here to
-        match what vLLM's composed_weight_loader does in the CUDA path
-        (mamba_mixer2.py line 461). The WebGPU loader does not run PyTorch
-        weight-loaders, so this transformation must be applied manually.
+        A_log transform: HF checkpoints store A as raw log values. A_log is in
+        f32_keys so it arrives as a float32 WebGPU buffer. This method reads those
+        bytes, applies A = -exp(A_log), and writes them back in place.
 
-        D and dt_bias are uploaded as F32 directly by load_weights() — no
-        conversion is needed here.
-
-        The conv1d.weight may arrive as [conv_dim, 1, kernel] or [conv_dim, kernel].
-        No reshape is performed: both shapes are row-major identical in memory, so
-        the GPU shader reads the same byte sequence either way (see comment below).
+        conv1d.weight validation: the checkpoint may store shape [conv_dim, 1, kernel]
+        or [conv_dim, kernel]. Both are row-major identical in memory; no reshape is
+        needed. This method only checks that the element count matches conv_dim * kernel.
         """
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":

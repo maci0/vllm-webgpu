@@ -178,19 +178,14 @@ def allocate_kv_from_hf_config(
 
 
 def get_num_kv_heads(hf_cfg) -> int:
-    """Read num_kv_heads from an hf_config, handling architecture-specific attribute names.
+    """Read num_kv_heads from an hf_config using vLLM's authoritative lookup.
 
-    Attribute order mirrors DefaultArchConfig.get_total_num_kv_heads() in
-    vllm.transformers_utils.model_arch_config_convertor, which is the
-    authoritative source. Align with that list when bumping vLLM to catch
-    newly added architecture aliases early.
+    Delegates to ModelArchConfigConvertorBase.get_total_num_kv_heads() so the
+    attribute priority list stays in sync with vLLM as new architecture aliases
+    are added (e.g. 'num_attention_groups' for Step3p5).
     """
-    return getattr_iter(
-        hf_cfg,
-        ('n_head_kv', 'num_kv_heads', 'num_key_value_heads',
-         'multi_query_group_num', 'num_attention_groups'),
-        default_factory=lambda: hf_cfg.num_attention_heads,
-    )
+    from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigConvertorBase
+    return ModelArchConfigConvertorBase(hf_cfg, hf_cfg).get_total_num_kv_heads()
 
 
 def _get_model_memory_usage(worker: "WebGPUWorker") -> int:
