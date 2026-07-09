@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING
 
 from vllm_webgpu.models.base import _gemv_wg
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -40,6 +40,22 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or self.intermediate_size
         self._clamp_extra: dict = {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
 
+    def _init_scratch_buffers(self, max_ctx: int) -> None:
+        """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
+
+        The parent class reuses gate_buf/up_buf/ffn_act (each sized intermediate_size)
+        as bias-addition destinations for Q, K, and V projections. For architectures
+        where num_q_heads * head_dim > intermediate_size or
+        num_kv_heads * head_dim > intermediate_size, those writes overflow.
+        Dedicated buffers sized at the correct Q and KV dimensions avoid the overflow.
+        """
+        super()._init_scratch_buffers(max_ctx)
+        dev = self.wgpu_device.wgpu_device
+        Q  = self.num_q_heads  * self.head_dim
+        KV = self.num_kv_heads * self.head_dim
+        self._sc["q_bias_tmp"] = WebGPUBuffer.empty(dev, Q  * 2)   # [Q]  f16
+        self._sc["k_bias_tmp"] = WebGPUBuffer.empty(dev, KV * 2)   # [KV] f16
+        self._sc["v_bias_tmp"] = WebGPUBuffer.empty(dev, KV * 2)   # [KV] f16
 
     def _attn_block(
         self,
@@ -77,26 +93,30 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
         # Bias addition before RoPE: WebGPU forbids a buffer appearing as both
         # STORAGE_READ (binding 0) and STORAGE_READ_WRITE (binding 2) in the
-        # same dispatch. Use free scratch buffers as add destinations instead:
-        #   Q bias: q_buf -> gate_buf    K bias: k_buf -> up_buf
-        #   V bias: v_buf -> ffn_act     (these are unused until the FFN phase)
+        # same dispatch. Use dedicated scratch buffers sized at q_dim / kv_dim:
+        #   Q bias: q_buf -> q_bias_tmp
+        #   K bias: k_buf -> k_bias_tmp
+        #   V bias: v_buf -> v_bias_tmp
+        # These are allocated in _init_scratch_buffers with correct sizes, avoiding
+        # the overflow that would occur if gate_buf/up_buf/ffn_act (sized at
+        # intermediate_size) were used when q_dim or kv_dim > intermediate_size.
 
         if self._attn_bias:
             q_bias = self.weights.get(f"{p}.self_attn.q_proj.bias")
             k_bias = self.weights.get(f"{p}.self_attn.k_proj.bias")
             v_bias = self.weights.get(f"{p}.self_attn.v_proj.bias")
             if q_bias is not None:
-                self._dispatch("add", [sc["q_buf"], q_bias, sc["gate_buf"]],
+                self._dispatch("add", [sc["q_buf"], q_bias, sc["q_bias_tmp"]],
                                {"N": q_dim}, ((q_dim // 4 + 255) // 256, 1, 1))
-                _q_src = sc["gate_buf"]
+                _q_src = sc["q_bias_tmp"]
             if k_bias is not None:
-                self._dispatch("add", [sc["k_buf"], k_bias, sc["up_buf"]],
+                self._dispatch("add", [sc["k_buf"], k_bias, sc["k_bias_tmp"]],
                                {"N": kv_dim}, ((kv_dim // 4 + 255) // 256, 1, 1))
-                _k_src = sc["up_buf"]
+                _k_src = sc["k_bias_tmp"]
             if v_bias is not None:
-                self._dispatch("add", [sc["v_buf"], v_bias, sc["ffn_act"]],
+                self._dispatch("add", [sc["v_buf"], v_bias, sc["v_bias_tmp"]],
                                {"N": kv_dim}, ((kv_dim // 4 + 255) // 256, 1, 1))
-                _v_src = sc["ffn_act"]
+                _v_src = sc["v_bias_tmp"]
 
         _rope_consts = self._rope_consts
         _freq_buf = self._rope_freq_buf
