@@ -378,7 +378,7 @@ class WebGPUModelRunner:
                     pieces.append(LogprobsTensors(
                         torch.zeros((1, max_k), dtype=torch.int32),
                         torch.full((1, max_k), -float("inf"), dtype=torch.float32),
-                        torch.zeros(1, dtype=torch.int32),
+                        torch.zeros(1, dtype=torch.int64),
                     ))
             stacked = LogprobsTensors(
                 torch.cat([p.logprob_token_ids for p in pieces]),
