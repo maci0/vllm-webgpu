@@ -134,6 +134,10 @@ def allocate_kv_from_tensors(
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
     layer_kv_bytes: dict[int, int] = {}
     for tensor in kv_cache_tensors:
+        if tensor.block_stride > 0:
+            raise NotImplementedError(
+                f"Packed KV cache layout (block_stride={tensor.block_stride}) is not supported by the WebGPU backend"
+            )
         per_buf = tensor.size // 2
         for layer_name in tensor.shared_by:
             parts = layer_name.split(".")
