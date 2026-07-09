@@ -51,11 +51,13 @@ def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
     """Sample one token from a 1-D float32 logit vector using SamplingParams."""
     if _is_greedy(sp):
         return int(np.argmax(logits_1d))
+    seed = getattr(sp, "seed", None)
     return _sample_token(
         logits_1d,
         temperature=float(sp.temperature),
         top_p=float(sp.top_p),
         top_k=int(sp.top_k),
+        seed=seed,
     )
 
 
