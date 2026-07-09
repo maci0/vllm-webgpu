@@ -159,8 +159,9 @@ if stats:
         inter_sz = max(raw_inter_sz) if isinstance(raw_inter_sz, list) else raw_inter_sz
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
         attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
-        # FFN weight bytes: 3 matrices (gate, up, down) for all SwiGLU models,
-        # multiplied by top_k for MoE (activated experts per token).
+        # FFN weight bytes: 3 matrices (gate, up, down) for SwiGLU models.
+        # NemotronH '-' layers use only 2 matrices (up, down; relu^2, no gate).
+        # MoE multiplies by top_k (activated experts per token).
         ffn_matrices = 3
         ffn_w = 2 * (hid * inter_sz * ffn_matrices)
         if getattr(model, '_is_moe', False):
@@ -205,7 +206,9 @@ if stats:
                     total_w_bytes += attn_w
                 elif lt in ('mlp', 'ffn'):
                     layer_inter = inter_list[idx] if inter_list else inter_sz
-                    total_w_bytes += 2 * (hid * layer_inter * ffn_matrices)
+                    # NemotronH '-' (mlp) layers: up_proj + down_proj only (relu^2, no gate_proj).
+                    layer_ffn_matrices = 2 if (lt == 'mlp' and 'NemotronH' in arch) else ffn_matrices
+                    total_w_bytes += 2 * (hid * layer_inter * layer_ffn_matrices)
                 elif lt == 'mamba':
                     total_w_bytes += ssm_w
                 # 'moe' and unknown types are skipped (no reliable generic formula)
