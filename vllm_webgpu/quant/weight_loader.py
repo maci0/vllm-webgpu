@@ -1316,7 +1316,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
             index = json.load(f)
         weight_map = index["weight_map"]
 
-    group_size = int(_load_quant_cfg(p / "config.json").get("group_size") or 64)
+    with open(p / "config.json") as f:
+        _raw_cfg = json.load(f)
+    group_size = int(_raw_cfg.get("quantization", {}).get("group_size", 64) or 64)
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
     key_to_shard: dict[str, str] = {k: str(p / v) for k, v in weight_map.items()}
