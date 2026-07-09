@@ -474,7 +474,7 @@ class WebGPUModelRunner:
 
             # Extract per-request logprob counts from SamplingParams.
             sp = req.sampling_params
-            if sp is not None and getattr(sp, "logprob_token_ids", None) and sp.logprobs is None:
+            if sp is not None and getattr(sp, "logprob_token_ids", None):
                 raise NotImplementedError(
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
