@@ -60,11 +60,7 @@ def compute_yarn_freqs(
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
-    )
+    from vllm.model_executor.layers.rotary_embedding import YaRNScalingRotaryEmbedding
 
     if rotary_dim is None:
         rotary_dim = head_dim
@@ -78,20 +74,22 @@ def compute_yarn_freqs(
     attn_factor          = float(rope_scaling.get("attn_factor", 1.0))
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
 
-    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
-    inv_freq_extrap = 1.0 / pos_freqs
-    inv_freq_interp = 1.0 / (factor * pos_freqs)
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
-    inv_freq = inv_freq_interp * (1 - mask) + inv_freq_extrap * mask
-
-    mscale = (
-        float(yarn_get_mscale(factor) * attn_factor)
-        if apply_yarn_scaling
-        else float(attn_factor)
+    rope = YaRNScalingRotaryEmbedding(
+        head_size=head_dim,
+        rotary_dim=rotary_dim,
+        max_position_embeddings=orig_ctx,
+        base=rope_theta,
+        is_neox_style=True,
+        scaling_factor=factor,
+        dtype=torch.float32,
+        extrapolation_factor=extrapolation_factor,
+        attn_factor=attn_factor,
+        beta_fast=beta_fast,
+        beta_slow=beta_slow,
+        apply_yarn_scaling=apply_yarn_scaling,
+        truncate=truncate,
     )
-
-    return inv_freq.numpy().astype(np.float32), mscale
+    return rope._compute_inv_freq(factor).numpy().astype(np.float32), rope.mscale
 
 
 
