@@ -201,7 +201,7 @@ if stats:
             total_w_bytes = 0
             _mlp_idx = 0
             for idx, lt in enumerate(layer_types):
-                if lt == 'attention':
+                if lt in ('attention', 'full_attention', 'sliding_attention'):
                     total_w_bytes += attn_w
                 elif lt in ('mlp', 'ffn'):
                     if layer_int_size is not None:
