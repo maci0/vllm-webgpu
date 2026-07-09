@@ -152,8 +152,15 @@ def allocate_kv_from_hf_config(
         # reports for architectures with TP-remapped or MLA-style heads.
         # Pass model_config when possible to get the canonical values.
         num_kv_heads = get_num_kv_heads(hf_config)
-        from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigConvertorBase
-        head_dim = ModelArchConfigConvertorBase(hf_config, hf_config).get_head_size()
+        from vllm.transformers_utils.model_arch_config_convertor import (
+            MODEL_ARCH_CONFIG_CONVERTORS,
+            ModelArchConfigConvertorBase,
+        )
+        _convertor_cls = MODEL_ARCH_CONFIG_CONVERTORS.get(
+            getattr(hf_config, "model_type", ""), ModelArchConfigConvertorBase
+        )
+        _hf_text = getattr(hf_config, "text_config", hf_config)
+        head_dim = _convertor_cls(hf_config, _hf_text).get_head_size()
     # model._layer_types wins; fall back to hf_config fields used by different
     # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
     layer_types = (
@@ -184,8 +191,15 @@ def get_num_kv_heads(hf_cfg) -> int:
     attribute priority list stays in sync with vLLM as new architecture aliases
     are added (e.g. 'num_attention_groups' for Step3p5).
     """
-    from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigConvertorBase
-    return ModelArchConfigConvertorBase(hf_cfg, hf_cfg).get_total_num_kv_heads()
+    from vllm.transformers_utils.model_arch_config_convertor import (
+        MODEL_ARCH_CONFIG_CONVERTORS,
+        ModelArchConfigConvertorBase,
+    )
+    convertor_cls = MODEL_ARCH_CONFIG_CONVERTORS.get(
+        getattr(hf_cfg, "model_type", ""), ModelArchConfigConvertorBase
+    )
+    hf_text = getattr(hf_cfg, "text_config", hf_cfg)
+    return convertor_cls(hf_cfg, hf_text).get_total_num_kv_heads()
 
 
 def _get_model_memory_usage(worker: "WebGPUWorker") -> int:
