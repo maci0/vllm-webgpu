@@ -797,9 +797,9 @@ def load_safetensors_weights(
                     elif (fmt == "awq" and g_idx is None
                           and (qz is None or _awq_qzeros_symmetric(qz))):
                         # GPU AWQ: either qzeros absent (implicit symmetric, all zero-points = 8)
-                        # or qzeros verified symmetric (every nibble is 0 or 8).
-                        # The shader hardcodes nibble - 8, matching both cases.
-                        # Asymmetric checkpoints fall through to the CPU dequant branch.
+                        # or qzeros verified all-8 (every nibble equals exactly 8, i.e., zero_point=8).
+                        # The shader hardcodes nibble - 8, which only produces 0 when nibble==8.
+                        # Models with zero_point=0 (all-zero qzeros) fall through to the CPU dequant branch.
                         K_, N8_ = qw.shape  # qw is [K, N//8]
                         N_ = N8_ * 8
                         G_ = sc.shape[0] if sc.ndim == 2 else K_ // 128
