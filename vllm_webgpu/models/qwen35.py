@@ -187,6 +187,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         if self._is_moe:
             H = self.hidden_size
             _moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
+            self._moe_act_sz = _moe_act_sz
             self._moe_sc: dict[str, "WebGPUBuffer"] = {
                 "router_out":   mk(self._moe_num_experts * 2),  # [N_E] f16 router logits
                 "topk_idx":     mk(self._moe_k * 4),            # [K] u32 expert indices
