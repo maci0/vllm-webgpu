@@ -1312,7 +1312,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
 
     config_path = p / "config.json"
     raw_cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
-    quant_section = raw_cfg.get("quantization_config") or raw_cfg.get("quantization") or {}
+    quant_section = _load_quant_cfg(config_path) or raw_cfg.get("quantization") or {}
     group_size = int(quant_section.get("group_size") or 64)
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
