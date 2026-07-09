@@ -14,6 +14,7 @@ enable f16;
 //
 // Input:  f32 residual (the pre-MoE residual stream, not pre_feedforward_layernorm_2 output)
 // Weight: f16 router.scale (per-dimension learned scale, shape [hidden_size])
+//         When NO_SCALE=1 the scale buffer is still bound but not read; pass any f16 buffer.
 // Output: f16 preprocessed router input, ready for the projection matmul
 //
 // Dispatch (num_tokens, 1, 1).
@@ -22,6 +23,7 @@ override HIDDEN_DIM:      u32 = 4096u;
 override WG_SIZE:         u32 = 256u;
 override VALS_PER_THREAD: u32 = 16u;   // HIDDEN_DIM / WG_SIZE; 0 = two-pass fallback
 override ROOT_SIZE:       f32 = 1.0;   // 1/sqrt(hidden_size), set by host
+override NO_SCALE:        u32 = 0u;    // 1 = skip per-dim scale (fallback when router.scale is absent)
 
 var<workgroup> shared_sum: array<f32, 256>;
 
@@ -66,7 +68,8 @@ fn main(
         col = tid;
         for (var i = 0u; i < VALS_PER_THREAD; i++) {
             if (col < HIDDEN_DIM) {
-                let normed = local_v[i] * rms_inv * f32(scale[col]);
+                let s = select(f32(scale[col]), 1.0, NO_SCALE != 0u);
+                let normed = local_v[i] * rms_inv * s;
                 output[base + col] = f16(clamp(normed, -65504.0, 65504.0));
                 col += WG_SIZE;
             }
@@ -94,7 +97,8 @@ fn main(
         col = tid;
         loop {
             if (col >= HIDDEN_DIM) { break; }
-            let normed = input[base + col] * rms_inv * f32(scale[col]);
+            let s = select(f32(scale[col]), 1.0, NO_SCALE != 0u);
+            let normed = input[base + col] * rms_inv * s;
             output[base + col] = f16(clamp(normed, -65504.0, 65504.0));
             col += WG_SIZE;
         }

@@ -522,8 +522,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                     "ROOT_SIZE": root_size},
                                    (num_tokens, 1, 1))
                 else:
-                    logger.warning("L%d: router.scale missing, routing will be incorrect", layer_idx)
-                    router_in = moe_in
+                    logger.warning("L%d: router.scale missing, routing will be suboptimal (no learned scale)", layer_idx)
+                    root_size = hidden ** -0.5
+                    self._dispatch("router_norm_f32in",
+                                   [residual, pfn2_w, router_in],
+                                   {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": self._rms_consts["VALS_PER_THREAD"],
+                                    "ROOT_SIZE": root_size, "NO_SCALE": 1},
+                                   (num_tokens, 1, 1))
 
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = self._uq_for_key(rw_)
