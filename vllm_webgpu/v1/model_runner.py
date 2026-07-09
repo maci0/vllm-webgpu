@@ -147,13 +147,13 @@ class WebGPUModelRunner:
     def _get_lp_list(self) -> "list | None":
         """Return per-layer attention params, guarding against model=None.
 
-        Uses explicit None checks rather than `or` so that an empty list
-        (a valid "no heterogeneous layers" signal) is not treated as falsy
-        and silently replaced by the hf_config fallback.
+        Returns None when no per-layer params exist. All callers treat None and
+        [] identically (via truthiness), so an empty list is also a valid
+        "no heterogeneous layers" signal and both map to the uniform KV path.
         """
         mc = self.vllm_config.model_config.hf_config
         lp = getattr(self.model, "_lp", None) if self.model is not None else None
-        return lp if lp is not None else getattr(mc, "_layer_attention_params", None)
+        return lp or getattr(mc, "_layer_attention_params", None)
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
@@ -308,7 +308,7 @@ class WebGPUModelRunner:
         """
         k = min(num_logprobs, logits_1d.shape[0])
 
-        lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
+        lp_t = torch.from_numpy(logits_1d).unsqueeze(0).log_softmax(dim=-1, dtype=torch.float32)
         return Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
 
     @staticmethod
@@ -350,7 +350,7 @@ class WebGPUModelRunner:
             num_prompt_logprobs = full_logits.shape[-1]
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
-        lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
+        lp_t = torch.from_numpy(full_logits[:num_positions]).log_softmax(dim=-1, dtype=torch.float32)
         return Sampler.gather_logprobs(
             lp_t,
             k,

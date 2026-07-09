@@ -226,10 +226,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         hidden = self.hidden_size
         lm_key = self._lm_head_key()
         uq = self._uq_for_key(lm_key)
-        # SPLIT_K=0 only handles USE_QUANT in {0, 1, 2}; all other quantized
-        # variants fall through to the f16 unpack path in the shader and produce
-        # wrong logits.  Use SPLIT_K=1 (_gemv_wg) for any quantized lm_head so
-        # the correct dequant branch is reached.
+        # SPLIT_K=0 only handles USE_QUANT=0 (f16); all quantized variants (3-8)
+        # must use SPLIT_K=1 so the correct dequant branch is reached.
         if uq == 0:
             split_k = 0
             workgroups = _rows_wg(vocab)
@@ -350,7 +348,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """Batch prefill: process T prompt tokens in one GPU command encoder.
 
         GEMM ops use matmul_quant_mr4 (T rows at once).
-        Attention is sequential per token (causal masking via Q_TOKEN_OFFSET override).
+        Attention is a fused T-token causal dispatch via flash_attn_prefill; no per-token looping occurs.
         Last-token prediction extracted via GPU copy_buffer_to_buffer.
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """

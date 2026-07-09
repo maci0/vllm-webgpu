@@ -42,11 +42,10 @@ print(f"Architecture: {arch}")
 
 from vllm_webgpu.v1.model_runner import _build_model
 from vllm_webgpu.v1.cache_policy import (
-    allocate_kv_from_hf_config, get_num_kv_heads, get_head_size_from_config,
+    allocate_kv_from_hf_config, get_kv_dims_from_config,
     get_layer_types,
 )
-head_dim = get_head_size_from_config(hf_cfg)
-num_kv_heads = get_num_kv_heads(hf_cfg)
+num_kv_heads, head_dim = get_kv_dims_from_config(hf_cfg)
 block_size = int(os.getenv('VLLM_WEBGPU_BLOCK_SIZE', '16'))
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
 

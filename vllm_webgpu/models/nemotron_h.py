@@ -18,6 +18,11 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _neg_exp_transform(x: "np.ndarray") -> "np.ndarray":
+    """A_log → -exp(A) weight transform applied CPU-side before GPU upload."""
+    return np.ascontiguousarray(-np.exp(x))
+
+
 class NemotronHWebGPUModel(BaseWebGPUModel):
     """
     Nemotron-H hybrid Mamba-2 SSM / Attention model (WebGPU decode backend).
@@ -90,14 +95,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         # Register CPU-side A_log → -exp(A) transforms for all Mamba layers.
         # Applied during load_weights before GPU upload, eliminating a per-layer
-        # GPU readback+re-upload that _postprocess_mamba_weights would otherwise
+        # GPU readback+re-upload that _validate_mamba_weights would otherwise
         # require. The transform uses the HF checkpoint key name (backbone. prefix).
-        def _neg_exp(x: "np.ndarray") -> "np.ndarray":
-            return np.ascontiguousarray(-np.exp(x))
-
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "mamba":
-                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _neg_exp
+                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _neg_exp_transform
 
         # The WebGPU MLP path does not implement bias addition. All known
         # NemotronH checkpoints ship with mlp_bias=False (the default), so
@@ -331,7 +333,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             qmeta = {k: v for k, v in qmeta.items() if (k + ".weight") in self.weights or k.startswith("__")}
             self.weights["__quant_meta__"] = qmeta
         self._pack_attn_weights()
-        self._postprocess_mamba_weights()
+        self._validate_mamba_weights()
         self._init_mamba_states()
         logger.info(
             "NemotronH: loaded %d weight tensors (%d Mamba layers, %d attn layers)",
@@ -502,7 +504,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 
-    def _postprocess_mamba_weights(self) -> None:
+    def _validate_mamba_weights(self) -> None:
         """Validate conv1d.weight element count for all Mamba layers.
 
         The A_log → -exp(A) transform is registered as a CPU-side weight_transform

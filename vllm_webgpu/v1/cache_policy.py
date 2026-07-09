@@ -279,6 +279,17 @@ def _make_convertor(hf_cfg):
 
 
 
+def get_kv_dims_from_config(hf_cfg) -> tuple[int, int]:
+    """Return (num_kv_heads, head_size) from an hf_config in a single convertor pass.
+
+    Builds ModelArchConfigConvertorBase once and returns both dimensions, avoiding
+    the duplicate _make_convertor calls that occur when get_num_kv_heads and
+    get_head_size_from_config are called back-to-back on the same config.
+    """
+    conv = _make_convertor(hf_cfg)
+    return conv.get_total_num_kv_heads(), conv.get_head_size()
+
+
 def get_num_kv_heads(hf_cfg) -> int:
     """Read num_kv_heads from an hf_config using vLLM's authoritative lookup.
 

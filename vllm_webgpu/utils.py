@@ -47,11 +47,6 @@ def sample_token(
     # when only top-k is needed (p_t is None). WebGPU tensors always live on CPU.
     filtered = apply_top_k_top_p_pytorch(logits_t, k_t, p_t, allow_cpu_sync=True)
 
-    if seed is not None:
-        generator = torch.Generator()
-        generator.manual_seed(seed)
-        generators: dict[int, torch.Generator] = {0: generator}
-    else:
-        generators = {}
+    generators = {0: torch.Generator().manual_seed(seed)} if seed is not None else {}
 
     return random_sample(filtered.softmax(dim=-1, dtype=torch.float32), generators).item()

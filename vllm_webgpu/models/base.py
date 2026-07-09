@@ -61,8 +61,11 @@ def compute_yarn_freqs(
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
     Uses the public yarn_find_correction_range and yarn_linear_ramp_mask
-    helpers from vLLM's rotary_embedding.common module. Avoids coupling to
-    the private _compute_inv_freq method on YaRNScalingRotaryEmbedding.
+    helpers from vLLM's rotary_embedding.common module. This function exists
+    because YaRNScalingRotaryEmbedding._compute_inv_freq is a private nn.Module
+    method that cannot be called standalone without a fully-initialized
+    RotaryEmbedding object. The torch dependency is forced by yarn_find_correction_range
+    and yarn_linear_ramp_mask, which accept only torch tensors.
 
     Args:
         head_dim:    Full attention head dimension.

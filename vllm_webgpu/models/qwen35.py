@@ -279,7 +279,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             conv_kernel_size=self._lin_conv_kernel,
         )
         ssm_bytes  = math.prod(ssm_shape) * 4   # f32
-        conv_bytes = conv_shape[0] * conv_shape[1] * 2                # f16
+        conv_bytes = math.prod(conv_shape) * 2                        # f16
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers

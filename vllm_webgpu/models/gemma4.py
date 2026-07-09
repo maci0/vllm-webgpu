@@ -143,6 +143,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
         self._ln_rope_theta: float = float(np.log(float(self.rope_theta)))
+        self._g4_rope_base = {
+            "ROPE_BASE": float(self.rope_theta),
+            "LN_ROPE_BASE": self._ln_rope_theta,
+            "USE_FREQ_BUF": int(self._use_freq_buf),
+        }
 
     def _scratch_token_count(self) -> int:
         """Number of tokens to size T-dependent scratch buffers for. Override in subclasses."""
@@ -246,15 +251,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """Return the weight key for the final layer norm. Subclasses may override."""
         return "model.norm.weight"
 
-    def _lm_head_key(self) -> str:
-        """Return the actual weight key for the LM head.
-
-        When the model uses tied embeddings there is no separate lm_head.weight
-        tensor in the checkpoint. Fall back to the embedding key so that quant
-        lookups (_uq_for_key, _scales_buf) operate on the correct key and do not
-        silently treat a quantized weight as raw f16.
-        """
-        return "lm_head.weight" if "lm_head.weight" in self.weights else self._embed_key()
 
     def _load_layer_scales(self) -> None:
         """Cache layer_scalar values on CPU at load time.
@@ -938,7 +934,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         num_kv_heads = lp["num_kv_heads"]
         has_v = lp["has_v_proj"]
         inter = lp["intermediate_size"]
-        ln_rope = self._ln_rope_theta
         # Per-layer scalar from GGUF (layer_scalar weight, e.g. ~0.97 or ~0.053 depending on model).
         # Applied to the full residual once after both attn and FFN sublayers, matching vLLM:
         #   hidden_states = hidden_states * self.layer_scalar
@@ -1027,9 +1022,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
             k_norm_w_l = self.weights.get(f"{p}.self_attn.k_norm.weight")
             _freq_buf = self._rope_freq_buf
-            _g4_rope_base = {"ROPE_BASE": float(self.rope_theta),
-                             "LN_ROPE_BASE": ln_rope,
-                             "USE_FREQ_BUF": int(self._use_freq_buf)}
+            _g4_rope_base = self._g4_rope_base
 
             if is_kv_shared:
                 # KV-shared layer (last N sliding-attention layers in laptop Gemma4 variant):
