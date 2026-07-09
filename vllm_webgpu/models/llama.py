@@ -229,14 +229,23 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         hidden = self.hidden_size
         lm_key = self._lm_head_key()
         uq = self._uq_for_key(lm_key)
-        workgroups = _rows_wg(vocab)
+        # SPLIT_K=0 only handles USE_QUANT in {0, 1, 2}; all other quantized
+        # variants fall through to the f16 unpack path in the shader and produce
+        # wrong logits.  Use SPLIT_K=1 (_gemv_wg) for any quantized lm_head so
+        # the correct dequant branch is reached.
+        if uq == 0:
+            split_k = 0
+            workgroups = _rows_wg(vocab)
+        else:
+            split_k = 1
+            workgroups = _gemv_wg(vocab)
         self._dispatch(
             "matmul_quant",
             [norm_out,
              self.weights[lm_key],
              self._scales_buf(lm_key, uq, self._dummy_scales_buf),
              logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra(lm_key.removesuffix(".weight"), uq)},
+            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": split_k, **self._quant_extra(lm_key.removesuffix(".weight"), uq)},
             workgroups,
         )
         if greedy:
