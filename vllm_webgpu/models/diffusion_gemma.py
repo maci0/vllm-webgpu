@@ -672,14 +672,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             if pes is not None:
                 rw_vals = rw_vals * pes[top_k_idx]  # [T, K] broadcast via advanced indexing
 
-            # Build unique-expert -> per-token-weight mapping.
-            # expert_token_weights[eid][t] = routing weight for token t to expert eid
-            # (0.0 for tokens that do not route to eid).
             # Vectorized scatter: avoids O(num_tokens * top_k_experts) Python iterations.
             dense_w = np.zeros((self.num_experts, num_tokens), dtype=np.float32)
             t_idx   = np.repeat(np.arange(num_tokens), self.top_k_experts)  # [T*K]
             np.add.at(dense_w, (top_k_idx.ravel(), t_idx), rw_vals.ravel())
-            expert_token_weights: dict = {int(e): dense_w[e] for e in np.unique(top_k_idx)}
+            unique_eids = list(map(int, np.unique(top_k_idx)))
 
             # GPU: run selected expert FFNs
             gelu_n_moe = num_tokens * inter_moe
@@ -695,11 +692,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # would leave only the last expert's weights visible to every dispatch. The
             # expert_slot index passed as an override constant lets each shader read its
             # own row without a re-entrant write.
-            unique_eids = list(expert_token_weights.keys())  # sorted by np.unique
             packed_w = np.stack([dense_w[e] for e in unique_eids], axis=0)  # [num_unique, T]
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
-            for expert_slot, (eid, _) in enumerate(expert_token_weights.items()):
+            for expert_slot, eid in enumerate(unique_eids):
                 ep = f"{p}.experts.{eid}"
                 g_w = self.weights.get(f"{ep}.gate_proj.weight")
                 u_w = self.weights.get(f"{ep}.up_proj.weight")
