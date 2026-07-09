@@ -561,7 +561,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # MoE layers use post_feedforward_layernorm_1 for the shared MLP stream;
             # non-MoE layers only have the no-suffix key.
             _pfn1_key_1 = f"{p}.post_feedforward_layernorm_1.weight"
-            if _pfn1_key_1 in self.weights:
+            if _pfn1_key_1 in self.weights and self.is_moe:
                 pfn1_w = self.weights[_pfn1_key_1]
                 self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
                                (num_tokens, 1, 1))
