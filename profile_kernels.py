@@ -21,16 +21,17 @@ parser.add_argument("--warmup-steps", type=int, default=2,
 args = parser.parse_args()
 
 # ── Setup device ──────────────────────────────────────────────────────────────
+import os
+from huggingface_hub import snapshot_download
 from vllm_webgpu.webgpu.device import WebGPUDevice
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 from vllm_webgpu.utils import SHADERS_DIR
-from vllm.transformers_utils.repo_utils import get_model_path
 
 wgpu_dev = WebGPUDevice.initialize()
 pipeline_cache = PipelineCache(wgpu_dev.wgpu_device, SHADERS_DIR)
 
 # ── Load model ────────────────────────────────────────────────────────────────
-model_path = str(get_model_path(args.model))
+model_path = args.model if os.path.isdir(args.model) else snapshot_download(args.model)
 print(f"Model: {model_path}")
 
 from transformers import AutoConfig
