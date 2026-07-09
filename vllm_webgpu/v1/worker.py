@@ -97,10 +97,7 @@ class WebGPUWorker(WorkerBase):
         elapsed = time.perf_counter() - start
         logger.info("WebGPU warm-up completed in %.2fs", elapsed)
         set_random_seed(self.model_config.seed)
-        return CompilationTimes(
-            language_model=self.compilation_config.compilation_time,
-            encoder=self.compilation_config.encoder_compilation_time,
-        )
+        return CompilationTimes(language_model=elapsed, encoder=0.0)
 
     def execute_model(self, scheduler_output: Any) -> Any:
         return self.model_runner.execute_model(scheduler_output)
