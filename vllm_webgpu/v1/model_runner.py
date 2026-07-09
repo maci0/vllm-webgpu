@@ -107,6 +107,26 @@ class WebGPUModelRunner:
         hf_config = mc.hf_config
 
         block_size = self.vllm_config.cache_config.block_size
+
+        # NemotronH Mamba conv state buffers are sized for num_spec=0:
+        # each buffer holds (conv_kernel - 1) * conv_dim slots (f16), matching
+        # the mamba2_causal_conv WGSL shader's ring-buffer layout. With
+        # speculative decoding, vLLM core sizes conv states to
+        # (conv_kernel - 1 + num_spec) slots. Loading such a state snapshot
+        # into the undersized WebGPU buffer would produce a silent size mismatch
+        # and corrupt the SSM state. Fail fast until the WebGPU conv state
+        # allocation is updated to account for num_spec.
+        if ARCH_MAP.get(arch) == "nemotron_h":
+            num_spec = self.vllm_config.num_speculative_tokens
+            if num_spec:
+                raise NotImplementedError(
+                    f"NemotronHWebGPUModel does not support speculative decoding "
+                    f"(num_speculative_tokens={num_spec}). The Mamba conv state "
+                    f"buffers are sized for num_spec=0 (conv_kernel - 1 slots). "
+                    f"Update _init_mamba_states to pass num_spec to "
+                    f"MambaStateShapeCalculator.mamba2_state_shape before enabling."
+                )
+
         self.model = _build_model(arch, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
         self.model.load_weights(mc.model)
         logger.info("Model loaded: arch=%s", arch)
