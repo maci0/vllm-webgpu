@@ -637,8 +637,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Decode path (T=1): zero-alloc hot path via pre-allocated buffers.
         dev = self.wgpu_device.wgpu_device
         hidden = self.hidden_size
-        _mds = getattr(attn_metadata, "max_decode_seq_len", None)
-        ctx_len = int(_mds) if _mds is not None else int(positions[-1]) + 1
+        ctx_len = self._compute_ctx_len(attn_metadata, positions)
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
