@@ -60,8 +60,8 @@ def _allocate_kv_pool_hybrid(
     if layer_types is None:
         total_mb = (bytes_per_layer * num_layers * 2) // 2**20
         logger.info(
-            "KV cache: %d blocks × %d layers × %d KV heads × %d head_dim = %dMB",
-            num_blocks, num_layers, num_kv_heads, head_dim, total_mb,
+            "KV cache: %d blocks × %d tokens/block × %d layers × %d KV heads × %d head_dim (f16, K+V) = %dMB",
+            num_blocks, block_size, num_layers, num_kv_heads, head_dim, total_mb,
         )
     else:
         kv_layer_count = sum(1 for lt in layer_types if lt in KV_ATTN_TYPES)
@@ -150,7 +150,7 @@ def allocate_kv_from_hf_config(
         # hf_config.num_key_value_heads may diverge from what ModelConfig
         # reports for architectures with TP-remapped or MLA-style heads.
         # Pass model_config when possible to get the canonical values.
-        num_kv_heads = _get_num_kv_heads(hf_config)
+        num_kv_heads = get_num_kv_heads(hf_config)
         head_dim = getattr(hf_config, 'head_dim', None)
         if head_dim is None:
             head_dim = hf_config.hidden_size // hf_config.num_attention_heads
@@ -177,7 +177,7 @@ def allocate_kv_from_hf_config(
     )
 
 
-def _get_num_kv_heads(hf_cfg) -> int:
+def get_num_kv_heads(hf_cfg) -> int:
     """Read num_kv_heads from an hf_config, handling architecture-specific attribute names."""
     return next(
         (v for a in ('num_key_value_heads', 'num_kv_heads', 'n_head_kv')

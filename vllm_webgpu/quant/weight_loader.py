@@ -5,7 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 # AWQ nibble reorder table (Lin et al., AWQ: Activation-aware Weight Quantization,
@@ -271,8 +271,7 @@ def _awq_qzeros_symmetric(qzeros: np.ndarray) -> bool:
     Any other value means the checkpoint uses per-group asymmetric zeros
     and must also fall back to CPU dequantisation.
     """
-    all_nibbles = (np.asarray(qzeros, dtype=np.int32)[..., np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF
-    return bool(np.all(all_nibbles == 8))
+    return bool(np.all(np.asarray(qzeros, dtype=np.int32) == np.int32(-0x77777778)))
 
 
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
@@ -542,7 +541,7 @@ def load_safetensors_weights(
             # to the shape ratio: AWQ has shape[0] > shape[1]; GPTQ has shape[0] < shape[1].
             fmt = "gptq"
             for _qw_key in header:
-                if _qw_key == "__metadata__" or not _qw_key.endswith(".qweight"):
+                if not _qw_key.endswith(".qweight"):
                     continue
                 _qw_shape = tuple(header[_qw_key]["shape"])
                 _base = _qw_key.removesuffix(".qweight")

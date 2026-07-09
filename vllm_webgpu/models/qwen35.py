@@ -219,8 +219,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         for ln_i in range(min(self.num_layers, 4)):
             ln_w = self.weights.get(f"model.layers.{ln_i}.input_layernorm.weight")
             if ln_w is not None:
-                if getattr(ln_w, "dtype", "f16") != "f16":
-                    continue  # unexpected dtype; keep searching
                 mean_abs = float(np.abs(ln_w.to_numpy().view(np.float16)).mean())
                 self._gemma_norm = 0 if mean_abs > 0.7 else 1
                 break
@@ -586,7 +584,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             tok_slot_bufs.append(WebGPUBuffer.from_numpy(
                 dev, np.array([attn_metadata.slot_mapping[tc]], dtype=np.uint32)))
 
-        greedy = getattr(self, "_greedy_decode", True)
+        greedy = self._greedy_decode
         if greedy:
             self._ensure_sample_buf(vocab)
 

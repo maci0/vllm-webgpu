@@ -270,18 +270,9 @@ class WebGPUModelRunner:
         vocab_size = logits_1d.shape[0]
         if num_logprobs == -1:
             # vLLM convention for -1: unsorted full-vocab distribution with
-            # empty token-ID and rank tensors. Return the raw log-prob tensor
-            # directly so downstream code gets LogprobsTensors(empty, lp, empty).
-            lp_t = Sampler.compute_logprobs(
-                torch.from_numpy(logits_1d).unsqueeze(0)
-            )
-            return (None, lp_t[0].numpy(), 0)
-        if num_logprobs < 0:
-            raise NotImplementedError(
-                f"num_logprobs={num_logprobs} is not supported by the WebGPU "
-                "backend. Use -1 for full-vocab logprobs or a positive integer "
-                "for top-k logprobs."
-            )
+            # empty token-ID and rank tensors. The downstream _make_model_output
+            # path discards this tuple (else: pass), so skip the log-softmax.
+            return (None, None, 0)
         k = min(num_logprobs, vocab_size)
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))

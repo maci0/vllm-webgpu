@@ -1,5 +1,4 @@
 from __future__ import annotations
-import logging
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -10,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.logger import init_logger
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ def _vec4_wg(N: int) -> tuple:
     """
     return (((N + 3) // 4 + 255) // 256, 1, 1)
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 
@@ -139,7 +139,6 @@ class BaseWebGPUModel(ABC):
         # GPU sampler: pre-allocated buffers for GPU argmax.
         # Allocated lazily on first call (need vocab_size from subclass).
         self._gpu_sample_tok: "WebGPUBuffer | None" = None    # [1] u32 next token (STORAGE)
-        self._gpu_sample_vocab: int = 0
         self._gpu_sample_staging = None   # MAP_READ staging buffer for zero-sync readback
         # Logit readback: set by subclasses before returning from forward().
         self._last_logit_buf: "WebGPUBuffer | None" = None
@@ -304,13 +303,12 @@ class BaseWebGPUModel(ABC):
         return val
 
     def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
-        """Lazily allocate GPU sampler buffers sized for vocab and return the token output buffer."""
-        if self._gpu_sample_tok is None or self._gpu_sample_vocab != vocab:
+        """Lazily allocate GPU sampler buffers and return the token output buffer."""
+        if self._gpu_sample_tok is None:
             import wgpu as wgpu_lib
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer
             dev = self.wgpu_device.wgpu_device
             self._gpu_sample_tok   = WebGPUBuffer.empty(dev, 4)      # 1 × u32
-            self._gpu_sample_vocab = vocab
             # MAP_READ staging buffer: copy argmax result here inside the MAIN command encoder,
             # then map after the single main sync — eliminates the second GPU sync per token.
             self._gpu_sample_staging = dev.create_buffer(

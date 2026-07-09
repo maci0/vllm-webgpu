@@ -136,7 +136,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                         _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_idx]
                     _layer_int_size_list.append(_isize)
                 else:
-                    _layer_int_size_list.append(_fallback)
+                    _layer_int_size_list.append(_sizes[min(_mlp_idx, len(_sizes) - 1)])
                 _mlp_idx += 1
         self._layer_int_size: list[int] = _layer_int_size_list
 

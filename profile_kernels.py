@@ -43,8 +43,8 @@ print(f"Architecture: {arch}")
 
 from vllm_webgpu.config import get_config
 from vllm_webgpu.v1.model_runner import _build_model
-from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config, _get_num_kv_heads
-num_kv_heads = _get_num_kv_heads(hf_cfg)
+from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config, get_num_kv_heads
+num_kv_heads = get_num_kv_heads(hf_cfg)
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache)
 
 print("Loading weights...")
