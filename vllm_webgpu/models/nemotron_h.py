@@ -7,7 +7,7 @@ import numpy as np
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _H_NAMES
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -654,7 +654,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     "add",
                     [x_buf, mixer_out, out],
                     {"N": add_n},
-                    ((add_n // 4 + 255) // 256, 1, 1),
+                    _vec4_wg(add_n),
                 )
                 normed_out = None  # stale after last layer; norm_f applied in forward()
 

@@ -69,8 +69,8 @@ def _allocate_kv_pool_hybrid(
     else:
         total_mb = (bytes_per_layer * kv_layer_count * 2) // 2**20
         logger.info(
-            "KV cache (hybrid): %d kv-attn × %d blocks × %d KV heads × %d head_dim = %dMB",
-            kv_layer_count, num_blocks, num_kv_heads, head_dim, total_mb,
+            "KV cache (hybrid): %d kv-attn × %d blocks × %d tokens/block × %d KV heads × %d head_dim (f16, K+V) = %dMB",
+            kv_layer_count, num_blocks, block_size, num_kv_heads, head_dim, total_mb,
         )
 
 

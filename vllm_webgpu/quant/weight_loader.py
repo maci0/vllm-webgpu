@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -17,6 +17,9 @@ _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=np.int
 # GPTQ nibble unpack: each int32 holds 8 nibbles at bit offsets [0, 4, 8, ..., 28].
 _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
+# Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint).
+# Stored as int32 bit pattern 0x88888888 = -0x77777778 in two's complement.
+_SYM_ZEROS_INT32: np.int32 = np.int32(-0x77777778)
 
 
 def _mx_scale_u8_to_f32(ws_u8: "np.ndarray") -> "np.ndarray":
@@ -279,7 +282,7 @@ def _awq_qzeros_symmetric(qzeros: np.ndarray) -> bool:
     Any other value means the checkpoint uses per-group asymmetric zeros
     and must also fall back to CPU dequantisation.
     """
-    return bool(np.all(np.asarray(qzeros, dtype=np.int32) == np.int32(-0x77777778)))
+    return bool(np.all(np.asarray(qzeros, dtype=np.int32) == _SYM_ZEROS_INT32))
 
 
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
@@ -820,12 +823,12 @@ def load_safetensors_weights(
                             # Symmetric AWQ uses zero_point=8 (uint4 midpoint), so every nibble
                             # is 8, encoded as 0x88888888 per int32 word.
                             # qzeros shape is (G, N//8) where G=sc.shape[0], N//8=qw.shape[1].
-                            qz_sym = np.full((sc.shape[0], qw.shape[1]), fill_value=np.int32(-0x77777778), dtype=np.int32)
+                            qz_sym = np.full((sc.shape[0], qw.shape[1]), fill_value=_SYM_ZEROS_INT32, dtype=np.int32)
                             w_f16 = _dequant_awq(qw, sc, qz_sym)
                         else:
                             w_f16 = _dequant_gptq(
                                 qw, sc,
-                                qz if qz is not None else np.full((sc.shape[0], qw.shape[1] // 8), np.int32(-0x77777778), dtype=np.int32),
+                                qz if qz is not None else np.full((sc.shape[0], qw.shape[1] // 8), _SYM_ZEROS_INT32, dtype=np.int32),
                                 g_idx)
                         _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
                 except Exception as exc:

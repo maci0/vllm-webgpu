@@ -219,10 +219,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         return "lm_head.weight" if "lm_head.weight" in self.weights else "model.embed_tokens.weight"
 
-    @property
-    def _lm_head_weight(self) -> "WebGPUBuffer":
-        return self.weights[self._lm_head_key()]
-
     def _decode_teardown(
         self,
         norm_out: "WebGPUBuffer",
@@ -244,7 +240,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [norm_out,
-             self._lm_head_weight,
+             self.weights[lm_key],
              self._scales_buf(lm_key, uq, self._dummy_scales_buf),
              logits_buf],
             {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra(lm_key.removesuffix(".weight"), uq)},

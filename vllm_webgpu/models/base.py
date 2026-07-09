@@ -9,9 +9,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-# Standard single-file safetensors filename. Defined here rather than imported
-# from huggingface_hub.constants (an internal submodule not part of the public API).
-_SAFE_WEIGHTS_NAME = "model.safetensors"
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -333,7 +331,7 @@ class BaseWebGPUModel(ABC):
             e.g. 'model.layers.0.self_attn.q_proj.weight.scales'
         For plain weights (USE_QUANT 0): no scales exist; return fallback.
         """
-        if uq in (3, 4, 5, 6, 7, 8):
+        if uq:
             return self.weights.get(w_key + ".scales", fallback)
         return fallback
 

@@ -55,9 +55,9 @@ def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
     seed = getattr(sp, "seed", None)
     return _sample_token(
         logits_1d,
-        temperature=float(sp.temperature),
-        top_p=float(sp.top_p),
-        top_k=int(sp.top_k),
+        temperature=sp.temperature,
+        top_p=sp.top_p,
+        top_k=sp.top_k,
         seed=seed,
     )
 
@@ -255,6 +255,12 @@ class WebGPUModelRunner:
             self.model.warmup()
 
     def execute_model(self, scheduler_output: "SchedulerOutput") -> None:
+        if getattr(scheduler_output, "has_structured_output_requests", False):
+            raise NotImplementedError(
+                "Guided/constrained decoding is not supported on the WebGPU backend. "
+                "The WebGPU argmax path discards the logit distribution required for "
+                "grammar token masks. Use unconstrained sampling or a CPU/CUDA backend."
+            )
         if self.model is None:
             self._last_model_output = EMPTY_MODEL_RUNNER_OUTPUT
             return None

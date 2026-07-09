@@ -58,9 +58,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Read head_dim from model_config directly — self.head_dim not set yet.
         _head_dim_raw = getattr(model_config, "head_dim",
                                 model_config.hidden_size // model_config.num_attention_heads)
-        self._rotary_dim: int = max(2, int(_head_dim_raw * _prf))
-        if self._rotary_dim % 2 != 0:
-            self._rotary_dim -= 1
+        self._rotary_dim: int = max(2, int(_head_dim_raw * _prf) // 2 * 2)
         # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
         # Qwen3.5 uses mrope_interleaved=True, stored in rope_parameters dict,
         # not as a top-level config attribute.
