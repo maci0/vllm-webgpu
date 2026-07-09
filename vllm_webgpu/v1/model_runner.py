@@ -672,10 +672,16 @@ class WebGPUModelRunner:
                 # request beyond the first in a multi-sequence decode batch.
                 if hasattr(self.model, "restore_recurrent_states"):
                     saved_recurrent = state.get("recurrent_states")
-                    if saved_recurrent is not None:
+                    # If this request was preempted and pos was rolled back below
+                    # the saved position, the KV cache is fresh (starting at 0)
+                    # but saved_recurrent reflects a later position. Restoring
+                    # that state would make SSM and attention inconsistent, so
+                    # reset instead to match the fresh KV cache.
+                    rolled_back = rid in resumed_req_ids and pos < state.get("pos", 0)
+                    if not rolled_back and saved_recurrent is not None:
                         self.model.restore_recurrent_states(saved_recurrent)
                     elif hasattr(self.model, "reset_recurrent_states"):
-                        # No snapshot yet (e.g. interrupted before first save).
+                        # No snapshot yet, or pos was rolled back: start fresh.
                         self.model.reset_recurrent_states()
 
                 logits = self.model.forward(
