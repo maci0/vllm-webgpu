@@ -695,7 +695,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             packed_w = np.stack([dense_w[e] for e in unique_eids], axis=0)  # [num_unique, T]
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
-            for expert_slot, (eid, w_per_token) in enumerate(expert_token_weights.items()):
+            for expert_slot, (eid, _) in enumerate(expert_token_weights.items()):
                 ep = f"{p}.experts.{eid}"
                 g_w = self.weights.get(f"{ep}.gate_proj.weight")
                 u_w = self.weights.get(f"{ep}.up_proj.weight")

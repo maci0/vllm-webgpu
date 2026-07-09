@@ -143,12 +143,15 @@ class WebGPUModelRunner:
         )
 
     def _get_lp_list(self) -> "list | None":
-        """Return per-layer attention params, guarding against model=None."""
+        """Return per-layer attention params, guarding against model=None.
+
+        Uses explicit None checks rather than `or` so that an empty list
+        (a valid "no heterogeneous layers" signal) is not treated as falsy
+        and silently replaced by the hf_config fallback.
+        """
         mc = self.vllm_config.model_config.hf_config
-        return (
-            (getattr(self.model, "_lp", None) if self.model is not None else None)
-            or getattr(mc, "_layer_attention_params", None)
-        )
+        lp = getattr(self.model, "_lp", None) if self.model is not None else None
+        return lp if lp is not None else getattr(mc, "_layer_attention_params", None)
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
@@ -205,6 +208,10 @@ class WebGPUModelRunner:
         if lp_list and len(lp_list) == mc.num_hidden_layers:
             for i, lp in enumerate(lp_list):
                 if _layer_types and _layer_types[i] not in KV_ATTN_TYPES:
+                    continue
+                if lp["num_kv_heads"] == 0:
+                    # Non-attention layer: skip regardless of _layer_types to
+                    # avoid emitting a zero-page-size FullAttentionSpec.
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     lp["num_kv_heads"], lp["head_dim"])

@@ -259,7 +259,12 @@ def test_gdn_decode_sequential_tokens(wgpu_device):
 
 
 def test_mlx_detect_format():
-    """detect_weight_format returns 'mlx_int4' for the MLX model directory."""
+    """detect_weight_format returns 'safetensors_sharded' for the MLX model directory.
+
+    MLX detection (presence of .biases keys) is deferred to the loader so the
+    index JSON is only parsed once (inside load_safetensors_weights_sharded,
+    which then dispatches to load_mlx_weights when .biases keys are present).
+    """
     import os
     from vllm_webgpu.quant.weight_loader import detect_weight_format
 
@@ -271,7 +276,7 @@ def test_mlx_detect_format():
         pytest.skip("Qwen3.5-9B MLX model not present on disk")
 
     fmt = detect_weight_format(model_dir)
-    assert fmt == "mlx_int4", f"Expected mlx_int4, got {fmt!r}"
+    assert fmt == "safetensors_sharded", f"Expected safetensors_sharded, got {fmt!r}"
 
 
 def test_mlx_dequant_correctness():

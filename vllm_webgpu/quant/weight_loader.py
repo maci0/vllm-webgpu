@@ -51,16 +51,6 @@ _GGUF_MAGIC = b"GGUF"
 _FLUSH_THRESHOLD = 512 * 1024 * 1024
 
 
-def _is_mlx_quantized_dir(p: Path) -> bool:
-    """Return True if directory contains MLX affine int4 weights (has .biases keys)."""
-    index_path = p / _SAFE_WEIGHTS_INDEX_NAME
-    try:
-        with open(index_path) as f:
-            index = json.load(f)
-        return any(k.endswith(".biases") for k in index.get("weight_map", {}))
-    except Exception:
-        return False
-
 
 _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
@@ -139,8 +129,8 @@ def detect_weight_format(path: str) -> str:
     if p.is_dir():
         _check_unsupported_quant(p)
         if (p / _SAFE_WEIGHTS_INDEX_NAME).exists():
-            if _is_mlx_quantized_dir(p):
-                return "mlx_int4"
+            # MLX vs standard sharded detection is deferred to the loader,
+            # which already reads the index and can check for .biases keys.
             return "safetensors_sharded"
         # No known safetensors manifest found in directory; default.
         return "safetensors"
@@ -165,10 +155,24 @@ def load_safetensors_weights_sharded(
     wgpu_device,
     f32_keys: "frozenset[str] | None" = None,
 ) -> dict:
-    """Load multi-shard safetensors from a directory with model.safetensors.index.json."""
+    """Load multi-shard safetensors from a directory with model.safetensors.index.json.
+
+    Also handles MLX affine int4 directories: when the index contains .biases keys,
+    delegates to load_mlx_weights rather than loading shards as plain safetensors.
+    This avoids parsing the index twice (detect_weight_format returns 'safetensors_sharded'
+    for both formats and lets this function distinguish them using the already-loaded index).
+    """
     index_path = Path(model_dir) / _SAFE_WEIGHTS_INDEX_NAME
     with open(index_path) as f:
         index = json.load(f)
+    weight_map = index.get("weight_map", {})
+
+    # MLX affine int4: presence of .biases keys distinguishes it from standard sharded.
+    if any(k.endswith(".biases") for k in weight_map):
+        if f32_keys:
+            raise ValueError("f32_keys is not supported for mlx_int4 format")
+        return load_mlx_weights(model_dir, wgpu_device)
+
     shard_files = sorted(set(index["weight_map"].values()))
     weights: dict = {}
     # IMPORTANT: keep shard_weights as a local variable (not inline with update()).
@@ -178,7 +182,6 @@ def load_safetensors_weights_sharded(
     # Detect multimodal models with nested language model prefix.
     # Gemma3 multimodal: keys start with "language_model." → strip prefix
     # Qwen3.5 multimodal: keys start with "model.language_model." → remap to "model."
-    weight_map = index.get("weight_map", {})
     is_gemma_mm  = any(k.startswith("language_model.") for k in weight_map)
     is_qwen35_mm = any(k.startswith("model.language_model.") for k in weight_map)
     is_multimodal = is_gemma_mm or is_qwen35_mm

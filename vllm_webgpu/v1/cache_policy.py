@@ -48,11 +48,13 @@ def _allocate_kv_pool_hybrid(
 
     model.kv_pool.clear()
 
+    kv_layer_count = 0
     for i in range(num_layers):
         needs_kv_cache = layer_types is None or layer_types[i] in KV_ATTN_TYPES
         if needs_kv_cache:
             k_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
             v_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
+            kv_layer_count += 1
         else:
             k_buf = WebGPUBuffer.empty(dev, 16)
             v_buf = WebGPUBuffer.empty(dev, 16)
@@ -65,7 +67,6 @@ def _allocate_kv_pool_hybrid(
             num_blocks, block_size, num_layers, num_kv_heads, head_dim, total_mb,
         )
     else:
-        kv_layer_count = sum(1 for lt in layer_types if lt in KV_ATTN_TYPES)
         total_mb = (bytes_per_layer * kv_layer_count * 2) // 2**20
         logger.info(
             "KV cache (hybrid): %d kv-attn × %d blocks × %d KV heads × %d head_dim = %dMB",
@@ -80,7 +81,7 @@ def _allocate_kv_pool_per_layer(
     block_size: int,
     layer_params: list,
 ) -> None:
-    """Allocate KV pool for models with per-layer KV dims (e.g. Nemotron-H).
+    """Allocate KV pool for models with per-layer KV dims (e.g. Gemma4 with mixed local/global attention dims).
 
     layer_params is a list of dicts (one per layer) each with keys:
       num_kv_heads, head_dim
@@ -91,9 +92,9 @@ def _allocate_kv_pool_per_layer(
     logger.info("KV cache (per-layer): %d layers, mixed dims", len(layer_params))
     for lp in layer_params:
         if lp["num_kv_heads"] == 0:
-            # Non-attention layer (e.g. SSM/MLP in Nemotron-H). A zero-byte
-            # buffer violates the WebGPU spec (size must be > 0), so use the
-            # same 16-byte placeholder that _allocate_kv_pool_hybrid uses.
+            # Non-attention layer (num_kv_heads == 0). A zero-byte buffer
+            # violates the WebGPU spec (size must be > 0), so use the same
+            # 16-byte placeholder that _allocate_kv_pool_hybrid uses.
             model.kv_pool.append((
                 WebGPUBuffer.empty(dev, 16),
                 WebGPUBuffer.empty(dev, 16),

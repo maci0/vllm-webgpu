@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
+# Standard single-file safetensors filename. Defined here rather than imported
+# from huggingface_hub.constants (an internal submodule not part of the public API).
+_SAFE_WEIGHTS_NAME = "model.safetensors"
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -248,7 +250,7 @@ class BaseWebGPUModel(ABC):
         """
         from vllm_webgpu.quant.weight_loader import (
             detect_weight_format, load_safetensors_weights,
-            load_safetensors_weights_sharded, load_mlx_weights,
+            load_safetensors_weights_sharded,
         )
         fmt = detect_weight_format(path)
         if fmt == "safetensors":
@@ -258,13 +260,11 @@ class BaseWebGPUModel(ABC):
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys)
         elif fmt == "safetensors_sharded":
+            # MLX affine int4 directories also return "safetensors_sharded" from
+            # detect_weight_format; load_safetensors_weights_sharded detects the
+            # .biases keys in the already-loaded index and dispatches accordingly.
             self.weights = load_safetensors_weights_sharded(
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys)
-        elif fmt == "mlx_int4":
-            # MLX community format (Qwen3.5-9B): affine int4 with bf16 scales/biases
-            if f32_keys:
-                raise ValueError("f32_keys is not supported for mlx_int4 format")
-            self.weights = load_mlx_weights(path, self.wgpu_device.wgpu_device)
         elif fmt == "gguf":
             raise ValueError(
                 f"GGUF format not supported by this plugin — use the vllm-gguf plugin: {path}"

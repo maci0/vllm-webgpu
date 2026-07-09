@@ -123,22 +123,27 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         _sizes = _raw_int if isinstance(_raw_int, list) else [_raw_int]
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
 
-        def _compute_layer_int_size(li: int, lt: str) -> int:
-            if lt != "mlp":
-                return 0
-            mlp_idx = self._layer_types[:li].count("mlp")
-            fallback = _sizes[mlp_idx] if len(_sizes) > 1 else _sizes[0]
+        # Build per-layer intermediate sizes in a single O(num_layers) pass,
+        # tracking the running MLP count to look up the correct entry in _sizes
+        # without the O(li) slice-and-count that an inner function would need.
+        _layer_int_sizes: list[int] = []
+        _mlp_count = 0
+        for _li, _lt in enumerate(self._layer_types):
+            if _lt != "mlp":
+                _layer_int_sizes.append(0)
+                continue
+            _mlp_idx = _mlp_count
+            _fallback = _sizes[_mlp_idx] if len(_sizes) > 1 else _sizes[0]
             if _get_layer_cfg is not None:
-                lcfg = _get_layer_cfg(li)
-                isize = getattr(lcfg, 'intermediate_size', fallback)
-                if isinstance(isize, list):
-                    isize = isize[0] if len(isize) == 1 else isize[mlp_idx]
-                return isize
-            return fallback
-
-        self._layer_int_size: list[int] = [
-            _compute_layer_int_size(li, lt) for li, lt in enumerate(self._layer_types)
-        ]
+                _lcfg = _get_layer_cfg(_li)
+                _isize = getattr(_lcfg, 'intermediate_size', _fallback)
+                if isinstance(_isize, list):
+                    _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_idx]
+                _layer_int_sizes.append(_isize)
+            else:
+                _layer_int_sizes.append(_fallback)
+            _mlp_count += 1
+        self._layer_int_size: list[int] = _layer_int_sizes
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
@@ -310,6 +315,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
 
 
+        import wgpu as _wgpu
+        _wgpu_usage = (
+            _wgpu.BufferUsage.STORAGE
+            | _wgpu.BufferUsage.COPY_SRC
+            | _wgpu.BufferUsage.COPY_DST
+        )
+
         for i, lt in enumerate(self._layer_types):
             if lt != "attention":
                 continue
@@ -324,21 +336,41 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             # Preserve the source weight dtype so _uq_for_key resolves the
             # correct USE_QUANT for GPU-quantized formats (GPTQ i32, FP8/INT8
-            # u8 with fmt tag).  to_numpy() always returns raw u8 bytes, so
-            # the dtype must be carried forward explicitly after concatenation.
+            # u8 with fmt tag).
             src_dtype = self.weights[q_key].dtype
 
-            q_bytes = self.weights[q_key].to_numpy()
-            k_bytes = self.weights[k_key].to_numpy()
-            v_bytes = self.weights[v_key].to_numpy()
-            qkv_bytes = np.concatenate([q_bytes, k_bytes, v_bytes])
+            # Concatenate Q/K/V weights on the GPU side using copy_buffer_to_buffer,
+            # avoiding three GPU→CPU readbacks (to_numpy) followed by a CPU→GPU
+            # re-upload. All weight buffers are 4-byte aligned from the loader.
+            q_nb = self.weights[q_key].nbytes
+            k_nb = self.weights[k_key].nbytes
+            v_nb = self.weights[v_key].nbytes
+            total_nb = q_nb + k_nb + v_nb
+            q_s = f"{q_key}.scales"
+            k_s = f"{k_key}.scales"
+            v_s = f"{v_key}.scales"
+            has_scales = q_s in self.weights and k_s in self.weights and v_s in self.weights
+            if has_scales:
+                scales_dtype = self.weights[q_s].dtype
+                qs_nb = self.weights[q_s].nbytes
+                ks_nb = self.weights[k_s].nbytes
+                vs_nb = self.weights[v_s].nbytes
+                total_snb = qs_nb + ks_nb + vs_nb
+                scales_raw = dev.create_buffer(size=max(total_snb, 4), usage=_wgpu_usage)
+
+            qkv_raw = dev.create_buffer(size=max(total_nb, 4), usage=_wgpu_usage)
+            _enc = dev.create_command_encoder()
+            _enc.copy_buffer_to_buffer(self.weights[q_key].buf, 0, qkv_raw, 0, q_nb)
+            _enc.copy_buffer_to_buffer(self.weights[k_key].buf, 0, qkv_raw, q_nb, k_nb)
+            _enc.copy_buffer_to_buffer(self.weights[v_key].buf, 0, qkv_raw, q_nb + k_nb, v_nb)
+            if has_scales:
+                _enc.copy_buffer_to_buffer(self.weights[q_s].buf, 0, scales_raw, 0, qs_nb)
+                _enc.copy_buffer_to_buffer(self.weights[k_s].buf, 0, scales_raw, qs_nb, ks_nb)
+                _enc.copy_buffer_to_buffer(self.weights[v_s].buf, 0, scales_raw, qs_nb + ks_nb, vs_nb)
+            dev.queue.submit([_enc.finish()])
 
             qkv_key = f"{p}.qkv_proj.weight"
-            packed_buf = WebGPUBuffer.from_numpy(
-                dev, np.ascontiguousarray(qkv_bytes))
-            # Override the dtype that from_numpy() inferred from the uint8
-            # concatenation; the underlying GPU bytes are correct already.
-            packed_buf.dtype = src_dtype
+            packed_buf = WebGPUBuffer(buf=qkv_raw, device=dev, shape=(total_nb,), dtype=src_dtype)
             self.weights[qkv_key] = packed_buf
 
             # Propagate quant_meta from q_proj to qkv_proj so _uq_for_key
@@ -382,21 +414,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 qmeta.pop(v_base, None)
                 qmeta.pop(q_base, None)
 
-            # Also pack per-weight scales (GPU quant formats store them
-            # alongside the weight at w_key + ".scales").
-            q_s = f"{q_key}.scales"
-            k_s = f"{k_key}.scales"
-            v_s = f"{v_key}.scales"
-            if q_s in self.weights and k_s in self.weights and v_s in self.weights:
-                scales_dtype = self.weights[q_s].dtype
-                packed_scales = np.concatenate([
-                    self.weights[q_s].to_numpy(),
-                    self.weights[k_s].to_numpy(),
-                    self.weights[v_s].to_numpy(),
-                ])
-                scales_buf = WebGPUBuffer.from_numpy(
-                    dev, np.ascontiguousarray(packed_scales))
-                scales_buf.dtype = scales_dtype
+            # Register the packed scales buffer created above (if present).
+            if has_scales:
+                scales_buf = WebGPUBuffer(
+                    buf=scales_raw, device=dev, shape=(total_snb,), dtype=scales_dtype)
                 self.weights[f"{qkv_key}.scales"] = scales_buf
             # Unconditionally remove any individual scale buffers that may remain
             # (handles partial-scale checkpoints where not all three are present).
