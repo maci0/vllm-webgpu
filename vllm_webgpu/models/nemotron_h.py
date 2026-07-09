@@ -33,8 +33,7 @@ del _mapper
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
 # 0 = F16 (no quantization), 3 = GPTQ int4, 4 = AWQ sym int4.
-_UQ_GPTQ: int = 3
-_UQ_AWQ:  int = 4
+_UQ_AWQ: int = 4
 
 
 def _neg_exp_transform(x: "np.ndarray") -> "np.ndarray":

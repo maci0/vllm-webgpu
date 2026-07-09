@@ -387,16 +387,18 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         for i in range(self.num_layers):
             p  = self._layer_key_prefix(i)
             lp = self._lp[i]
+            is_kv_shared = lp.get("is_kv_shared", False)
             keys = [
                 f"{p}.self_attn.q_proj.weight",
-                f"{p}.self_attn.k_proj.weight",
                 f"{p}.self_attn.o_proj.weight",
                 f"{p}.mlp.gate_proj.weight",
                 f"{p}.mlp.up_proj.weight",
                 f"{p}.mlp.down_proj.weight",
             ]
-            if lp.get("has_v_proj", True):
-                keys.append(f"{p}.self_attn.v_proj.weight")
+            if not is_kv_shared:
+                keys.append(f"{p}.self_attn.k_proj.weight")
+                if lp.get("has_v_proj", True):
+                    keys.append(f"{p}.self_attn.v_proj.weight")
             for k in keys:
                 if k in self.weights and self._uq_for_key(k) not in (0, 3):
                     return False

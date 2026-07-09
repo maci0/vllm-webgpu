@@ -376,8 +376,7 @@ class WebGPUModelRunner:
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = logprobs_data and any(d is not None for d in logprobs_data)
         if has_topk:
-            non_none = [d for d in logprobs_data if d is not None]
-            max_k = max(d.logprob_token_ids.shape[1] for d in non_none)
+            max_k = max(d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None)
             pieces = []
             for d in logprobs_data:
                 if d is not None:
@@ -472,7 +471,7 @@ class WebGPUModelRunner:
         # ── Prefill: new requests ──────────────────────────────────────────────
         for req in new_reqs:
             rid = req.req_id
-            tok_ids = list(req.prompt_token_ids or [])
+            tok_ids = req.prompt_token_ids or []
             if not tok_ids:
                 continue
 

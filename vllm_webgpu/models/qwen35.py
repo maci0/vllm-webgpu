@@ -107,7 +107,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # GEMMA_NORM=1 for safetensors (weights are deviations from 1, mean≈0.2).
         # GEMMA_NORM=0 for MLX format (weights are absolute, mean≈1.0 — +1 already baked in).
         # Detected after load_weights() by checking the first layernorm weight mean.
-        self._gemma_norm: int = 1  # default; updated in _postprocess_weights
+        self._gemma_norm: int = 1  # default; set by _gemma_norm_detect transform during load_weights()
 
         # GDN_BF16: when set, GDN projection matmuls use bf16-preserved weight buffers
         # (key + "__bf16") instead of the default f16 version. Falls back silently if
@@ -315,10 +315,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             _self._gemma_norm = 0 if mean_abs > 0.7 else 1
             return arr
 
-        for _ln_i in range(min(self.num_layers, 4)):
-            _key = f"model.layers.{_ln_i}.input_layernorm.weight"
-            if _key not in self._weight_transforms:
-                self._weight_transforms[_key] = _gemma_norm_detect
+        _key = "model.layers.0.input_layernorm.weight"
+        if _key not in self._weight_transforms:
+            self._weight_transforms[_key] = _gemma_norm_detect
 
         # Register CPU-side split transforms for q_proj.weight when attn_output_gate
         # is enabled.  The loader calls weight_transforms[name](arr) with the fp16
@@ -345,7 +344,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     def _split(arr):
                         if arr.shape[0] != 2 * q_dim:
                             return arr  # already split or unexpected shape; pass through
-                        a = arr.view(np.float16).reshape(nh, 2 * hd, hs)
+                        # arr is always float16: loader converts BF16/F32 before invoking transforms
+                        a = arr.reshape(nh, 2 * hd, hs)
                         q_half   = np.ascontiguousarray(a[:, :hd, :].reshape(q_dim, hs))
                         gate_half = np.ascontiguousarray(a[:, hd:, :].reshape(q_dim, hs))
                         pending[gk] = gate_half

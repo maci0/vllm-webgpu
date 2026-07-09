@@ -41,9 +41,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     logit_returns_token_id: bool = False
 
     # V norm is applied unconditionally in _decoder_layer (not gated by self._apply_v_norm).
-    # The parent class flag is always True for DiffusionGemma (layer_types is present in its
-    # config), but _decoder_layer here does not consult it — V norm is structural, not optional.
-    _apply_v_norm: bool = True
+    # _decoder_layer here does not consult self._apply_v_norm — V norm is structural, not optional.
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:

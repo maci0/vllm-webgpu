@@ -64,8 +64,9 @@ def compute_yarn_freqs(
     helpers from vLLM's rotary_embedding.common module. This function exists
     because YaRNScalingRotaryEmbedding._compute_inv_freq is a private nn.Module
     method that cannot be called standalone without a fully-initialized
-    RotaryEmbedding object. The torch dependency is forced by yarn_find_correction_range
-    and yarn_linear_ramp_mask, which accept only torch tensors.
+    RotaryEmbedding object. The torch dependency comes from torch.arange (for pos_freqs) and
+    yarn_linear_ramp_mask, which returns a torch.Tensor.
+    yarn_find_correction_range uses only Python math and has no torch dependency.
 
     Formula transcribed from vLLM 0.24.0:
     vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
@@ -415,7 +416,6 @@ class BaseWebGPUModel(ABC):
             self._gpu_sample_staging = dev.create_buffer(
                 size=4,
                 usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
-        assert self._gpu_sample_tok is not None
         return self._gpu_sample_tok
 
     def logit_readback(self) -> "np.ndarray":
