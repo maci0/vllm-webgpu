@@ -617,15 +617,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     rms_base, (1, 1, 1),
                 )
 
-            normed_x: "WebGPUBuffer" = sc["normed"]
-            x_buf                    = pre["x"]
+                normed_x: "WebGPUBuffer" = sc["normed"]
+                x_buf                    = pre["x"]
 
-            for layer_idx in range(self.num_layers):
-                normed_x, x_buf = self._transformer_layer(
-                    layer_idx, normed_x, x_buf,
-                    pre["pos"], pre["slot_map"], pre["bt"],
-                    tok_ctx, 1,
-                )
+                for layer_idx in range(self.num_layers):
+                    normed_x, x_buf = self._transformer_layer(
+                        layer_idx, normed_x, x_buf,
+                        pre["pos"], pre["slot_map"], pre["bt"],
+                        tok_ctx, 1,
+                    )
 
         # Final norm + LM head on the last token's hidden state.
         with self._batched_dispatch():
