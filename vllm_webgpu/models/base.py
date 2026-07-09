@@ -136,6 +136,11 @@ class BaseWebGPUModel(ABC):
             wgpu_device.wgpu_device, 4)  # 1-element f32 placeholder
         self._use_freq_buf: bool = False
         self._yarn_mscale: float = 1.0  # set to mscale when rope_type='yarn'
+        # Greedy-decode flag: True means forward() returns a (1,1) int32 token
+        # ID via GPU argmax; False means it returns (1, vocab) float32 logits
+        # for temperature sampling. Initialized True so hasattr() returns True,
+        # allowing the model runner to flip it to False for non-greedy requests.
+        self._greedy_decode: bool = True
 
     @staticmethod
     def _vals_per_thread(hidden_size: int) -> int:
