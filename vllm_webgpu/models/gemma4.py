@@ -552,9 +552,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             v_src = b["v_buf"]
                         else:
                             v_src = b["k_buf"]   # global attention: V = K (pre-RoPE)
-                    else:
-                        v_src = b["k_buf"]   # unused for KV-shared; satisfies type checker
-
                     # Resolve which KV pool slot to read/write.
                     # KV-shared layers use the target layer's cache; non-shared use their own.
                     _kv_layer = kv_shared_target if (is_kv_shared and kv_shared_target >= 0) else i

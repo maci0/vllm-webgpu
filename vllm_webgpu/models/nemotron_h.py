@@ -122,17 +122,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # to return per-layer overrides, including a different intermediate_size.
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
 
-        # Build per-layer intermediate sizes in a single O(num_layers) pass,
-        # tracking the running MLP count to look up the correct entry in the
-        # (possibly heterogeneous) intermediate_size list.
+        # Build per-layer intermediate sizes in a single O(num_layers) pass.
+        # MLP index is derived from hybrid_override_pattern (same string vLLM's
+        # NemotronHMLPDecoderLayer.__init__ uses: pattern[:layer_idx+1].count("-") - 1).
         _layer_int_sizes: list[int] = []
-        _mlp_count = 0
+        _hybrid_pat: str = model_config.hybrid_override_pattern
         for _li, _lt in enumerate(self._layer_types):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = _mlp_count
-            _mlp_count += 1
+            _mlp_idx = _hybrid_pat[:_li + 1].count("-") - 1
             if isinstance(_raw_int, list):
                 _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
             else:
@@ -946,6 +945,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         sc  = self._sc
         bt_arr = self._bt_arr(attn_metadata)
         bt_bytes = bt_arr.tobytes()
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_bytes)
 
         for t in range(T):
             self._hstate = 0
@@ -956,7 +956,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             dev.queue.write_buffer(
                 pre["slot_map"].buf, 0,
                 np.array(attn_metadata.slot_mapping[t:t+1], dtype=np.uint32).tobytes())
-            dev.queue.write_buffer(pre["bt"].buf, 0, bt_bytes)
 
             with self._batched_dispatch():
                 self._dispatch(

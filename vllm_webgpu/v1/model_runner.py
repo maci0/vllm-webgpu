@@ -5,10 +5,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
+from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
 from vllm_webgpu.config import get_config
@@ -27,14 +29,9 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-def _is_greedy(sp) -> bool:
-    """Return True when sampling params request greedy (argmax) decoding."""
-    return sp is None or sp.temperature < 1e-5
-
-
 def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
     """Sample one token from a 1-D float32 logit vector using SamplingParams."""
-    if _is_greedy(sp):
+    if sp is None or sp.sampling_type == SamplingType.GREEDY:
         return int(np.argmax(logits_1d))
     seed = getattr(sp, "seed", None)
     return _sample_token(
@@ -332,8 +329,8 @@ class WebGPUModelRunner:
                 if d is not None:
                     pad = max_k - d.logprob_token_ids.shape[1]
                     pieces.append(LogprobsTensors(
-                        torch.nn.functional.pad(d.logprob_token_ids, (0, pad), value=0),
-                        torch.nn.functional.pad(d.logprobs, (0, pad), value=-float("inf")),
+                        F.pad(d.logprob_token_ids, (0, pad), value=0),
+                        F.pad(d.logprobs, (0, pad), value=-float("inf")),
                         d.selected_token_ranks,
                     ))
                 else:
@@ -489,7 +486,7 @@ class WebGPUModelRunner:
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
             if hasattr(self.model, "_greedy_decode"):
-                self.model._greedy_decode = _is_greedy(sp)
+                self.model._greedy_decode = sp is None or sp.sampling_type == SamplingType.GREEDY
 
             last_logits = self.model.forward(
                 np.array(chunk_toks, dtype=np.uint32),
@@ -596,7 +593,7 @@ class WebGPUModelRunner:
 
                 sp = state.get("sampling_params")
                 if hasattr(self.model, "_greedy_decode"):
-                    self.model._greedy_decode = _is_greedy(sp)
+                    self.model._greedy_decode = sp is None or sp.sampling_type == SamplingType.GREEDY
 
                 logits = self.model.forward(
                     np.array([tok], dtype=np.uint32),

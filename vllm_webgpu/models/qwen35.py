@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -278,8 +279,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        ssm_bytes  = int(np.prod(ssm_shape)) * 4   # f32
-        conv_bytes = int(np.prod(conv_shape)) * 2   # f16
+        ssm_bytes  = math.prod(ssm_shape) * 4   # f32
+        conv_bytes = math.prod(conv_shape) * 2   # f16
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers

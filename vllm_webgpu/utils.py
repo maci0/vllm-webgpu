@@ -35,7 +35,7 @@ def sample_token(
             the draw is deterministic and reproducible across runs.
     """
     import torch
-    from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
+    from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
 
     if temperature < 1e-5:
         return int(logits_1d.argmax())
@@ -44,7 +44,9 @@ def sample_token(
     logits_t = logits_t / temperature
     k_t = torch.tensor([top_k]) if top_k > 0 else None
     p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None
-    filtered = apply_top_k_top_p(logits_t, k_t, p_t)
+    # allow_cpu_sync=True enables the faster partial-topk path (apply_top_k_only)
+    # when only top-k is needed (p_t is None). WebGPU tensors always live on CPU.
+    filtered = apply_top_k_top_p_pytorch(logits_t, k_t, p_t, allow_cpu_sync=True)
 
     if seed is not None:
         generator = torch.Generator()

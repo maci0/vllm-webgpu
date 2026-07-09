@@ -42,6 +42,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache") -> None:
+        # Set moe_intermediate_size before super().__init__ because Gemma4.__init__
+        # calls _init_scratch_buffers which dispatches to _scratch_inter_size().
+        # Use model_config.intermediate_size as fallback (same value as self.intermediate_size
+        # after super().__init__; model_config always has this attribute for Gemma models).
+        self.moe_intermediate_size: int = getattr(model_config, "moe_intermediate_size",
+                                                   getattr(model_config, "expert_intermediate_size",
+                                                           model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
         # Router scale: constant across all layers and tokens.
@@ -50,9 +57,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         # MoE configuration
         self.num_experts: int = getattr(model_config, "num_experts", 0)
         self.top_k_experts: int = getattr(model_config, "top_k_experts", 8)
-        self.moe_intermediate_size: int = getattr(model_config, "moe_intermediate_size",
-                                                   getattr(model_config, "expert_intermediate_size",
-                                                           self.intermediate_size))
         if self.moe_intermediate_size % 4 != 0:
             raise ValueError(
                 f"moe_intermediate_size={self.moe_intermediate_size} must be divisible by 4 "
@@ -97,11 +101,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         return getattr(self.model_config, "canvas_length", 256)
 
     def _scratch_inter_size(self) -> int:
-        return max(
-            self.intermediate_size,
-            getattr(self.model_config, "moe_intermediate_size",
-                    getattr(self.model_config, "expert_intermediate_size", self.intermediate_size)),
-        )
+        return max(self.intermediate_size, self.moe_intermediate_size)
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Allocate scratch buffers without qkv_buf, which _decoder_layer never uses.

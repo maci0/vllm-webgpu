@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -470,10 +470,10 @@ def load_safetensors_weights(
     with sft.safe_open(path, framework="pt") as sf:
         # Build header from the already-open safe_open handle instead of opening
         # the file again via parse_safetensors_file_metadata.
-        header = {
-            k: {"dtype": sf.get_slice(k).get_dtype(), "shape": list(sf.get_slice(k).get_shape())}
-            for k in sf.keys()
-        }
+        header = {}
+        for k in sf.keys():
+            slc = sf.get_slice(k)
+            header[k] = {"dtype": slc.get_dtype(), "shape": list(slc.get_shape())}
 
         usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
