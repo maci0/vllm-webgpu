@@ -975,8 +975,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 vw = None
                 _use_fused_qkv = False
 
-            if _use_fused_qkv:
-                # All f16: single fused_qkv dispatch → sc["qkv_buf"] laid out as [Q | K | V].
+            if _use_fused_qkv and not is_kv_shared:
+                # All f16, non-shared: single fused_qkv dispatch → sc["qkv_buf"] laid out as [Q | K | V].
                 self._dispatch("fused_qkv",
                                [normed_x, self.weights[qw], self.weights[kw], self.weights[vw],
                                 sc["qkv_buf"]],
@@ -987,7 +987,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 _v_src = sc["qkv_buf"]       # V at element offset q_dim + kv_dim
                 _v_src_offset = q_dim + kv_dim
             else:
-                # Separate projections (quantized weights or global attention layer).
+                # Separate projections (quantized weights, global attention, or KV-shared layer).
+                # KV-shared layers only need Q; K and V come from the target layer's KV cache.
                 uq = uq_q
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[qw],
@@ -995,26 +996,30 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                {"K": hidden, "N": q_dim, "USE_QUANT": uq,
                                 **self._quant_extra(f"{p}.self_attn.q_proj", uq)},
                                _gemv_wg(q_dim))
-                uq = uq_k
-                self._dispatch("matmul_quant",
-                               [normed_x, self.weights[kw],
-                                self._scales_buf(kw, uq, self._dummy_scales_buf), sc["k_buf"]],
-                               {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                                **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
-                               _gemv_wg(kv_dim))
-                if has_v:
-                    uq = uq_v
+                if not is_kv_shared:
+                    uq = uq_k
                     self._dispatch("matmul_quant",
-                                   [normed_x, self.weights[vw],
-                                    self._scales_buf(vw, uq, self._dummy_scales_buf), sc["v_buf"]],
+                                   [normed_x, self.weights[kw],
+                                    self._scales_buf(kw, uq, self._dummy_scales_buf), sc["k_buf"]],
                                    {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                                    **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
+                                    **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
                                    _gemv_wg(kv_dim))
-                    _v_src = sc["v_buf"]
+                    if has_v:
+                        uq = uq_v
+                        self._dispatch("matmul_quant",
+                                       [normed_x, self.weights[vw],
+                                        self._scales_buf(vw, uq, self._dummy_scales_buf), sc["v_buf"]],
+                                       {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
+                                        **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
+                                       _gemv_wg(kv_dim))
+                        _v_src = sc["v_buf"]
+                    else:
+                        _v_src = sc["k_buf"]  # global attention: V = K
+                    _k_src = sc["k_buf"]
                 else:
-                    _v_src = sc["k_buf"]  # global attention: V = K
+                    _k_src = sc["k_buf"]   # unused in KV-shared path
+                    _v_src = sc["k_buf"]   # unused in KV-shared path
                 _q_src = sc["q_buf"]
-                _k_src = sc["k_buf"]
                 _v_src_offset = 0
 
             # Per-head RMSNorm + RoPE for Q and K.
