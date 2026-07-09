@@ -12,6 +12,9 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
+# Float16 element size in bytes. Used in KV cache byte calculations.
+_F16_BYTES: int = 2
+
 # Layer type strings that carry KV state and require cache allocation.
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
 # this constant and uses it as the authoritative set.
@@ -38,7 +41,7 @@ def _allocate_kv_pool_hybrid(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
-    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2
+    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * _F16_BYTES
 
     if layer_types is not None and len(layer_types) != num_layers:
         raise ValueError(
@@ -256,6 +259,16 @@ def _make_convertor(hf_cfg):
     )(hf_cfg, hf_text)
 
 
+def get_kv_dims(hf_cfg) -> "tuple[int, int]":
+    """Return (num_kv_heads, head_size) from one convertor instantiation.
+
+    Avoids creating two separate ModelArchConfigConvertorBase objects (each
+    including a get_hf_text_config call) when both values are needed together.
+    """
+    conv = _make_convertor(hf_cfg)
+    return conv.get_total_num_kv_heads(), conv.get_head_size()
+
+
 def get_num_kv_heads(hf_cfg) -> int:
     """Read num_kv_heads from an hf_config using vLLM's authoritative lookup.
 
@@ -276,8 +289,8 @@ def get_head_size_from_config(hf_cfg) -> int:
     return _make_convertor(hf_cfg).get_head_size()
 
 
-def _get_model_memory_usage(worker: "WebGPUWorker") -> int:
-    """Sum of all weight buffer sizes in bytes."""
+def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:
+    """Sum of weight buffer sizes in bytes (excludes scratch/dummy/rope buffers)."""
     model = worker.model_runner.model if worker.model_runner is not None else None
     if model is None:
         return 0
@@ -296,7 +309,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
 
     """
     config = worker.webgpu_config
-    model_mem = _get_model_memory_usage(worker)
+    model_mem = _get_weight_memory_usage(worker)
 
     total: int = get_cpu_memory()
 

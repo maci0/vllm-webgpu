@@ -158,18 +158,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         # Inherit standard _pre (7 keys), _sc (17 keys), and _hstate from parent.
-        super()._init_scratch_buffers(max_ctx)
+        # Pass qkv_size so the parent allocates qkv_buf at the correct GDN size
+        # directly, avoiding an allocate-then-discard cycle on every instantiation.
+        super()._init_scratch_buffers(max_ctx, qkv_size=self._lin_conv_dim * 2)
 
         dev = self.wgpu_device.wgpu_device
         Q = self.num_q_heads * self.head_dim
 
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, max(n, 8))
-
-        # qkv_buf: parent sizes for full-attn (Q + 2*KV); GDN layers need
-        # lin_conv_dim (K+K+V heads packed). Replace with the larger GDN size so
-        # both full-attn and GDN layers can reuse the same buffer.
-        self._sc["qkv_buf"] = mk(self._lin_conv_dim * 2)
 
         # Attention output gate: silu(gate)*attn_out before o_proj.
         # Not present in the parent; added only for models with attn_output_gate=True,

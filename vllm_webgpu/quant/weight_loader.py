@@ -29,8 +29,8 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
         return np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
     if t.dtype == _torch.float32:
         return np.clip(t.numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
-    # F16: cast to ensure the contract is always float16
-    return t.to(_torch.float16).numpy()
+    # F16: already the right dtype, return directly
+    return t.numpy()
 
 def _is_gdn_weight_key(key: str) -> bool:
     """True for GDN linear-attention projection weights that benefit from bf16 storage."""
@@ -582,7 +582,7 @@ def load_safetensors_weights(
         def _load_raw(name: str, as_float: bool = False) -> np.ndarray:
             """Load a tensor from the open safetensors file as numpy.
 
-            Returns float32 for BF16 tensors (bit-shifted from uint16), uint8 for
+            Returns float32 for BF16 tensors (via PyTorch native BF16→F32 cast), uint8 for
             F8_E4M3 (raw bytes for the FP8 LUT decoder), and the native numpy dtype
             for all other formats (F16, F32, I32, U8, I8).
 

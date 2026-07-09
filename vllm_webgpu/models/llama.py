@@ -86,11 +86,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 lambda a, n=num_kv: np.tile(a, n) if a.shape == (head_dim,) else a
             )
 
-    def _init_scratch_buffers(self, max_ctx: int) -> None:
+    def _init_scratch_buffers(self, max_ctx: int, qkv_size: "int | None" = None) -> None:
         """Pre-allocate all intermediate scratch buffers used in _transformer_layer.
 
         Eliminates 17 GPU buffer allocations per layer per decode token.
         Decode path only (num_tokens=1). Sizes are fixed by model dimensions.
+
+        qkv_size: optional override for qkv_buf byte size. Subclasses that need
+            a non-standard qkv buffer (e.g. Qwen35 GDN layers) pass this to
+            avoid allocating the standard-sized buffer only to immediately replace it.
         """
         dev = self.wgpu_device.wgpu_device
         T = 1  # decode: num_tokens == 1
@@ -117,7 +121,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         self._sc: dict[str, "WebGPUBuffer"] = {
             "normed":  mk(T * H * 2),
-            "qkv_buf": mk(T * (Q + 2 * KV) * 2),  # [Q|K|V] f16 - fused QKV output
+            "qkv_buf": mk(qkv_size if qkv_size is not None else T * (Q + 2 * KV) * 2),  # [Q|K|V] f16
             "q_buf":       mk(T * Q * 2),
             "k_buf":       mk(T * KV * 2),
             "v_buf":       mk(T * KV * 2),
@@ -178,7 +182,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Returns (ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len).
         """
         pre = self._pre
-        dev = self.wgpu_device.wgpu_device
         bt_arr = self._bt_arr(attn_metadata)
         self._write_token_bufs(
             input_ids, positions,

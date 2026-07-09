@@ -139,7 +139,7 @@ if stats:
     cat_layer_count: dict = defaultdict(int)
     for label, times in stats.items():
         cat = label.split("_", 1)[1] if "_" in label else "layer"  # "L00_attn" → "attn"
-        cat_totals[cat] += sum(times) / len(times)
+        cat_totals[cat] += np.mean(times)
         cat_layer_count[cat] += 1
 
     print(f"Total GPU time: {total:.2f} ms")
@@ -160,11 +160,15 @@ if stats:
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
         attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
 
-        # For hybrid architectures (e.g. NemotronH), layer types differ per layer.
+        # For hybrid architectures (e.g. NemotronH, Gemma4), layer types differ per layer.
         # Use per-layer type weights rather than applying (attn_w + ffn_w) uniformly.
-        layer_types = getattr(model, '_layer_types', None)
-        if layer_types is None:
-            layer_types = getattr(hf_cfg, 'layers_block_type', None)
+        # Mirror the three-way fallback from cache_policy.py: model._layer_types wins,
+        # then hf_cfg.layer_types (Gemma4), then hf_cfg.layers_block_type (NemotronH).
+        layer_types = (
+            getattr(model, '_layer_types', None)
+            or getattr(hf_cfg, 'layer_types', None)
+            or getattr(hf_cfg, 'layers_block_type', None)
+        )
 
         if layer_types is not None and len(layer_types) == num_layers:
             # Mamba-2 SSM layer weight bytes (f16 unless noted):

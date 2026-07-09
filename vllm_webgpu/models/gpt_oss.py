@@ -58,12 +58,13 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         Dedicated buffers sized at the correct Q and KV dimensions avoid the overflow.
         """
         super()._init_scratch_buffers(max_ctx)
-        dev = self.wgpu_device.wgpu_device
-        Q  = self.num_q_heads  * self.head_dim
-        KV = self.num_kv_heads * self.head_dim
-        self._sc["q_bias_tmp"] = WebGPUBuffer.empty(dev, Q  * 2)   # [Q]  f16
-        self._sc["k_bias_tmp"] = WebGPUBuffer.empty(dev, KV * 2)   # [KV] f16
-        self._sc["v_bias_tmp"] = WebGPUBuffer.empty(dev, KV * 2)   # [KV] f16
+        if getattr(self.model_config, "attention_bias", False):
+            dev = self.wgpu_device.wgpu_device
+            Q  = self.num_q_heads  * self.head_dim
+            KV = self.num_kv_heads * self.head_dim
+            self._sc["q_bias_tmp"] = WebGPUBuffer.empty(dev, Q  * 2)   # [Q]  f16
+            self._sc["k_bias_tmp"] = WebGPUBuffer.empty(dev, KV * 2)   # [KV] f16
+            self._sc["v_bias_tmp"] = WebGPUBuffer.empty(dev, KV * 2)   # [KV] f16
 
     def _attn_block(
         self,

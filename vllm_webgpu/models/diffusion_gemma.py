@@ -682,9 +682,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 rw_vals = rw_vals * pes[top_k_idx]  # [T, K] broadcast via advanced indexing
 
             # Vectorized scatter: avoids O(num_tokens * top_k_experts) Python iterations.
+            # All (expert, token) index pairs are unique (top-K guarantees distinct
+            # expert IDs per token; distinct t values make cross-token duplicates impossible),
+            # so buffered fancy-index assignment is equivalent to np.add.at and faster.
             dense_w = np.zeros((self.num_experts, num_tokens), dtype=np.float32)
             t_idx   = np.repeat(np.arange(num_tokens), self.top_k_experts)  # [T*K]
-            np.add.at(dense_w, (top_k_idx.ravel(), t_idx), rw_vals.ravel())
+            dense_w[top_k_idx.ravel(), t_idx] += rw_vals.ravel()
             unique_eids = np.unique(top_k_idx).tolist()
 
             # GPU: run selected expert FFNs

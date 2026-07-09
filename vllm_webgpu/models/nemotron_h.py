@@ -89,6 +89,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Length invariant is enforced by NemotronHConfig.__init__ asserting
         # len(hybrid_override_pattern) == num_hidden_layers.
 
+        # Register CPU-side A_log → -exp(A) transforms for all Mamba layers.
+        # Applied during load_weights before GPU upload, eliminating a per-layer
+        # GPU readback+re-upload that _postprocess_mamba_weights would otherwise
+        # require. The transform uses the HF checkpoint key name (backbone. prefix).
+        def _neg_exp(x: "np.ndarray") -> "np.ndarray":
+            return np.ascontiguousarray(-np.exp(x))
+
+        for _i, _lt in enumerate(self._layer_types):
+            if _lt == "mamba":
+                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _neg_exp
+
         # The WebGPU MLP path does not implement bias addition. All known
         # NemotronH checkpoints ship with mlp_bias=False (the default), so
         # this is latent. Fail fast rather than silently produce wrong outputs
@@ -493,11 +504,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 
     def _postprocess_mamba_weights(self) -> None:
-        """Apply A_log transform and validate conv1d.weight element count.
+        """Validate conv1d.weight element count for all Mamba layers.
 
-        A_log transform: HF checkpoints store A as raw log values. A_log is in
-        f32_keys so it arrives as a float32 WebGPU buffer. This method reads those
-        bytes, applies A = -exp(A_log), and writes them back in place.
+        The A_log → -exp(A) transform is registered as a CPU-side weight_transform
+        in __init__ and applied before GPU upload, so no GPU round-trip is needed here.
 
         conv1d.weight validation: the checkpoint may store shape [conv_dim, 1, kernel]
         or [conv_dim, kernel]. Both are row-major identical in memory; no reshape is
@@ -507,18 +517,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if lt != "mamba":
                 continue
             p = f"model.layers.{i}.mixer"
-
-            # A_log → -exp(A). HF checkpoints store raw log values; the SSM
-            # shader reads the discrete state transition coefficient A = -exp(A_log).
-            # The mapper renames A_log → A before this runs, so look up the
-            # already-renamed key. Applied here since A arrives as a float32 buffer.
-            a_key = f"{p}.A"
-            if a_key in self.weights:
-                _a_buf = self.weights[a_key]
-                _dev = self.wgpu_device.wgpu_device
-                _raw = _a_buf.to_numpy().view(np.float32)
-                _a_val = np.ascontiguousarray(-np.exp(_raw))
-                _dev.queue.write_buffer(_a_buf.buf, 0, _a_val.tobytes())
 
             # conv1d.weight: validate element count.
             # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements

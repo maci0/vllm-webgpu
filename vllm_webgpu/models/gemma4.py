@@ -1,6 +1,5 @@
 from __future__ import annotations
 from itertools import batched
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -144,7 +143,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
-        self._ln_rope_theta: float = math.log(self.rope_theta)
+        self._ln_rope_theta: float = float(np.log(float(self.rope_theta)))
 
     def _scratch_token_count(self) -> int:
         """Number of tokens to size T-dependent scratch buffers for. Override in subclasses."""

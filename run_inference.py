@@ -48,8 +48,9 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.utils import SHADERS_DIR, sample_token
+    from vllm_webgpu.config import get_config
 
-    device = WebGPUDevice.initialize("high-performance")
+    device = WebGPUDevice.initialize(get_config().power_preference)
     print(f"  Adapter: f16={device.supports_f16}")
     pipeline_cache = PipelineCache(device.wgpu_device, SHADERS_DIR)
 
@@ -65,7 +66,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print(f"  Loaded {sum(1 for k in model.weights if not k.startswith('__'))} tensors in {time.perf_counter() - t0:.1f}s")
 
     # KV cache
-    from vllm_webgpu.config import get_config
     from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config
 
     block_size = get_config().block_size

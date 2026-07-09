@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
+import torch.nn.functional as F  # F.pad used for logprob stacking in _make_model_output
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
@@ -279,10 +279,12 @@ class WebGPUModelRunner:
     ) -> "LogprobsTensors | None":
         """Compute top-N logprobs from a 1-D float32 logits vector.
 
-        Returns a LogprobsTensors of shape [1, num_logprobs+1] for top-k
-        requests (slot 0 is always the sampled token; slots 1..k are the
-        top-k tokens by log probability, matching the layout expected by
-        LogprobsLists), or None when logprobs cannot be computed.
+        Returns a LogprobsTensors of shape [1, min(num_logprobs, vocab_size)+1]
+        for top-k requests (slot 0 is always the sampled token; slots 1..k are
+        the top-k tokens by log probability, matching the layout expected by
+        LogprobsLists). k is capped at vocab_size so the shape may be smaller
+        than num_logprobs+1 for small-vocabulary models. Returns None when
+        logprobs cannot be computed.
         """
         k = min(num_logprobs, logits_1d.shape[0])
 
@@ -299,8 +301,9 @@ class WebGPUModelRunner:
 
         For T prompt tokens, produces T-1 rows: row i uses full_logits[i]
         to evaluate the probability of tok_ids[i+1].  Returns a
-        LogprobsTensors of shape [T-1, num_prompt_logprobs+1], or None when
-        Sampler is unavailable or T < 2.
+        LogprobsTensors of shape [T-1, min(num_prompt_logprobs, vocab_size)+1].
+        k is capped at vocab_size. Returns None when T < 2 or the logits
+        buffer has fewer rows than prompt positions need.
         """
         T = len(tok_ids)
         if T < 2:
@@ -348,6 +351,9 @@ class WebGPUModelRunner:
         # Each non-None entry in logprobs_data is a LogprobsTensors of shape
         # [1, k+1]. Stack them (preserving req alignment with placeholder rows
         # for requests that did not ask for logprobs), then call tolists() once.
+        # TODO: only stack non-None entries and build a req_id->row index
+        # restricted to logprob-requested reqs; current approach wastes memory
+        # in large batches where most requests have no logprobs.
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = logprobs_data and any(d is not None for d in logprobs_data)
