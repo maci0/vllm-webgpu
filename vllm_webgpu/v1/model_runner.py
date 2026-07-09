@@ -261,10 +261,12 @@ class WebGPUModelRunner:
     @staticmethod
     def _compute_request_logprobs(
         logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
-    ) -> "tuple[np.ndarray, np.ndarray, int] | None":
+    ) -> "tuple[np.ndarray | None, np.ndarray, int] | None":
         """Compute top-N logprobs from a 1-D float32 logits vector.
 
-        Returns (top_k_ids, top_k_log_probs, sampled_token_rank).
+        Returns (top_k_ids, top_k_log_probs, sampled_token_rank) for top-k
+        requests, or (None, full_vocab_log_probs, 0) when num_logprobs == -1
+        (full-vocab distribution, vLLM convention).
 
         Slot 0 is always the sampled token; slots 1..k are the top-k tokens
         by log probability (num_logprobs+1 columns total), matching the layout
@@ -361,33 +363,61 @@ class WebGPUModelRunner:
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
-        # Build LogprobsLists when at least one request supplied logprob tuples.
+        # Build LogprobsLists for top-k entries and route full-vocab entries
+        # (num_logprobs == -1, where d[0] is None) through prompt_logprobs_dict
+        # as LogprobsTensors, since the fixed-width matrix cannot represent a
+        # vocab-size array per request.
         built_logprobs = None
-        if (
-            LogprobsLists is not None
-            and logprobs_data
-            and any(d is not None for d in logprobs_data)
-        ):
+        merged_prompt_logprobs: dict = dict(prompt_logprobs_dict) if prompt_logprobs_dict else {}
+        has_topk = (
+            logprobs_data
+            and any(d is not None and d[0] is not None for d in logprobs_data)
+        )
+        if LogprobsLists is not None and has_topk:
             n = len(req_ids)
-            max_k = max(len(d[0]) for d in logprobs_data if d is not None)
+            max_k = max(
+                len(d[0])
+                for d in logprobs_data
+                if d is not None and d[0] is not None
+            )
             tok_ids_arr = np.zeros((n, max_k), dtype=np.int32)
             logprobs_arr = np.full((n, max_k), -float("inf"), dtype=np.float32)
             ranks_arr = np.zeros(n, dtype=np.int32)
             for i, d in enumerate(logprobs_data):
-                if d is not None:
-                    ids, lp, rank = d
+                if d is None:
+                    continue
+                ids, lp, rank = d
+                if ids is not None:
+                    # top-k entry: pack into the fixed-width arrays
                     k = len(ids)
                     tok_ids_arr[i, :k] = ids
                     logprobs_arr[i, :k] = lp
                     ranks_arr[i] = rank
+                elif LogprobsTensors is not None:
+                    # full-vocab entry: store as LogprobsTensors keyed by req_id
+                    merged_prompt_logprobs[req_ids[i]] = LogprobsTensors(
+                        torch.empty(0, dtype=torch.int32),
+                        torch.from_numpy(lp).unsqueeze(0),
+                        torch.empty(0, dtype=torch.int32),
+                    )
             built_logprobs = LogprobsLists(tok_ids_arr, logprobs_arr, ranks_arr)
+        elif LogprobsTensors is not None and logprobs_data:
+            # No top-k entries; handle any full-vocab entries.
+            for i, d in enumerate(logprobs_data):
+                if d is not None and d[0] is None:
+                    _, lp, _ = d
+                    merged_prompt_logprobs[req_ids[i]] = LogprobsTensors(
+                        torch.empty(0, dtype=torch.int32),
+                        torch.from_numpy(lp).unsqueeze(0),
+                        torch.empty(0, dtype=torch.int32),
+                    )
 
         out = ModelRunnerOutput(
             req_ids=req_ids,
             req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
             sampled_token_ids=[[t] for t in sampled],
             logprobs=built_logprobs,
-            prompt_logprobs_dict=prompt_logprobs_dict or {},
+            prompt_logprobs_dict=merged_prompt_logprobs,
         )
         return out
 
