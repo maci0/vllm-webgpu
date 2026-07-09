@@ -44,6 +44,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                  pipeline_cache: "PipelineCache") -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
+        # DiffusionGemma always applies per-head V normalization (DiffusionGemmaRMSNorm,
+        # no weight, no scale). The parent flag is keyed on "Gemma4" in the architecture
+        # name, which does not match "DiffusionGemmaForBlockDiffusion", so force it here.
+        self._apply_v_norm = True
+
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
@@ -99,15 +104,15 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         )
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
-        """Skip qkv_buf and v_normed: the fused-QKV decode path is unreachable here.
+        """Skip qkv_buf: the fused-QKV decode path is unreachable here.
 
         DiffusionGemma overrides forward() and _decoder_layer() entirely; the parent
-        _transformer_layer() that reads qkv_buf and v_normed is never called from this
-        model. Omitting them saves roughly (T * max_q_dim * 6) bytes of GPU memory.
+        _transformer_layer() that reads qkv_buf is never called from this model.
+        v_normed is kept because _decoder_layer() uses it for per-head V normalization.
+        Omitting qkv_buf saves roughly (T * max_q_dim * 4) bytes of GPU memory.
         """
         super()._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
         del self._sc["qkv_buf"]
-        del self._sc["v_normed"]
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 
@@ -353,7 +358,15 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    {**_dg_rope_base, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads},
                                    (num_tokens, n_heads, 1))
 
-            v_to_cache = v_src
+            # Per-head RMSNorm (no weight) on V before caching — required for DiffusionGemma.
+            # Matches DiffusionGemmaTextAttention.forward which calls self.v_norm(value_states)
+            # unconditionally (DiffusionGemmaRMSNorm, dim=head_dim, with_scale=False).
+            self._dispatch("per_head_rms_norm_no_weight", [v_src, sc["v_normed"]],
+                           {"HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads,
+                            "WG_SIZE": min(head_dim, 128),
+                            "V_IN_OFFSET": 0},
+                           (num_kv_heads, num_tokens, 1), shader_subdir="gemma")
+            v_to_cache = sc["v_normed"]
             # Write all T tokens' KV to cache before the attention loop.
             # Each query token then attends to the full ctx_len cache (all T tokens),
             # which is non-causal (bidirectional). For the diffusion denoising use-case
