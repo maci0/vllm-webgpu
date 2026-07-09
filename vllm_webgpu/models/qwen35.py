@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -269,15 +270,23 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         dev = self.wgpu_device.wgpu_device
 
-        # Compute bytes directly from the shader's actual layout.
-        # gdn_state_update.wgsl declares state as [NUM_V_HEADS, K_DIM, V_DIM] f32.
-        # The vLLM utility returns (num_v_heads, head_v_dim, head_k_dim), i.e. the
-        # inner two dims are swapped relative to what the shader expects.  For
-        # Qwen3.5 where K_DIM == V_DIM == 128 the byte count happens to be
-        # identical, but any model with K_DIM != V_DIM would either leave V
-        # positions unwritten or have threads index out-of-bounds.
-        ssm_bytes  = self._lin_v_heads * self._lin_k_dim * self._lin_v_dim * 4  # [V_HEADS, K_DIM, V_DIM] f32
-        conv_bytes = (self._lin_conv_kernel - 1) * self._lin_conv_dim * 2       # [KERNEL-1, CONV_DIM] f16
+        # Use vLLM's canonical shape calculator (same pattern as nemotron_h.py).
+        # gdn_state_update.wgsl lays out state as [NUM_V_HEADS, K_DIM, V_DIM] f32,
+        # while vLLM returns (num_v_heads, head_v_dim, head_k_dim), with the inner two
+        # dims transposed relative to the shader's stride order.  The byte
+        # allocation is identical regardless (multiplication is commutative), so the
+        # buffers sized here are correct.  The stride difference only matters inside
+        # the shader's index arithmetic, which is a separate concern.
+        conv_shape, ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads,
+            num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim,
+            head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel,
+        )
+        ssm_bytes  = math.prod(ssm_shape) * 4   # f32
+        conv_bytes = math.prod(conv_shape) * 2   # f16
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers
