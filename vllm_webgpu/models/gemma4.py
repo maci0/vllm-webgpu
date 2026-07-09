@@ -340,12 +340,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             _lm_key = self._lm_head_key()
             lm_head_w = self.weights[_lm_key]
             uq_lm = self._uq_for_key(_lm_key)
+            _lm_base = _lm_key.removesuffix('.weight')
             # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
                            [norm_out, lm_head_w,
                             self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), logits_buf],
-                           {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
+                           {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
+                            **self._quant_extra(_lm_base, uq_lm)},
                            ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
@@ -724,6 +726,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _lm_key = self._lm_head_key()
         lm_head_w = self.weights[_lm_key]
         uq_lm = self._uq_for_key(_lm_key)
+        _lm_base = _lm_key.removesuffix('.weight')
         with self._batched_dispatch():
             last_byte_offset = (T - 1) * hidden * 4   # f32: 4 bytes per element
             enc = self._active_encoder
@@ -741,7 +744,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 "matmul_quant",
                 [b["last_norm"], lm_head_w,
                  self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), b["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
+                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
+                 **self._quant_extra(_lm_base, uq_lm)},
                 ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
@@ -824,6 +828,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _lm_key = self._lm_head_key()
         lm_head_w = self.weights[_lm_key]
         uq_lm = self._uq_for_key(_lm_key)
+        _lm_base = _lm_key.removesuffix('.weight')
         with self._batched_dispatch():
             self._dispatch(
                 "rms_norm_f32in",
@@ -833,7 +838,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 "matmul_quant",
                 [pre["norm_out"], lm_head_w,
                  self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), pre["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
+                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
+                 **self._quant_extra(_lm_base, uq_lm)},
                 ((vocab + 255) // 256, 1, 1))
 
             if self.softcap is not None and self.softcap > 0:
