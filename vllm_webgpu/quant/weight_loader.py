@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -678,12 +678,7 @@ def load_safetensors_weights(
             # F16, silently discarding 13 mantissa bits. Shaders that declare these
             # bindings as array<f32> need the full-precision values.
             if f32_keys and name in f32_keys and dtype_str in ("F32", "BF16", "F16"):
-                if dtype_str == "BF16":
-                    arr_f32 = np.ascontiguousarray(
-                        sf.get_tensor(name).to(torch.float32).numpy())
-                else:
-                    arr_f32 = np.ascontiguousarray(
-                        sf.get_tensor(name).numpy().astype(np.float32))
+                arr_f32 = np.ascontiguousarray(_load_raw(name).astype(np.float32))
                 if weight_transforms and name in weight_transforms:
                     arr_f32 = weight_transforms[name](arr_f32)
                 _upload(arr_f32, np.float32, 'f32', name, weights)

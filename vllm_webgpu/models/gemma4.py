@@ -919,13 +919,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                      sc["normed"]],
                     _rms, (1, 1, 1))
 
-            normed_x = sc["normed"]
-            x_buf    = pre["x"]
-            for layer_idx in range(self.num_layers):
-                normed_x, x_buf = self._transformer_layer(
-                    layer_idx, normed_x, x_buf,
-                    pre["pos"], pre["slot_map"], pre["bt"], tok_ctx, 1,
-                )
+                normed_x = sc["normed"]
+                x_buf    = pre["x"]
+                for layer_idx in range(self.num_layers):
+                    normed_x, x_buf = self._transformer_layer(
+                        layer_idx, normed_x, x_buf,
+                        pre["pos"], pre["slot_map"], pre["bt"], tok_ctx, 1,
+                    )
 
         # Final norm and LM head on the last token's hidden state.
         _lm_key = self._lm_head_key()

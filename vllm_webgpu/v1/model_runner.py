@@ -1,5 +1,4 @@
 from __future__ import annotations
-import itertools
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -8,6 +7,7 @@ import torch
 import torch.nn.functional as F  # F.pad used for logprob stacking in _make_model_output
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
+from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
@@ -238,10 +238,7 @@ class WebGPUModelRunner:
         if lp_list:
             head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
             num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)
-        return FullAttentionSpec(
-            block_size=block_size, num_kv_heads=num_kv_heads,
-            head_size=head_dim, dtype=torch.float16,
-        ).page_size_bytes
+        return 2 * block_size * num_kv_heads * head_dim * get_dtype_size(torch.float16)
 
     def warm_up(self) -> None:
         if self.model is not None:
@@ -520,7 +517,7 @@ class WebGPUModelRunner:
 
             raw_bids = req.block_ids
             assert raw_bids, f"req {rid}: scheduler produced NewRequestData with empty block_ids"
-            blk_ids = list(itertools.chain.from_iterable(raw_bids))
+            blk_ids = [bid for group in raw_bids for bid in group]
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -528,7 +525,7 @@ class WebGPUModelRunner:
             # forward() call. With prefix caching, num_computed_tokens tokens are
             # already in the KV cache; only the uncached tail needs to be processed.
             num_computed = req.num_computed_tokens
-            num_sched = scheduler_output.num_scheduled_tokens.get(rid, len(tok_ids))
+            num_sched = scheduler_output.num_scheduled_tokens[rid]
             T = min(num_sched, len(tok_ids) - num_computed)
             chunk_toks = tok_ids[num_computed:num_computed + T]
             slots = []
@@ -640,7 +637,7 @@ class WebGPUModelRunner:
                 # block table entirely; others append newly allocated blocks.
                 cur_new_bids = new_block_ids[i]
                 if cur_new_bids is not None:
-                    flat_new = list(itertools.chain.from_iterable(cur_new_bids))
+                    flat_new = [bid for group in cur_new_bids for bid in group]
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.

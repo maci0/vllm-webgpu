@@ -171,22 +171,24 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def _layer_key_prefix(self, layer_idx: int) -> str:
         return f"model.decoder.layers.{layer_idx}"
 
+    def _first_weight_key(self, *candidates: str) -> str:
+        """Return the first candidate key present in self.weights, or the last candidate as fallback."""
+        return next((k for k in candidates if k in self.weights), candidates[-1])
+
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
-        return next(
-            (k for k in ("model.decoder.embed_tokens.weight", "model.embed_tokens.weight") if k in self.weights),
-            "model.embed_tokens.weight",
+        return self._first_weight_key(
+            "model.embed_tokens.weight", "model.decoder.embed_tokens.weight",
         )
 
     def _norm_key(self) -> str:
-        return next(
-            (k for k in ("model.decoder.norm.weight", "model.norm.weight") if k in self.weights),
-            "model.norm.weight",
+        return self._first_weight_key(
+            "model.norm.weight", "model.decoder.norm.weight",
         )
 
     def _lm_head_key(self) -> str:
-        return next(
-            (k for k in ("lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight") if k in self.weights),
+        return self._first_weight_key(
+            "lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight",
             self._embed_key(),  # tied weights fallback
         )
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -61,7 +62,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
             "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
+            "LN_ROPE_BASE": math.log(self.rope_theta),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
@@ -288,7 +289,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         if num_tokens > 1:
             return self._prefill_batch_forward(
                 input_ids, positions, attn_metadata,
-                num_tokens, hidden, vocab, _rms_base,
+                num_tokens,
             )
 
         # Decode path (num_tokens=1): use pre-allocated buffers for zero-alloc hot path.
@@ -341,9 +342,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         positions: "np.ndarray",
         attn_metadata: object,
         T: int,
-        hidden: int,
-        vocab: int,
-        rms_base: dict,
     ) -> "np.ndarray":
         """Batch prefill: process T prompt tokens in one GPU command encoder.
 
@@ -352,6 +350,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Last-token prediction extracted via GPU copy_buffer_to_buffer.
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """
+        hidden = self.hidden_size
+        vocab = self.vocab_size
+        rms_base = self._rms_consts
         dev  = self.wgpu_device.wgpu_device
 
         def alloc(n_f16: int) -> WebGPUBuffer:
@@ -418,7 +419,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         ]
         if any(self._uq_for_key(k) not in (0, 3) for k in _rep_keys):
             return self._prefill_sequential_fallback(
-                input_ids, positions, attn_metadata, T, hidden, vocab, rms_base,
+                input_ids, positions, attn_metadata, T,
             )
 
         # Sliding Window Attention models must use the sequential path so that
@@ -431,7 +432,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # _effective_ctx_len semantics correct.
         if getattr(self, "_force_sequential_prefill", False) or getattr(self, "_sw", None):
             return self._prefill_sequential_fallback(
-                input_ids, positions, attn_metadata, T, hidden, vocab, rms_base,
+                input_ids, positions, attn_metadata, T,
             )
 
         # _CHUNK layers per command encoder keeps each submit under Metal's GPU timeout.
@@ -579,9 +580,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         positions: "np.ndarray",
         attn_metadata: object,
         T: int,
-        hidden: int,
-        vocab: int,
-        rms_base: dict,
     ) -> "np.ndarray":
         """Process T prefill tokens one at a time through the decode-path infrastructure.
 
@@ -592,6 +590,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         KV entries are stored token-by-token so causal attention is satisfied at each step.
         Only the last token's logits are returned (prefill next-token prediction).
         """
+        hidden = self.hidden_size
+        vocab = self.vocab_size
+        rms_base = self._rms_consts
         dev = self.wgpu_device.wgpu_device
         pre = self._pre
         sc  = self._sc

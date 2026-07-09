@@ -3,6 +3,10 @@
 This test compares compute_yarn_freqs against vLLM's internal _compute_inv_freq
 on a small known config. Any vLLM version bump that changes the YaRN formula will
 cause this test to fail, surfacing the divergence before it reaches inference.
+
+On vLLM upgrade, diff:
+  vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py lines 49-73
+    (_compute_inv_freq body) and lines 40-44 (__init__ parameters).
 """
 from __future__ import annotations
 

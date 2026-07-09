@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
+from transformers.utils import SAFE_WEIGHTS_NAME as _SAFE_WEIGHTS_NAME
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -400,7 +400,7 @@ class BaseWebGPUModel(ABC):
             total += buf.nbytes
 
         staging = dev.create_buffer(
-            size=max(total, 4),
+            size=total,
             usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ,
         )
         enc = dev.create_command_encoder()

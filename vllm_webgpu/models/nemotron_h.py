@@ -36,9 +36,15 @@ del _mapper
 _UQ_AWQ: int = 4
 
 
-def _neg_exp_transform(x: "np.ndarray") -> "np.ndarray":
-    """A_log → -exp(A) weight transform applied CPU-side before GPU upload."""
-    return -np.exp(x)
+def _mlp_layer_index(pattern: str, layer_idx: int) -> int:
+    """Return the 0-based MLP index for a given layer_idx within hybrid_override_pattern.
+
+    Mirrors NemotronHMLPDecoderLayer.__init__ lines 279-280 in vLLM's
+    vllm/model_executor/models/nemotron_h.py. If that file changes its
+    mlp_index formula, update this function to match.
+    """
+    return pattern[: layer_idx + 1].count("-") - 1
+
 
 
 class NemotronHWebGPUModel(BaseWebGPUModel):
@@ -99,8 +105,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.conv_kernel: int = model_config.conv_kernel
         # conv_dim: size of the vector passed through the causal conv
         # = x (mamba_int) + B (n_groups*state_size) + C (n_groups*state_size)
+        # MambaMixer2.conv_dim, vllm/model_executor/layers/mamba/mamba_mixer2.py L313
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
+        # MambaMixer2 in_proj output_size (tp=1), mamba_mixer2.py L353-355
         self.in_proj_dim: int = (
             self.mamba_int + self.conv_dim + self.mamba_num_heads
         )
@@ -117,7 +125,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # require. The transform uses the HF checkpoint key name (backbone. prefix).
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "mamba":
-                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _neg_exp_transform
+                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = lambda x: -np.exp(x)
 
         # The WebGPU MLP path does not implement bias addition. All known
         # NemotronH checkpoints ship with mlp_bias=False (the default), so
@@ -161,7 +169,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = _hybrid_pat[:_li + 1].count("-") - 1
+            _mlp_idx = _mlp_layer_index(_hybrid_pat, _li)
             if isinstance(_raw_int, list):
                 _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
             else:
