@@ -66,13 +66,20 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _k_eq_v     = getattr(model_config, "attention_k_eq_v", False)
 
         if raw_lp and len(raw_lp) == self.num_layers:
+            for lp_entry in raw_lp:
+                lp_entry.setdefault("intermediate_size", self.intermediate_size)
             self._lp: list[dict] = raw_lp
         elif layer_types and len(layer_types) == self.num_layers:
             # Build per-layer params from layer_types list (Gemma4 safetensors config).
             # sliding_attention: local GQA, head_dim=default_hd, has_v_proj=True
             # full_attention:    global, head_dim=global_hd; V=K only when attention_k_eq_v=True
+            #
+            # use_double_wide_mlp: the last num_kv_shared_layers layers have FFN width * 2.
+            first_kv_shared = self.num_layers - getattr(model_config, "num_kv_shared_layers", 0)
+            use_dwm = getattr(model_config, "use_double_wide_mlp", False)
             self._lp = []
-            for lt in layer_types:
+            for i, lt in enumerate(layer_types):
+                inter_l = self.intermediate_size * (2 if use_dwm and i >= first_kv_shared else 1)
                 if lt == "full_attention":
                     hd_l  = global_hd
                     nkv_l = global_kv if _k_eq_v else default_kv
@@ -82,12 +89,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     nkv_l = default_kv
                     hv = True
                 self._lp.append({
-                    "head_dim":    hd_l,
-                    "num_q_heads": self.num_q_heads,
-                    "num_kv_heads": nkv_l,
-                    "q_dim":       self.num_q_heads * hd_l,
-                    "kv_dim":      nkv_l * hd_l,
-                    "has_v_proj":  hv,
+                    "head_dim":         hd_l,
+                    "num_q_heads":      self.num_q_heads,
+                    "num_kv_heads":     nkv_l,
+                    "q_dim":            self.num_q_heads * hd_l,
+                    "kv_dim":           nkv_l * hd_l,
+                    "has_v_proj":       hv,
+                    "intermediate_size": inter_l,
                 })
         else:
             # Uniform fallback: all layers use the config defaults.
@@ -95,12 +103,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             hd = default_hd
             nkv = default_kv
             uniform_lp = {
-                "head_dim": hd,
-                "num_q_heads": self.num_q_heads,
-                "num_kv_heads": nkv,
-                "q_dim": self.num_q_heads * hd,
-                "kv_dim": nkv * hd,
-                "has_v_proj": True,
+                "head_dim":         hd,
+                "num_q_heads":      self.num_q_heads,
+                "num_kv_heads":     nkv,
+                "q_dim":            self.num_q_heads * hd,
+                "kv_dim":           nkv * hd,
+                "has_v_proj":       True,
+                "intermediate_size": self.intermediate_size,
             }
             self._lp = [uniform_lp.copy() for _ in range(self.num_layers)]
 
@@ -126,7 +135,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
     def _scratch_inter_size(self) -> int:
         """Intermediate size for FFN scratch buffers. Override in subclasses."""
-        return self.intermediate_size
+        return max(lp["intermediate_size"] for lp in self._lp)
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Pre-allocate scratch buffers at maximum layer dimensions."""
@@ -406,7 +415,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         hidden = self.hidden_size
         vocab  = self.vocab_size
-        inter  = self.intermediate_size
+        max_inter  = max(lp["intermediate_size"] for lp in self._lp)
         max_q_dim  = self._max_q_dim
         max_kv_dim = self._max_kv_dim
 
@@ -427,9 +436,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "attn_out": alloc(T * max_q_dim * 2),     # f16 attention output
             "o_proj":   alloc(T * hidden * 2),         # f16 output projection
             "ffn_n":    alloc(T * hidden * 2),         # f16 FFN normed (intermediate)
-            "gate_buf": alloc(T * inter * 2),          # f16 FFN gate
-            "up_buf":   alloc(T * inter * 2),          # f16 FFN up
-            "ffn_act":  alloc(T * inter * 2),          # f16 activated gate*up
+            "gate_buf": alloc(T * max_inter * 2),          # f16 FFN gate
+            "up_buf":   alloc(T * max_inter * 2),          # f16 FFN up
+            "ffn_act":  alloc(T * max_inter * 2),          # f16 activated gate*up
             "ffn_out":  alloc(T * hidden * 2),         # f16 FFN output
             "h0":       alloc(T * hidden * 4),         # f32 residual (rotation slot 0)
             "h1":       alloc(T * hidden * 4),         # f32 residual (rotation slot 1)
@@ -504,6 +513,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     head_dim     = lp["head_dim"]
                     num_kv_heads = lp["num_kv_heads"]
                     has_v        = lp["has_v_proj"]
+                    inter        = lp["intermediate_size"]
                     add_n        = T * hidden
                     gelu_n       = T * inter
                     _ls          = self._layer_scales[i]
@@ -866,7 +876,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         head_dim = lp["head_dim"]
         num_kv_heads = lp["num_kv_heads"]
         has_v = lp["has_v_proj"]
-        inter = self.intermediate_size
+        inter = lp["intermediate_size"]
         ln_rope = self._ln_rope_theta
         # Per-layer scalar from GGUF (layer_scalar weight, e.g. ~0.97 or ~0.053 depending on model).
         # Applied to the full residual once after both attn and FFN sublayers, matching vLLM:
