@@ -33,32 +33,6 @@ def _slot(blk_ids, pos: int, block_size: int) -> int:
     return int(blk_ids[pos // block_size]) * block_size + pos % block_size
 
 
-def _topk_logprob_indices(log_probs: "np.ndarray", k: int) -> "np.ndarray":
-    """Return the top-k indices into log_probs sorted by descending log-prob.
-
-    Works on both 1-D (single position) and 2-D (batch of positions) arrays.
-    The last axis is treated as the vocabulary dimension.
-
-    Edge cases:
-      k == 0           → empty index array (shape [..., 0])
-      k >= vocab_size  → all indices sorted by descending log-prob
-    """
-    vocab_size = log_probs.shape[-1]
-    if k == 0:
-        if log_probs.ndim == 1:
-            return np.empty(0, dtype=np.int64)
-        return np.empty((log_probs.shape[0], 0), dtype=np.int64)
-    if k >= vocab_size:
-        return np.argsort(log_probs, axis=-1)[..., ::-1]
-    if log_probs.ndim == 1:
-        part = np.argpartition(log_probs, -k)[-k:]
-        return part[np.argsort(log_probs[part])[::-1]]
-    # 2-D path
-    row_idx = np.arange(log_probs.shape[0])[:, None]
-    part = np.argpartition(log_probs, -k, axis=-1)[:, -k:]
-    order = np.argsort(log_probs[row_idx, part], axis=-1)[:, ::-1]
-    return part[row_idx, order]
-
 
 
 if TYPE_CHECKING:
@@ -299,7 +273,7 @@ class WebGPUModelRunner:
         arr -= arr.max()
         log_probs = arr - np.log(np.exp(arr).sum())
 
-        topk_idx = _topk_logprob_indices(log_probs, k)
+        topk_idx = torch.topk(torch.from_numpy(log_probs), k).indices.numpy()
         topk_lp = log_probs[topk_idx]
 
         # Rank of the sampled token (1-indexed: 1 = highest-prob token).
@@ -361,7 +335,7 @@ class WebGPUModelRunner:
 
         row_idx = np.arange(num_positions)[:, None]
 
-        topk_idx = _topk_logprob_indices(log_probs, k)  # [T-1, k]
+        topk_idx = torch.topk(torch.from_numpy(log_probs), k, dim=-1).indices.numpy()  # [T-1, k]
         topk_lp = log_probs[row_idx, topk_idx]          # [T-1, k]
 
         # Target token (tok_ids[i+1]) logprob and 1-indexed rank per position.
