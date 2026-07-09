@@ -25,12 +25,9 @@ _SYM_ZEROS_INT32: np.int32 = np.int32(-0x77777778)
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     """Convert a BF16, F32, or F16 torch tensor to a float16 numpy array."""
     import torch as _torch
-    if t.dtype == _torch.bfloat16:
-        return np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
-    if t.dtype == _torch.float32:
-        return np.clip(t.numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
-    # F16: already the right dtype, return directly
-    return t.numpy()
+    if t.dtype == _torch.float16:
+        return t.numpy()
+    return np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
 
 def _is_gdn_weight_key(key: str) -> bool:
     """True for GDN linear-attention projection weights that benefit from bf16 storage."""

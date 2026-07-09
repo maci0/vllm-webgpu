@@ -184,7 +184,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes(),
             bt_arr.tobytes(),
         )
-        ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len is not None else int(positions[-1]) + 1
+        ctx_len = int(attn_metadata.max_decode_seq_len)
         return (
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,

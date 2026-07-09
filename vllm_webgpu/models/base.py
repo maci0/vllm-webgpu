@@ -391,7 +391,7 @@ class BaseWebGPUModel(ABC):
             return 0
         import wgpu as wgpu_lib
         self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
-        val = int(np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32)[0])
+        val = int(np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32).item())
         self._gpu_sample_staging.unmap()
         return val
 
@@ -426,9 +426,7 @@ class BaseWebGPUModel(ABC):
             e.g. 'model.layers.0.self_attn.q_proj.weight.scales'
         For plain weights (USE_QUANT 0): no scales exist; return fallback.
         """
-        if uq:
-            return self.weights.get(w_key + ".scales", fallback)
-        return fallback
+        return self.weights.get(w_key + ".scales", fallback) if uq else fallback
 
     def _quant_extra(self, base_key: str, uq: int) -> dict:
         """Return additional shader override constants for quantized dispatch."""

@@ -25,10 +25,11 @@ def _get_wgpu_adapter():
     between calls (e.g. in tests), and re-probing is cheap on failure.
     Returns None if wgpu is unavailable or the probe failed.
     """
+    from vllm_webgpu.config import get_config
+    cfg = get_config()
     try:
         import wgpu
-        from vllm_webgpu.config import get_config
-        return wgpu.gpu.request_adapter_sync(power_preference=get_config().power_preference)
+        return wgpu.gpu.request_adapter_sync(power_preference=cfg.power_preference)
     except Exception:
         return None
 

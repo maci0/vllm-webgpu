@@ -6,6 +6,7 @@ Usage:
     python3 profile_kernels.py [--model MODEL_PATH] [--tokens N]
 """
 import argparse
+import os
 import time
 from collections import defaultdict
 from types import SimpleNamespace
@@ -21,7 +22,6 @@ parser.add_argument("--warmup-steps", type=int, default=2,
 args = parser.parse_args()
 
 # ── Setup device ──────────────────────────────────────────────────────────────
-import os
 from huggingface_hub import snapshot_download
 from vllm_webgpu.webgpu.device import WebGPUDevice
 from vllm_webgpu.webgpu.pipeline import PipelineCache
@@ -82,7 +82,7 @@ slots = list(range(len(tok_ids)))
 _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
 logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
-_has_gpu_argmax = getattr(model, 'logit_returns_token_id', False)
+_has_gpu_argmax = model.logit_returns_token_id
 
 decode_tok = int(logits[0, 0]) if _has_gpu_argmax else int(np.argmax(logits[-1]))
 pos = len(tok_ids)

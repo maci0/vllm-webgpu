@@ -89,7 +89,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         batch_meta,
     )
 
-    has_gpu_argmax = getattr(model, "logit_returns_token_id", False)
+    has_gpu_argmax = model.logit_returns_token_id
     if has_gpu_argmax:
         if temperature > 0.0:
             _real = model.logit_readback()
@@ -123,7 +123,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     t_start = time.perf_counter()
 
     for step in range(max_tokens):
-        if last_token == eos_id:
+        if eos_id is not None and last_token == eos_id:
             print(f"  [EOS at step {step}]")
             break
         generated.append(last_token)

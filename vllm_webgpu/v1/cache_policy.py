@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-import torch
 from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_utils import get_cpu_memory
@@ -15,9 +14,8 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
-# Float16 element size in bytes. Derived from dtype so it tracks any future
-# KV dtype change rather than being a silent magic constant.
-_F16_BYTES: int = torch.float16.itemsize
+# Float16 element size in bytes.
+_F16_BYTES: int = 2
 
 # Layer type strings that carry KV state and require cache allocation.
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports

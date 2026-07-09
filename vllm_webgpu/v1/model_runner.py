@@ -32,7 +32,7 @@ def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
     """Sample one token from a 1-D float32 logit vector using SamplingParams."""
     if sp is None or sp.sampling_type == SamplingType.GREEDY:
         return int(np.argmax(logits_1d))
-    seed = getattr(sp, "seed", None)
+    seed = sp.seed
     return _sample_token(
         logits_1d,
         temperature=sp.temperature,
@@ -492,7 +492,7 @@ class WebGPUModelRunner:
 
             # Extract per-request logprob counts from SamplingParams.
             sp = req.sampling_params
-            if sp is not None and getattr(sp, "logprob_token_ids", None):
+            if sp is not None and sp.logprob_token_ids:
                 raise NotImplementedError(
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
@@ -503,7 +503,7 @@ class WebGPUModelRunner:
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
                     "use a positive integer instead"
                 )
-            num_prompt_logprobs = getattr(sp, "prompt_logprobs", None) if sp is not None else None
+            num_prompt_logprobs = sp.prompt_logprobs if sp is not None else None
 
             # Warn early when full-vocab prompt logprobs are requested. The CPU
             # topk over the entire vocabulary (O(T * V log V)) can stall inference
