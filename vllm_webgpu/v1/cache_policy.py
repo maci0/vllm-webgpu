@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+from vllm.config.utils import getattr_iter
 from vllm.logger import init_logger
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm_webgpu.utils import OVERHEAD_BYTES
@@ -179,10 +180,11 @@ def allocate_kv_from_hf_config(
 
 def get_num_kv_heads(hf_cfg) -> int:
     """Read num_kv_heads from an hf_config, handling architecture-specific attribute names."""
-    return next(
-        (v for a in ('num_key_value_heads', 'num_kv_heads', 'n_head_kv')
-         if (v := getattr(hf_cfg, a, None)) is not None),
-        hf_cfg.num_attention_heads,
+    return getattr_iter(
+        hf_cfg,
+        ('num_key_value_heads', 'num_kv_heads', 'n_head_kv',
+         'multi_query_group_num', 'num_attention_groups'),
+        default_factory=lambda: hf_cfg.num_attention_heads,
     )
 
 

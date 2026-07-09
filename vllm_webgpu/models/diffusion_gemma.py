@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import _gemv_wg, _H_NAMES
+from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
 
 if TYPE_CHECKING:
@@ -184,9 +184,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     # ── Weight loading ───────────────────────────────────────────────────────
 
-    def load_weights(self, path: str) -> None:
+    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None) -> None:
         """Load weights and cache per_expert_scale arrays to avoid per-step GPU readbacks."""
-        super().load_weights(path)
+        super().load_weights(path, f32_keys=f32_keys)
         # Cache per_expert_scale for each MoE layer. Each to_numpy() is a blocking
         # GPU-CPU sync (~100 µs); caching once at load time avoids N syncs per step.
         self._pes_cache: list[np.ndarray | None] = []
@@ -470,10 +470,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._dispatch("rms_norm", [sc["o_proj_out"], pan_w, sc["ffn_normed"]], _rms,
                                (num_tokens, 1, 1))
                 self._dispatch("add_f32", [x_buf, sc["ffn_normed"], residual],
-                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+                               {"N": add_n}, _vec4_wg(add_n))
             else:
                 self._dispatch("add_f32", [x_buf, sc["o_proj_out"], residual],
-                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+                               {"N": add_n}, _vec4_wg(add_n))
 
             # ── Shared expert FFN ─────────────────────────────────────────────
             gelu_n_shared = num_tokens * inter_shared
@@ -505,7 +505,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                     self._scales_buf(wk, uq, self._dummy_scales_buf), out_b],
                                    _ex_mr4, (inter_shared, num_tokens, 1))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                               {"N": gelu_n_shared}, ((gelu_n_shared // 4 + 255) // 256, 1, 1),
+                               {"N": gelu_n_shared}, _vec4_wg(gelu_n_shared),
                                shader_subdir="gemma")
             elif uq_g == 0 and uq_u == 0:
                 self._dispatch("fused_gate_act",
@@ -526,7 +526,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                     **self._quant_extra(wk.removesuffix(".weight"), uq)},
                                    _gemv_wg(inter_shared))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                               {"N": gelu_n_shared}, ((gelu_n_shared // 4 + 255) // 256, 1, 1),
+                               {"N": gelu_n_shared}, _vec4_wg(gelu_n_shared),
                                shader_subdir="gemma")
 
             dw = f"{p}.mlp.down_proj.weight"
@@ -719,7 +719,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         self._dispatch("gelu_mul",
                                        [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                        {"N": gelu_n_moe},
-                                       ((gelu_n_moe // 4 + 255) // 256, 1, 1),
+                                       _vec4_wg(gelu_n_moe),
                                        shader_subdir="gemma")
                         # down: [T, inter_moe] x [hidden, inter_moe]^T -> [T, hidden]
                         _sc_dk = self._scales_buf(dk, uq_dk, self._dummy_scales_buf)
@@ -751,7 +751,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         self._dispatch("gelu_mul",
                                        [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                        {"N": gelu_n_moe},
-                                       ((gelu_n_moe // 4 + 255) // 256, 1, 1),
+                                       _vec4_wg(gelu_n_moe),
                                        shader_subdir="gemma")
                         self._dispatch("matmul_quant",
                                        [sc["ffn_act"], self.weights[dk],
@@ -780,7 +780,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
                 # Combine shared-MLP and MoE streams (f16 + f16 -> f16)
                 self._dispatch("add", [hidden_states_1, hidden_states_2, sc["normed"]],
-                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+                               {"N": add_n}, _vec4_wg(add_n))
 
                 # Combined post-FFN norm before residual add
                 pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
@@ -793,7 +793,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
                 self._dispatch("add_f32", [residual, combined_normed, out],
                                {"N": add_n},
-                               ((add_n // 4 + 255) // 256, 1, 1))
+                               _vec4_wg(add_n))
         else:
             # Apply post_feedforward_layernorm before residual add, matching vLLM's
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
@@ -803,7 +803,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                (num_tokens, 1, 1))
                 hidden_states_1 = sc["normed"]
             self._dispatch("add_f32", [residual, hidden_states_1, out],
-                           {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+                           {"N": add_n}, _vec4_wg(add_n))
 
         if abs(layer_scalar - 1.0) > 1e-6:
             self._dispatch("f32_scale_inplace", [out],

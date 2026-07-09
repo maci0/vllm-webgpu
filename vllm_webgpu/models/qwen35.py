@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import _gemv_wg, _H_NAMES
+from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
 
@@ -489,7 +489,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                _rms_h, (num_tokens, 1, 1))
             else:
                 self._dispatch("add", [residual, ffn_out, out],
-                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+                               {"N": add_n}, _vec4_wg(add_n))
 
         self._hstate = (self._hstate + 2) % 3
         return sc["normed"], out
@@ -766,7 +766,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             gate_n = num_tokens * q_dim
             self._dispatch("sigmoid_gate",
                            [sc["q_gate_buf"], sc["attn_out"], sc["q_buf"]],
-                           {"N": gate_n}, ((gate_n // 4 + 255) // 256, 1, 1))
+                           {"N": gate_n}, _vec4_wg(gate_n))
             o_proj_in = sc["q_buf"]
         else:
             o_proj_in = sc["attn_out"]

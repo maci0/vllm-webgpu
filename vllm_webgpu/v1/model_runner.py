@@ -140,6 +140,14 @@ class WebGPUModelRunner:
             model_config=mc,
         )
 
+    def _get_lp_list(self) -> "list | None":
+        """Return per-layer attention params, guarding against model=None."""
+        mc = self.vllm_config.model_config.hf_config
+        return (
+            (getattr(self.model, "_lp", None) if self.model is not None else None)
+            or getattr(mc, "_layer_attention_params", None)
+        )
+
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
         block_size = self.webgpu_config.block_size
@@ -160,8 +168,10 @@ class WebGPUModelRunner:
         # Use per-layer params if available (Gemma4 heterogeneous layers).
         # Prefer the model object's _lp list (populated from layer_types config)
         # over the raw HF config attribute, which may not be set for safetensors.
-        lp_list = (getattr(self.model, "_lp", None) or
-                   getattr(mc, "_layer_attention_params", None))
+        lp_list = (
+            (getattr(self.model, "_lp", None) if self.model is not None else None)
+            or getattr(mc, "_layer_attention_params", None)
+        )
 
         # Fallback: derive per-layer KV spec from layer_types + global_head_dim when
         # the model has not been loaded yet and hf_config lacks _layer_attention_params.
@@ -222,10 +232,7 @@ class WebGPUModelRunner:
         num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
         # Use the maximum per-layer values when heterogeneous layer params are available
         # (e.g. Gemma4 models with mixed local/global attention dimensions).
-        lp_list = (
-            (getattr(self.model, "_lp", None) if self.model is not None else None)
-            or getattr(mc, "_layer_attention_params", None)
-        )
+        lp_list = self._get_lp_list()
         if lp_list:
             head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
             num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)

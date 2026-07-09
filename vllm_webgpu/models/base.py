@@ -231,7 +231,7 @@ class BaseWebGPUModel(ABC):
         Uses block_tables[0] when present, falling back to a single-element [0]
         placeholder for warmup or metadata objects that lack a block table.
         """
-        return np.array(getattr(attn_metadata, "block_tables", [[0]])[0], dtype=np.uint32)
+        return np.asarray(getattr(attn_metadata, "block_tables", [[0]])[0], dtype=np.uint32)
 
     def load_weights(
         self, path: str, f32_keys: "frozenset[str] | None" = None
@@ -246,6 +246,7 @@ class BaseWebGPUModel(ABC):
             f32_keys: Optional set of checkpoint key names that must be uploaded as float32
                       instead of the default float16. Passed through to the safetensors loader.
         """
+        from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
         from vllm_webgpu.quant.weight_loader import (
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded, load_mlx_weights,
@@ -254,7 +255,7 @@ class BaseWebGPUModel(ABC):
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             p = Path(path)
-            actual = str(p / "model.safetensors") if p.is_dir() else path
+            actual = str(p / _SAFE_WEIGHTS_NAME) if p.is_dir() else path
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys)
         elif fmt == "safetensors_sharded":
@@ -262,6 +263,8 @@ class BaseWebGPUModel(ABC):
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys)
         elif fmt == "mlx_int4":
             # MLX community format (Qwen3.5-9B): affine int4 with bf16 scales/biases
+            if f32_keys:
+                raise ValueError("f32_keys is not supported for mlx_int4 format")
             self.weights = load_mlx_weights(path, self.wgpu_device.wgpu_device)
         elif fmt == "gguf":
             raise ValueError(

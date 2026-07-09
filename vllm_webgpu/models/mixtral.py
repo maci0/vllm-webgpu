@@ -1,18 +1,18 @@
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.logger import init_logger
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg
 from vllm_webgpu.models.llama import LlamaWebGPUModel
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 class MixtralWebGPUModel(LlamaWebGPUModel):
@@ -49,7 +49,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         if self._is_moe:
             import wgpu as _wgpu_lib
             self._wgpu_lib = _wgpu_lib
-            from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
             dev = self.wgpu_device.wgpu_device
 
@@ -310,10 +309,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # (uq != 0 for gate or up weights). For f16 MoE models they would otherwise
         # sit allocated-but-unused for the entire model lifetime.
         if "expert_gate" not in msc:
-            from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WBuf
             _act_sz = self._moe_act_sz
-            msc["expert_gate"] = _WBuf.empty(dev, max(_act_sz * 2, 8))
-            msc["expert_up"]   = _WBuf.empty(dev, max(_act_sz * 2, 8))
+            msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
+            msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
 
         # Without a shared expert, zero-initialize the accumulation buffer so
         # the first expert's weighted output accumulates from zero.

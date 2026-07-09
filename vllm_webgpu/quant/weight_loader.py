@@ -19,15 +19,23 @@ _F16_MAX: float = np.finfo(np.float16).max
 
 
 def _mx_scale_u8_to_f32(ws_u8: "np.ndarray") -> "np.ndarray":
-    """Decode E8M0 MX scale exponents to float32: scale = 2^(u8 - 127).
+    """Decode E8M0 MX scale exponents to float32: scale = 2^(u8 - 127)."""
+    import torch as _torch
+    from compressed_tensors.compressors.mx_utils import decompress_mx_scale
+    return decompress_mx_scale(
+        _torch.from_numpy(np.ascontiguousarray(ws_u8))
+    ).to(_torch.float32).numpy()
 
-    compressed_tensors provides an equivalent as
-    `compressed_tensors.compressors.mx_utils.decompress_mx_scale`, but that
-    function takes a torch.uint8 tensor and returns bfloat16.  The two-way
-    tensor conversion (numpy→torch in, torch→float32→numpy out) would cost
-    more than this one-liner, so we keep the numpy path here intentionally.
-    """
-    return np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)
+
+def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
+    """Convert a BF16, F32, or F16 torch tensor to a float16 numpy array."""
+    import torch as _torch
+    if t.dtype == _torch.bfloat16:
+        return np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
+    if t.dtype == _torch.float32:
+        return np.clip(t.numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
+    # F16: zero-copy passthrough
+    return t.numpy()
 
 def _is_gdn_weight_key(key: str) -> bool:
     """True for GDN linear-attention projection weights that benefit from bf16 storage."""
@@ -674,7 +682,7 @@ def load_safetensors_weights(
                 return True
 
             if dtype_str == "F16":
-                arr = sf.get_tensor(name).numpy()    # torch.float16 → np.float16
+                arr = _torch_to_f16_numpy(sf.get_tensor(name))
             elif dtype_str == "BF16":
                 t_bf16 = sf.get_tensor(name)
                 if _webgpu_envs.GDN_BF16 and _is_gdn_weight_key(name):
@@ -693,10 +701,9 @@ def load_safetensors_weights(
                     _maybe_flush()
                     weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
                                                             shape=tuple(shape), dtype="u32")
-                f32 = t_bf16.to(torch.float32).numpy()
-                arr = np.clip(f32, -_F16_MAX, _F16_MAX).astype(np.float16)
+                arr = _torch_to_f16_numpy(t_bf16)
             elif dtype_str == "F32":
-                arr = np.clip(sf.get_tensor(name).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
+                arr = _torch_to_f16_numpy(sf.get_tensor(name))
             elif dtype_str == "I8":
                 # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
                 # Upload raw bytes; shader does sign extension via int8_to_f32().
@@ -1357,15 +1364,10 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                 if key in processed:
                     continue
                 t = sf.get_tensor(key)
-                if t.dtype == _torch.bfloat16:
-                    arr = np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
-                elif t.dtype == _torch.float32:
-                    arr = np.clip(t.numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
-                elif t.dtype == _torch.float16:
-                    arr = t.numpy()
-                else:
+                if t.dtype not in (_torch.bfloat16, _torch.float32, _torch.float16):
                     logger.warning("Unsupported dtype %s for tensor %s, skipping", t.dtype, key)
                     continue
+                arr = _torch_to_f16_numpy(t)
                 local_key = key.removeprefix("language_model.")
                 weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
 

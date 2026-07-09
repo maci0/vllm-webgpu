@@ -90,14 +90,22 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     )
 
     has_gpu_argmax = getattr(model, "logit_returns_token_id", False)
-    last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[-1]))
     if has_gpu_argmax:
+        last_token = int(logits[0, 0])
         _real = model.logit_readback()
-        print(f"  Last prefill logit: argmax={last_token}, value={float(_real[0][last_token]):.2f}, "
+        if temperature > 0.0:
+            last_token = sample_token(_real[0], temperature=temperature, top_p=top_p)
+        print(f"  Last prefill logit: argmax={int(logits[0, 0])}, value={float(_real[0][int(logits[0, 0])]):.2f}, "
               f"std={float(_real[0].std()):.2f}")
     else:
-        print(f"  Last prefill logit: argmax={last_token}, value={float(logits[-1][last_token]):.2f}, "
-              f"std={float(logits[-1].std()):.2f}")
+        _logits_last = logits[-1]
+        last_token = (
+            sample_token(_logits_last, temperature=temperature, top_p=top_p)
+            if temperature > 0.0
+            else int(np.argmax(_logits_last))
+        )
+        print(f"  Last prefill logit: argmax={int(np.argmax(_logits_last))}, value={float(_logits_last[int(np.argmax(_logits_last))]):.2f}, "
+              f"std={float(_logits_last.std()):.2f}")
 
     # When sampling, disable the GPU argmax path so model.forward() returns full
     # (1, vocab) logits directly. The prefill above ran with _greedy_decode=True

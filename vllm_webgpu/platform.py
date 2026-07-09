@@ -47,10 +47,9 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def import_ir_kernels(cls) -> None:
-        # OOT platform contract: override to prevent the base-class default
-        # from importing vllm.kernels, which registers CUDA/ROCm/XPU ops.
-        # Those registrations are platform-guarded and won't be selected for
-        # WebGPU, but the OOT interface contract requires an explicit no-op here.
+        # WebGPU has no IR kernel modules to register; override prevents the
+        # base-class default from importing vllm.kernels and loading
+        # CUDA/ROCm/XPU ops.
         pass
 
     @classmethod

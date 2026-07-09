@@ -122,23 +122,23 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # to return per-layer overrides, including a different intermediate_size.
         _sizes = _raw_int if isinstance(_raw_int, list) else [_raw_int]
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
-        _layer_int_size_list: list[int] = []
-        _mlp_idx = 0
-        for _li, _lt in enumerate(self._layer_types):
-            if _lt != "mlp":
-                _layer_int_size_list.append(0)
-            else:
-                _fallback = _sizes[min(_mlp_idx, len(_sizes) - 1)]
-                if _get_layer_cfg is not None:
-                    _lcfg = _get_layer_cfg(_li)
-                    _isize = getattr(_lcfg, 'intermediate_size', _fallback)
-                    if isinstance(_isize, list):
-                        _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_idx]
-                    _layer_int_size_list.append(_isize)
-                else:
-                    _layer_int_size_list.append(_sizes[min(_mlp_idx, len(_sizes) - 1)])
-                _mlp_idx += 1
-        self._layer_int_size: list[int] = _layer_int_size_list
+
+        def _compute_layer_int_size(li: int, lt: str) -> int:
+            if lt != "mlp":
+                return 0
+            mlp_idx = self._layer_types[:li].count("mlp")
+            fallback = _sizes[min(mlp_idx, len(_sizes) - 1)]
+            if _get_layer_cfg is not None:
+                lcfg = _get_layer_cfg(li)
+                isize = getattr(lcfg, 'intermediate_size', fallback)
+                if isinstance(isize, list):
+                    isize = isize[0] if len(isize) == 1 else isize[mlp_idx]
+                return isize
+            return fallback
+
+        self._layer_int_size: list[int] = [
+            _compute_layer_int_size(li, lt) for li, lt in enumerate(self._layer_types)
+        ]
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
@@ -253,9 +253,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Zero all Mamba conv and SSM states. Call before each new request."""
         dev = self.wgpu_device.wgpu_device
         for buf in self._conv_states.values():
-            dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
+            dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
         for buf in self._ssm_states.values():
-            dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
+            dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
 
     # ── Weight loading ────────────────────────────────────────────────────────
 

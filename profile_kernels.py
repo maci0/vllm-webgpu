@@ -102,7 +102,7 @@ for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra 
     if step >= args.warmup_steps:
         prod_times.append(elapsed_ms)
 
-prod_avg_ms = sum(prod_times) / len(prod_times)
+prod_avg_ms = np.mean(prod_times)
 print(f"Production throughput: {prod_avg_ms:.1f} ms/tok = {1000/prod_avg_ms:.1f} tok/s")
 
 # ── Profiled decode steps ──────────────────────────────────────────────────────
@@ -122,7 +122,7 @@ for step in range(args.decode_steps):
     pos += 1
 
 model.profiling = False
-avg_step_ms = sum(decode_times) / len(decode_times)
+avg_step_ms = np.mean(decode_times)
 print(f"\nAverage decode step: {avg_step_ms:.1f} ms  ({1000/avg_step_ms:.1f} tok/s)")
 print()
 print(model.profile_report())
@@ -131,7 +131,7 @@ print()
 # ── Per-component breakdown ────────────────────────────────────────────────────
 stats = model._prof_stats
 if stats:
-    total = sum(sum(v)/len(v) for v in stats.values())
+    total = sum(np.mean(v) for v in stats.values())
 
     # Aggregate by category (strip L00_ prefix; labels without a suffix, e.g.
     # "L00", are grouped under "layer" so that per_layer divides by the actual

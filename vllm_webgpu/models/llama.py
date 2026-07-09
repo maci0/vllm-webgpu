@@ -1,10 +1,11 @@
 from __future__ import annotations
-import logging
+import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.logger import init_logger
 from vllm_webgpu.config import get_config
 from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 class LlamaWebGPUModel(BaseWebGPUModel):
@@ -88,7 +89,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
-        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
+        max_bt_blocks = max(4096, math.ceil(max_ctx / self.block_size))
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      mk(T * 4),              # [1] uint32 token id
             "pos":      mk(T * 4),              # [1] uint32 position

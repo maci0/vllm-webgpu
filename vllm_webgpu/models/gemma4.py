@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _H_NAMES
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -136,7 +136,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         T = self._scratch_token_count()
         H = self.hidden_size
         I = self._scratch_inter_size()
-        NQ = self.num_q_heads
 
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, n)
@@ -249,8 +248,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 self._layer_scales.append(1.0)
 
-    def load_weights(self, path: str) -> None:
-        super().load_weights(path)
+    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None) -> None:
+        super().load_weights(path, f32_keys=f32_keys)
         self._postprocess_weights()
         self._load_layer_scales()
 
@@ -659,7 +658,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         "gelu_mul",
                         [b["gate_buf"], b["up_buf"], b["ffn_act"]],
                         {"N": gelu_n},
-                        ((gelu_n // 4 + 255) // 256, 1, 1),
+                        _vec4_wg(gelu_n),
                         shader_subdir="gemma")
 
                     # FFN down projection (batch GEMM)
@@ -695,7 +694,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             ffn_delta = b["ffn_out"]
                         self._dispatch(
                             "add_f32", [residual, ffn_delta, out_h],
-                            {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+                            {"N": add_n}, _vec4_wg(add_n))
 
                     # Apply layer_scalar to the full f32 residual (matches vLLM).
                     if abs(_ls - 1.0) > 1e-6:
@@ -1099,7 +1098,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                     **self._quant_extra(f"{p}.mlp.{proj}", uq2)},
                                    _gemv_wg(inter))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                               {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1),
+                               {"N": gelu_n}, _vec4_wg(gelu_n),
                                shader_subdir="gemma")
 
             # Down projection → sc["ffn_out"]
@@ -1140,7 +1139,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 else:
                     ffn_delta = sc["ffn_out"]
                 self._dispatch("add_f32", [residual, ffn_delta, out],
-                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+                               {"N": add_n}, _vec4_wg(add_n))
 
             # Apply layer_scalar to the full residual once per decoder layer.
             # Matches vLLM: hidden_states = hidden_states * self.layer_scalar,
