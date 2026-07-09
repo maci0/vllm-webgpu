@@ -153,7 +153,7 @@ def allocate_kv_from_hf_config(
         # reports for architectures with TP-remapped or MLA-style heads.
         # Pass model_config when possible to get the canonical values.
         num_kv_heads = get_num_kv_heads(hf_config)
-        head_dim = getattr(hf_config, 'head_dim', None) or (hf_config.hidden_size // hf_config.num_attention_heads)
+        head_dim = getattr_iter(hf_config, ('head_dim', 'hidden_size_per_head'), default_factory=lambda: hf_config.hidden_size // hf_config.num_attention_heads)
     # model._layer_types wins; fall back to hf_config fields used by different
     # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
     layer_types = (
@@ -162,7 +162,7 @@ def allocate_kv_from_hf_config(
         or getattr(hf_config, "layers_block_type", None)
     )
     # Treat uniform full-attention lists the same as None (avoids tiny buffers).
-    if layer_types and all(t in KV_ATTN_TYPES for t in layer_types):
+    if layer_types and KV_ATTN_TYPES.issuperset(layer_types):
         layer_types = None
 
     _allocate_kv_pool_hybrid(

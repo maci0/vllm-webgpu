@@ -674,7 +674,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             dense_w = np.zeros((self.num_experts, num_tokens), dtype=np.float32)
             t_idx   = np.repeat(np.arange(num_tokens), self.top_k_experts)  # [T*K]
             np.add.at(dense_w, (top_k_idx.ravel(), t_idx), rw_vals.ravel())
-            unique_eids = list(map(int, np.unique(top_k_idx)))
+            unique_eids = np.unique(top_k_idx).tolist()
 
             # GPU: run selected expert FFNs
             gelu_n_moe = num_tokens * inter_moe

@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -22,11 +22,6 @@ _F16_MAX: float = np.finfo(np.float16).max
 _SYM_ZEROS_INT32: np.int32 = np.int32(-0x77777778)
 
 
-def _mx_scale_u8_to_f32(ws_u8: "np.ndarray") -> "np.ndarray":
-    """Decode E8M0 MX scale exponents to float32: scale = 2^(u8 - 127)."""
-    return np.exp2(ws_u8.astype(np.float32) - 127.0)
-
-
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     """Convert a BF16, F32, or F16 torch tensor to a float16 numpy array."""
     import torch as _torch
@@ -34,8 +29,8 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
         return np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
     if t.dtype == _torch.float32:
         return np.clip(t.numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
-    # F16: zero-copy passthrough
-    return t.numpy()
+    # F16: cast to ensure the contract is always float16
+    return t.to(_torch.float16).numpy()
 
 def _is_gdn_weight_key(key: str) -> bool:
     """True for GDN linear-attention projection weights that benefit from bf16 storage."""
@@ -1006,8 +1001,7 @@ def load_safetensors_weights(
                 try:
                     wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                    # Convert U8 exponents to F32: scale = 2^(u8 - 127)
-                    ws_f32 = np.ascontiguousarray(_mx_scale_u8_to_f32(ws_u8).astype(np.float32))
+                    ws_f32 = np.ascontiguousarray(np.exp2(ws_u8.astype(np.float32) - 127.0))  # E8M0: 2^(u8-127)
                     N_, K2_ = wp.shape
                     K_ = K2_ * 2
                     _upload_u8(wp, f"{base}.weight", weights)
@@ -1042,8 +1036,7 @@ def load_safetensors_weights(
                     w_u8  = _load_raw(f"{base}.weight")        # (N, K) U8 FP8 E4M3 bytes
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                     N_, K_ = w_u8.shape
-                    # Convert U8 exponents to F32 block scales: scale = 2^(u8 - 127)
-                    block_scale = _mx_scale_u8_to_f32(ws_u8)
+                    block_scale = np.exp2(ws_u8.astype(np.float32) - 127.0)  # E8M0: 2^(u8-127)
                     n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
                     block_size = K_ // n_blocks if n_blocks > 0 else K_
                     # Expand block scales to (N, K) for element-wise multiply

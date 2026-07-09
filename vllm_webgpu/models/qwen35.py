@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -192,8 +191,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 "router_out":   mk(self._moe_num_experts * 2),  # [N_E] f16 router logits
                 "topk_idx":     mk(self._moe_k * 4),            # [K] u32 expert indices
                 "topk_w":       mk(self._moe_k * 4),            # [K] f32 softmax weights
-                "expert_gate":  mk(_moe_act_sz * 2),            # [max_inter] f16 gate proj
-                "expert_up":    mk(_moe_act_sz * 2),            # [max_inter] f16 up proj
                 "expert_act":   mk(_moe_act_sz * 2),            # [max_inter] f16 gate*up activated
                 "expert_out":   mk(H * 2),                      # [hidden] f16 accumulated output
                 "expert_tmp":   mk(H * 2),                      # [hidden] f16 per-expert temp
@@ -285,8 +282,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        ssm_bytes  = math.prod(ssm_shape) * 4   # f32
-        conv_bytes = math.prod(conv_shape) * 2   # f16
+        ssm_bytes  = np.prod(ssm_shape) * 4   # f32
+        conv_bytes = np.prod(conv_shape) * 2   # f16
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers

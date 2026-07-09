@@ -366,7 +366,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 k_w = self.weights[k_key].to_numpy().view(np.int32).reshape(self.weights[k_key].shape)
                 v_w = self.weights[v_key].to_numpy().view(np.int32).reshape(self.weights[v_key].shape)
                 packed_w = np.ascontiguousarray(np.concatenate([q_w, k_w, v_w], axis=1))
-                qkv_raw = dev.create_buffer_with_data(data=packed_w.tobytes(), usage=_wgpu_usage)
+                qkv_raw_buf = WebGPUBuffer.from_numpy(dev, packed_w)
             else:
                 # Non-AWQ (GPTQ, FP16, FP8, etc.): GPU-side byte concat is correct.
                 # All weight buffers are 4-byte aligned from the loader.
@@ -395,12 +395,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     # 1D per-channel scales (G=1): axis=0 concat is correct since
                     # grp is always 0, so scales[0*N_total+row] == scales[row].
                     packed_sc = np.ascontiguousarray(np.concatenate([q_sc, k_sc, v_sc]))
-                scales_raw = dev.create_buffer_with_data(
-                    data=packed_sc.tobytes(), usage=_wgpu_usage)
-                scales_packed_shape = packed_sc.shape
+                scales_buf = WebGPUBuffer.from_numpy(dev, packed_sc)
 
             qkv_key = f"{p}.qkv_proj.weight"
-            packed_buf = WebGPUBuffer(buf=qkv_raw, device=dev, shape=(total_nb,), dtype=src_dtype)
+            packed_buf = qkv_raw_buf if _is_awq else WebGPUBuffer(buf=qkv_raw, device=dev, shape=(total_nb,), dtype=src_dtype)
             self.weights[qkv_key] = packed_buf
 
             # Propagate quant_meta from q_proj to qkv_proj so _uq_for_key
@@ -457,8 +455,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             # Register the packed scales buffer created above (if present).
             if has_scales:
-                scales_buf = WebGPUBuffer(
-                    buf=scales_raw, device=dev, shape=scales_packed_shape, dtype=scales_dtype)
                 self.weights[f"{qkv_key}.scales"] = scales_buf
             # Unconditionally remove any individual scale buffers that may remain
             # (handles partial-scale checkpoints where not all three are present).

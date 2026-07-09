@@ -298,7 +298,7 @@ class WebGPUModelRunner:
         full_logits: "np.ndarray",
         tok_ids: "list[int]",
         num_prompt_logprobs: int,
-    ) -> "Any":
+    ) -> "LogprobsTensors | None":
         """Compute per-position prompt logprobs for a prefill pass.
 
         For T prompt tokens, produces T-1 rows: row i uses full_logits[i]
@@ -344,8 +344,8 @@ class WebGPUModelRunner:
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "list | None" = None,
-        prompt_logprobs_dict: "dict | None" = None,
+        logprobs_data: "list[LogprobsTensors | None] | None" = None,
+        prompt_logprobs_dict: "dict[str, LogprobsTensors] | None" = None,
     ) -> Any:
         if ModelRunnerOutput is None:
             return None

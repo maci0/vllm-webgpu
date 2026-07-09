@@ -161,14 +161,6 @@ if stats:
         inter_sz = max(raw_inter_sz) if isinstance(raw_inter_sz, list) else raw_inter_sz
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
         attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
-        # FFN weight bytes: 3 matrices (gate, up, down) for SwiGLU models.
-        # NemotronH '-' layers use only 2 matrices (up, down; relu^2, no gate).
-        # MoE multiplies by top_k (activated experts per token).
-        ffn_matrices = 3
-        ffn_w = 2 * (hid * inter_sz * ffn_matrices)
-        if getattr(model, '_is_moe', False):
-            top_k = getattr(model, '_top_k', 1)
-            ffn_w *= top_k
 
         # For hybrid architectures (e.g. NemotronH), layer types differ per layer.
         # Use per-layer type weights rather than applying (attn_w + ffn_w) uniformly.
@@ -184,14 +176,14 @@ if stats:
             #   D (f32):     mamba_num_heads * 4
             #   dt_bias (f32): mamba_num_heads * 4
             #   out_proj:   mamba_int * hid * 2
-            mnh  = getattr(hf_cfg, 'mamba_num_heads', 0)
-            mhd  = getattr(hf_cfg, 'mamba_head_dim', 0)
-            ng   = getattr(hf_cfg, 'n_groups', 0)
-            ss   = getattr(hf_cfg, 'ssm_state_size', 0)
-            ck   = getattr(hf_cfg, 'conv_kernel', 0)
-            mi   = mnh * mhd                           # mamba_int
-            cd   = mi + 2 * ng * ss                   # conv_dim
-            ipd  = mi + cd + mnh                      # in_proj_dim
+            mnh  = getattr(model, 'mamba_num_heads', getattr(hf_cfg, 'mamba_num_heads', 0))
+            mhd  = getattr(model, 'mamba_head_dim', getattr(hf_cfg, 'mamba_head_dim', 0))
+            ng   = getattr(model, 'n_groups',        getattr(hf_cfg, 'n_groups', 0))
+            ss   = getattr(model, 'ssm_state_size',  getattr(hf_cfg, 'ssm_state_size', 0))
+            ck   = getattr(model, 'conv_kernel',     getattr(hf_cfg, 'conv_kernel', 0))
+            mi   = getattr(model, 'mamba_int',  mnh * mhd)                # mamba_int
+            cd   = getattr(model, 'conv_dim',   mi + 2 * ng * ss)         # conv_dim
+            ipd  = getattr(model, 'in_proj_dim', mi + cd + mnh)           # in_proj_dim
             ssm_w = (
                 2 * hid * ipd       # in_proj (f16)
                 + 2 * cd * ck       # conv1d  (f16)
@@ -199,16 +191,28 @@ if stats:
                 + 2 * mi * hid      # out_proj (f16)
             ) if (mnh and mhd) else 0
 
+            # Use per-layer intermediate sizes from the loaded model when available,
+            # falling back to the raw hf_config list or scalar.
+            layer_int_size = getattr(model, '_layer_int_size', None)
+            if layer_int_size is not None and len(layer_int_size) != num_layers:
+                layer_int_size = None
             inter_list = raw_inter_sz if isinstance(raw_inter_sz, list) else None
 
+            ffn_matrices = 3
             total_w_bytes = 0
             _mlp_idx = 0
             for idx, lt in enumerate(layer_types):
                 if lt == 'attention':
                     total_w_bytes += attn_w
                 elif lt in ('mlp', 'ffn'):
-                    layer_inter = inter_list[_mlp_idx] if inter_list else inter_sz
-                    _mlp_idx += 1
+                    if layer_int_size is not None:
+                        layer_inter = layer_int_size[idx]
+                    elif inter_list:
+                        layer_inter = inter_list[_mlp_idx]
+                        _mlp_idx += 1
+                    else:
+                        layer_inter = inter_sz
+                        _mlp_idx += 1
                     # NemotronH '-' (mlp) layers: up_proj + down_proj only (relu^2, no gate_proj).
                     layer_ffn_matrices = 2 if (lt == 'mlp' and 'NemotronH' in arch) else ffn_matrices
                     total_w_bytes += 2 * (hid * layer_inter * layer_ffn_matrices)
@@ -217,6 +221,13 @@ if stats:
                 # 'moe' and unknown types are skipped (no reliable generic formula)
         else:
             # Uniform architecture: every layer has both attention and FFN.
+            # FFN weight bytes: 3 matrices (gate, up, down) for SwiGLU models.
+            # MoE multiplies by top_k (activated experts per token).
+            ffn_matrices = 3
+            ffn_w = 2 * (hid * inter_sz * ffn_matrices)
+            if getattr(model, '_is_moe', False):
+                top_k = getattr(model, '_top_k', 1)
+                ffn_w *= top_k
             total_w_bytes = (attn_w + ffn_w) * num_layers
 
         total_w_mb = total_w_bytes / 1e6

@@ -49,7 +49,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # - GEMMA_NORM=1: all Gemma models use (1+w) RMSNorm (weights trained as deviations from 0)
         # - _apply_v_norm: only Gemma4 applies per-head RMS norm to V before caching
         archs = getattr(model_config, "architectures", [])
-        self._apply_v_norm = any("Gemma4" in a or "DiffusionGemma" in a for a in archs)  # Gemma3 does NOT normalize V
+        self._apply_v_norm = any('Gemma4' in a for a in archs)  # Gemma3 does NOT normalize V; DiffusionGemma handles V-norm unconditionally in _decoder_layer
 
         # Per-layer attention parameters (head_dim, num_kv_heads, q_dim, kv_dim, has_v_proj).
         # Set from _layer_attention_params if available (parsed from GGUF), otherwise derive
