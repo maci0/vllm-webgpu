@@ -8,6 +8,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculat
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _H_NAMES
+from vllm_webgpu.webgpu.buffer import _ELEM_BYTES
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -403,10 +404,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 scales_buf = WebGPUBuffer.from_numpy(dev, packed_sc)
 
             qkv_key = f"{p}.qkv_proj.weight"
-            _ebs = {"f16": 2, "i32": 4, "f32": 4, "u8": 1}
             packed_buf = qkv_raw_buf if _is_awq else WebGPUBuffer(
                 buf=qkv_raw, device=dev,
-                shape=(total_nb // _ebs.get(src_dtype, 1),),
+                shape=(total_nb // _ELEM_BYTES[src_dtype],),
                 dtype=src_dtype,
             )
             self.weights[qkv_key] = packed_buf
