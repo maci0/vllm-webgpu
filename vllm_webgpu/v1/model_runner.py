@@ -22,6 +22,11 @@ try:
 except ImportError:
     SamplingType = None  # type: ignore[assignment,misc]
 
+try:
+    from vllm.v1.sample.sampler import Sampler
+except ImportError:
+    Sampler = None  # type: ignore[assignment,misc]
+
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
 from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_hf_config
@@ -269,20 +274,13 @@ class WebGPUModelRunner:
             num_logprobs = vocab_size
         k = min(num_logprobs, vocab_size)
 
-        arr = logits_1d.astype(np.float32)
-        log_probs = torch.from_numpy(arr).log_softmax(dim=0).numpy()
-
-        topk_idx = torch.topk(torch.from_numpy(log_probs), k).indices.numpy()
-        topk_lp = log_probs[topk_idx]
-
-        # Rank of the sampled token (1-indexed: 1 = highest-prob token).
-        sampled_lp = float(log_probs[sampled_tok])
-        rank = int(np.sum(log_probs >= sampled_lp))
-
-        # Slot 0 is the sampled token; slots 1..k are the top-k tokens.
-        top_ids = np.concatenate([[sampled_tok], topk_idx]).astype(np.int32)
-        top_lp = np.concatenate([[sampled_lp], topk_lp]).astype(np.float32)
-        return top_ids, top_lp, rank
+        lp_t = torch.from_numpy(logits_1d.astype(np.float32)).unsqueeze(0).log_softmax(dim=-1)
+        result = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
+        return (
+            result.logprob_token_ids[0].numpy(),
+            result.logprobs[0].numpy(),
+            int(result.selected_token_ranks[0]),
+        )
 
     @staticmethod
     def _compute_prompt_logprobs(
@@ -328,31 +326,11 @@ class WebGPUModelRunner:
             num_prompt_logprobs = full_logits.shape[-1]
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
-        arr = full_logits[:num_positions].astype(np.float32)  # [T-1, vocab]
-        log_probs = torch.from_numpy(arr).log_softmax(dim=-1).numpy()  # [T-1, vocab]
-
-        row_idx = np.arange(num_positions)[:, None]
-
-        topk_idx = torch.topk(torch.from_numpy(log_probs), k, dim=-1).indices.numpy()  # [T-1, k]
-        topk_lp = log_probs[row_idx, topk_idx]          # [T-1, k]
-
-        # Target token (tok_ids[i+1]) logprob and 1-indexed rank per position.
-        token_ids_arr = np.array(tok_ids[1:num_positions + 1], dtype=np.int64)  # [T-1]
-        token_lp = log_probs[np.arange(num_positions), token_ids_arr]           # [T-1]
-        token_ranks = np.sum(log_probs >= token_lp[:, None], axis=-1).astype(np.int32)  # [T-1]
-
-        # Slot 0 is the target token; slots 1..k are the top-k tokens.
-        indices = np.concatenate(
-            [token_ids_arr[:, None].astype(np.int32), topk_idx.astype(np.int32)], axis=1
-        )  # [T-1, k+1]
-        logprobs_out = np.concatenate(
-            [token_lp[:, None].astype(np.float32), topk_lp.astype(np.float32)], axis=1
-        )  # [T-1, k+1]
-
-        return LogprobsTensors(
-            torch.from_numpy(indices),
-            torch.from_numpy(logprobs_out),
-            torch.from_numpy(token_ranks),
+        lp_t = torch.from_numpy(full_logits[:num_positions].astype(np.float32)).log_softmax(dim=-1)
+        return Sampler.gather_logprobs(
+            lp_t,
+            k,
+            torch.tensor(tok_ids[1:num_positions + 1], dtype=torch.int64),
         )
 
     def _make_model_output(
