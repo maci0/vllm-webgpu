@@ -145,14 +145,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _layer_int_sizes.append(_fallback)
         self._layer_int_size: list[int] = _layer_int_sizes
 
-        # Register A_log → -exp(A) transform so load_weights applies it on the
-        # CPU numpy array before the GPU upload, avoiding a GPU roundtrip per layer.
-        # HF checkpoint keys use 'backbone.' prefix (remapped to 'model.' after load).
-        for _i, _lt in enumerate(self._layer_types):
-            if _lt == "mamba":
-                _key = f"backbone.layers.{_i}.mixer.A_log"
-                self._weight_transforms[_key] = lambda a: -np.exp(a.view(np.float32))
-
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
         self._conv_states: dict[int, "WebGPUBuffer"] = {}
@@ -493,8 +485,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 continue
             p = f"model.layers.{i}.mixer"
 
-            # A_log → -exp(A) is now applied via _weight_transforms at upload time
-            # (registered in __init__). No GPU roundtrip needed here.
+            # A_log → -exp(A). HF checkpoints store raw log values; the SSM
+            # shader reads the discrete state transition coefficient A = -exp(A_log).
+            # Applied here after weight loading since A_log is in f32_keys and
+            # arrives as a float32 buffer.
+            a_log_key = f"{p}.A_log"
+            if a_log_key in self.weights:
+                _a_buf = self.weights[a_log_key]
+                _dev = self.wgpu_device.wgpu_device
+                _raw = _a_buf.to_numpy().view(np.float32)
+                _a_val = np.ascontiguousarray(-np.exp(_raw))
+                _dev.queue.write_buffer(_a_buf.buf, 0, _a_val.tobytes())
 
             # conv1d.weight: validate element count.
             # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements
