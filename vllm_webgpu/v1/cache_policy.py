@@ -160,7 +160,7 @@ def allocate_kv_from_hf_config(
         or getattr(hf_config, "layers_block_type", None)
     )
     # Treat uniform full-attention lists the same as None (avoids tiny buffers).
-    if layer_types and all(t == "full_attention" for t in layer_types):
+    if layer_types and all(t in KV_ATTN_TYPES for t in layer_types):
         layer_types = None
 
     allocate_kv_pool_hybrid(
