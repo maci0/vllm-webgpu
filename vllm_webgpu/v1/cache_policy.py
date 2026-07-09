@@ -106,6 +106,59 @@ def _allocate_kv_pool_per_layer(
         ))
 
 
+def allocate_kv_from_tensors(
+    wgpu_device,
+    model,
+    kv_cache_tensors,
+    num_blocks: int,
+    num_total_layers: int,
+) -> None:
+    """Allocate KV cache buffers from vLLM's authoritative KVCacheTensor list.
+
+    KVCacheTensor.size = 2 * block_size * num_kv_heads * head_size * dtype_bytes * num_blocks,
+    where the leading 2 combines K and V. Per-buffer bytes = size // 2. Non-KV layers
+    (absent from kv_cache_tensors) receive 16-byte placeholder buffers to satisfy
+    the WebGPU spec (size must be > 0).
+    """
+    if model is None:
+        raise RuntimeError("model must not be None during KV cache allocation")
+
+    # Build layer_index -> per-buffer bytes from the tensors vLLM already computed.
+    # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
+    layer_kv_bytes: dict[int, int] = {}
+    for tensor in kv_cache_tensors:
+        per_buf = tensor.size // 2
+        for layer_name in tensor.shared_by:
+            parts = layer_name.split(".")
+            try:
+                idx = int(parts[2])
+            except (IndexError, ValueError):
+                logger.warning("Cannot parse layer index from KVCacheTensor.shared_by entry %r", layer_name)
+                continue
+            layer_kv_bytes[idx] = per_buf
+
+    model.kv_pool.clear()
+    total_bytes = 0
+    for i in range(num_total_layers):
+        if i in layer_kv_bytes:
+            per_buf = layer_kv_bytes[i]
+            model.kv_pool.append((
+                WebGPUBuffer.empty(wgpu_device, per_buf),
+                WebGPUBuffer.empty(wgpu_device, per_buf),
+            ))
+            total_bytes += per_buf * 2
+        else:
+            model.kv_pool.append((
+                WebGPUBuffer.empty(wgpu_device, 16),
+                WebGPUBuffer.empty(wgpu_device, 16),
+            ))
+
+    logger.info(
+        "KV cache: %d blocks, %d kv-attn layers, total=%dMB",
+        num_blocks, len(layer_kv_bytes), total_bytes // 2**20,
+    )
+
+
 def allocate_kv_from_hf_config(
     wgpu_device,
     model,

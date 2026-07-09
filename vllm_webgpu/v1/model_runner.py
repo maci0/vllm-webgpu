@@ -15,7 +15,7 @@ from vllm.sampling_params import SamplingType
 from vllm.logger import init_logger
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_hf_config
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_hf_config, allocate_kv_from_tensors
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
@@ -112,18 +112,15 @@ class WebGPUModelRunner:
 
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
         mc = self.vllm_config.model_config
-        hf = mc.hf_config
-        block_size = self.webgpu_config.block_size
         num_blocks = kv_cache_config.num_blocks
         self._num_kv_blocks = num_blocks
 
-        allocate_kv_from_hf_config(
+        allocate_kv_from_tensors(
             self.wgpu_device.wgpu_device,
             self.model,
-            hf,
+            kv_cache_config.kv_cache_tensors,
             num_blocks=num_blocks,
-            block_size=block_size,
-            model_config=mc,
+            num_total_layers=mc.hf_config.num_hidden_layers,
         )
 
     def _get_lp_list(self) -> "list | None":
