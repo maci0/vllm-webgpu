@@ -582,7 +582,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            [b["last_norm"], self._lm_head_weight,
                             self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
                             b["logits"]],
-                           {"K": hidden, "N": vocab, "USE_QUANT": uq},
+                           {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0},
                            ((vocab + 255) // 256, 1, 1))
 
             greedy = getattr(self, "_greedy_decode", True)
