@@ -62,19 +62,20 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         layer_types = getattr(model_config, "layer_types", None)
         global_hd   = getattr(model_config, "global_head_dim", default_hd)
         global_kv   = getattr(model_config, "num_global_key_value_heads", 1)
+        _k_eq_v     = getattr(model_config, "attention_k_eq_v", False)
 
         if raw_lp and len(raw_lp) == self.num_layers:
             self._lp: list[dict] = raw_lp
         elif layer_types and len(layer_types) == self.num_layers:
             # Build per-layer params from layer_types list (Gemma4 safetensors config).
             # sliding_attention: local GQA, head_dim=default_hd, has_v_proj=True
-            # full_attention:    global MQA, head_dim=global_hd, num_kv=1, has_v_proj=False
+            # full_attention:    global, head_dim=global_hd; V=K only when attention_k_eq_v=True
             self._lp = []
             for lt in layer_types:
                 if lt == "full_attention":
-                    hd_l = global_hd
-                    nkv_l = global_kv
-                    hv = False  # global: V = K, no separate v_proj
+                    hd_l  = global_hd
+                    nkv_l = global_kv if _k_eq_v else default_kv
+                    hv    = not _k_eq_v
                 else:
                     hd_l = default_hd
                     nkv_l = default_kv
