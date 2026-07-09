@@ -379,10 +379,29 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         # Only matmul_quant_mr4 USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ int4) are
-        # supported in the batch path. Other quant types fall back to token-by-token.
-        _rep_key = f"{self._layer_key_prefix(0)}.self_attn.q_proj.weight"
-        _rep_uq  = self._uq_for_key(_rep_key)
-        if _rep_uq not in (0, 3):
+        # supported in the batch path. Scan every layer and every projection key so
+        # that a mixed-quant checkpoint (e.g. layer 0 int4, layer N int8) is caught
+        # before any KV-cache population occurs rather than crashing mid-forward.
+        def _batch_path_supported() -> bool:
+            for _i in range(self.num_layers):
+                _p  = self._layer_key_prefix(_i)
+                _lp = self._lp[_i] if isinstance(self._lp, list) else self._lp
+                _keys = [
+                    f"{_p}.self_attn.q_proj.weight",
+                    f"{_p}.self_attn.k_proj.weight",
+                    f"{_p}.self_attn.o_proj.weight",
+                    f"{_p}.mlp.gate_proj.weight",
+                    f"{_p}.mlp.up_proj.weight",
+                    f"{_p}.mlp.down_proj.weight",
+                ]
+                if _lp.get("has_v_proj", True):
+                    _keys.append(f"{_p}.self_attn.v_proj.weight")
+                for _k in _keys:
+                    if _k in self.weights and self._uq_for_key(_k) not in (0, 3):
+                        return False
+            return True
+
+        if not _batch_path_supported():
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 
         dev = self.wgpu_device.wgpu_device
