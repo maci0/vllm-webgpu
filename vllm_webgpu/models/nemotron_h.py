@@ -144,6 +144,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 "before using a checkpoint with use_bias=True."
             )
 
+        # _layer_dispatch has no MoE branch. A checkpoint with 'E' entries in
+        # hybrid_override_pattern would load all weights, fill GPU memory, then
+        # raise an unguarded NotImplementedError on the first forward pass.
+        # Fail here instead, before any GPU allocation happens.
+        if any(lt == "moe" for lt in self._layer_types):
+            raise NotImplementedError(
+                "NemotronHWebGPUModel does not support MoE layers "
+                "(hybrid_override_pattern contains 'E')."
+            )
+
         # Precomputed per-layer intermediate size for heterogeneous MLP configs.
         # Index by layer_idx; 0 for non-MLP layers. Avoids O(num_layers) slice-
         # and-count inside _mlp_layer on every forward pass.
