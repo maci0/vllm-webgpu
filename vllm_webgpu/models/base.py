@@ -472,7 +472,10 @@ class BaseWebGPUModel(ABC):
         Falls back to the embedding key for models with tied weights that have
         no separate lm_head.weight tensor in the checkpoint.
         """
-        return "lm_head.weight" if "lm_head.weight" in self.weights else "model.embed_tokens.weight"
+        return next(
+            (k for k in ("lm_head.weight", "model.lm_head.weight") if k in self.weights),
+            "model.embed_tokens.weight",
+        )
 
     def _uq_for_key(self, key: str) -> int:
         """Return USE_QUANT for a weight key (closure-free helper)."""
