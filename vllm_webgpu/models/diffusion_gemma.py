@@ -52,6 +52,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         self.top_k_experts: int = getattr(model_config, "top_k_experts", 8)
         self.moe_intermediate_size: int = getattr(model_config, "moe_intermediate_size",
                                                    self.intermediate_size)
+        if self.moe_intermediate_size % 4 != 0:
+            raise ValueError(
+                f"moe_intermediate_size={self.moe_intermediate_size} must be divisible by 4 "
+                f"for vec4<f16> shaders"
+            )
         self.is_moe: bool = self.num_experts > 0
 
         if self.is_moe:
