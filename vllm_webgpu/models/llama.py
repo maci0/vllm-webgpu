@@ -243,7 +243,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
              self._lm_head_weight,
              self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
              logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": split_k},
+            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": split_k, **self._quant_extra("lm_head", uq)},
             ((vocab + 255) // 256, 1, 1),
         )
         if greedy:
@@ -575,7 +575,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            [b["last_norm"], self._lm_head_weight,
                             self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
                             b["logits"]],
-                           {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0},
+                           {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra("lm_head", uq)},
                            ((vocab + 255) // 256, 1, 1))
 
             greedy = getattr(self, "_greedy_decode", True)
@@ -667,7 +667,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 [pre["norm_out"], self._lm_head_weight,
                  self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
                  pre["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0},
+                {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra("lm_head", uq)},
                 ((vocab + 255) // 256, 1, 1),
             )
             greedy = getattr(self, "_greedy_decode", True)
