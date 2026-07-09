@@ -88,7 +88,12 @@ def test_make_model_output_no_logprobs():
 
 def test_compute_prompt_logprobs():
     """_compute_prompt_logprobs returns LogprobsTensors with correct shape."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, LogprobsTensors
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
+
+    try:
+        from vllm.v1.outputs import LogprobsTensors
+    except ImportError:
+        LogprobsTensors = None
 
     if LogprobsTensors is None:
         pytest.skip("vllm not available")
@@ -118,7 +123,12 @@ def test_compute_prompt_logprobs():
 
 def test_compute_prompt_logprobs_short_sequence():
     """_compute_prompt_logprobs returns None for sequences shorter than 2 tokens."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, LogprobsTensors
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
+
+    try:
+        from vllm.v1.outputs import LogprobsTensors
+    except ImportError:
+        LogprobsTensors = None
 
     if LogprobsTensors is None:
         pytest.skip("vllm not available")
@@ -132,7 +142,12 @@ def test_compute_prompt_logprobs_short_sequence():
 
 def test_make_model_output_with_prompt_logprobs():
     """_make_model_output passes prompt_logprobs_dict through to ModelRunnerOutput."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, LogprobsTensors, ModelRunnerOutput
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, ModelRunnerOutput
+
+    try:
+        from vllm.v1.outputs import LogprobsTensors
+    except ImportError:
+        LogprobsTensors = None
 
     if ModelRunnerOutput is None or LogprobsTensors is None:
         pytest.skip("vllm not available")

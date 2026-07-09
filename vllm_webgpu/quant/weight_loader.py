@@ -842,7 +842,7 @@ def load_safetensors_weights(
             for base in nvfp4_bases:
                 try:
                     wp = _load_raw(f"{base}.weight_packed")    # (N, K//2) U8
-                    ws = _load_raw(f"{base}.weight_scale")     # (N, K//16) F8_E4M3 as uint8
+                    ws = sf.get_tensor(f"{base}.weight_scale").to(torch.float32).numpy()  # (N, K//16) f32
                     wgs_key = f"{base}.weight_global_scale"
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
                     N_, K2_ = wp.shape
@@ -850,7 +850,7 @@ def load_safetensors_weights(
                     # GPU NVFP4: upload raw weight_packed + F32-converted block scales.
                     # The shader uses GLOBAL_SCALE as an override constant and
                     # reads F8_E4M3 scales via the standard f32 scales binding.
-                    ws_f32 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws))
+                    ws_f32 = np.ascontiguousarray(ws)
                     _upload_u8(wp, f"{base}.weight", weights)
                     _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
@@ -885,12 +885,12 @@ def load_safetensors_weights(
             for base in dnvfp4_bases:
                 try:
                     wp = _load_raw(f"{base}.weight")        # (N, K//2) U8
-                    ws = _load_raw(f"{base}.weight_scale")  # (N, K//group_size) F8_E4M3 as uint8
+                    ws = sf.get_tensor(f"{base}.weight_scale").to(torch.float32).numpy()  # (N, K//group_size) f32
                     wgs_key = f"{base}.weight_scale_2"
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
                     N_, K2_ = wp.shape
                     K_ = K2_ * 2
-                    ws_f32 = np.ascontiguousarray(_fp8_e4m3_to_f32(ws))
+                    ws_f32 = np.ascontiguousarray(ws)
                     _upload_u8(wp, f"{base}.weight", weights)
                     _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {

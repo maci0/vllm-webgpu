@@ -248,12 +248,10 @@ class BaseWebGPUModel(ABC):
             f32_keys: Optional set of checkpoint key names that must be uploaded as float32
                       instead of the default float16. Passed through to the safetensors loader.
         """
-        from vllm.transformers_utils.repo_utils import get_model_path
         from vllm_webgpu.quant.weight_loader import (
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded, load_mlx_weights,
         )
-        path = str(get_model_path(path))
         fmt = detect_weight_format(path)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
@@ -298,9 +296,9 @@ class BaseWebGPUModel(ABC):
 
     def _read_sample_tok(self) -> int:
         """Map and read the staging buffer (no submit/sync — already done by main batch)."""
-        import wgpu as wgpu_lib
         if self._gpu_sample_staging is None:
             return 0
+        import wgpu as wgpu_lib
         self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
         val = int(np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32)[0])
         self._gpu_sample_staging.unmap()
@@ -399,7 +397,7 @@ class BaseWebGPUModel(ABC):
                 dev = self.wgpu_device.wgpu_device
                 self._dummy_bias_buf = WebGPUBuffer.empty(
                     dev, 4,
-                    usage=wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC,
+                    usage=wgpu_lib.BufferUsage.STORAGE,
                 )
             bindings = list(bindings) + [self._dummy_bias_buf]
 
@@ -417,12 +415,10 @@ class BaseWebGPUModel(ABC):
         ]
         bg = dev.create_bind_group(layout=bg_layout, entries=entries)
 
-        if self._active_encoder is not None:
-            # Batch mode: record into the shared encoder; submit happens at context manager exit.
-            encoder = self._active_encoder
-        else:
-            # Standalone mode: create a fresh encoder and submit immediately.
-            encoder = dev.create_command_encoder()
+        standalone = self._active_encoder is None
+        # Batch mode: record into the shared encoder; submit happens at context manager exit.
+        # Standalone mode: create a fresh encoder and submit immediately.
+        encoder = dev.create_command_encoder() if standalone else self._active_encoder
 
         cp = encoder.begin_compute_pass()
         cp.set_pipeline(pipeline)
@@ -430,7 +426,7 @@ class BaseWebGPUModel(ABC):
         cp.dispatch_workgroups(*workgroups)
         cp.end()
 
-        if self._active_encoder is None:
+        if standalone:
             dev.queue.submit([encoder.finish()])
 
     @abstractmethod

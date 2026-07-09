@@ -8,12 +8,11 @@ import torch
 
 try:
     from vllm.v1.kv_cache_interface import FullAttentionSpec
-    from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+    from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
 except ImportError:
     FullAttentionSpec = None  # type: ignore[assignment,misc]
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
     LogprobsLists = None  # type: ignore[assignment,misc]
-    LogprobsTensors = None  # type: ignore[assignment,misc]
     EMPTY_MODEL_RUNNER_OUTPUT = None  # type: ignore[assignment,misc]
 
 try:
@@ -512,7 +511,7 @@ class WebGPUModelRunner:
                         f"block table too short for req {rid}: token {abs_idx} needs block "
                         f"{blk_idx} but only {len(blk_ids)} blocks allocated"
                     )
-                slots.append(int(blk_ids[abs_idx // block_size]) * block_size + abs_idx % block_size)
+                slots.append(int(blk_ids[blk_idx]) * block_size + abs_idx % block_size)
 
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 

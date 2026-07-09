@@ -89,7 +89,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
-        max_bt_blocks = max(4096, math.ceil(max_ctx / self.block_size))
+        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      mk(T * 4),              # [1] uint32 token id
             "pos":      mk(T * 4),              # [1] uint32 position
@@ -220,7 +220,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         logits_buf: "WebGPUBuffer",
         vocab: int,
         greedy: bool,
-        split_k: int = 0,
     ) -> None:
         """Dispatch the LM-head and optionally the GPU argmax + copy-to-staging.
 
@@ -228,30 +227,17 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         or a manually managed encoder in MixtralWebGPUModel._moe_decode_forward).
         Sets _last_logit_buf and _last_vocab. The caller is responsible for
         submitting the encoder and reading back the result.
-
-        split_k controls the SPLIT_K shader override:
-          0 (default): row-per-thread — requires ceil(vocab/256, 1, 1) WGs, works
-                       for any vocab size. gid.x is the output row index.
-          1: one workgroup per output row — requires (vocab, 1, 1) WGs (wgid.x is
-             the row index), only usable when vocab <= 65535.
         """
         hidden = self.hidden_size
         uq = self._uq_for_key("lm_head.weight")
-        if split_k == 1:
-            if vocab > 65535:
-                raise ValueError(
-                    f"split_k=1 requires vocab <= 65535, got {vocab}"
-                )
-            workgroups = (vocab, 1, 1)
-        else:
-            workgroups = ((vocab + 255) // 256, 1, 1)
+        workgroups = ((vocab + 255) // 256, 1, 1)
         self._dispatch(
             "matmul_quant",
             [norm_out,
              self._lm_head_weight,
              self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
              logits_buf],
-            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": split_k, **self._quant_extra("lm_head", uq)},
+            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra("lm_head", uq)},
             workgroups,
         )
         if greedy:

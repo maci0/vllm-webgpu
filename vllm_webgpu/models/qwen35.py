@@ -182,10 +182,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             "gdn_out":      mk(self._lin_val_dim * 2),   # GDN attn output
             "gated":        mk(self._lin_val_dim * 2),   # after norm+gate
             "b_buf":        mk(self._lin_k_heads * 2),   # in_proj_b output [K_HEADS f16]
-            # Dummy binding-2 scales buffer for USE_QUANT=0 dispatches. Prevents
-            # sc["normed"] from being silently aliased as a scales buffer, which
-            # would corrupt output if a dispatch is promoted to USE_QUANT=1/2.
-            "dummy_scales": mk(8),
         })
 
         if self._is_moe:
@@ -261,8 +257,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
           - SSM state:  [NUM_V_HEADS * K_DIM * V_DIM] f32 (zero-initialized)
           - Conv state: [(CONV_KERNEL-1) * CONV_DIM] f16 (zero-initialized)
 
-        conv1d weight from MLX has shape [8192, 4, 1]; reshape the last dim
-        so the shader reads [CONV_DIM, KERNEL] = [8192, 4] correctly.
+        HuggingFace checkpoints store conv1d weight as [CONV_DIM, 1, KERNEL]
+        (standard PyTorch depthwise-conv layout). The GPU shader reads bytes
+        identically for both [CONV_DIM, 1, KERNEL] and [CONV_DIM, KERNEL], so no
+        reshape is needed.
         """
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -280,16 +278,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes)
             self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes)
 
-            # conv1d weight from HuggingFace has shape [CONV_DIM, 1, KERNEL] (standard
-            # PyTorch depthwise conv). The shader expects [CONV_DIM, KERNEL] (flat 2D).
-            # Reshape by dropping the middle size-1 dim (groups/in_channels dimension).
             p = f"model.layers.{i}.linear_attn"
-            conv_w_key = f"{p}.conv1d.weight"
-            w = self.weights.get(conv_w_key)
-            if w is not None and len(w.shape) == 3 and w.shape[1] == 1:
-                # [CONV_DIM, 1, KERNEL] → [CONV_DIM, KERNEL]: squeeze the groups dim.
-                arr = np.ascontiguousarray(w.to_numpy().view(np.float16).squeeze(1))
-                self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr)
 
             # Upgrade SSM parameter precision: A_log and dt_bias are small per-head
             # arrays originally in bf16 but stored as f16. Keeping them as f32 avoids
@@ -708,15 +697,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # When attn_output_gate=True, q_proj.weight was split at load time.
         # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].
         # The gate is applied as sigmoid(gate)*attn_out before o_proj (step below).
-        gate_buf = None
+        gate_w = None
         if self._attn_output_gate:
             gate_wk = f"{p}.self_attn.q_gate_proj.weight"
-            gate_buf = self.weights.get(gate_wk)
-            if gate_buf is not None:
+            gate_w = self.weights.get(gate_wk)
+            if gate_w is not None:
                 uq_gate = _uq(gate_wk)
                 qi_gate = self._quant_extra(f"{p}.self_attn.q_gate_proj", uq_gate)
                 self._dispatch("matmul_quant",
-                               [normed_x, self.weights[gate_wk],
+                               [normed_x, gate_w,
                                 self._scales_buf(gate_wk, uq_gate, self._dummy_scales_buf),
                                 sc["q_gate_buf"]],
                                {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, **qi_gate},
@@ -774,7 +763,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         # Apply attention output gate: gated = sigmoid(gate) * attn_out.
         # q_buf is free at this point (last read in RoPE), reused as the gated output.
-        if self._attn_output_gate and gate_buf is not None:
+        if self._attn_output_gate and gate_w is not None:
             gate_n = num_tokens * q_dim
             self._dispatch("sigmoid_gate",
                            [sc["q_gate_buf"], sc["attn_out"], sc["q_buf"]],

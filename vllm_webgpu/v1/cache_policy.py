@@ -20,7 +20,7 @@ KV_ATTN_TYPES: frozenset[str] = frozenset(
 )
 
 
-def allocate_kv_pool_hybrid(
+def _allocate_kv_pool_hybrid(
     dev,
     model,
     num_blocks: int,
@@ -72,7 +72,7 @@ def allocate_kv_pool_hybrid(
         )
 
 
-def allocate_kv_pool_per_layer(
+def _allocate_kv_pool_per_layer(
     dev,
     model,
     num_blocks: int,
@@ -92,7 +92,7 @@ def allocate_kv_pool_per_layer(
         if lp["num_kv_heads"] == 0:
             # Non-attention layer (e.g. SSM/MLP in Nemotron-H). A zero-byte
             # buffer violates the WebGPU spec (size must be > 0), so use the
-            # same 16-byte placeholder that allocate_kv_pool_hybrid uses.
+            # same 16-byte placeholder that _allocate_kv_pool_hybrid uses.
             model.kv_pool.append((
                 WebGPUBuffer.empty(dev, 16),
                 WebGPUBuffer.empty(dev, 16),
@@ -133,7 +133,7 @@ def allocate_kv_from_hf_config(
     if lp_list is None:
         lp_list = getattr(hf_config, "_layer_attention_params", None)
     if lp_list:
-        allocate_kv_pool_per_layer(
+        _allocate_kv_pool_per_layer(
             wgpu_device, model,
             num_blocks=num_blocks,
             block_size=block_size,
@@ -165,7 +165,7 @@ def allocate_kv_from_hf_config(
     if layer_types and all(t in KV_ATTN_TYPES for t in layer_types):
         layer_types = None
 
-    allocate_kv_pool_hybrid(
+    _allocate_kv_pool_hybrid(
         wgpu_device,
         model,
         num_blocks=num_blocks,

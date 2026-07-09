@@ -95,10 +95,10 @@ class WebGPUWorker(WorkerBase):
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def compile_or_warm_up_model(self) -> CompilationTimes:
-        set_random_seed(self.model_config.seed)
         start = time.perf_counter()
         self.model_runner.warm_up()
         elapsed = time.perf_counter() - start
+        set_random_seed(self.model_config.seed)
         return CompilationTimes(language_model=elapsed, encoder=0.0)
 
     def execute_model(self, scheduler_output: Any) -> Any:
