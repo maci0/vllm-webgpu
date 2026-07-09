@@ -464,19 +464,19 @@ def load_safetensors_weights(
     import safetensors.torch as sft
     import torch
     import wgpu as wgpu_lib
+    from vllm.transformers_utils.utils import parse_safetensors_file_metadata
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
-    with sft.safe_open(path, framework="pt") as sf:
-        # Build header for format detection from safetensors metadata.
-        # get_slice() reads only the file header bytes — no tensor data is loaded yet.
-        header = {}
-        for _n in sf.keys():
-            _t = sf.get_slice(_n)
-            header[_n] = {
-                "dtype": _t.get_dtype(),
-                "shape": list(_t.get_shape()),
-            }
+    # Build header for format detection by reading the binary header directly,
+    # without opening a safe_open handle.
+    raw_meta = parse_safetensors_file_metadata(path)
+    header = {
+        k: {"dtype": v["dtype"], "shape": v["shape"]}
+        for k, v in raw_meta.items()
+        if k != "__metadata__"
+    }
 
+    with sft.safe_open(path, framework="pt") as sf:
         usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
         # Detect compressed-tensors config from the model directory (needed for
