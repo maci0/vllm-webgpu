@@ -131,7 +131,9 @@ def allocate_kv_from_hf_config(
     names across architectures (PLaMo2.1, Falcon, DeepSeek-MLA, etc.), keeping
     this path consistent with get_kv_cache_spec().
     """
-    lp_list = getattr(model, "_lp", None) or getattr(hf_config, "_layer_attention_params", None)
+    lp_list = getattr(model, "_lp", None)
+    if lp_list is None:
+        lp_list = getattr(hf_config, "_layer_attention_params", None)
     if lp_list:
         _allocate_kv_pool_per_layer(
             wgpu_device, model,
