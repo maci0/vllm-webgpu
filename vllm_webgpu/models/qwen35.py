@@ -199,23 +199,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def _postprocess_weights(self) -> None:
         """Post-load weight transformations for full-attn layers:
 
-        1. Detect GEMMA_NORM format: deviation (safetensors, mean≈0) vs absolute (MLX, mean≈1).
-        2. When attn_output_gate=True: split q_proj.weight [2*q_dim, hidden] into
+        1. When attn_output_gate=True: split q_proj.weight [2*q_dim, hidden] into
            q_proj.weight [q_dim, hidden] (Q part) and q_gate_proj.weight [q_dim, hidden]
            (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
 
-        Note: q_norm/k_norm tiling is handled at load time via _weight_transforms
-        (registered in LlamaWebGPUModel.__init__) for all checkpoint formats.
+        Note: q_norm/k_norm tiling and GEMMA_NORM detection are both handled at load
+        time via _weight_transforms (registered in load_weights / LlamaWebGPUModel.__init__)
+        for all checkpoint formats. No GPU readback happens here.
         """
         dev = self.wgpu_device.wgpu_device
-
-        # Detect norm weight format from the first input_layernorm weight.
-        for ln_i in range(min(self.num_layers, 4)):
-            ln_w = self.weights.get(f"model.layers.{ln_i}.input_layernorm.weight")
-            if ln_w is not None:
-                mean_abs = float(np.abs(ln_w.to_numpy().view(np.float16)).mean())
-                self._gemma_norm = 0 if mean_abs > 0.7 else 1
-                break
 
         for i in range(self.num_layers):
             if not self._is_full_attn(i):
@@ -302,6 +294,24 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             if not self._is_full_attn(i)
             for wk in ("A_log", "dt_bias")
         )
+
+        # Detect GEMMA_NORM format CPU-side before GPU upload, avoiding a round-trip
+        # in _postprocess_weights. The sentinel fires for the first layers that exist
+        # in the checkpoint and sets self._gemma_norm from the CPU float16 array:
+        #   0 = MLX absolute format (mean≈1.0, +1 already baked in)
+        #   1 = safetensors deviation format (mean≈0.2)
+        # The detection result is static per checkpoint; every layer gives the same
+        # answer, so firing for multiple layers is harmless.
+        def _gemma_norm_detect(arr, _self=self):
+            mean_abs = float(np.abs(arr).mean())
+            _self._gemma_norm = 0 if mean_abs > 0.7 else 1
+            return arr
+
+        for _ln_i in range(min(self.num_layers, 4)):
+            _key = f"model.layers.{_ln_i}.input_layernorm.weight"
+            if _key not in self._weight_transforms:
+                self._weight_transforms[_key] = _gemma_norm_detect
+
         super().load_weights(path, f32_keys=f32_keys)
         self._postprocess_weights()
         self._alloc_lin_states()
