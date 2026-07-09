@@ -161,7 +161,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         Q = self.num_q_heads * self.head_dim
 
         def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, n)
+            return WebGPUBuffer.empty(dev, max(n, 8))
 
         # qkv_buf: parent sizes for full-attn (Q + 2*KV); GDN layers need
         # lin_conv_dim (K+K+V heads packed). Replace with the larger GDN size so
