@@ -451,6 +451,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [ffn_in, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
                                {"K": hidden, "N": inter_shared, "GELU": 1}, (inter_shared, 1, 1))
             else:
+                if num_tokens > 1:
+                    raise RuntimeError(
+                        "Shared FFN multi-token path requires f16 or GPTQ weights; "
+                        "got uq_g=%d uq_u=%d" % (uq_g, uq_u))
                 for out_b, proj, wk, uq in [
                         (sc["gate_buf"], "gate_proj", gw_k, uq_g),
                         (sc["up_buf"],   "up_proj",   uw_k, uq_u)]:
