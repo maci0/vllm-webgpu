@@ -70,7 +70,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # The first half is Q; the second half is a gate applied as sigmoid(gate)*attn_out
         # before the o_proj. _postprocess_weights splits the weight and stores the gate
         # half under self_attn.q_gate_proj.weight.
-        self._attn_output_gate: bool = bool(getattr(model_config, "attn_output_gate", False))
+        self._attn_output_gate: bool = bool(getattr(model_config, "attn_output_gate", True))
 
         # GDN (linear-attention) architecture dimensions from config.
         # Fall back to Qwen3.5-9B defaults if not present.
