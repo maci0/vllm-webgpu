@@ -311,14 +311,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 f"moe_intermediate_size) elements."
             )
 
-        # Lazy-allocate expert_gate and expert_up: only needed on the quantized path
-        # (uq != 0 for gate or up weights). For f16 MoE models they would otherwise
-        # sit allocated-but-unused for the entire model lifetime.
-        if "expert_gate" not in msc:
-            _act_sz = self._moe_act_sz
-            msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
-            msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
-
         # Without a shared expert, zero-initialize the accumulation buffer so
         # the first expert's weighted output accumulates from zero.
         if shared_expert_prefix is None:
@@ -348,6 +340,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                         (_sinter, 1, 1),
                     )
                 else:
+                    # Lazy-allocate expert_gate and expert_up on first quantized call.
+                    if "expert_gate" not in msc:
+                        _act_sz = self._moe_act_sz
+                        msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
+                        msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
                     qi_sg = self._quant_extra(f"{sp}.{gate_key}", uq_sg)
                     qi_su = self._quant_extra(f"{sp}.{up_key}", uq_su)
                     self._dispatch(
@@ -410,6 +407,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 )
             else:
                 # Quantized path: separate gate and up matmuls then SiLU.
+                # Lazy-allocate expert_gate and expert_up on first quantized call.
+                if "expert_gate" not in msc:
+                    _act_sz = self._moe_act_sz
+                    msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
+                    msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
                 qi_g = self._quant_extra(f"{ep}.{gate_key}", uq_g)
                 qi_u = self._quant_extra(f"{ep}.{up_key}", uq_u)
                 self._dispatch(

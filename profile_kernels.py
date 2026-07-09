@@ -41,7 +41,10 @@ num_layers = hf_cfg.num_hidden_layers
 print(f"Architecture: {arch}")
 
 from vllm_webgpu.v1.model_runner import _build_model
-from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config, get_num_kv_heads, get_head_size_from_config
+from vllm_webgpu.v1.cache_policy import (
+    allocate_kv_from_hf_config, get_num_kv_heads, get_head_size_from_config,
+    get_layer_types,
+)
 head_dim = get_head_size_from_config(hf_cfg)
 num_kv_heads = get_num_kv_heads(hf_cfg)
 block_size = int(os.getenv('VLLM_WEBGPU_BLOCK_SIZE', '16'))
@@ -157,17 +160,11 @@ if stats:
         raw_inter_sz = hf_cfg.intermediate_size
         inter_sz = max(raw_inter_sz) if isinstance(raw_inter_sz, list) else raw_inter_sz
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
-        attn_w = 2 * (hid * q_dim2 + hid * num_kv_heads * head_dim * 2 + q_dim2 * hid)  # qkvo in f16 bytes
+        attn_w = 4 * hid * (q_dim2 + num_kv_heads * head_dim)  # Q+K+V+O projections in f16 bytes
 
         # For hybrid architectures (e.g. NemotronH, Gemma4), layer types differ per layer.
         # Use per-layer type weights rather than applying (attn_w + ffn_w) uniformly.
-        # Mirror the three-way fallback from cache_policy.py: model._layer_types wins,
-        # then hf_cfg.layer_types (Gemma4), then hf_cfg.layers_block_type (NemotronH).
-        layer_types = (
-            getattr(model, '_layer_types', None)
-            or getattr(hf_cfg, 'layer_types', None)
-            or getattr(hf_cfg, 'layers_block_type', None)
-        )
+        layer_types = get_layer_types(model, hf_cfg)
 
         if layer_types is not None and len(layer_types) == num_layers:
             # Mamba-2 SSM layer weight bytes (f16 unless noted):

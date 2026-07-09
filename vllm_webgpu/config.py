@@ -3,11 +3,11 @@ from __future__ import annotations
 import functools
 from dataclasses import dataclass
 
-import wgpu.enums
 import vllm_webgpu.envs as envs
 
 AUTO_MEMORY_FRACTION = -1.0
-VALID_POWER_PREFERENCES = frozenset(wgpu.enums.PowerPreference)
+# WebGPU spec power preference values (stable since the spec was published).
+VALID_POWER_PREFERENCES = frozenset({"low-power", "high-performance"})
 
 
 @dataclass

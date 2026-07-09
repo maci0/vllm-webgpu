@@ -1,5 +1,4 @@
 from __future__ import annotations
-import statistics
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -61,10 +60,9 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via a minimal
-    stub so the formula stays in sync with vLLM automatically. Only the
-    attributes read by that method are set on the stub; the full nn.Module
-    constructor (and its expensive cos_sin_cache build) is never called.
+    Uses the public yarn_find_correction_range and yarn_linear_ramp_mask
+    helpers from vLLM's rotary_embedding.common module. Avoids coupling to
+    the private _compute_inv_freq method on YaRNScalingRotaryEmbedding.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -81,9 +79,9 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding as _YaRN,
+    import torch
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask,
     )
 
     if rotary_dim is None:
@@ -104,19 +102,18 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
-    # Build a minimal stub with only the attributes _compute_inv_freq reads.
-    # object.__new__ bypasses __init__, so the full cos_sin_cache is never built.
-    _stub = object.__new__(_YaRN)
-    _stub.base = rope_theta
-    _stub.rotary_dim = rotary_dim
-    _stub.max_position_embeddings = orig_ctx
-    _stub.beta_fast = beta_fast
-    _stub.beta_slow = beta_slow
-    _stub.truncate = truncate
-    _stub.extrapolation_factor = extrapolation_factor
-    inv_freq = _stub._compute_inv_freq(factor)
+    pos_freqs = rope_theta ** (
+        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
+    )
+    low, high = yarn_find_correction_range(
+        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate,
+    )
+    mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
+    ) * extrapolation_factor
+    inv_freq = (1.0 / (factor * pos_freqs)) * (1 - mask) + (1.0 / pos_freqs) * mask
 
-    return inv_freq.numpy().astype(np.float32), mscale
+    return inv_freq.numpy(), mscale
 
 
 
@@ -250,7 +247,7 @@ class BaseWebGPUModel(ABC):
         if not self._prof_stats:
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
-        rows = [(lbl, statistics.mean(t), len(t)) for lbl, t in self._prof_stats.items()]
+        rows = [(lbl, sum(t) / len(t), len(t)) for lbl, t in self._prof_stats.items()]
         rows.sort(key=lambda r: r[1] * r[2], reverse=True)
         total = sum(r[1] * r[2] for r in rows)
         for label, avg, n in rows:

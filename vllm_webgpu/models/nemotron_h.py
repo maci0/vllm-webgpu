@@ -347,14 +347,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         dev = self.wgpu_device.wgpu_device
 
-
-        import wgpu as _wgpu
-        _wgpu_usage = (
-            _wgpu.BufferUsage.STORAGE
-            | _wgpu.BufferUsage.COPY_SRC
-            | _wgpu.BufferUsage.COPY_DST
-        )
-
         for i, lt in enumerate(self._layer_types):
             if lt != "attention":
                 continue
@@ -403,7 +395,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             else:
                 # Non-AWQ (GPTQ, FP16, FP8, etc.): GPU-side byte concat is correct.
                 # All weight buffers are 4-byte aligned from the loader.
-                qkv_raw = dev.create_buffer(size=max(total_nb, 4), usage=_wgpu_usage)
+                qkv_raw = WebGPUBuffer.empty(dev, max(total_nb, 4)).buf
                 _enc = dev.create_command_encoder()
                 _enc.copy_buffer_to_buffer(self.weights[q_key].buf, 0, qkv_raw, 0, q_nb)
                 _enc.copy_buffer_to_buffer(self.weights[k_key].buf, 0, qkv_raw, q_nb, k_nb)
@@ -417,9 +409,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # scales[grp * N_total + row], which requires row-interleaved [G, N_total].
                 # For G > 1 (e.g. K=4096, group_size=128 -> G=32) every grp > 0 lookup
                 # would land in the wrong projection's data. Stack on axis=1 on the CPU.
-                q_sc = np.frombuffer(self.weights[q_s].to_numpy(), dtype=np.float32).reshape(self.weights[q_s].shape)
-                k_sc = np.frombuffer(self.weights[k_s].to_numpy(), dtype=np.float32).reshape(self.weights[k_s].shape)
-                v_sc = np.frombuffer(self.weights[v_s].to_numpy(), dtype=np.float32).reshape(self.weights[v_s].shape)
+                q_sc = self.weights[q_s].to_numpy().view(np.float32).reshape(self.weights[q_s].shape)
+                k_sc = self.weights[k_s].to_numpy().view(np.float32).reshape(self.weights[k_s].shape)
+                v_sc = self.weights[v_s].to_numpy().view(np.float32).reshape(self.weights[v_s].shape)
                 if q_sc.ndim == 2:
                     # [G, N] layout: concatenate along N axis to get [G, N_total].
                     packed_sc = np.ascontiguousarray(np.concatenate([q_sc, k_sc, v_sc], axis=1))

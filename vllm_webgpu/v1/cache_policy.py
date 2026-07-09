@@ -1,8 +1,10 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+import torch
 from vllm.logger import init_logger
 from vllm.utils.mem_utils import get_cpu_memory
+from vllm.utils.torch_utils import get_dtype_size
 from vllm_webgpu.utils import OVERHEAD_BYTES
 
 if TYPE_CHECKING:
@@ -12,8 +14,9 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
-# Float16 element size in bytes. Used in KV cache byte calculations.
-_F16_BYTES: int = 2
+# Float16 element size in bytes. Derived from dtype so it tracks any future
+# KV dtype change rather than being a silent magic constant.
+_F16_BYTES: int = get_dtype_size(torch.float16)
 
 # Layer type strings that carry KV state and require cache allocation.
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
@@ -225,11 +228,7 @@ def allocate_kv_from_hf_config(
         _num_layers = _conv.get_num_hidden_layers()
     # model._layer_types wins; fall back to hf_config fields used by different
     # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
-    layer_types = (
-        getattr(model, "_layer_types", None)
-        or getattr(hf_config, "layer_types", None)
-        or getattr(hf_config, "layers_block_type", None)
-    )
+    layer_types = get_layer_types(model, hf_config)
     # Treat uniform full-attention lists the same as None (avoids tiny buffers).
     if layer_types and KV_ATTN_TYPES.issuperset(layer_types):
         layer_types = None
@@ -243,6 +242,20 @@ def allocate_kv_from_hf_config(
         num_kv_heads=num_kv_heads,
         head_dim=head_dim,
         layer_types=layer_types,
+    )
+
+
+def get_layer_types(model, hf_config) -> list | None:
+    """Return the layer-type list for a model, using a canonical three-way fallback.
+
+    Priority: model._layer_types (set at load time) > hf_config.layer_types
+    (Gemma4 and similar) > hf_config.layers_block_type (NemotronH/Falcon).
+    Returns None when none of the three attributes is present.
+    """
+    return (
+        getattr(model, "_layer_types", None)
+        or getattr(hf_config, "layer_types", None)
+        or getattr(hf_config, "layers_block_type", None)
     )
 
 

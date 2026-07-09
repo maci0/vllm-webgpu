@@ -211,7 +211,6 @@ class WebGPUModelRunner:
         return spec
 
     def get_cache_block_size_bytes(self) -> int:
-        mc = self.vllm_config.model_config.hf_config
         block_size = self.vllm_config.cache_config.block_size
         head_dim = self.vllm_config.model_config.get_head_size()
         num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()

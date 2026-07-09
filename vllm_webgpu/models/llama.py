@@ -43,18 +43,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self.head_dim: int = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
         self.block_size: int = block_size
-        # matmul_quant f16 path packs two f16 values per u32. Row boundaries only
-        # align to u32 boundaries when K is even; odd K silently produces wrong results.
-        for name, val in [("hidden_size", self.hidden_size),
-                          ("intermediate_size", self.intermediate_size),
-                          ("head_dim", self.head_dim)]:
-            if val % 2 != 0:
-                raise ValueError(f"{name}={val} must be even for f16 GEMV")
         # add.wgsl and gelu_mul.wgsl use vec4<f16>: dimensions must be divisible by 4.
+        # The % 4 check subsumes the % 2 check for hidden_size and intermediate_size.
         for name, val in [("hidden_size", self.hidden_size),
                           ("intermediate_size", self.intermediate_size)]:
             if val % 4 != 0:
                 raise ValueError(f"{name}={val} must be divisible by 4 for vec4<f16> shaders")
+        # matmul_quant f16 path packs two f16 values per u32; head_dim must be even.
+        if self.head_dim % 2 != 0:
+            raise ValueError(f"head_dim={self.head_dim} must be even for f16 GEMV")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         # Precompute constants that are used every forward pass.
         _vpt = self._vals_per_thread(self.hidden_size)

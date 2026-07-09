@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from itertools import batched, chain
 from typing import TYPE_CHECKING
 
@@ -143,9 +144,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             self._topk_idx_staging = dev.create_buffer(
                 size=_staging_sz,
                 usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
-            self._topk_w_staging = dev.create_buffer(
-                size=_staging_sz,
-                usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+            # Match Mixtral's lazy pattern: only allocate when debug logging is active.
+            self._topk_w_staging = None
 
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
@@ -278,7 +278,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        ssm_bytes  = ssm_shape[0] * ssm_shape[1] * ssm_shape[2] * 4   # f32
+        ssm_bytes  = math.prod(ssm_shape) * 4   # f32
         conv_bytes = conv_shape[0] * conv_shape[1] * 2                # f16
 
         self._ssm_gpu  = [None] * self.num_layers
@@ -366,7 +366,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._alloc_lin_states()
         # Confirm MoE detection against actual weight keys.
         # Check any layer rather than pinning to layer 0.
-        has_moe_gate = any("mlp.gate.weight" in k for k in self.weights)
+        has_moe_gate = any(k.endswith(".mlp.gate.weight") for k in self.weights)
         if has_moe_gate and not self._is_moe:
             logger.warning(
                 "MoE gate weight found but config did not declare num_experts. "
