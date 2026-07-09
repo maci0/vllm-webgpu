@@ -710,7 +710,7 @@ def load_safetensors_weights(
                 # compressed-tensors int8 (strategy=channel) stores a (N,) F32 scale at
                 # {base}.weight_scale. Without it the USE_QUANT=7 shader reads scales[row]
                 # from an uninitialized or wrong buffer, producing ~127x magnitude error.
-                for sc_key in (f"{base_key}.weight_scale", f"{base_key}.scale", f"{base_key}.SCB"):
+                for sc_key in (f"{base_key}.weight_scale", f"{base_key}.scale", f"{name}.SCB"):
                     if sc_key in header:
                         try:
                             sc_dtype = header[sc_key]["dtype"]
