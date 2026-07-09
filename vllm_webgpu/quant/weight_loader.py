@@ -1312,14 +1312,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
         weight_map = index["weight_map"]
 
     config_path = p / "config.json"
-    raw_cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
-    # Inline the compressed_tensors cascade plus the MLX-specific "quantization"
-    # fallback in one pass over raw_cfg, avoiding a second file open.
     quant_section = (
-        raw_cfg.get("quantization_config")
-        or raw_cfg.get("text_config", {}).get("quantization_config")
-        or raw_cfg.get("compression_config")
-        or raw_cfg.get("quantization")
+        _load_quant_cfg(config_path)
+        or (json.loads(config_path.read_text()).get("quantization") if config_path.exists() else None)
         or {}
     )
     group_size = int(quant_section.get("group_size") or 64)
