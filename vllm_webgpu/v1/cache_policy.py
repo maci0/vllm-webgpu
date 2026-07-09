@@ -40,12 +40,12 @@ def allocate_kv_pool_hybrid(
         raise RuntimeError("model must not be None during KV cache allocation")
     bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2
 
-    model.kv_pool.clear()
-
     if layer_types is not None and len(layer_types) != num_layers:
         raise ValueError(
             f"layer_types length {len(layer_types)} != num_layers {num_layers}"
         )
+
+    model.kv_pool.clear()
 
     kv_layer_count = 0
     for i in range(num_layers):
