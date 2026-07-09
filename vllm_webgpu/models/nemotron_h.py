@@ -280,8 +280,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        conv_bytes = math.prod(conv_shape) * 2
-        ssm_bytes  = math.prod(ssm_shape) * 4
+        # WebGPU WGSL shaders operate at fixed precision: f16 for the conv
+        # state and f32 for the SSM state. These sizes are not configurable
+        # via mamba_cache_dtype on the WebGPU path; the shaders are compiled
+        # ahead-of-time and cannot switch dtype at runtime.
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
