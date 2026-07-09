@@ -145,8 +145,7 @@ def allocate_kv_from_hf_config(
     if model_config is not None:
         num_kv_heads = model_config.get_total_num_kv_heads()
         head_dim = model_config.get_head_size()
-        # ModelConfig normalizes hf_config, so num_hidden_layers is safe here.
-        _num_layers = hf_config.num_hidden_layers
+        _num_layers = model_config.get_total_num_hidden_layers()
     else:
         # Fallback for standalone scripts (run_inference.py, profile_kernels.py)
         # that call allocate_kv_from_hf_config without a vLLM ModelConfig.
