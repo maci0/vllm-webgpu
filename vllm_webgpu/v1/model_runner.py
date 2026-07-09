@@ -273,12 +273,20 @@ class WebGPUModelRunner:
         if Sampler is None:
             return None
         vocab_size = logits_1d.shape[0]
-        if num_logprobs < 0:
-            logger.warning(
-                "num_logprobs=%d will return full-vocab logprobs; this is very slow on CPU",
-                num_logprobs,
+        if num_logprobs == -1:
+            # vLLM convention for -1: unsorted full-vocab distribution with
+            # empty token-ID and rank tensors. Return the raw log-prob tensor
+            # directly so downstream code gets LogprobsTensors(empty, lp, empty).
+            lp_t = Sampler.compute_logprobs(
+                torch.from_numpy(logits_1d).unsqueeze(0)
             )
-            num_logprobs = vocab_size
+            return (None, lp_t[0].numpy(), 0)
+        if num_logprobs < 0:
+            raise NotImplementedError(
+                f"num_logprobs={num_logprobs} is not supported by the WebGPU "
+                "backend. Use -1 for full-vocab logprobs or a positive integer "
+                "for top-k logprobs."
+            )
         k = min(num_logprobs, vocab_size)
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
