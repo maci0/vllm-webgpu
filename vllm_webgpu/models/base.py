@@ -1,5 +1,4 @@
 from __future__ import annotations
-import functools
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -53,46 +52,6 @@ logger = init_logger(__name__)
 
 
 
-@functools.cache
-def _check_yarn_formula_unchanged() -> None:
-    """Verify that the vLLM YaRN formula has not drifted from our local copy.
-
-    Computes a SHA-256 over YaRNScalingRotaryEmbedding._compute_inv_freq and
-    __init__ source text and compares against a known-good digest. Call once at
-    model load; the result is cached so subsequent calls are free.
-
-    Raises RuntimeError if the digest no longer matches, signalling that
-    compute_yarn_freqs must be re-verified against the updated vLLM code.
-    """
-    import hashlib
-    import inspect
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
-    )
-
-    # SHA-256 of (_compute_inv_freq source + __init__ source) as of the pinned
-    # vLLM version. Recompute with:
-    #   python -c "
-    #   import inspect, hashlib
-    #   from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope \
-    #       import YaRNScalingRotaryEmbedding as Y
-    #   src = inspect.getsource(Y._compute_inv_freq) + inspect.getsource(Y.__init__)
-    #   print(hashlib.sha256(src.encode()).hexdigest())"
-    _KNOWN_HASH = "de1b463bf06b61f3816ff0430de47a38ad007ee832a2e50124105e0bd7efa302"
-
-    src = (
-        inspect.getsource(YaRNScalingRotaryEmbedding._compute_inv_freq)
-        + inspect.getsource(YaRNScalingRotaryEmbedding.__init__)
-    )
-    digest = hashlib.sha256(src.encode()).hexdigest()
-    if digest != _KNOWN_HASH:
-        raise RuntimeError(
-            f"vLLM YaRN formula has changed (expected {_KNOWN_HASH}, got {digest}). "
-            "Re-verify compute_yarn_freqs in vllm_webgpu/models/base.py against "
-            "YaRNScalingRotaryEmbedding._compute_inv_freq and update _KNOWN_HASH."
-        )
-
-
 def compute_yarn_freqs(
     head_dim: int,
     rope_theta: float,
@@ -101,9 +60,8 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    The blend formula is transcribed from vLLM's YaRNScalingRotaryEmbedding.
-    _check_yarn_formula_unchanged() is called once per process to detect if
-    the upstream implementation drifts; it raises RuntimeError on mismatch.
+    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq from vLLM so
+    that this function automatically tracks any upstream changes.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -122,10 +80,11 @@ def compute_yarn_freqs(
     """
     import torch
     from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask,
+        yarn_get_mscale,
     )
-
-    _check_yarn_formula_unchanged()
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
+    )
 
     if rotary_dim is None:
         rotary_dim = head_dim
@@ -145,28 +104,16 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
-    # Lines below are a direct transcription of YaRNScalingRotaryEmbedding._compute_inv_freq
-    # from vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py (lines 49-73).
-    # Instantiating YaRNScalingRotaryEmbedding.__init__ is impractical here because it calls
-    # _compute_cos_sin_cache(), which builds a [max_pos * factor, rotary_dim] tensor we
-    # don't need. The SHA-256 hash guard above detects upstream drift.
-    # If the guard fires at startup: diff the vLLM source at the path above against these
-    # lines and re-verify the formula before updating _KNOWN_HASH.
-    pos_freqs = rope_theta ** (
-        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
+    _obj = SimpleNamespace(
+        base=rope_theta,
+        rotary_dim=rotary_dim,
+        max_position_embeddings=orig_ctx,
+        beta_fast=beta_fast,
+        beta_slow=beta_slow,
+        extrapolation_factor=extrapolation_factor,
+        truncate=truncate,
     )
-    inv_freq_extrapolation = 1.0 / pos_freqs
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
-    low, high = yarn_find_correction_range(
-        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate,
-    )
-    inv_freq_mask = (
-        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
-    ) * extrapolation_factor
-    inv_freq = (
-        inv_freq_interpolation * (1 - inv_freq_mask)
-        + inv_freq_extrapolation * inv_freq_mask
-    )
+    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(_obj, factor)
 
     return inv_freq.numpy(), mscale
 
