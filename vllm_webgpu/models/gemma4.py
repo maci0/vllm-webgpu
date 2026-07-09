@@ -200,12 +200,39 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
-        self._ln_rope_theta: float = math.log(self.rope_theta)
-        self._g4_rope_base = {
-            "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": self._ln_rope_theta,
-            "USE_FREQ_BUF": int(self._use_freq_buf),
-        }
+
+        # Build per-layer rope constants from rope_parameters.
+        # rope_parameters maps layer type to {"rope_type", "rope_theta", "partial_rotary_factor"}.
+        # Gemma4:  full_attention     → "proportional", rope_theta=1e6, partial_rotary_factor=0.25
+        #          sliding_attention  → "default",      rope_theta=10000
+        # Models without rope_parameters (Gemma3, test configs) fall back to self.rope_theta with
+        # full rotation (partial_rotary_factor=1.0).
+        _rope_params_raw = getattr(model_config, "rope_parameters", None)
+        _rope_params_map = _rope_params_raw if isinstance(_rope_params_raw, dict) else {}
+        _use_freq = int(self._use_freq_buf)
+        self._rope_consts: list[dict] = []
+        for _i, _lp_e in enumerate(self._lp):
+            _lt = layer_types[_i] if (layer_types and _i < len(layer_types)) else None
+            _rp: dict = _rope_params_map.get(_lt, {}) if _lt else {}
+            _rope_base  = float(_rp.get("rope_theta", self.rope_theta))
+            _partial    = float(_rp.get("partial_rotary_factor", 1.0))
+            _rope_type  = str(_rp.get("rope_type", "default"))
+            _hd         = _lp_e["head_dim"]
+            _rotary_dim = int(_hd * _partial)
+            # "proportional" rope: freq exponent denominator = head_dim, not rotary_dim.
+            # Matches Gemma4RotaryEmbedding._compute_inv_freq which uses head_size as
+            # denominator regardless of partial_rotary_factor.
+            _freq_dim   = _hd if _rope_type == "proportional" else _rotary_dim
+            # Cache rope_base and rotary_dim in _lp for reference.
+            _lp_e["rope_base"]  = _rope_base
+            _lp_e["rotary_dim"] = _rotary_dim
+            self._rope_consts.append({
+                "ROPE_BASE":    _rope_base,
+                "LN_ROPE_BASE": math.log(_rope_base),
+                "USE_FREQ_BUF": _use_freq,
+                "ROTARY_DIM":   _rotary_dim,
+                "FREQ_DIM":     _freq_dim,
+            })
 
         # Register q_norm/k_norm tiling transforms so load_weights tiles at upload time,
         # avoiding a GPU roundtrip (to_numpy → tile → re-upload) per weight per layer.
@@ -530,7 +557,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _CHUNK   = 4
         _hstate  = 0
         _freq_buf = self._rope_freq_buf
-        _g4_rope_base = self._g4_rope_base
 
         for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), _CHUNK)):
             with self._batched_dispatch():
@@ -561,6 +587,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     add_n           = T * hidden
                     gelu_n          = T * inter
                     _ls             = self._layer_scales[i]
+
+                    # Per-layer rope constants: fused shaders get ROTARY_DIM + FREQ_DIM;
+                    # plain rope.wgsl only accepts ROPE_BASE, LN_ROPE_BASE, USE_FREQ_BUF.
+                    _rc          = self._rope_consts[i]
+                    _rope_fused  = _rc
+                    _rope_plain  = {k: _rc[k] for k in ("ROPE_BASE", "LN_ROPE_BASE", "USE_FREQ_BUF")}
 
                     residual = b[_H_NAMES[(_hstate + 1) % 3]]
                     out_h    = b[_H_NAMES[(_hstate + 2) % 3]]
@@ -596,7 +628,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             self._dispatch(
                                 "fused_per_head_norm_rope",
                                 [b["q_buf"], q_norm_w, pos_buf, b["q_rope"], _freq_buf],
-                                {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                {**_rope_fused, "HEAD_DIM": head_dim,
                                  "NUM_HEADS": self.num_q_heads, "HAS_WEIGHT": 1,
                                  "GEMMA_NORM": self._GEMMA_NORM, "INPUT_OFFSET": 0},
                                 (self.num_q_heads, T, 1))
@@ -604,7 +636,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             self._dispatch(
                                 "rope",
                                 [b["q_buf"], pos_buf, b["q_rope"], _freq_buf],
-                                {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                {**_rope_plain, "HEAD_DIM": head_dim,
                                  "NUM_HEADS": self.num_q_heads},
                                 (T, self.num_q_heads, 1))
                         # Load the target layer's cached K and V into dense buffers so that
@@ -626,7 +658,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 "fused_qk_norm_rope",
                                 [b["q_buf"], q_norm_w, k_norm_wl, pos_buf,
                                  b["q_rope"], b["k_rope"], b["k_buf"], _freq_buf],
-                                {**_g4_rope_base,
+                                {**_rope_fused,
                                  "HEAD_DIM":      head_dim,
                                  "NUM_Q_HEADS":   self.num_q_heads,
                                  "NUM_KV_HEADS":  num_kv_heads,
@@ -647,7 +679,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                     self._dispatch(
                                         "fused_per_head_norm_rope",
                                         [src, nw, pos_buf, dst, _freq_buf],
-                                        {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                        {**_rope_fused, "HEAD_DIM": head_dim,
                                          "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
                                          "GEMMA_NORM": self._GEMMA_NORM,
                                          "INPUT_OFFSET": 0},
@@ -656,7 +688,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                     self._dispatch(
                                         "rope",
                                         [src, pos_buf, dst, _freq_buf],
-                                        {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                        {**_rope_plain, "HEAD_DIM": head_dim,
                                          "NUM_HEADS": n_heads},
                                         (T, n_heads, 1))
 
@@ -1052,7 +1084,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
             k_norm_w_l = self.weights.get(f"{p}.self_attn.k_norm.weight")
             _freq_buf = self._rope_freq_buf
-            _g4_rope_base = self._g4_rope_base
+            # Per-layer rope constants: fused shaders accept ROTARY_DIM + FREQ_DIM;
+            # plain rope.wgsl only accepts ROPE_BASE, LN_ROPE_BASE, USE_FREQ_BUF.
+            _rc         = self._rope_consts[layer_idx]
+            _rope_fused = _rc
+            _rope_plain = {k: _rc[k] for k in ("ROPE_BASE", "LN_ROPE_BASE", "USE_FREQ_BUF")}
 
             if is_kv_shared:
                 # KV-shared layer (last N sliding-attention layers in laptop Gemma4 variant):
@@ -1062,20 +1098,20 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 if q_norm_w is not None:
                     self._dispatch("fused_per_head_norm_rope",
                                    [_q_src, q_norm_w, pos_buf, sc["q_rope"], _freq_buf],
-                                   {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                   {**_rope_fused, "HEAD_DIM": head_dim,
                                     "NUM_HEADS": self.num_q_heads, "HAS_WEIGHT": 1,
                                     "GEMMA_NORM": self._GEMMA_NORM, "INPUT_OFFSET": 0},
                                    (self.num_q_heads, num_tokens, 1))
                 elif _use_fused_qkv:
                     self._dispatch("fused_per_head_norm_rope",
                                    [_q_src, _q_src, pos_buf, sc["q_rope"], _freq_buf],
-                                   {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                   {**_rope_fused, "HEAD_DIM": head_dim,
                                     "NUM_HEADS": self.num_q_heads, "HAS_WEIGHT": 0,
                                     "GEMMA_NORM": 0, "INPUT_OFFSET": 0},
                                    (self.num_q_heads, num_tokens, 1))
                 else:
                     self._dispatch("rope", [_q_src, pos_buf, sc["q_rope"], _freq_buf],
-                                   {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                   {**_rope_plain, "HEAD_DIM": head_dim,
                                     "NUM_HEADS": self.num_q_heads},
                                    (num_tokens, self.num_q_heads, 1))
             else:
@@ -1087,7 +1123,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     self._dispatch("fused_qk_norm_rope",
                                    [_q_src, q_norm_w, k_norm_w_l, pos_buf,
                                     sc["q_rope"], sc["k_rope"], _k_bind, _freq_buf],
-                                   {**_g4_rope_base,
+                                   {**_rope_fused,
                                     "HEAD_DIM": head_dim,
                                     "NUM_Q_HEADS": self.num_q_heads,
                                     "NUM_KV_HEADS": num_kv_heads,
@@ -1107,7 +1143,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         if norm_w is not None:
                             self._dispatch("fused_per_head_norm_rope",
                                            [src, norm_w, pos_buf, dst, _freq_buf],
-                                           {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                           {**_rope_fused, "HEAD_DIM": head_dim,
                                             "NUM_HEADS": n_heads, "HAS_WEIGHT": 1,
                                             "GEMMA_NORM": self._GEMMA_NORM,
                                             "INPUT_OFFSET": in_off},
@@ -1115,14 +1151,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         elif not _use_fused_qkv:
                             # Plain rope from standalone buffer (no offset needed).
                             self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                           {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                           {**_rope_plain, "HEAD_DIM": head_dim,
                                             "NUM_HEADS": n_heads},
                                            (num_tokens, n_heads, 1))
                         else:
                             # Rope from fused QKV buffer at in_off — use HAS_WEIGHT=0 variant.
                             self._dispatch("fused_per_head_norm_rope",
                                            [src, src, pos_buf, dst, _freq_buf],
-                                           {**_g4_rope_base, "HEAD_DIM": head_dim,
+                                           {**_rope_fused, "HEAD_DIM": head_dim,
                                             "NUM_HEADS": n_heads, "HAS_WEIGHT": 0,
                                             "GEMMA_NORM": 0, "INPUT_OFFSET": in_off},
                                            (n_heads, num_tokens, 1))

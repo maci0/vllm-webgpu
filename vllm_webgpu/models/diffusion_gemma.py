@@ -393,7 +393,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     v_src = sc["k_buf"]  # global attention: V = K
 
             _freq_buf = self._rope_freq_buf
-            _dg_rope_base = self._g4_rope_base
+            _dg_rc       = self._rope_consts[layer_idx]
+            _dg_fused    = _dg_rc
+            _dg_plain    = {k: _dg_rc[k] for k in ("ROPE_BASE", "LN_ROPE_BASE", "USE_FREQ_BUF")}
             # Q: norm+RoPE unconditionally (KV-shared layers still project and use Q).
             # K: norm+RoPE only for non-shared layers; shared layers read K from cache directly.
             _heads_specs = [(sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight")]
@@ -405,14 +407,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     # Binding 4 (inv_freq_buf): always provided.
                     self._dispatch("fused_per_head_norm_rope",
                                    [src, nw, pos_buf, dst, _freq_buf],
-                                   {**_dg_rope_base, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
+                                   {**_dg_fused, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
                                     "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
                                     "INPUT_OFFSET": 0},
                                    (n_heads, num_tokens, 1))
                 else:
                     # Binding 3 (inv_freq_buf): always provided.
                     self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                   {**_dg_rope_base, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads},
+                                   {**_dg_plain, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads},
                                    (num_tokens, n_heads, 1))
 
             # Per-head RMSNorm (no weight) on V before caching — required for DiffusionGemma.

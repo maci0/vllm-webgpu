@@ -11,6 +11,13 @@ override GEMMA_NORM: u32    = 0u;
 // ROTARY_DIM: number of dimensions to apply RoPE to (rest pass through unchanged).
 // Set to HEAD_DIM for full RoPE (default), or HEAD_DIM * partial_rotary_factor for partial.
 override ROTARY_DIM: u32    = HEAD_DIM;
+// FREQ_DIM: denominator for the RoPE frequency exponent -2i/FREQ_DIM.
+// Defaults to ROTARY_DIM (correct for standard and default rope types).
+// Set to HEAD_DIM for "proportional" rope (Gemma4 full-attention layers), where
+// Gemma4RotaryEmbedding._compute_inv_freq uses head_size as the denominator
+// regardless of partial_rotary_factor, so rotating fewer pairs still uses
+// the full head_dim in the exponent.
+override FREQ_DIM: u32      = ROTARY_DIM;
 // INTERLEAVED=1: pairs are (2i, 2i+1) — used by some models (Qwen3.5 mrope_interleaved).
 // INTERLEAVED=0: pairs are (i, i+half) — standard convention (Llama, Gemma3, Qwen3).
 override INTERLEAVED: u32   = 0u;
@@ -118,7 +125,7 @@ fn main(
             if (USE_FREQ_BUF == 1u) {
                 theta_i = inv_freq_buf[i];
             } else {
-                theta_i = exp(-f32(i * 2u) / f32(ROTARY_DIM) * LN_ROPE_BASE);
+                theta_i = exp(-f32(i * 2u) / f32(FREQ_DIM) * LN_ROPE_BASE);
             }
             let angle   = pos * theta_i;
             let cos_v   = ATTN_SCALE * cos(angle);

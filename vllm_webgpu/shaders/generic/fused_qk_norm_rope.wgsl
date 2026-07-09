@@ -40,6 +40,13 @@ override LN_ROPE_BASE:   f32 = 9.210340372;   // log(ROPE_BASE); host sets this
 override HAS_WEIGHT:     u32 = 1u;
 override GEMMA_NORM:     u32 = 0u;
 override ROTARY_DIM:     u32 = HEAD_DIM;
+// FREQ_DIM: denominator for the RoPE frequency exponent -2i/FREQ_DIM.
+// Defaults to ROTARY_DIM (correct for standard and default rope types).
+// Set to HEAD_DIM for "proportional" rope (Gemma4 full-attention layers), where
+// Gemma4RotaryEmbedding._compute_inv_freq uses head_size as the denominator
+// regardless of partial_rotary_factor, so rotating fewer pairs still uses
+// the full head_dim in the exponent.
+override FREQ_DIM:       u32 = ROTARY_DIM;
 override INTERLEAVED:    u32 = 0u;
 override INPUT_OFFSET_K: u32 = 0u;            // f16 element offset for K in input[]
 // K_SEPARATE=1: K data is in k_input (binding 6) at element 0 (set INPUT_OFFSET_K=0).
@@ -160,7 +167,7 @@ fn main(
             if (USE_FREQ_BUF == 1u) {
                 theta_i = inv_freq_buf[i];
             } else {
-                theta_i = exp(-f32(i * 2u) / f32(ROTARY_DIM) * LN_ROPE_BASE);
+                theta_i = exp(-f32(i * 2u) / f32(FREQ_DIM) * LN_ROPE_BASE);
             }
             let angle   = pos * theta_i;
             let cos_v   = ATTN_SCALE * cos(angle);
