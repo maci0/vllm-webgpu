@@ -240,7 +240,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             workgroups,
         )
         if greedy:
-            self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
+            self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf()],
                            {"N": vocab}, (1, 1, 1))
             self._copy_sample_to_staging()
         self._last_logit_buf = logits_buf
@@ -574,7 +574,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
             greedy = self._greedy_decode
             if greedy:
-                self._dispatch("argmax_f16", [b["logits"], self._ensure_sample_buf(vocab)],
+                self._dispatch("argmax_f16", [b["logits"], self._ensure_sample_buf()],
                                {"N": vocab}, (1, 1, 1))
                 self._copy_sample_to_staging()
 
@@ -666,7 +666,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             )
             greedy = self._greedy_decode
             if greedy:
-                self._dispatch("argmax_f16", [pre["logits"], self._ensure_sample_buf(vocab)],
+                self._dispatch("argmax_f16", [pre["logits"], self._ensure_sample_buf()],
                                {"N": vocab}, (1, 1, 1))
                 self._copy_sample_to_staging()
 

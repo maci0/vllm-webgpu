@@ -350,7 +350,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 result_buf = logits_buf
 
-            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf(vocab)],
+            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
                            {"N": vocab}, (1, 1, 1))
             self._copy_sample_to_staging()
 
@@ -743,7 +743,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 result_buf = b["logits"]
 
-            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf(vocab)],
+            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
                            {"N": vocab}, (1, 1, 1))
             self._copy_sample_to_staging()
 
@@ -835,7 +835,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 result_buf = pre["logits"]
 
-            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf(vocab)],
+            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
                            {"N": vocab}, (1, 1, 1))
             self._copy_sample_to_staging()
 

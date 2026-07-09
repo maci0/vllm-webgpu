@@ -302,7 +302,7 @@ class BaseWebGPUModel(ABC):
         self._gpu_sample_staging.unmap()
         return val
 
-    def _ensure_sample_buf(self, vocab: int) -> "WebGPUBuffer":
+    def _ensure_sample_buf(self) -> "WebGPUBuffer":
         """Lazily allocate GPU sampler buffers and return the token output buffer."""
         if self._gpu_sample_tok is None:
             import wgpu as wgpu_lib

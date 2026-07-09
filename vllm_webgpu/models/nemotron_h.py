@@ -478,7 +478,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         if greedy:
             self._dispatch(
                 "argmax_f16",
-                [pre["logits"], self._ensure_sample_buf(vocab)],
+                [pre["logits"], self._ensure_sample_buf()],
                 {"N": vocab},
                 (1, 1, 1),
             )

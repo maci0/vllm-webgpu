@@ -586,7 +586,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         greedy = self._greedy_decode
         if greedy:
-            self._ensure_sample_buf(vocab)
+            self._ensure_sample_buf()
 
         for chunk_start in range(0, num_tokens, _CHUNK):
             chunk_end = min(chunk_start + _CHUNK, num_tokens)
