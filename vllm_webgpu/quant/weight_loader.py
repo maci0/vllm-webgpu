@@ -696,23 +696,9 @@ def load_safetensors_weights(
                 arr = _torch_to_f16_numpy(sf.get_tensor(name))
             elif dtype_str == "BF16":
                 t_bf16 = sf.get_tensor(name)
-                if _webgpu_envs.GDN_BF16 and _is_gdn_weight_key(name):
-                    # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
-                    # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
-                    # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
-                    u16 = t_bf16.view(torch.int16).numpy().view(np.uint16)
-                    u16_flat = np.ascontiguousarray(u16.ravel())
-                    if u16_flat.size % 2 != 0:
-                        u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
-                    arr_u32 = u16_flat.view(np.uint32)
-                    data_u32 = _pad4(arr_u32.tobytes())
-                    buf_bf16 = wgpu_device.create_buffer(size=len(data_u32), usage=usage)
-                    wgpu_device.queue.write_buffer(buf_bf16, 0, data_u32)
-                    _pending_bytes += len(data_u32)
-                    _maybe_flush()
-                    weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
-                                                            shape=tuple(shape), dtype="u32")
                 arr = _torch_to_f16_numpy(t_bf16)
+                # __bf16 companion is created after weight_transforms below, so both
+                # the f16 buffer and the companion see the same (transformed) layout.
             elif dtype_str == "F32":
                 arr = _torch_to_f16_numpy(sf.get_tensor(name))
             elif dtype_str == "I8":
@@ -752,6 +738,31 @@ def load_safetensors_weights(
             # Apply per-key transform (e.g. tiling shared norm weights) before upload.
             if weight_transforms and name in weight_transforms:
                 arr = weight_transforms[name](arr)
+            # GDN_BF16 companion is created here, after any transform, so both the
+            # f16 buffer and the __bf16 companion reflect the same tensor layout.
+            # The companion packs original bf16 bit patterns as u16 pairs in u32;
+            # if the transform changed the shape, the bf16 view is reshaped to match.
+            # Do not register value-changing (non-shape) transforms for GDN weight
+            # keys: this block mirrors the shape but not value changes from f16 back
+            # to bf16.
+            if dtype_str == "BF16" and _webgpu_envs.GDN_BF16 and _is_gdn_weight_key(name):
+                # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
+                # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
+                # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
+                u16 = t_bf16.view(torch.int16).numpy().view(np.uint16)
+                if u16.shape != arr.shape:
+                    u16 = u16.reshape(arr.shape)
+                u16_flat = np.ascontiguousarray(u16.ravel())
+                if u16_flat.size % 2 != 0:
+                    u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
+                arr_u32 = u16_flat.view(np.uint32)
+                data_u32 = _pad4(arr_u32.tobytes())
+                buf_bf16 = wgpu_device.create_buffer(size=len(data_u32), usage=usage)
+                wgpu_device.queue.write_buffer(buf_bf16, 0, data_u32)
+                _pending_bytes += len(data_u32)
+                _maybe_flush()
+                weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
+                                                        shape=tuple(arr.shape), dtype="u32")
             arr = np.ascontiguousarray(arr)
             data = _pad4(arr.tobytes())
             buf = wgpu_device.create_buffer(size=len(data), usage=usage)
