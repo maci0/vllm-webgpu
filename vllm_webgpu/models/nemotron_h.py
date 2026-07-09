@@ -577,14 +577,22 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         lm_key = self._lm_head_key()
         lm_head_w = self.weights[lm_key]
         uq = self._uq_for_key(lm_key)
+        # SPLIT_K=0 only handles USE_QUANT=0 (f16); all quantized variants (3-8)
+        # must use SPLIT_K=1 so the correct dequant branch is reached.
+        if uq == 0:
+            split_k = 0
+            workgroups = _rows_wg(vocab)
+        else:
+            split_k = 1
+            workgroups = _gemv_wg(vocab)
         self._dispatch(
             "matmul_quant",
             [pre["norm_out"], lm_head_w,
              self._scales_buf(lm_key, uq, self._dummy_scales_buf),
              pre["logits"]],
-            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0,
+            {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": split_k,
              **self._quant_extra(lm_key.removesuffix(".weight"), uq)},
-            _rows_wg(vocab),
+            workgroups,
         )
         greedy = self._greedy_decode
         if greedy:
