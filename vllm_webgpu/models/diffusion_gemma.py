@@ -85,8 +85,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._topk_weight_buf  = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] f32
             self._router_logit_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2)    # [T, E] f16
             self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2)    # [T, H] f16
-            # Per-expert scratch: [T] f32 routing weight for one expert across all tokens.
-            self._moe_per_expert_weight_buf = _WB.empty(_dev, max_canvas_len * 4)
+            # Packed routing weights: [num_unique_experts, T] f32, pre-filled before the
+            # expert loop so a single write_buffer covers all experts. Sized for worst
+            # case: all num_experts active across max_canvas_len tokens.
+            self._moe_per_expert_weight_buf = _WB.empty(
+                _dev, self.num_experts * max_canvas_len * 4)
             # Tiny f16 dummy for the NO_SCALE=1 router_norm_f32in path: binding 1
             # is declared but never read when NO_SCALE=1; pass this instead of an
             # unrelated weight buffer to make the intent clear.
@@ -675,7 +678,18 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # moe_accumulate_batched can do in-place += without a ping-pong buffer.
             dev.queue.write_buffer(moe_acc.buf, 0, b"\x00" * (add_n * 2))
 
-            for eid, w_per_token in expert_token_weights.items():
+            # Pre-pack all unique experts' per-token weights into the GPU buffer as a
+            # [num_unique_experts, T] f32 array. A single write_buffer here is correct:
+            # within one command encoder all write_buffer calls are processed before any
+            # recorded compute commands execute, so per-iteration writes inside the loop
+            # would leave only the last expert's weights visible to every dispatch. The
+            # expert_slot index passed as an override constant lets each shader read its
+            # own row without a re-entrant write.
+            unique_eids = list(expert_token_weights.keys())  # sorted by np.unique
+            packed_w = np.stack([dense_w[e] for e in unique_eids], axis=0)  # [num_unique, T]
+            dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
+
+            for expert_slot, (eid, w_per_token) in enumerate(expert_token_weights.items()):
                 ep = f"{p}.experts.{eid}"
                 g_w = self.weights.get(f"{ep}.gate_proj.weight")
                 u_w = self.weights.get(f"{ep}.up_proj.weight")
@@ -695,10 +709,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         f"MoE multi-token FFN requires f16 (uq=0) or GPTQ (uq=3) weights; "
                         f"expert {eid} at L{layer_idx} has uq=({uq_g},{uq_u},{uq_dk})"
                     )
-
-                # Write per-token routing weights for this expert to GPU scratch buffer.
-                dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0,
-                                       w_per_token.tobytes())
 
                 with self._batched_dispatch(label=f"L{layer_idx:02d}E{eid}"):
                     if use_mr4 and num_tokens > 1:
@@ -731,10 +741,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        _ex_dk,
                                        (hidden, num_tokens, 1))
                         # Per-token weighted accumulate: moe_acc[t*H+j] += w[t] * ffn_out[t*H+j]
+                        # EXPERT_SLOT selects row expert_slot from packed_w[num_unique, T].
                         self._dispatch("moe_accumulate_batched",
                                        [moe_acc, sc["ffn_out"],
                                         self._moe_per_expert_weight_buf],
-                                       {"N": add_n, "H": hidden},
+                                       {"N": add_n, "H": hidden,
+                                        "EXPERT_SLOT": expert_slot},
                                        ((add_n + 255) // 256, 1, 1))
                     else:
                         # Single-token GEMV path (num_tokens==1).
@@ -761,11 +773,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                         "USE_QUANT": uq_dk,
                                         **self._quant_extra(dk.removesuffix(".weight"), uq_dk)},
                                        _gemv_wg(hidden))
-                        # K_IDX=0: w_per_token[0] is the scalar weight for this expert.
+                        # K_IDX=expert_slot: reads packed_w[expert_slot] from the pre-filled
+                        # [num_unique_experts] f32 array (T=1 so each row is a single scalar).
                         self._dispatch("moe_accumulate",
                                        [moe_acc, sc["ffn_out"],
                                         self._moe_per_expert_weight_buf],
-                                       {"N": add_n, "K_IDX": 0},
+                                       {"N": add_n, "K_IDX": expert_slot},
                                        ((add_n + 255) // 256, 1, 1))
 
             # Post-MoE norm + single residual add (vLLM Gemma4 pattern)
