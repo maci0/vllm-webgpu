@@ -54,7 +54,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._layer_types: list | None = getattr(model_config, "layer_types", None)
         # Partial RoPE: some models only rotate a fraction of head dimensions.
         # partial_rotary_factor=0.25 → rotary_dim = head_dim * 0.25.
-        _prf = getattr(model_config, "partial_rotary_factor", 1.0) or 1.0
+        _prf = getattr(model_config, "partial_rotary_factor", None) or 1.0
         # Read head_dim from model_config directly — self.head_dim not set yet.
         _head_dim_raw = getattr(model_config, "head_dim",
                                 model_config.hidden_size // model_config.num_attention_heads)
@@ -93,7 +93,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # the standard gate/up/down weights are replaced by a router + per-expert weights.
         self._moe_num_experts: int = getattr(model_config, "num_experts", 0)
         self._moe_k: int           = getattr(model_config, "num_experts_per_tok", 0)
-        self._moe_inter: int       = getattr(model_config, "moe_intermediate_size", 0)
+        self._moe_inter: int       = getattr(model_config, "moe_intermediate_size", model_config.intermediate_size)
         self._moe_shared_inter: int = (
             getattr(model_config, "shared_expert_intermediate_size", None)
             or model_config.intermediate_size)
@@ -133,6 +133,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             # _is_moe as True. For Qwen35, Mixtral sees num_local_experts=0 (uses a
             # different config key), so it skips the allocation. Allocate them now.
             import wgpu as _wgpu_lib
+            self._wgpu_lib = _wgpu_lib
             dev = self.wgpu_device.wgpu_device
             _staging_sz = max(self._top_k * 4, 8)
             self._topk_idx_staging = dev.create_buffer(
@@ -221,7 +222,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             ln_w = self.weights.get(f"model.layers.{ln_i}.input_layernorm.weight")
             if ln_w is not None:
                 if getattr(ln_w, "dtype", "f16") != "f16":
-                    break  # unexpected dtype; leave _gemma_norm at default
+                    continue  # unexpected dtype; keep searching
                 mean_abs = float(np.abs(ln_w.to_numpy().view(np.float16)).mean())
                 self._gemma_norm = 0 if mean_abs > 0.7 else 1
                 break

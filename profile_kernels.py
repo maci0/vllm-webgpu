@@ -38,10 +38,11 @@ hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
 num_layers = hf_cfg.num_hidden_layers
 head_dim = getattr(hf_cfg, 'head_dim', hf_cfg.hidden_size // hf_cfg.num_attention_heads)
-num_kv_heads = hf_cfg.num_key_value_heads
+num_kv_heads = getattr(hf_cfg, 'num_key_value_heads', getattr(hf_cfg, 'num_kv_heads', getattr(hf_cfg, 'n_head_kv', hf_cfg.num_attention_heads)))
 
 print(f"Architecture: {arch}")
 
+from vllm_webgpu.config import get_config
 from vllm_webgpu.v1.model_runner import _build_model
 from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache)
@@ -63,7 +64,7 @@ except Exception as e:
 
 # ── Setup fake KV pool ────────────────────────────────────────────────────────
 dev = wgpu_dev.wgpu_device
-from vllm_webgpu.config import get_config; block_size = get_config().block_size
+block_size = get_config().block_size
 num_blocks = 512  # enough for profiling
 
 allocate_kv_from_hf_config(dev, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)

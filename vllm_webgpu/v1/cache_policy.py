@@ -47,13 +47,11 @@ def allocate_kv_pool_hybrid(
 
     model.kv_pool.clear()
 
-    kv_layer_count = 0
     for i in range(num_layers):
         needs_kv_cache = layer_types is None or layer_types[i] in KV_ATTN_TYPES
         if needs_kv_cache:
             k_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
             v_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
-            kv_layer_count += 1
         else:
             k_buf = WebGPUBuffer.empty(dev, 16)
             v_buf = WebGPUBuffer.empty(dev, 16)
@@ -66,6 +64,7 @@ def allocate_kv_pool_hybrid(
             num_blocks, num_layers, num_kv_heads, head_dim, total_mb,
         )
     else:
+        kv_layer_count = sum(1 for lt in layer_types if lt in KV_ATTN_TYPES)
         total_mb = (bytes_per_layer * kv_layer_count * 2) // 2**20
         logger.info(
             "KV cache (hybrid): %d kv-attn × %d blocks × %d KV heads × %d head_dim = %dMB",
@@ -142,14 +141,14 @@ def allocate_kv_from_hf_config(
         # hf_config.num_key_value_heads may diverge from what ModelConfig
         # reports for architectures with TP-remapped or MLA-style heads.
         # Pass model_config when possible to get the canonical values.
-        num_kv_heads = getattr(
-            hf_config, "num_key_value_heads",
-            getattr(hf_config, "num_kv_heads",
-                    getattr(hf_config, "n_head_kv",
-                            hf_config.num_attention_heads))
+        num_kv_heads = next(
+            (getattr(hf_config, a, None) for a in ('num_key_value_heads', 'num_kv_heads', 'n_head_kv')
+             if getattr(hf_config, a, None) is not None),
+            hf_config.num_attention_heads,
         )
-        head_dim = getattr(
-            hf_config, "head_dim",
+        head_dim = next(
+            (getattr(hf_config, a, None) for a in ('head_dim',)
+             if getattr(hf_config, a, None) is not None),
             hf_config.hidden_size // hf_config.num_attention_heads,
         )
     # model._layer_types wins; fall back to hf_config fields used by different

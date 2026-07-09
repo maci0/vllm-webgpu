@@ -438,13 +438,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             """Dispatch matmul_quant_mr4: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T."""
             uq = self._uq_for_key(w_key)
             if uq == 3:
-                base_key = w_key.removesuffix(".weight")
-                group_k  = self._quant_extra(base_key, uq).get("GROUP_K", 128)
-                sc_b     = self.weights.get(w_key + ".scales", _dummy)
+                sc_b = self._scales_buf(w_key, uq, _dummy)
                 self._dispatch("matmul_quant_mr4",
                                [x_b, self.weights[w_key], sc_b, out_b],
-                               {"K": K_in, "N": N_out, "M": T,
-                                "USE_QUANT": 3, "GROUP_K": group_k},
+                               {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 3,
+                                **self._quant_extra(w_key.removesuffix(".weight"), uq)},
                                (N_out, T, 1))
             elif uq == 0:
                 self._dispatch("matmul_quant_mr4",

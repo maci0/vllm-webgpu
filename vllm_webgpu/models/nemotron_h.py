@@ -107,7 +107,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "VALS_PER_THREAD": self._vals_per_thread(self.hidden_size),
         }
         self._init_scratch_buffers()
-        self._hstate: int = 0
 
     # ── Scratch buffer allocation ─────────────────────────────────────────────
 
@@ -465,19 +464,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         if num_tokens > 1:
             return self._prefill_forward(
                 input_ids, positions, attn_metadata,
-                num_tokens, vocab, self._rms_base,
+                num_tokens, vocab,
             )
 
         # Decode path (T=1): zero-alloc hot path via pre-allocated buffers.
         dev = self.wgpu_device.wgpu_device
         hidden = self.hidden_size
-        ctx_len = int(
-            attn_metadata.max_decode_seq_len
-            if getattr(attn_metadata, "max_decode_seq_len", None) is not None
-            else int(positions[-1]) + 1
-        )
-        if ctx_len <= 0:
-            ctx_len = int(positions[-1]) + 1
+        _mds = getattr(attn_metadata, "max_decode_seq_len", None)
+        ctx_len = int(_mds) if _mds else int(positions[-1]) + 1
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
@@ -518,7 +512,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 normed_x, x_buf = self._layer_dispatch(
                     i, normed_x, x_buf,
                     pre["slot_map"], pre["bt"],
-                    ctx_len, num_tokens, self._rms_base,
+                    ctx_len, num_tokens,
                 )
 
             # Final norm, LM head, and optional argmax.
@@ -541,7 +535,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
-        rms_base: dict,
     ) -> "tuple[WebGPUBuffer | None, WebGPUBuffer]":
         """Dispatch one Nemotron-H layer (Mamba, Attention, or MLP).
 
@@ -583,7 +576,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 self._dispatch(
                     "add_rms_norm",
                     [x_buf, mixer_out, next_norm_w, out, sc["normed"]],
-                    rms_base,
+                    self._rms_base,
                     (num_tokens, 1, 1),
                 )
                 normed_out = sc["normed"]
@@ -840,7 +833,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         attn_metadata: object,
         T: int,
         vocab: int,
-        rms_base: dict,
     ) -> np.ndarray:
         """Process T prompt tokens one at a time through the decode path.
 
@@ -879,7 +871,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     [pre["x"],
                      self.weights["model.layers.0.norm.weight"],
                      sc["normed"]],
-                    rms_base,
+                    self._rms_base,
                     (1, 1, 1),
                 )
 
@@ -892,7 +884,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     normed_x, x_buf = self._layer_dispatch(
                         i, normed_x, x_buf,
                         pre["slot_map"], pre["bt"],
-                        tok_ctx, 1, rms_base,
+                        tok_ctx, 1,
                     )
 
                 if t == T - 1:

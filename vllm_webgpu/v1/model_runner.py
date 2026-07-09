@@ -236,7 +236,12 @@ class WebGPUModelRunner:
         if lp_list:
             head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
             num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)
-        return block_size * num_kv_heads * head_dim * 2 * 2  # K + V, f16
+        if FullAttentionSpec is not None:
+            return FullAttentionSpec(
+                block_size=block_size, num_kv_heads=num_kv_heads,
+                head_size=head_dim, dtype=torch.float16,
+            ).page_size_bytes
+        return block_size * num_kv_heads * head_dim * 2 * 2  # K + V, f16 fallback
 
     def warm_up(self) -> None:
         if self.model is not None:
@@ -276,7 +281,7 @@ class WebGPUModelRunner:
             num_logprobs = vocab_size
         k = min(num_logprobs, vocab_size)
 
-        lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d.astype(np.float32)).unsqueeze(0))
+        lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
         result = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
         return (
             result.logprob_token_ids[0].numpy(),
@@ -328,7 +333,7 @@ class WebGPUModelRunner:
             num_prompt_logprobs = full_logits.shape[-1]
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
-        lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions].astype(np.float32)))
+        lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
         return Sampler.gather_logprobs(
             lp_t,
             k,

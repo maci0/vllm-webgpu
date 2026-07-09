@@ -4,12 +4,12 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
-import torch
 from vllm.logger import init_logger
 from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
 from vllm.utils.mem_utils import get_cpu_memory
 
 if TYPE_CHECKING:
+    import torch
     from vllm.config import VllmConfig
     from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE
     from vllm.v1.attention.selector import AttentionSelectorConfig
