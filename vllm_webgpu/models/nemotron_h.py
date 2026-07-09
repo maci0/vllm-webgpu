@@ -351,24 +351,34 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             k_s = f"{k_key}.scales"
             v_s = f"{v_key}.scales"
             has_scales = q_s in self.weights and k_s in self.weights and v_s in self.weights
-            if has_scales:
-                scales_dtype = self.weights[q_s].dtype
-                qs_nb = self.weights[q_s].nbytes
-                ks_nb = self.weights[k_s].nbytes
-                vs_nb = self.weights[v_s].nbytes
-                total_snb = qs_nb + ks_nb + vs_nb
-                scales_raw = dev.create_buffer(size=max(total_snb, 4), usage=_wgpu_usage)
-
             qkv_raw = dev.create_buffer(size=max(total_nb, 4), usage=_wgpu_usage)
             _enc = dev.create_command_encoder()
             _enc.copy_buffer_to_buffer(self.weights[q_key].buf, 0, qkv_raw, 0, q_nb)
             _enc.copy_buffer_to_buffer(self.weights[k_key].buf, 0, qkv_raw, q_nb, k_nb)
             _enc.copy_buffer_to_buffer(self.weights[v_key].buf, 0, qkv_raw, q_nb + k_nb, v_nb)
-            if has_scales:
-                _enc.copy_buffer_to_buffer(self.weights[q_s].buf, 0, scales_raw, 0, qs_nb)
-                _enc.copy_buffer_to_buffer(self.weights[k_s].buf, 0, scales_raw, qs_nb, ks_nb)
-                _enc.copy_buffer_to_buffer(self.weights[v_s].buf, 0, scales_raw, qs_nb + ks_nb, vs_nb)
             dev.queue.submit([_enc.finish()])
+
+            if has_scales:
+                # Scales have shape [G, N] (G = K // group_size, N = output neurons).
+                # GPU-side byte concatenation would produce column-block order:
+                # [q_group_0..G | k_group_0..G | v_group_0..G], but the shader reads
+                # scales[grp * N_total + row], which requires row-interleaved [G, N_total].
+                # For G > 1 (e.g. K=4096, group_size=128 -> G=32) every grp > 0 lookup
+                # would land in the wrong projection's data. Stack on axis=1 on the CPU.
+                scales_dtype = self.weights[q_s].dtype
+                q_sc = self.weights[q_s].to_numpy().view(np.float32).reshape(self.weights[q_s].shape)
+                k_sc = self.weights[k_s].to_numpy().view(np.float32).reshape(self.weights[k_s].shape)
+                v_sc = self.weights[v_s].to_numpy().view(np.float32).reshape(self.weights[v_s].shape)
+                if q_sc.ndim == 2:
+                    # [G, N] layout: concatenate along N axis to get [G, N_total].
+                    packed_sc = np.ascontiguousarray(np.concatenate([q_sc, k_sc, v_sc], axis=1))
+                else:
+                    # 1D per-channel scales (G=1): axis=0 concat is correct since
+                    # grp is always 0, so scales[0*N_total+row] == scales[row].
+                    packed_sc = np.ascontiguousarray(np.concatenate([q_sc, k_sc, v_sc]))
+                scales_raw = dev.create_buffer_with_data(
+                    data=packed_sc.tobytes(), usage=_wgpu_usage)
+                scales_packed_shape = packed_sc.shape
 
             qkv_key = f"{p}.qkv_proj.weight"
             packed_buf = WebGPUBuffer(buf=qkv_raw, device=dev, shape=(total_nb,), dtype=src_dtype)
@@ -418,7 +428,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # Register the packed scales buffer created above (if present).
             if has_scales:
                 scales_buf = WebGPUBuffer(
-                    buf=scales_raw, device=dev, shape=(total_snb,), dtype=scales_dtype)
+                    buf=scales_raw, device=dev, shape=scales_packed_shape, dtype=scales_dtype)
                 self.weights[f"{qkv_key}.scales"] = scales_buf
             # Unconditionally remove any individual scale buffers that may remain
             # (handles partial-scale checkpoints where not all three are present).
