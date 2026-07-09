@@ -183,8 +183,10 @@ def allocate_kv_from_hf_config(
 ) -> None:
     """Allocate KV cache from a HuggingFace config object.
 
-    Single source of truth used by WebGPUModelRunner.initialize_kv_cache,
-    run_inference.run, and profile_kernels. Add new model support here only.
+    Used only by standalone scripts (run_inference.py, profile_kernels.py).
+    The vLLM engine path uses allocate_kv_from_tensors, which derives buffer
+    sizes directly from vLLM KVCacheTensor objects and requires no
+    per-architecture changes here.
 
     Priority order:
       1. model._lp (populated at load time for heterogeneous-dim models)
