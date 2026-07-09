@@ -453,6 +453,13 @@ class WebGPUModelRunner:
         prompt_logprobs_dict: dict[str, Any] = {}  # req_id -> LogprobsTensors for prefill
 
         # ── Prefill: new requests ──────────────────────────────────────────────
+        # Reset recurrent state once before processing any new requests.
+        # Doing this inside the loop would zero shared conv/SSM buffers after
+        # the first request's prefill writes them, corrupting that request's
+        # accumulated context when it enters decode on the next step.
+        if new_reqs and hasattr(self.model, "reset_recurrent_states"):
+            self.model.reset_recurrent_states()
+
         for req in new_reqs:
             rid = req.req_id
             tok_ids = list(req.prompt_token_ids or [])
@@ -491,10 +498,6 @@ class WebGPUModelRunner:
                     rid,
                     num_prompt_logprobs,
                 )
-
-            # Reset recurrent state for models with persistent state (Qwen3.5 GDN SSM).
-            if hasattr(self.model, "reset_recurrent_states"):
-                self.model.reset_recurrent_states()
 
             raw_bids = req.block_ids
             assert raw_bids, f"req {rid}: scheduler produced NewRequestData with empty block_ids"
