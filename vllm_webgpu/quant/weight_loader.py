@@ -379,6 +379,15 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
       8-bit float + tensor/channel -> fmt='fp8_gpu'
       4-bit int  + group          -> fmt='gptq_gpu'
       other                       -> empty dict with a logged warning
+
+    Limitation: only the first config group that carries a weights spec is used;
+    the result is applied as a single global descriptor to all weight layers. Models
+    with multiple groups (e.g. quantized layers alongside an unquantized embedding or
+    lm_head) will have the non-matching layers misclassified. All currently targeted
+    checkpoints are single-format, so this is safe. If multi-group support is needed,
+    iterate cfg.config_groups and build a per-layer prefix map (as vLLM's
+    compressed_tensors.py does), returning a dict keyed by layer-name prefix rather
+    than '__global__'.
     """
     p = Path(config_path)
     if not p.exists():
@@ -1281,17 +1290,13 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     group_size = 64
     config_path = p / "config.json"
     if config_path.exists():
-        # Single read: resolve quantization_config from nested locations, then
-        # fall back to the raw 'quantization' key used by some MLX formats.
         with open(config_path) as f:
             cfg_raw = json.load(f)
-        quant_cfg = (
-            cfg_raw.get("quantization_config")
-            or cfg_raw.get("text_config", {}).get("quantization_config")
-            or cfg_raw.get("compression_config")
-            or {}
-        )
-        qs = quant_cfg.get("group_size") or cfg_raw.get("quantization", {}).get("group_size")
+        # _load_quant_cfg handles the standard three-location traversal
+        # (quantization_config, text_config.quantization_config, compression_config).
+        # The fourth fallback covers the 'quantization' key used by some MLX checkpoints.
+        qcfg = _load_quant_cfg(config_path)
+        qs = qcfg.get("group_size") or cfg_raw.get("quantization", {}).get("group_size")
         if qs:
             group_size = int(qs)
 
@@ -1341,11 +1346,17 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                     weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
                     continue
 
-                # Load scales and biases from their respective shards (may differ from weight shard).
-                with _sft.safe_open(key_to_shard[sk], framework="pt") as sf_s:
-                    s_t = sf_s.get_tensor(sk)
-                with _sft.safe_open(key_to_shard[bk], framework="pt") as sf_b:
-                    b_t = sf_b.get_tensor(bk)
+                # Load scales and biases. Reuse sf_w when they live in the same shard.
+                if key_to_shard[sk] == shard_path:
+                    s_t = sf_w.get_tensor(sk)
+                else:
+                    with _sft.safe_open(key_to_shard[sk], framework="pt") as sf_s:
+                        s_t = sf_s.get_tensor(sk)
+                if key_to_shard[bk] == shard_path:
+                    b_t = sf_w.get_tensor(bk)
+                else:
+                    with _sft.safe_open(key_to_shard[bk], framework="pt") as sf_b:
+                        b_t = sf_b.get_tensor(bk)
                 w_u32 = t.numpy()
                 scales_f32 = s_t.to(_torch.float32).numpy()
                 biases_f32 = b_t.to(_torch.float32).numpy()

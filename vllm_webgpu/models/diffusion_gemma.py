@@ -84,6 +84,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         moe_inter = getattr(self.model_config, "moe_intermediate_size", self.intermediate_size)
         return max(self.intermediate_size, moe_inter)
 
+    def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
+        """Skip qkv_buf and v_normed: the fused-QKV decode path is unreachable here.
+
+        DiffusionGemma overrides forward() and _decoder_layer() entirely; the parent
+        _transformer_layer() that reads qkv_buf and v_normed is never called from this
+        model. Omitting them saves roughly (T * max_q_dim * 6) bytes of GPU memory.
+        """
+        super()._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
+        del self._sc["qkv_buf"]
+        del self._sc["v_normed"]
+
     # ── Weight key helpers ───────────────────────────────────────────────────
 
     def _layer_key_prefix(self, layer_idx: int) -> str:

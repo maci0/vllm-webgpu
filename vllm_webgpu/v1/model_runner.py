@@ -270,8 +270,7 @@ class WebGPUModelRunner:
         k = min(num_logprobs, vocab_size)
 
         arr = logits_1d.astype(np.float32)
-        arr -= arr.max()
-        log_probs = arr - np.log(np.exp(arr).sum())
+        log_probs = torch.from_numpy(arr).log_softmax(dim=0).numpy()
 
         topk_idx = torch.topk(torch.from_numpy(log_probs), k).indices.numpy()
         topk_lp = log_probs[topk_idx]
@@ -330,8 +329,7 @@ class WebGPUModelRunner:
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
         arr = full_logits[:num_positions].astype(np.float32)  # [T-1, vocab]
-        arr -= arr.max(axis=-1, keepdims=True)
-        log_probs = arr - np.log(np.exp(arr).sum(axis=-1, keepdims=True))  # [T-1, vocab]
+        log_probs = torch.from_numpy(arr).log_softmax(dim=-1).numpy()  # [T-1, vocab]
 
         row_idx = np.arange(num_positions)[:, None]
 
@@ -670,9 +668,6 @@ class WebGPUModelRunner:
 
     def get_supported_tasks(self) -> "tuple[SupportedTask, ...]":
         return ("generate",)
-
-    def reset_mm_cache(self) -> None:
-        pass
 
     def reset_encoder_cache(self) -> None:
         pass

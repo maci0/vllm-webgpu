@@ -680,23 +680,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                            [x_buf, self.weights["model.norm.weight"], norm_out],
                            _rms_base, (num_tokens, 1, 1))
 
-            # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
-            # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
-            uq = self._uq_for_key("lm_head.weight")
-            self._dispatch("matmul_quant",
-                           [norm_out, self._lm_head_weight,
-                            self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
-                            logits_buf],
-                           {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0},
-                           ((vocab + 255) // 256, 1, 1))
-            # GPU argmax inside the same encoder — 4-byte readback.
-            if greedy:
-                self._dispatch("argmax_f16", [logits_buf, self._ensure_sample_buf(vocab)],
-                               {"N": vocab}, (1, 1, 1))
-                self._copy_sample_to_staging()
+            self._decode_teardown(norm_out, logits_buf, vocab, greedy)
 
-        self._last_logit_buf = logits_buf
-        self._last_vocab     = vocab
         if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)

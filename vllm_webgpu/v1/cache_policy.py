@@ -47,13 +47,13 @@ def allocate_kv_pool_hybrid(
             f"layer_types length {len(layer_types)} != num_layers {num_layers}"
         )
 
-    full_attn_count = 0
+    kv_layer_count = 0
     for i in range(num_layers):
-        is_full = layer_types is None or layer_types[i] in KV_ATTN_TYPES
-        if is_full:
+        needs_kv_cache = layer_types is None or layer_types[i] in KV_ATTN_TYPES
+        if needs_kv_cache:
             k_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
             v_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
-            full_attn_count += 1
+            kv_layer_count += 1
         else:
             k_buf = WebGPUBuffer.empty(dev, 16)
             v_buf = WebGPUBuffer.empty(dev, 16)
@@ -66,10 +66,10 @@ def allocate_kv_pool_hybrid(
             num_blocks, num_layers, num_kv_heads, head_dim, total_mb,
         )
     else:
-        total_mb = (bytes_per_layer * full_attn_count * 2) // 2**20
+        total_mb = (bytes_per_layer * kv_layer_count * 2) // 2**20
         logger.info(
-            "KV cache (hybrid): %d full-attn × %d blocks × %d KV heads × %d head_dim = %dMB",
-            full_attn_count, num_blocks, num_kv_heads, head_dim, total_mb,
+            "KV cache (hybrid): %d kv-attn × %d blocks × %d KV heads × %d head_dim = %dMB",
+            kv_layer_count, num_blocks, num_kv_heads, head_dim, total_mb,
         )
 
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import itertools
 import logging
 from typing import TYPE_CHECKING
 
@@ -91,27 +92,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Precomputed per-layer intermediate size for heterogeneous MLP configs.
         # Index by layer_idx; 0 for non-MLP layers. Avoids O(num_layers) slice-
         # and-count inside _mlp_layer on every forward pass.
-        if isinstance(_raw_int, list):
-            _sizes = _raw_int
-            if len(_sizes) == 1:
-                self._layer_int_size: list[int] = [
-                    _sizes[0] if lt == "mlp" else 0 for lt in self._layer_types
-                ]
-            else:
-                _mlp_idx = 0
-                _result: list[int] = []
-                for lt in self._layer_types:
-                    if lt == "mlp":
-                        _result.append(_sizes[_mlp_idx])
-                        _mlp_idx += 1
-                    else:
-                        _result.append(0)
-                self._layer_int_size = _result
-        else:
-            self._layer_int_size = [
-                _raw_int if lt == "mlp" else 0
-                for lt in self._layer_types
-            ]
+        _sizes = _raw_int if isinstance(_raw_int, list) else [_raw_int]
+        _it = itertools.repeat(_sizes[0]) if len(_sizes) == 1 else iter(_sizes)
+        self._layer_int_size: list[int] = [next(_it) if lt == "mlp" else 0 for lt in self._layer_types]
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).

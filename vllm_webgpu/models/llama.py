@@ -405,19 +405,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             Supports USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4).
             """
             uq = self._uq_for_key(w_key)
-            if uq == 3:
-                sc_buf = self._scales_buf(w_key, uq, self._dummy_scales_buf)
-                self._dispatch("matmul_quant_mr4",
-                               [x_buf, self.weights[w_key], sc_buf, out_buf],
-                               {"K": K_in, "N": N_out, "M": T,
-                                "USE_QUANT": uq, **self._quant_extra(w_key.removesuffix('.weight'), uq)},
-                               (N_out, T, 1))
-            else:
-                # uq is 0 (f16) here; _rep_keys guard above excludes all other formats.
-                self._dispatch("matmul_quant_mr4",
-                               [x_buf, self.weights[w_key], self._dummy_scales_buf, out_buf],
-                               {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
-                               (N_out, T, 1))
+            sc_buf = self._scales_buf(w_key, uq, self._dummy_scales_buf)
+            self._dispatch("matmul_quant_mr4",
+                           [x_buf, self.weights[w_key], sc_buf, out_buf],
+                           {"K": K_in, "N": N_out, "M": T,
+                            "USE_QUANT": uq, **self._quant_extra(w_key.removesuffix('.weight'), uq)},
+                           (N_out, T, 1))
 
         # Fall back to per-token sequential only for formats matmul_quant_mr4 cannot handle.
         # USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4) are both supported in the batch path.
