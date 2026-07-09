@@ -9,11 +9,10 @@ import torch.nn.functional as F
 
 try:
     from vllm.v1.kv_cache_interface import FullAttentionSpec
-    from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+    from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 except ImportError:
     FullAttentionSpec = None  # type: ignore[assignment,misc]
     ModelRunnerOutput = None  # type: ignore[assignment,misc]
-    LogprobsLists = None  # type: ignore[assignment,misc]
     LogprobsTensors = None  # type: ignore[assignment,misc]
     EMPTY_MODEL_RUNNER_OUTPUT = None  # type: ignore[assignment,misc]
 

@@ -380,7 +380,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 dev.queue.write_buffer(msc["expert_out"].buf, 0, bytes(hidden * 2))
 
         for k_idx, exp_idx in enumerate(expert_indices):
-            if expert_weights[k_idx] == 0.0:
+            if expert_weights[k_idx] <= 0.0:
                 continue
             ep = f"{p}.experts.{exp_idx}"
             w1_key = f"{ep}.{gate_key}.weight"

@@ -54,7 +54,8 @@ class WebGPUWorker(WorkerBase):
             is_driver_worker=is_driver_worker,
         )
         self.webgpu_config = get_config()
-        self.parallel_config.disable_custom_all_reduce = True
+        # disable_custom_all_reduce is already set by WebGPUPlatform.check_and_update_config
+        # (platform.py); no need to repeat the assignment here.
         self.wgpu_device: "WebGPUDevice | None" = None
 
     def init_device(self) -> None:

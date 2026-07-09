@@ -79,7 +79,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         def _tile_if_shared(arr: "np.ndarray", num_heads: int) -> "np.ndarray":
             if arr.shape == (head_dim,):
-                return np.tile(arr.view(np.float16), num_heads)
+                return np.tile(arr, num_heads)
             return arr
 
         for _i in range(self.num_layers):
@@ -197,7 +197,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 # Fallback: weight arrived with unexpected shape (e.g. after MLX load
                 # which bypasses the transform path). Re-tile via GPU roundtrip.
                 if buf.shape == (self.head_dim,):
-                    tiled = np.tile(buf.to_numpy().view(np.float16), num_heads)
+                    raw = buf.to_numpy()
+                    assert buf.dtype == 'f16', (
+                        f"{norm_key}: expected f16 buffer, got {buf.dtype}; "
+                        "reinterpret-cast would corrupt weights"
+                    )
+                    tiled = np.tile(np.frombuffer(raw, dtype=np.float16), num_heads)
                     self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled)
                 else:
                     raise ValueError(

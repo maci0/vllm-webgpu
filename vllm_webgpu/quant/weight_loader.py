@@ -46,8 +46,6 @@ def _is_gdn_weight_key(key: str) -> bool:
 
 logger = init_logger(__name__)
 
-_GGUF_MAGIC = b"GGUF"
-
 # Flush every 512 MB of pending write_buffer calls. Metal silently drops
 # write_buffer operations when the GPU staging buffer queue is saturated
 # (~1-2 GB). Periodic flushes prevent this for large single-file models.
@@ -148,7 +146,7 @@ def detect_weight_format(path: str) -> str:
     # Try magic bytes
     with open(p, "rb") as f:
         magic = f.read(4)
-    if magic == _GGUF_MAGIC:
+    if magic == b"GGUF":
         return "gguf"
     return "safetensors"
 
@@ -175,7 +173,7 @@ def load_safetensors_weights_sharded(
     if any(k.endswith(".biases") for k in weight_map):
         if f32_keys:
             raise ValueError("f32_keys is not supported for mlx_int4 format")
-        return load_mlx_weights(model_dir, wgpu_device)
+        return load_mlx_weights(model_dir, wgpu_device, weight_map=weight_map)
 
     shard_files = sorted(set(weight_map.values()))
     weights: dict = {}
@@ -1300,21 +1298,26 @@ def _dequant_mlx_int4(
         return scales_bc * nibbles + biases_bc
 
 
-def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
-    """Load MLX affine int4 safetensors weights, dequantize to f16, upload to GPU."""
+def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = None) -> dict:
+    """Load MLX affine int4 safetensors weights, dequantize to f16, upload to GPU.
+
+    weight_map: when supplied by the caller (e.g. load_safetensors_weights_sharded
+    which has already parsed the index), the index file is not re-read from disk.
+    """
     import torch as _torch
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
     p = Path(model_dir)
-    index_path = p / _SAFE_WEIGHTS_INDEX_NAME
-    with open(index_path) as f:
-        index = json.load(f)
+
+    if weight_map is None:
+        index_path = p / _SAFE_WEIGHTS_INDEX_NAME
+        with open(index_path) as f:
+            index = json.load(f)
+        weight_map = index["weight_map"]
 
     config_path = p / "config.json"
     qcfg = _load_quant_cfg(config_path) if config_path.exists() else {}
     group_size = int(qcfg.get("group_size", None) or 64)
-
-    weight_map: dict = index["weight_map"]
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
     key_to_shard: dict[str, str] = {k: str(p / v) for k, v in weight_map.items()}

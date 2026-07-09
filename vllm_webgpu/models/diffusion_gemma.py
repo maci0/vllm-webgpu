@@ -844,16 +844,3 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # (model.layers.* vs model.decoder.layers.*) and would silently produce
     # wrong results or KeyErrors.
 
-    def _prefill_batch_forward(self, *args, **kwargs):
-        raise NotImplementedError(
-            "_prefill_batch_forward is a Gemma4-specific path and is not reachable "
-            "from DiffusionGemmaWebGPUModel; multi-token prefill is handled directly "
-            "in forward() via _decoder_layer."
-        )
-
-    def _prefill_sequential_fallback(self, *args, **kwargs):
-        raise NotImplementedError(
-            "_prefill_sequential_fallback is a Gemma4-specific path and is not "
-            "reachable from DiffusionGemmaWebGPUModel; multi-token prefill is handled "
-            "directly in forward() via _decoder_layer."
-        )

@@ -66,7 +66,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         _rope_params = getattr(model_config, "rope_parameters", {}) or {}
         self._rope_interleaved: int = 1 if _rope_params.get("mrope_interleaved", False) else 0
         # Attention output gate: when True, q_proj.weight has shape [2*q_dim, hidden].
-        # The first half is Q; the second half is a gate applied as silu(gate)*attn_out
+        # The first half is Q; the second half is a gate applied as sigmoid(gate)*attn_out
         # before the o_proj. _postprocess_weights splits the weight and stores the gate
         # half under self_attn.q_gate_proj.weight.
         self._attn_output_gate: bool = bool(getattr(model_config, "attn_output_gate", False))

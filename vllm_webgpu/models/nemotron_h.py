@@ -120,12 +120,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Per-layer config override: some NemotronH variants (puzzle-style heterogeneous
         # checkpoints) expose get_nemotron_h_config_for_layer() on the model_config
         # to return per-layer overrides, including a different intermediate_size.
-        _sizes = _raw_int if isinstance(_raw_int, list) else [_raw_int]
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
 
         # Build per-layer intermediate sizes in a single O(num_layers) pass,
-        # tracking the running MLP count to look up the correct entry in _sizes
-        # without the O(li) slice-and-count that an inner function would need.
+        # tracking the running MLP count to look up the correct entry in the
+        # (possibly heterogeneous) intermediate_size list.
         _layer_int_sizes: list[int] = []
         _mlp_count = 0
         for _li, _lt in enumerate(self._layer_types):
@@ -133,7 +132,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _layer_int_sizes.append(0)
                 continue
             _mlp_idx = _mlp_count
-            _fallback = _sizes[_mlp_idx] if len(_sizes) > 1 else _sizes[0]
+            if isinstance(_raw_int, list):
+                _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
+            else:
+                _fallback = _raw_int
             if _get_layer_cfg is not None:
                 _lcfg = _get_layer_cfg(_li)
                 _isize = getattr(_lcfg, 'intermediate_size', _fallback)
@@ -243,7 +245,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             head_dim=self.mamba_head_dim,
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
-            num_spec=0,
         )
         conv_bytes = math.prod(conv_shape) * 2
         ssm_bytes  = math.prod(ssm_shape) * 4
@@ -587,7 +588,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         hidden = self.hidden_size
         _mds = getattr(attn_metadata, "max_decode_seq_len", None)
-        ctx_len = int(_mds) if _mds else int(positions[-1]) + 1
+        ctx_len = int(_mds) if _mds is not None else int(positions[-1]) + 1
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())

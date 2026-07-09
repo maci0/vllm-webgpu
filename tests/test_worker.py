@@ -51,7 +51,11 @@ def test_compute_request_logprobs():
 
 def test_make_model_output_with_logprobs():
     """_make_model_output builds a non-None LogprobsLists when logprob data is supplied."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, LogprobsLists, ModelRunnerOutput
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, ModelRunnerOutput
+    try:
+        from vllm.v1.outputs import LogprobsLists
+    except ImportError:
+        LogprobsLists = None  # type: ignore[assignment,misc]
 
     if ModelRunnerOutput is None or LogprobsLists is None:
         pytest.skip("vllm not available (vllm mock installed by test_config.py)")
