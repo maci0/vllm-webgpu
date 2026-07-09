@@ -65,7 +65,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._pes_cache: list[np.ndarray | None] = [None] * self.num_layers
             logger.info("DiffusionGemma MoE: %d experts, top-%d, moe_inter=%d",
                         self.num_experts, self.top_k_experts, self.moe_intermediate_size)
-            # Extra scratch buffer: shared-expert residual (F32 like h0/h1/h2).
+            # Extra scratch buffer: shared-expert residual (F16; unlike h0/h1/h2 which are F32).
             # Needed because the 3-buffer h-rotation doesn't accommodate 4 distinct
             # tensor states (x_buf, post-attn, post-shared-expert, post-moe).
             from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WB

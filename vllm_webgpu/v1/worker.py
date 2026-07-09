@@ -3,6 +3,8 @@ import gc
 import time
 from typing import TYPE_CHECKING, Any
 
+from vllm.config import VllmConfig
+
 import torch
 
 # vLLM v1 internals verified against vllm>=0.24,<0.25.
@@ -38,7 +40,7 @@ class WebGPUWorker(WorkerBase):
 
     def __init__(
         self,
-        vllm_config: Any,
+        vllm_config: VllmConfig,
         local_rank: int,
         rank: int,
         distributed_init_method: str,

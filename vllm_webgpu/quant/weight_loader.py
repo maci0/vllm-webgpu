@@ -5,6 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+import vllm_webgpu.envs as _webgpu_envs
 
 # AWQ nibble reorder table (Lin et al., AWQ: Activation-aware Weight Quantization,
 # https://arxiv.org/abs/2306.00978, Appendix). Each int32 stores 8 nibbles; the
@@ -19,13 +20,6 @@ _F16_MAX: float = np.finfo(np.float16).max
 def _mx_scale_u8_to_f32(ws_u8: "np.ndarray") -> "np.ndarray":
     """Decode E8M0 MX scale exponents to float32: scale = 2^(u8 - 127)."""
     return np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)
-
-# GDN_BF16 is read lazily from envs.py so the environment variable is always
-# evaluated at the time of the upload call, not at module import time.
-def _gdn_bf16() -> bool:
-    import vllm_webgpu.envs as _envs
-    return _envs.GDN_BF16
-
 
 def _is_gdn_weight_key(key: str) -> bool:
     """True for GDN linear-attention projection weights that benefit from bf16 storage."""
@@ -671,7 +665,7 @@ def load_safetensors_weights(
                 arr = sf.get_tensor(name).numpy()    # torch.float16 → np.float16
             elif dtype_str == "BF16":
                 t_bf16 = sf.get_tensor(name)
-                if _gdn_bf16() and _is_gdn_weight_key(name):
+                if _webgpu_envs.GDN_BF16 and _is_gdn_weight_key(name):
                     # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
                     # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
                     # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
@@ -1244,13 +1238,12 @@ def _dequant_mlx_int4(
     """
     try:
         import mlx.core as mx
-        import numpy as _np
         w_mlx = mx.array(weight_u32)
         s_mlx = mx.array(scales_f32)
         b_mlx = mx.array(biases_f32)
         result = mx.dequantize(w_mlx, s_mlx, b_mlx, bits=4, group_size=group_size)
         mx.eval(result)
-        return _np.array(result, dtype=_np.float32)
+        return np.array(result, dtype=np.float32)
     except (ImportError, RuntimeError):
         out_rows, packed_cols = weight_u32.shape
         in_cols = packed_cols * 8
@@ -1278,9 +1271,12 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     if config_path.exists():
         with open(config_path) as f:
             cfg_raw = json.load(f)
-        # Use the shared helper for the three-location CT traversal; fall back to the
-        # 'quantization' key used by MLX checkpoints, which _load_quant_cfg does not cover.
-        qcfg = _load_quant_cfg(config_path)
+        qcfg = (
+            cfg_raw.get("quantization_config")
+            or cfg_raw.get("text_config", {}).get("quantization_config")
+            or cfg_raw.get("compression_config")
+            or {}
+        )
         qs = qcfg.get("group_size") or cfg_raw.get("quantization", {}).get("group_size")
         if qs:
             group_size = int(qs)

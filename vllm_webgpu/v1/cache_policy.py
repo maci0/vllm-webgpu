@@ -177,8 +177,7 @@ def allocate_kv_from_hf_config(
 
 def _get_model_memory_usage(worker: "WebGPUWorker") -> int:
     """Sum of all weight buffer sizes in bytes."""
-    runner = worker.model_runner
-    model = runner.model if runner is not None else None
+    model = worker.model_runner.model if worker.model_runner is not None else None
     if model is None:
         return 0
     return sum(buf.nbytes for buf in model.weights.values() if isinstance(buf, WebGPUBuffer))

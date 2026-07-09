@@ -256,7 +256,7 @@ class WebGPUModelRunner:
     @staticmethod
     def _compute_request_logprobs(
         logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
-    ) -> "tuple[np.ndarray, np.ndarray, int]":
+    ) -> "tuple[np.ndarray, np.ndarray, int] | None":
         """Compute top-N logprobs from a 1-D float32 logits vector.
 
         Returns (top_k_ids, top_k_log_probs, sampled_token_rank).

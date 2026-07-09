@@ -2,7 +2,6 @@
 from __future__ import annotations
 from pathlib import Path
 
-import numpy as np
 import torch
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch
@@ -33,7 +32,7 @@ def sample_token(
     if temperature < 1e-5:
         return int(logits_1d.argmax())
 
-    logits_t = torch.from_numpy(logits_1d.astype(np.float32, copy=False)).unsqueeze(0)
+    logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)
     logits_t = logits_t / temperature
     k_t = torch.tensor([top_k]) if top_k > 0 else None
     p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None

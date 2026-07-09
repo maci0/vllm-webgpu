@@ -67,11 +67,6 @@ def test_is_pin_memory_available():
     assert WebGPUPlatform.is_pin_memory_available() is False
 
 
-def test_get_device_count():
-    from vllm_webgpu.platform import WebGPUPlatform
-    assert WebGPUPlatform.get_device_count() == 1
-
-
 def test_webgpu_device_initialize():
     """Requires a real WebGPU adapter. Skip if unavailable."""
     pytest.importorskip("wgpu")

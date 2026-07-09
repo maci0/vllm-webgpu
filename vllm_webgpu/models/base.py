@@ -60,7 +60,6 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    import math
     import torch
     from vllm.model_executor.layers.rotary_embedding.common import (
         yarn_find_correction_range,

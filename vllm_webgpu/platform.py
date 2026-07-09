@@ -73,10 +73,6 @@ class WebGPUPlatform(_Platform):
         return "WebGPU"
 
     @classmethod
-    def get_device_count(cls) -> int:
-        return 1
-
-    @classmethod
     def get_device_total_memory(cls, device_id: int = 0) -> int:
         # System RAM is the correct budget on all supported platforms.
         # On Apple Silicon, all memory is unified so this is exact.

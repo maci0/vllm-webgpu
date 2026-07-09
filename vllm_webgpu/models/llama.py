@@ -89,7 +89,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
-        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
+        max_bt_blocks = max(4096, math.ceil(max_ctx / self.block_size))
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      mk(T * 4),              # [1] uint32 token id
             "pos":      mk(T * 4),              # [1] uint32 position
@@ -201,7 +201,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
-            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
+            np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
         ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len is not None else int(positions[-1]) + 1
@@ -543,7 +543,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                         self._dispatch("add_rms_norm",
                                        [residual, b["ffn_out"], next_w, out_h, b["normed"]],
                                        rms_base, (T, 1, 1))
-                        normed_x = b["normed"]
+                        # normed_x stays as b["normed"] — set once before the loop
                     else:
                         add_n = T * hidden
                         self._dispatch("add",

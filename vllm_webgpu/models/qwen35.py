@@ -387,7 +387,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             self._dispatch("matmul_quant",
                            [normed_x, _w_qkv, sc["dummy_scales"], sc["qkv_buf"]],
                            {"K": hidden, "N": cd, "USE_QUANT": 0, "USE_BF16": _bf16_qkv},
-                           (cd, 1, 1))
+                           _gemv_wg(cd))
 
             # 3. Causal conv step: updates conv_state in-place, writes qkv_conv
             conv_w = self.weights[f"{p}.conv1d.weight"]
@@ -401,21 +401,21 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             self._dispatch("matmul_quant",
                            [normed_x, _w_a, sc["dummy_scales"], sc["a_buf"]],
                            {"K": hidden, "N": kh, "USE_QUANT": 0, "USE_BF16": _bf16_a},
-                           (kh, 1, 1))
+                           _gemv_wg(kh))
 
             # 5a. b projection: normed → [K_HEADS] (outer-product gate)
             _w_b, _bf16_b = _gdn_w(f"{p}.in_proj_b.weight")
             self._dispatch("matmul_quant",
                            [normed_x, _w_b, sc["dummy_scales"], sc["b_buf"]],
                            {"K": hidden, "N": kh, "USE_QUANT": 0, "USE_BF16": _bf16_b},
-                           (kh, 1, 1))
+                           _gemv_wg(kh))
 
             # 5b. z gate projection: normed → [val_dim]
             _w_z, _bf16_z = _gdn_w(f"{p}.in_proj_z.weight")
             self._dispatch("matmul_quant",
                            [normed_x, _w_z, sc["dummy_scales"], sc["z_buf"]],
                            {"K": hidden, "N": vd, "USE_QUANT": 0, "USE_BF16": _bf16_z},
-                           (vd, 1, 1))
+                           _gemv_wg(vd))
 
             # 6. GDN state update: updates ssm_state in-place, writes gdn_out
             self._dispatch("gdn_state_update",
@@ -426,21 +426,21 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                            {"K_DIM": kd, "V_DIM": vdh,
                             "NUM_K_HEADS": kh, "NUM_V_HEADS": vh,
                             "Q_BASE": 0, "K_BASE": k_base, "V_BASE": v_base},
-                           (vh, 1, 1))
+                           _gemv_wg(vh))
 
             # 7. Per-head RMSNorm + sigmoid gate → gated
             self._dispatch("linear_attn_norm_gate",
                            [sc["gdn_out"], self.weights[f"{p}.norm.weight"],
                             sc["z_buf"], sc["gated"]],
                            {"NUM_V_HEADS": vh, "V_DIM": vdh},
-                           (vh, 1, 1))
+                           _gemv_wg(vh))
 
             # 8. Output projection: [val_dim] → [hidden]
             _w_out, _bf16_out = _gdn_w(f"{p}.out_proj.weight")
             self._dispatch("matmul_quant",
                            [sc["gated"], _w_out, sc["dummy_scales"], sc["o_proj_out"]],
                            {"K": vd, "N": hidden, "USE_QUANT": 0, "USE_BF16": _bf16_out},
-                           (hidden, 1, 1))
+                           _gemv_wg(hidden))
 
             # 9+10 fused: add(x, attn_out, residual) + rms_norm(residual, post_attn_norm) → ffn_normed
             self._dispatch("add_rms_norm",

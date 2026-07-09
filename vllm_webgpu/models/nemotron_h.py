@@ -95,7 +95,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         _mlp_indices = [i for i, lt in enumerate(self._layer_types) if lt == "mlp"]
         _sizes_padded = _sizes if len(_sizes) > 1 else _sizes * len(_mlp_indices)
         _mlp_size_map = {layer_idx: _sizes_padded[mlp_rank] for mlp_rank, layer_idx in enumerate(_mlp_indices)}
-        self._layer_int_size: list[int] = [_mlp_size_map[i] if lt == "mlp" else 0 for i, lt in enumerate(self._layer_types)]
+        self._layer_int_size: list[int] = [_mlp_size_map.get(i, 0) for i in range(len(self._layer_types))]
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
@@ -131,7 +131,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             return WebGPUBuffer.empty(dev, max(n, 8))
 
         max_ctx = self.model_config.max_position_embeddings
-        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
+        max_bt_blocks = max(4096, math.ceil(max_ctx / self.block_size))
 
         # Fixed pre-allocated decode buffers (zero-alloc hot path for T=1).
         self._pre: dict[str, "WebGPUBuffer"] = {
