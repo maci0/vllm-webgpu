@@ -48,9 +48,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Gemma3 vs Gemma4 capability flags:
         # - GEMMA_NORM=1: all Gemma models use (1+w) RMSNorm (weights trained as deviations from 0)
         # - _apply_v_norm: only Gemma4 applies per-head RMS norm to V before caching
-        archs = getattr(model_config, "architectures", [])
-        self._apply_v_norm = any('Gemma4' in a for a in archs)  # Gemma3 does NOT normalize V; DiffusionGemma handles V-norm unconditionally in _decoder_layer
-
         # Per-layer attention parameters (head_dim, num_kv_heads, q_dim, kv_dim, has_v_proj).
         # Set from _layer_attention_params if available (parsed from GGUF), otherwise derive
         # using the heuristic that every 6th layer (idx%6==5) is global attention.
@@ -61,6 +58,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         # Gemma4 safetensors: derive per-layer params from layer_types + global_head_dim.
         layer_types = getattr(model_config, "layer_types", None)
+
+        # Capability flag: only Gemma4 applies per-head RMS norm to V before caching.
+        # Gemma3 does NOT normalize V; DiffusionGemma handles V-norm unconditionally in _decoder_layer.
+        # Use layer_types as the discriminator: Gemma4 configs carry a per-layer attention type list
+        # (one entry per layer), Gemma3 configs do not. This avoids fragile architecture name matching.
+        self._apply_v_norm = (layer_types is not None and len(layer_types) == self.num_layers)
         global_hd   = getattr(model_config, "global_head_dim", default_hd)
         global_kv   = getattr(model_config, "num_global_key_value_heads", default_kv)
         _k_eq_v     = getattr(model_config, "attention_k_eq_v", False)
