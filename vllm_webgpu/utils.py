@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 from vllm.utils.mem_constants import MiB_bytes
-from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch
+from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
 
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
@@ -37,4 +37,4 @@ def sample_token(
     k_t = torch.tensor([top_k]) if top_k > 0 else None
     p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None
     filtered = apply_top_k_top_p_pytorch(logits_t, k_t, p_t, allow_cpu_sync=True)
-    return torch.multinomial(filtered.softmax(dim=-1, dtype=torch.float32), num_samples=1).item()
+    return random_sample(filtered.softmax(dim=-1, dtype=torch.float32), {}).item()

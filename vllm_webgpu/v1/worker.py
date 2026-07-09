@@ -169,14 +169,16 @@ class WebGPUWorker(WorkerBase):
             raise RuntimeError(f"WebGPU device health check failed: {e}") from e
 
     def reset_encoder_cache(self) -> None:
-        self.model_runner.reset_encoder_cache()
+        # WebGPU has no encoder cache; this is a no-op required by the vLLM
+        # executor RPC contract.
+        pass
 
     def shutdown(self) -> None:
         # Release the GPU device. Both the worker and model_runner hold a
         # reference to wgpu_device; clearing only one leaves the object alive.
         # Do not null model_runner itself: any post-shutdown delegate call (e.g.
-        # reset_encoder_cache, get_supported_tasks) would raise AttributeError
-        # on NoneType instead of a clear error.
+        # get_supported_tasks) would raise AttributeError on NoneType instead of
+        # a clear error.
         if self.model_runner is not None:
             self.model_runner.wgpu_device = None
         self.wgpu_device = None

@@ -116,15 +116,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Precomputed per-layer intermediate size for heterogeneous MLP configs.
         # Index by layer_idx; 0 for non-MLP layers. Avoids O(num_layers) slice-
         # and-count inside _mlp_layer on every forward pass.
-        _sizes_list = _raw_int if isinstance(_raw_int, list) else [_raw_int]
-        _mlp_rank = -1
-        self._layer_int_size: list[int] = []
-        for _lt in self._layer_types:
-            if _lt == "mlp":
-                _mlp_rank += 1
-                self._layer_int_size.append(_sizes_list[min(_mlp_rank, len(_sizes_list) - 1)])
-            else:
-                self._layer_int_size.append(0)
+        _sizes = _raw_int if isinstance(_raw_int, list) else [_raw_int]
+        _it = iter(_sizes)
+        _last = _sizes[-1]
+        self._layer_int_size: list[int] = [
+            next(_it, _last) if lt == "mlp" else 0 for lt in self._layer_types
+        ]
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
@@ -160,7 +157,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             return WebGPUBuffer.empty(dev, max(n, 8))
 
         max_ctx = self.model_config.max_position_embeddings
-        max_bt_blocks = max(4096, math.ceil(max_ctx / self.block_size))
+        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
 
         # Fixed pre-allocated decode buffers (zero-alloc hot path for T=1).
         self._pre: dict[str, "WebGPUBuffer"] = {
@@ -212,22 +209,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def _init_mamba_states(self) -> None:
         """Allocate zero-initialized GPU buffers for each Mamba layer's state."""
-        from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
         dev = self.wgpu_device.wgpu_device
 
-        conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
-            tp_world_size=1,
-            intermediate_size=self.mamba_int,
-            n_groups=self.n_groups,
-            num_heads=self.mamba_num_heads,
-            head_dim=self.mamba_head_dim,
-            state_size=self.ssm_state_size,
-            conv_kernel=self.conv_kernel,
-        )
-        conv_bytes = math.prod(conv_shape) * 2   # f16: 2 bytes per element
-        ssm_bytes  = math.prod(ssm_shape) * 4    # f32: 4 bytes per element
+        # Buffer sizes derived directly from the Mamba-2 state layout used by
+        # the WGSL shaders. The conv state is f16 (2 bytes); the SSM state is
+        # f32 (4 bytes). tp_world_size=1 and num_spec=0 so no TP sharding or
+        # speculative-decode padding applies, and math.prod of the shape tuple
+        # returned by MambaStateShapeCalculator equals these direct expressions.
+        conv_bytes = (self.conv_kernel - 1) * self.conv_dim * 2
+        ssm_bytes  = self.mamba_num_heads * self.mamba_head_dim * self.ssm_state_size * 4
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":

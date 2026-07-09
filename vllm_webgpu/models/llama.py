@@ -755,8 +755,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             sc["qkv_buf"]],
                            {"K": hidden, "Q_DIM": q_dim, "KV_DIM": kv_dim},
                            (q_dim + 2 * kv_dim, 1, 1))
-            _q_src = sc["qkv_buf"]
-            _k_src = sc["qkv_buf"]
             _v_src = sc["qkv_buf"]
             _v_offset = q_dim + kv_dim  # f16 elements before V section
         else:
@@ -783,6 +781,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             "INPUT_OFFSET_K": q_dim},
                            (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
         else:
+            if _use_fused_qkv:
+                _q_src = sc["qkv_buf"]
+                _k_src = sc["qkv_buf"]
             for src, dst, n_heads, norm_w, in_off in [
                 (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
                 (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, q_dim if _use_fused_qkv else 0),

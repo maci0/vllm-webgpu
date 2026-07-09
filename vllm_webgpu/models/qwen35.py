@@ -711,6 +711,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # When attn_output_gate=True, q_proj.weight was split at load time.
         # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].
         # The gate is applied as sigmoid(gate)*attn_out before o_proj (step below).
+        gate_buf = None
         if self._attn_output_gate:
             gate_wk = f"{p}.self_attn.q_gate_proj.weight"
             gate_buf = self.weights.get(gate_wk)

@@ -151,8 +151,8 @@ def allocate_kv_from_hf_config(
         # reports for architectures with TP-remapped or MLA-style heads.
         # Pass model_config when possible to get the canonical values.
         num_kv_heads = next(
-            (getattr(hf_config, a, None) for a in ('num_key_value_heads', 'num_kv_heads', 'n_head_kv')
-             if getattr(hf_config, a, None) is not None),
+            (v for a in ('num_key_value_heads', 'num_kv_heads', 'n_head_kv')
+             if (v := getattr(hf_config, a, None)) is not None),
             hf_config.num_attention_heads,
         )
         head_dim = getattr(hf_config, 'head_dim', None)

@@ -692,6 +692,4 @@ class WebGPUModelRunner:
     def get_supported_tasks(self) -> "tuple[SupportedTask, ...]":
         return ("generate",)
 
-    def reset_encoder_cache(self) -> None:
-        pass
 

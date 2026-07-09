@@ -5,6 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 # AWQ nibble reorder table (Lin et al., AWQ: Activation-aware Weight Quantization,
@@ -36,9 +37,6 @@ _GGUF_MAGIC = b"GGUF"
 # write_buffer operations when the GPU staging buffer queue is saturated
 # (~1-2 GB). Periodic flushes prevent this for large single-file models.
 _FLUSH_THRESHOLD = 512 * 1024 * 1024
-
-
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
 
 
 def _is_mlx_quantized_dir(p: Path) -> bool:
@@ -132,8 +130,6 @@ def detect_weight_format(path: str) -> str:
             if _is_mlx_quantized_dir(p):
                 return "mlx_int4"
             return "safetensors_sharded"
-        if (p / SAFE_WEIGHTS_NAME).exists():
-            return "safetensors"
         # No known safetensors manifest found in directory; default.
         return "safetensors"
     if p.suffix == ".gguf":
