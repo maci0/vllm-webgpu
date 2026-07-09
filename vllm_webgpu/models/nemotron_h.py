@@ -100,6 +100,19 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 "a checkpoint with mlp_bias=True."
             )
 
+        # The WebGPU _mamba_layer path does not apply in_proj.bias or
+        # out_proj.bias. All known NemotronH checkpoints ship with
+        # use_bias=False, so this is latent. Fail fast rather than silently
+        # produce wrong Mamba outputs if a checkpoint with use_bias=True is
+        # ever loaded.
+        if getattr(model_config, "use_bias", False):
+            raise NotImplementedError(
+                "NemotronHWebGPUModel does not support use_bias=True. "
+                "The WebGPU _mamba_layer path omits in_proj.bias and "
+                "out_proj.bias additions. Implement bias-add dispatches "
+                "before using a checkpoint with use_bias=True."
+            )
+
         # Precomputed per-layer intermediate size for heterogeneous MLP configs.
         # Index by layer_idx; 0 for non-MLP layers. Avoids O(num_layers) slice-
         # and-count inside _mlp_layer on every forward pass.

@@ -65,6 +65,7 @@ def make_tiny_nemotron_config():
     # conv_dim = 32 + 2*2*4 = 48, in_proj_dim = 32 + 48 + 4 = 84
     cfg.layers_block_type = ["mamba", "attention"]
     cfg.mlp_bias          = False
+    cfg.use_bias          = False
     return cfg
 
 
