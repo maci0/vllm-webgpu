@@ -226,9 +226,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._last_logit_buf = logits_buf
         self._last_vocab = vocab
 
-    def load_weights(self, path: str) -> None:
-        super().load_weights(path)
-
     def forward(
         self,
         input_ids: np.ndarray,
