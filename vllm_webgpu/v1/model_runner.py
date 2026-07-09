@@ -99,6 +99,7 @@ class WebGPUModelRunner:
         self.model: "BaseWebGPUModel | None" = None
         self._last_model_output: Any = EMPTY_MODEL_RUNNER_OUTPUT  # cached for sample_tokens()
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
+        self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
 
     def load_model(self) -> None:
         mc = self.vllm_config.model_config
@@ -114,6 +115,7 @@ class WebGPUModelRunner:
         hf = mc.hf_config
         block_size = self.webgpu_config.block_size
         num_blocks = kv_cache_config.num_blocks
+        self._num_kv_blocks = num_blocks
 
         allocate_kv_from_hf_config(
             self.wgpu_device.wgpu_device,
@@ -229,6 +231,37 @@ class WebGPUModelRunner:
     def warm_up(self) -> None:
         if self.model is not None:
             self.model.warmup()
+
+    def _zero_kv_blocks(self, block_ids: list[int]) -> None:
+        """Zero the KV cache entries for recycled block IDs.
+
+        When the block pool reuses a block from a completed request, stale K/V
+        values remain in the buffer until the new request's forward pass writes
+        to those positions. Attention over positions beyond the current write
+        cursor would read that garbage, producing incorrect outputs.
+
+        This mirrors gpu_model_runner.py _zero_block_ids (lines 1105-1108).
+        Called before any forward pass in the step so the zeroing is committed
+        to the GPU before the first attention dispatch.
+
+        Each layer buffer has layout [num_blocks * block_size * num_kv_heads * head_dim]
+        in f16. The byte range for block_id is
+          [block_id * bytes_per_block, (block_id + 1) * bytes_per_block).
+        Placeholder buffers (16 bytes, used for non-attention layers) are skipped.
+        """
+        if not block_ids or self.model is None or self._num_kv_blocks == 0:
+            return
+        queue = self.wgpu_device.wgpu_device.queue
+        for k_buf, v_buf in self.model.kv_pool:
+            if k_buf.nbytes <= 16:
+                # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
+                continue
+            bytes_per_block = k_buf.nbytes // self._num_kv_blocks
+            zeros = b"\x00" * bytes_per_block
+            for block_id in block_ids:
+                offset = block_id * bytes_per_block
+                queue.write_buffer(k_buf.buf, offset, zeros)
+                queue.write_buffer(v_buf.buf, offset, zeros)
 
     def execute_model(self, scheduler_output: "SchedulerOutput") -> None:
         if getattr(scheduler_output, "has_structured_output_requests", False):
@@ -389,6 +422,14 @@ class WebGPUModelRunner:
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> Any:
         """vLLM >= 0.24 SchedulerOutput format."""
+        # Zero recycled KV blocks before any forward pass. The block pool may
+        # reuse blocks from completed requests; without zeroing, attention over
+        # positions beyond the current write cursor reads stale K/V values and
+        # produces incorrect outputs. The GPU runner does the same via
+        # _zero_block_ids (gpu_model_runner.py lines 1155-1156).
+        if scheduler_output.new_block_ids_to_zero:
+            self._zero_kv_blocks(scheduler_output.new_block_ids_to_zero)
+
         # Prune state for requests that completed in the previous step.
         for rid in scheduler_output.finished_req_ids:
             self._req_state.pop(rid, None)
