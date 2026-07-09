@@ -122,16 +122,27 @@ def allocate_kv_from_tensors(
     kv_cache_tensors,
     num_blocks: int,
     num_total_layers: int,
+    kv_cache_groups=None,
 ) -> None:
     """Allocate KV cache buffers from vLLM's authoritative KVCacheTensor list.
 
-    KVCacheTensor.size = 2 * block_size * num_kv_heads * head_size * dtype_bytes * num_blocks,
-    where the leading 2 combines K and V. Per-buffer bytes = size // 2. Non-KV layers
-    (absent from kv_cache_tensors) receive 16-byte placeholder buffers to satisfy
-    the WebGPU spec (size must be > 0).
+    Per-buffer bytes are derived from the spec's real_page_size_bytes (excludes
+    per-token-head quantization scale overhead) when kv_cache_groups is provided.
+    Dividing tensor.size by 2 would silently over-allocate when the KV cache
+    dtype uses per-token-head scales, because page_size_bytes (and therefore
+    tensor.size) includes those scale bytes but the WebGPU K/V shaders do not
+    read them. Non-KV layers receive 16-byte placeholder buffers.
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
+
+    # Build layer_name -> KVCacheSpec map so we can use real_page_size_bytes,
+    # which excludes the per-token-head scale overhead that page_size_bytes adds.
+    layer_spec_map: dict[str, object] = {}
+    if kv_cache_groups is not None:
+        for group in kv_cache_groups:
+            for name in group.layer_names:
+                layer_spec_map[name] = group.kv_cache_spec
 
     # Build layer_index -> per-buffer bytes from the tensors vLLM already computed.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
@@ -145,7 +156,30 @@ def allocate_kv_from_tensors(
             raise NotImplementedError(
                 f"Shared-block-table KV cache (shared_by={tensor.shared_by}) is not supported by the WebGPU backend"
             )
-        per_buf = tensor.size // 2
+        # Prefer spec.real_page_size_bytes over tensor.size // 2. The latter
+        # includes per-token-head scale bytes that inflate the allocation beyond
+        # what the K or V data actually occupies.
+        first_name = tensor.shared_by[0] if tensor.shared_by else None
+        spec = layer_spec_map.get(first_name) if first_name is not None else None
+        if spec is not None and hasattr(spec, "real_page_size_bytes"):
+            per_buf = spec.real_page_size_bytes * num_blocks // 2
+            naive = tensor.size // 2
+            if per_buf != naive:
+                logger.warning(
+                    "KV tensor size contains non-data bytes (per-token-head scale "
+                    "overhead): spec-derived per_buf=%d B, tensor.size//2=%d B "
+                    "(layer %r). Using spec-derived value; scale bytes are not "
+                    "accessible to WebGPU shaders.",
+                    per_buf, naive, first_name,
+                )
+        else:
+            per_buf = tensor.size // 2
+            if kv_cache_groups is not None:
+                logger.warning(
+                    "No spec found for layer %r; falling back to tensor.size // 2. "
+                    "May over-allocate for quantized KV cache with scale bytes.",
+                    first_name or "<unknown>",
+                )
         for layer_name in tensor.shared_by:
             try:
                 idx = extract_layer_index(layer_name)

@@ -140,6 +140,7 @@ class WebGPUModelRunner:
             kv_cache_config.kv_cache_tensors,
             num_blocks=num_blocks,
             num_total_layers=mc.hf_config.num_hidden_layers,
+            kv_cache_groups=kv_cache_config.kv_cache_groups,
         )
 
     def _get_lp_list(self) -> "list | None":
