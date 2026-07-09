@@ -1302,11 +1302,9 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     if config_path.exists():
         with open(config_path) as f:
             cfg_raw = json.load(f)
-        # Standard three-location CT traversal, plus the 'quantization' key used by MLX checkpoints.
-        qcfg = (cfg_raw.get("quantization_config")
-                or cfg_raw.get("text_config", {}).get("quantization_config")
-                or cfg_raw.get("compression_config")
-                or {})
+        # Use the shared helper for the three-location CT traversal; fall back to the
+        # 'quantization' key used by MLX checkpoints, which _load_quant_cfg does not cover.
+        qcfg = _load_quant_cfg(config_path)
         qs = qcfg.get("group_size") or cfg_raw.get("quantization", {}).get("group_size")
         if qs:
             group_size = int(qs)
