@@ -451,11 +451,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # For num_tokens == 1 the loop runs once with offset 0, matching the old dispatch.
             for _t in range(num_tokens):
                 _t_q_off = _t * q_dim
+                # SCALE=1.0: Q/K RMSNorm (fused_per_head_norm_rope with GEMMA_NORM=1)
+                # implicitly controls magnitudes, so no 1/sqrt(HEAD_DIM) factor is needed.
                 self._dispatch("attn_score",
                                [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
                                {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                                "MAX_SEQ_LEN": ctx_len, "Q_TOKEN_OFFSET": _t_q_off},
+                                "MAX_SEQ_LEN": ctx_len, "Q_TOKEN_OFFSET": _t_q_off,
+                                "SCALE": 1.0},
                                (self.num_q_heads, ctx_len, 1))
                 self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
                                {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))

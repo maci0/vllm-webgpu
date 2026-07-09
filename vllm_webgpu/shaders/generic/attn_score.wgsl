@@ -8,6 +8,9 @@ override MAX_SEQ_LEN: u32    = 4096u;
 // Q_TOKEN_OFFSET: row offset into Q for batch prefill.
 // Decode: 0 (single query). Prefill token t: t * NUM_Q_HEADS * HEAD_DIM.
 override Q_TOKEN_OFFSET: u32 = 0u;
+// SCALE: attention score multiplier. Pass 1.0 for models with Q/K RMSNorm
+// (e.g. DiffusionGemma) where the norms implicitly control Q/K magnitudes.
+override SCALE: f32 = 1.0;
 
 // Q: [num_q_heads, head_dim]  f16  (single decode token)
 // K_cache: [num_blocks, block_size, num_kv_heads, head_dim]  f16
@@ -37,7 +40,7 @@ fn main(
 
     let block_idx = block_table[ctx_idx / BLOCK_SIZE];
     let block_off = ctx_idx % BLOCK_SIZE;
-    let scale     = 1.0 / sqrt(f32(HEAD_DIM));
+    let scale     = SCALE;
 
     let q_base = Q_TOKEN_OFFSET + q_head * HEAD_DIM;
     let k_base = ((block_idx * BLOCK_SIZE + block_off) * NUM_KV_HEADS + kv_head) * HEAD_DIM;
