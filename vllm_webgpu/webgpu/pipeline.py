@@ -1,9 +1,10 @@
 from __future__ import annotations
-import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 
 @dataclass(frozen=True)

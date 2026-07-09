@@ -1,11 +1,11 @@
 from __future__ import annotations
 import itertools
-import logging
 import math
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _H_NAMES
 
 if TYPE_CHECKING:
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 class Gemma4WebGPUModel(BaseWebGPUModel):
@@ -163,7 +163,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "v_normed":   mk(T * max_kv_dim * 2),                     # f16
             "q_rope":     mk(T * max_q_dim * 2),  # f16
             "k_rope":     mk(T * max_kv_dim * 2), # f16
-"attn_out":   mk(T * max_q_dim * 2),  # f16
+            "attn_out":   mk(T * max_q_dim * 2),  # f16
             "o_proj_out": mk(T * H * 2),           # f16
             "ffn_normed": mk(T * H * 2),           # f16
             "gate_buf":   mk(T * I * 2),           # f16
@@ -358,6 +358,31 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         tok = self._read_sample_tok()
         return np.array([[tok]], dtype=np.int32)
 
+    def _mr4_quant_supported(self) -> bool:
+        """Return True when every layer weight uses a quant format compatible with matmul_quant_mr4.
+
+        Only USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ int4) are supported in the batch
+        prefill path. Scanning all layers up front catches mixed-quant checkpoints before
+        any KV-cache population occurs rather than crashing mid-forward.
+        """
+        for i in range(self.num_layers):
+            p  = self._layer_key_prefix(i)
+            lp = self._lp[i]
+            keys = [
+                f"{p}.self_attn.q_proj.weight",
+                f"{p}.self_attn.k_proj.weight",
+                f"{p}.self_attn.o_proj.weight",
+                f"{p}.mlp.gate_proj.weight",
+                f"{p}.mlp.up_proj.weight",
+                f"{p}.mlp.down_proj.weight",
+            ]
+            if lp.get("has_v_proj", True):
+                keys.append(f"{p}.self_attn.v_proj.weight")
+            for k in keys:
+                if k in self.weights and self._uq_for_key(k) not in (0, 3):
+                    return False
+        return True
+
     def _prefill_batch_forward(  # noqa: C901
         self,
         input_ids: "np.ndarray",
@@ -375,30 +400,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """
         from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
-        # Only matmul_quant_mr4 USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ int4) are
-        # supported in the batch path. Scan every layer and every projection key so
-        # that a mixed-quant checkpoint (e.g. layer 0 int4, layer N int8) is caught
-        # before any KV-cache population occurs rather than crashing mid-forward.
-        def _batch_path_supported() -> bool:
-            for _i in range(self.num_layers):
-                _p  = self._layer_key_prefix(_i)
-                _lp = self._lp[_i]
-                _keys = [
-                    f"{_p}.self_attn.q_proj.weight",
-                    f"{_p}.self_attn.k_proj.weight",
-                    f"{_p}.self_attn.o_proj.weight",
-                    f"{_p}.mlp.gate_proj.weight",
-                    f"{_p}.mlp.up_proj.weight",
-                    f"{_p}.mlp.down_proj.weight",
-                ]
-                if _lp.get("has_v_proj", True):
-                    _keys.append(f"{_p}.self_attn.v_proj.weight")
-                for _k in _keys:
-                    if _k in self.weights and self._uq_for_key(_k) not in (0, 3):
-                        return False
-            return True
-
-        if not _batch_path_supported():
+        if not self._mr4_quant_supported():
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 
         dev = self.wgpu_device.wgpu_device

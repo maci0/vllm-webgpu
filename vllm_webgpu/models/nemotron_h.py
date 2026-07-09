@@ -1,5 +1,4 @@
 from __future__ import annotations
-import logging
 import math
 from typing import TYPE_CHECKING
 
@@ -7,6 +6,7 @@ import numpy as np
 
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
+from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _H_NAMES
 
 if TYPE_CHECKING:
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 class NemotronHWebGPUModel(BaseWebGPUModel):
@@ -127,7 +127,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if lt != "mlp":
                 return 0
             mlp_idx = self._layer_types[:li].count("mlp")
-            fallback = _sizes[min(mlp_idx, len(_sizes) - 1)]
+            fallback = _sizes[mlp_idx] if len(_sizes) > 1 else _sizes[0]
             if _get_layer_cfg is not None:
                 lcfg = _get_layer_cfg(li)
                 isize = getattr(lcfg, 'intermediate_size', fallback)
@@ -394,8 +394,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     dev, np.ascontiguousarray(packed_scales))
                 scales_buf.dtype = scales_dtype
                 self.weights[f"{qkv_key}.scales"] = scales_buf
-                del self.weights[q_s], self.weights[k_s], self.weights[v_s]
-
+            # Unconditionally remove any individual scale buffers that may remain
+            # (handles partial-scale checkpoints where not all three are present).
+            for s in (q_s, k_s, v_s):
+                self.weights.pop(s, None)
 
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
 

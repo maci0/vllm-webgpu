@@ -168,10 +168,7 @@ class WebGPUModelRunner:
         # Use per-layer params if available (Gemma4 heterogeneous layers).
         # Prefer the model object's _lp list (populated from layer_types config)
         # over the raw HF config attribute, which may not be set for safetensors.
-        lp_list = (
-            (getattr(self.model, "_lp", None) if self.model is not None else None)
-            or getattr(mc, "_layer_attention_params", None)
-        )
+        lp_list = self._get_lp_list()
 
         # Fallback: derive per-layer KV spec from layer_types + global_head_dim when
         # the model has not been loaded yet and hf_config lacks _layer_attention_params.
@@ -261,7 +258,7 @@ class WebGPUModelRunner:
     @staticmethod
     def _compute_request_logprobs(
         logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
-    ) -> "tuple[np.ndarray | None, np.ndarray, int] | None":
+    ) -> "tuple[np.ndarray | None, np.ndarray | None, int] | None":
         """Compute top-N logprobs from a 1-D float32 logits vector.
 
         Returns (top_k_ids, top_k_log_probs, sampled_token_rank) for top-k

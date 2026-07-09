@@ -1,9 +1,9 @@
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.logger import init_logger
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
 
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
@@ -174,10 +174,16 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
-        return "model.decoder.embed_tokens.weight" if "model.decoder.embed_tokens.weight" in self.weights else "model.embed_tokens.weight"
+        return next(
+            (k for k in ("model.decoder.embed_tokens.weight", "model.embed_tokens.weight") if k in self.weights),
+            "model.embed_tokens.weight",
+        )
 
     def _norm_key(self) -> str:
-        return "model.decoder.norm.weight" if "model.decoder.norm.weight" in self.weights else "model.norm.weight"
+        return next(
+            (k for k in ("model.decoder.norm.weight", "model.norm.weight") if k in self.weights),
+            "model.norm.weight",
+        )
 
     def _lm_head_key(self) -> str:
         return next(

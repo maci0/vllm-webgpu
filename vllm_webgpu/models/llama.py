@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -89,7 +88,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
-        max_bt_blocks = max(4096, math.ceil(max_ctx / self.block_size))
+        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      mk(T * 4),              # [1] uint32 token id
             "pos":      mk(T * 4),              # [1] uint32 position

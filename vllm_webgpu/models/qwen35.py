@@ -1,9 +1,9 @@
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.logger import init_logger
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 # Qwen3.5-9B fixed architecture constants
@@ -312,7 +312,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         for lst in (self._ssm_gpu, self._conv_gpu):
             for buf in lst:
                 if buf is not None:
-                    dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
+                    dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
 
     def _resolve_gdn_weight(self, key: str):
         """Return (buffer, use_bf16_flag, use_quant) for a GDN projection weight key.
@@ -691,7 +691,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         # QKV projections (always separate; fused_qkv is incompatible with attn_output_gate).
-        self._qkv_proj(normed_x, layer_idx)
+        self._qkv_proj(normed_x, layer_idx)  # fills sc['q_buf'], sc['k_buf'], sc['v_buf']
 
         # When attn_output_gate=True, q_proj.weight was split at load time.
         # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].

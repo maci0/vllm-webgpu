@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
 from vllm.logger import init_logger
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -154,8 +155,7 @@ class BaseWebGPUModel(ABC):
         # every dispatch must provide a buffer at the slot. Initialised here as a
         # 1-element dummy; LlamaWebGPUModel._init_rope_freq_buf() replaces it with
         # actual YaRN frequencies when rope_scaling.rope_type == "yarn".
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WGPUBuf
-        self._rope_freq_buf: "WebGPUBuffer" = _WGPUBuf.empty(
+        self._rope_freq_buf: "WebGPUBuffer" = WebGPUBuffer.empty(
             wgpu_device.wgpu_device, 4)  # 1-element f32 placeholder
         self._use_freq_buf: bool = False
         self._yarn_mscale: float = 1.0  # set to mscale when rope_type='yarn'
@@ -246,7 +246,6 @@ class BaseWebGPUModel(ABC):
             f32_keys: Optional set of checkpoint key names that must be uploaded as float32
                       instead of the default float16. Passed through to the safetensors loader.
         """
-        from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
         from vllm_webgpu.quant.weight_loader import (
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded, load_mlx_weights,
@@ -309,7 +308,6 @@ class BaseWebGPUModel(ABC):
         """Lazily allocate GPU sampler buffers and return the token output buffer."""
         if self._gpu_sample_tok is None:
             import wgpu as wgpu_lib
-            from vllm_webgpu.webgpu.buffer import WebGPUBuffer
             dev = self.wgpu_device.wgpu_device
             self._gpu_sample_tok   = WebGPUBuffer.empty(dev, 4)      # 1 × u32
             # MAP_READ staging buffer: copy argmax result here inside the MAIN command encoder,
@@ -393,7 +391,6 @@ class BaseWebGPUModel(ABC):
         if shader_name == "matmul_quant" and len(bindings) == 4:
             if self._dummy_bias_buf is None:
                 import wgpu as wgpu_lib
-                from vllm_webgpu.webgpu.buffer import WebGPUBuffer
                 dev = self.wgpu_device.wgpu_device
                 self._dummy_bias_buf = WebGPUBuffer.empty(
                     dev, 4,

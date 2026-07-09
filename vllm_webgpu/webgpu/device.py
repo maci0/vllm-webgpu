@@ -1,7 +1,8 @@
 from __future__ import annotations
-import logging
 
-logger = logging.getLogger(__name__)
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 _REQUIRED_LIMITS: dict[str, int] = {}
 

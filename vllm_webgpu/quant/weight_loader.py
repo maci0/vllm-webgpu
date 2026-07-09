@@ -1,12 +1,13 @@
 from __future__ import annotations
 import json
-import logging
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
+
+from vllm.logger import init_logger
 
 # AWQ nibble reorder table (Lin et al., AWQ: Activation-aware Weight Quantization,
 # https://arxiv.org/abs/2306.00978, Appendix). Each int32 stores 8 nibbles; the
@@ -20,11 +21,7 @@ _F16_MAX: float = np.finfo(np.float16).max
 
 def _mx_scale_u8_to_f32(ws_u8: "np.ndarray") -> "np.ndarray":
     """Decode E8M0 MX scale exponents to float32: scale = 2^(u8 - 127)."""
-    import torch as _torch
-    from compressed_tensors.compressors.mx_utils import decompress_mx_scale
-    return decompress_mx_scale(
-        _torch.from_numpy(np.ascontiguousarray(ws_u8))
-    ).to(_torch.float32).numpy()
+    return np.exp2(ws_u8.astype(np.float32) - 127.0)
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -44,7 +41,7 @@ def _is_gdn_weight_key(key: str) -> bool:
                            "out_proj", "conv1d")
     )
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 _GGUF_MAGIC = b"GGUF"
 
@@ -1330,7 +1327,7 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
                     # Not actually an int4 weight; upload as plain float.
                     processed.discard(sk)
                     processed.discard(bk)
-                    arr = t.numpy() if t.dtype == _torch.float16 else np.clip(t.to(_torch.float32).numpy(), -_F16_MAX, _F16_MAX).astype(np.float16)
+                    arr = _torch_to_f16_numpy(t)
                     local_key = wk.removeprefix("language_model.")
                     weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
                     continue

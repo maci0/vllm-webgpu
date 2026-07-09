@@ -27,6 +27,10 @@ class WebGPUConfig:
                 f"VLLM_WEBGPU_POWER_PREFERENCE={self.power_preference!r}. "
                 f"Valid: {sorted(VALID_POWER_PREFERENCES)}"
             )
+        if self.block_size <= 0:
+            raise ValueError(
+                f"VLLM_WEBGPU_BLOCK_SIZE={self.block_size!r} must be a positive integer."
+            )
 
     @property
     def is_auto_memory(self) -> bool:
