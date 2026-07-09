@@ -38,9 +38,8 @@ from transformers import AutoConfig
 hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
 num_layers = hf_cfg.num_hidden_layers
-from vllm.config.utils import getattr_iter as _getattr_iter
-head_dim = _getattr_iter(hf_cfg, ('head_dim', 'hidden_size_per_head'),
-                         default_factory=lambda: hf_cfg.hidden_size // hf_cfg.num_attention_heads)
+from vllm.transformers_utils.model_arch_config_convertor import ModelArchConfigConvertorBase as _MACConvertor
+head_dim = _MACConvertor(hf_cfg, hf_cfg).get_head_size()
 
 print(f"Architecture: {arch}")
 
@@ -215,7 +214,6 @@ if stats:
                         _mlp_idx += 1
                     else:
                         layer_inter = inter_sz
-                        _mlp_idx += 1
                     # NemotronH '-' (mlp) layers: up_proj + down_proj only (relu^2, no gate_proj).
                     layer_ffn_matrices = 2 if (lt == 'mlp' and 'NemotronH' in arch) else ffn_matrices
                     total_w_bytes += 2 * (hid * layer_inter * layer_ffn_matrices)

@@ -224,12 +224,10 @@ class WebGPUModelRunner:
         if lp_list:
             head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
             num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)
-        if FullAttentionSpec is not None:
-            return FullAttentionSpec(
-                block_size=block_size, num_kv_heads=num_kv_heads,
-                head_size=head_dim, dtype=torch.float16,
-            ).page_size_bytes
-        return block_size * num_kv_heads * head_dim * 2 * 2  # K + V, f16 fallback
+        return FullAttentionSpec(
+            block_size=block_size, num_kv_heads=num_kv_heads,
+            head_size=head_dim, dtype=torch.float16,
+        ).page_size_bytes
 
     def warm_up(self) -> None:
         if self.model is not None:
@@ -326,7 +324,7 @@ class WebGPUModelRunner:
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = logprobs_data and any(d is not None for d in logprobs_data)
-        if LogprobsTensors is not None and has_topk:
+        if has_topk:
             non_none = [d for d in logprobs_data if d is not None]
             max_k = max(d.logprob_token_ids.shape[1] for d in non_none)
             pieces = []

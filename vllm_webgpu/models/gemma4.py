@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -361,7 +361,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), logits_buf],
                            {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
                             **self._quant_extra(_lm_base, uq_lm)},
-                           ((vocab + 255) // 256, 1, 1))
+                           _rows_wg(vocab))
 
             if self.softcap is not None and self.softcap > 0:
                 capped_buf = pre["capped"]
@@ -802,13 +802,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                  self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), b["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
                  **self._quant_extra(_lm_base, uq_lm)},
-                ((vocab + 255) // 256, 1, 1))
+                _rows_wg(vocab))
 
             if self.softcap is not None and self.softcap > 0:
                 self._dispatch(
                     "logit_softcap", [b["logits"], b["capped"]],
                     {"VOCAB": vocab, "CAP": float(self.softcap)},
-                    ((vocab + 255) // 256, 1, 1),
+                    _rows_wg(vocab),
                     shader_subdir="gemma")
                 result_buf = b["capped"]
             else:
@@ -896,13 +896,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                  self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), pre["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
                  **self._quant_extra(_lm_base, uq_lm)},
-                ((vocab + 255) // 256, 1, 1))
+                _rows_wg(vocab))
 
             if self.softcap is not None and self.softcap > 0:
                 self._dispatch(
                     "logit_softcap", [pre["logits"], pre["capped"]],
                     {"VOCAB": vocab, "CAP": float(self.softcap)},
-                    ((vocab + 255) // 256, 1, 1),
+                    _rows_wg(vocab),
                     shader_subdir="gemma")
                 result_buf = pre["capped"]
             else:

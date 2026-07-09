@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -199,17 +198,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def _postprocess_weights(self) -> None:
         """Post-load weight transformations for full-attn layers:
 
-        0. Tile q_norm/k_norm via super()._postprocess_weights() (handles all layers gracefully).
         1. Detect GEMMA_NORM format: deviation (safetensors, mean≈0) vs absolute (MLX, mean≈1).
         2. When attn_output_gate=True: split q_proj.weight [2*q_dim, hidden] into
            q_proj.weight [q_dim, hidden] (Q part) and q_gate_proj.weight [q_dim, hidden]
            (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
+
+        Note: q_norm/k_norm tiling is handled at load time via _weight_transforms
+        (registered in LlamaWebGPUModel.__init__) for all checkpoint formats.
         """
         dev = self.wgpu_device.wgpu_device
-
-        # Tile q_norm/k_norm weights via the parent implementation. Linear-attn layers
-        # have no norm keys, so the parent loop skips them gracefully.
-        super()._postprocess_weights()
 
         # Detect norm weight format from the first input_layernorm weight.
         for ln_i in range(min(self.num_layers, 4)):
@@ -281,8 +278,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        ssm_bytes  = math.prod(ssm_shape) * 4   # f32
-        conv_bytes = math.prod(conv_shape) * 2   # f16
+        ssm_bytes  = int(np.prod(ssm_shape)) * 4   # f32
+        conv_bytes = int(np.prod(conv_shape)) * 2   # f16
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers
@@ -707,7 +704,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         # QKV projections (always separate; fused_qkv is incompatible with attn_output_gate).
-        self._qkv_proj(normed_x, layer_idx)  # fills sc['q_buf'], sc['k_buf'], sc['v_buf']
+        _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx)
 
         # When attn_output_gate=True, q_proj.weight was split at load time.
         # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].
@@ -735,10 +732,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                       "ROTARY_DIM": self._rotary_dim,
                       "INTERLEAVED": self._rope_interleaved}
         if _q_norm_w is not None and _k_norm_w is not None:
-            # fused_qk_norm_rope with K_SEPARATE=1: Q in q_buf, K in k_buf (separate buffers).
+            # fused_qk_norm_rope with K_SEPARATE=1: Q in _q_src, K in _k_src (separate buffers).
             self._dispatch("fused_qk_norm_rope",
-                           [sc["q_buf"], _q_norm_w, _k_norm_w, pos_buf,
-                            sc["q_rope"], sc["k_rope"], sc["k_buf"], _freq_buf],
+                           [_q_src, _q_norm_w, _k_norm_w, pos_buf,
+                            sc["q_rope"], sc["k_rope"], _k_src, _freq_buf],
                            {**_rope_base,
                             "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": self.num_kv_heads,
@@ -748,8 +745,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                            (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
         else:
             for src, dst, n_heads, norm_w in [
-                (sc["q_buf"], sc["q_rope"], self.num_q_heads, _q_norm_w),
-                (sc["k_buf"], sc["k_rope"], self.num_kv_heads, _k_norm_w),
+                (_q_src, sc["q_rope"], self.num_q_heads, _q_norm_w),
+                (_k_src, sc["k_rope"], self.num_kv_heads, _k_norm_w),
             ]:
                 if norm_w is not None:
                     self._dispatch("fused_per_head_norm_rope",
@@ -762,9 +759,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                    {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 0},
                                    (n_heads, num_tokens, 1))
 
-        # Fused K+V cache store. V always lives in its own sc["v_buf"] (no offset needed).
+        # Fused K+V cache store. V always lives in its own _v_src buffer (no offset needed).
         self._dispatch("kv_cache_store_both",
-                       [sc["k_rope"], k_cache, sc["v_buf"], v_cache, slot_map],
+                       [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
                        {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
                         "HEAD_DIM": self.head_dim, "V_IN_OFFSET": 0},
                        (num_tokens, self.num_kv_heads, 1))
@@ -777,13 +774,13 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                        (self.num_q_heads, 1, 1))
 
         # Apply attention output gate: gated = sigmoid(gate) * attn_out.
-        # q_buf is free at this point (last read in RoPE), reused as the gated output.
-        if self._attn_output_gate and gate_w is not None:
+        # _q_src is free at this point (last read in RoPE), reused as the gated output.
+        if gate_w is not None:
             gate_n = num_tokens * q_dim
             self._dispatch("sigmoid_gate",
-                           [sc["q_gate_buf"], sc["attn_out"], sc["q_buf"]],
+                           [sc["q_gate_buf"], sc["attn_out"], _q_src],
                            {"N": gate_n}, _vec4_wg(gate_n))
-            o_proj_in = sc["q_buf"]
+            o_proj_in = _q_src
         else:
             o_proj_in = sc["attn_out"]
 

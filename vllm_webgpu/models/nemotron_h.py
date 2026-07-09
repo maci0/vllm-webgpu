@@ -7,7 +7,7 @@ import numpy as np
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import _ELEM_BYTES
 
 if TYPE_CHECKING:
@@ -531,7 +531,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              pre["logits"]],
             {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0,
              **self._quant_extra(lm_key.removesuffix(".weight"), uq)},
-            ((vocab + 255) // 256, 1, 1),
+            _rows_wg(vocab),
         )
         greedy = self._greedy_decode
         if greedy:
@@ -761,7 +761,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._conv_states[layer_idx], sc["mamba_conv_out"]],
             {"CONV_DIM": CD, "KERNEL": self.conv_kernel,
              "WG_SIZE": 256, "HAS_BIAS": has_bias},
-            ((CD + 255) // 256, 1, 1),
+            _rows_wg(CD),
         )
 
         # Step 3: Mamba-2 SSM state update.
@@ -910,7 +910,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "relu_sq",
             [sc["up_buf"], sc["ffn_act"]],
             {"N": relu_n, "WG_SIZE": 256},
-            ((relu_n + 255) // 256, 1, 1),
+            _rows_wg(relu_n),
         )
 
         # down_proj: intermediate -> hidden

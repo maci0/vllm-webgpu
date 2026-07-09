@@ -101,12 +101,12 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             print(f"  Last prefill logit: argmax={last_token}")
     else:
         _logits_last = logits[-1]
+        _best = int(np.argmax(_logits_last))
         last_token = (
             sample_token(_logits_last, temperature=temperature, top_p=top_p)
             if temperature > 0.0
-            else int(np.argmax(_logits_last))
+            else _best
         )
-        _best = int(np.argmax(_logits_last))
         print(f"  Last prefill logit: argmax={_best}, value={float(_logits_last[_best]):.2f}, "
               f"std={float(_logits_last.std()):.2f}")
 

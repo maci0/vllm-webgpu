@@ -166,45 +166,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             rope_scaling.get("original_max_position_embeddings", 4096),
         )
 
-    def _postprocess_weights(self) -> None:
-        """Fix weight shapes that differ between model variants.
-
-        Qwen3's q_norm/k_norm weights are shared across all heads: shape (head_dim,).
-        Our fused_per_head_norm_rope shader indexes weight[head_idx * HEAD_DIM + i],
-        expecting shape (num_heads * head_dim,). Tile if the loaded shape is just (head_dim,).
-        """
-        if not any('q_norm.weight' in k for k in self.weights):
-            return
-
-        for i in range(self.num_layers):
-            p = f"model.layers.{i}"
-            for norm_key, num_heads in [
-                (f"{p}.self_attn.q_norm.weight", self.num_q_heads),
-                (f"{p}.self_attn.k_norm.weight", self.num_kv_heads),
-            ]:
-                buf = self.weights.get(norm_key)
-                if buf is None:
-                    continue
-                expected = (num_heads * self.head_dim,)
-                if buf.shape == expected:
-                    continue  # already tiled at load time via _weight_transforms
-                # Fallback: weight arrived with unexpected shape (e.g. after MLX load
-                # which bypasses the transform path). Re-tile via GPU roundtrip.
-                if buf.shape == (self.head_dim,):
-                    dev = self.wgpu_device.wgpu_device
-                    raw = buf.to_numpy()
-                    assert buf.dtype == 'f16', (
-                        f"{norm_key}: expected f16 buffer, got {buf.dtype}; "
-                        "reinterpret-cast would corrupt weights"
-                    )
-                    tiled = np.tile(np.frombuffer(raw, dtype=np.float16), num_heads)
-                    self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled)
-                else:
-                    raise ValueError(
-                        f"{norm_key}: unexpected shape {buf.shape}, "
-                        f"expected {expected} or ({self.head_dim},)"
-                    )
-
     def _decode_setup(
         self,
         input_ids: "np.ndarray",
@@ -267,7 +228,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
-        self._postprocess_weights()
 
     def forward(
         self,

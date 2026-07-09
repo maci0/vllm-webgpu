@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
+from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
 
 if TYPE_CHECKING:
@@ -161,7 +161,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "h1":         mk(T * H * 4),
             "h2":         mk(T * H * 4),
         }
-        self._dummy_scales_buf: "WebGPUBuffer" = mk(4)
         self._hstate: int = 0
 
     # ── Weight key helpers ───────────────────────────────────────────────────
@@ -281,7 +280,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [norm_out, lm_head_w, sc_lm, logits_buf],
                                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
                                 **self._quant_extra(_lm_base, uq_lm)},
-                               ((vocab + 255) // 256, 1, 1))
+                               _rows_wg(vocab))
 
             if self.softcap is not None and self.softcap > 0:
                 capped = self._pre["capped"]

@@ -61,8 +61,12 @@ def compute_yarn_freqs(
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
     Uses only public vLLM helpers from vllm.model_executor.layers.rotary_embedding.common.
-    The _compute_inv_freq body is inlined here so that internal refactoring of
-    YaRNScalingRotaryEmbedding cannot break frequency computation.
+    The six-line combining formula (pos_freqs → inv_freq_extrapolation/inv_freq_interpolation
+    → inv_freq_mask → inv_freq) is inlined from
+    YaRNScalingRotaryEmbedding._compute_inv_freq in
+    vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py so that
+    internal refactoring of that private method cannot silently break frequency
+    computation here. Verify against that method on each vLLM version bump.
 
     Args:
         head_dim:    Full attention head dimension.

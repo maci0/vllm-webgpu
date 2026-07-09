@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -168,7 +168,8 @@ def load_safetensors_weights_sharded(
     if any(k.endswith(".biases") for k in weight_map):
         if f32_keys:
             raise ValueError("f32_keys is not supported for mlx_int4 format")
-        return load_mlx_weights(model_dir, wgpu_device, weight_map=weight_map)
+        return load_mlx_weights(model_dir, wgpu_device, weight_map=weight_map,
+                                weight_transforms=weight_transforms)
 
     shard_files = sorted(set(weight_map.values()))
     weights: dict = {}
@@ -1292,7 +1293,8 @@ def _dequant_mlx_int4(
         return scales_bc * nibbles + biases_bc
 
 
-def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = None) -> dict:
+def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = None,
+                     weight_transforms: "dict | None" = None) -> dict:
     """Load MLX affine int4 safetensors weights, dequantize to f16, upload to GPU.
 
     weight_map: when supplied by the caller (e.g. load_safetensors_weights_sharded
@@ -1311,10 +1313,15 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
 
     config_path = p / "config.json"
     raw_cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
-    # Use _load_quant_cfg for the standard cascade (quantization_config,
-    # text_config.quantization_config, compression_config), then fall back to
-    # the MLX-specific "quantization" key that compressed_tensors does not handle.
-    quant_section = _load_quant_cfg(config_path) or raw_cfg.get("quantization") or {}
+    # Inline the compressed_tensors cascade plus the MLX-specific "quantization"
+    # fallback in one pass over raw_cfg, avoiding a second file open.
+    quant_section = (
+        raw_cfg.get("quantization_config")
+        or raw_cfg.get("text_config", {}).get("quantization_config")
+        or raw_cfg.get("compression_config")
+        or raw_cfg.get("quantization")
+        or {}
+    )
     group_size = int(quant_section.get("group_size") or 64)
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
@@ -1395,6 +1402,8 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                     continue
                 arr = _torch_to_f16_numpy(t)
                 local_key = key.removeprefix("language_model.")
+                if weight_transforms and local_key in weight_transforms:
+                    arr = weight_transforms[local_key](arr)
                 weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
 
     _apply_multimodal_remap(weights)
