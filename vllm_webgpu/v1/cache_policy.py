@@ -192,7 +192,8 @@ def _make_convertor(hf_cfg):
         MODEL_ARCH_CONFIG_CONVERTORS,
         ModelArchConfigConvertorBase,
     )
-    hf_text = getattr(hf_cfg, "text_config", hf_cfg)
+    from vllm.transformers_utils.config import get_hf_text_config
+    hf_text = get_hf_text_config(hf_cfg)
     return MODEL_ARCH_CONFIG_CONVERTORS.get(
         getattr(hf_cfg, "model_type", ""), ModelArchConfigConvertorBase
     )(hf_cfg, hf_text)

@@ -264,7 +264,7 @@ class WebGPUModelRunner:
                 queue.write_buffer(v_buf.buf, offset, zeros)
 
     def execute_model(self, scheduler_output: "SchedulerOutput") -> None:
-        if getattr(scheduler_output, "has_structured_output_requests", False):
+        if scheduler_output.has_structured_output_requests:
             raise NotImplementedError(
                 "Guided/constrained decoding is not supported on the WebGPU backend. "
                 "The WebGPU argmax path discards the logit distribution required for "

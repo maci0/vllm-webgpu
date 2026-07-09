@@ -148,8 +148,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "v_normed":   mk(T * max_kv_dim * 2),
             "q_rope":     mk(T * max_q_dim * 2),
             "k_rope":     mk(T * max_kv_dim * 2),
-            "scores_buf": mk(NQ * max_ctx * 2),
-            "sm_buf":     mk(NQ * max_ctx * 2),
+            "scores_buf": mk(NQ * getattr(self.model_config, "canvas_length", 256) * 2),
+            "sm_buf":     mk(NQ * getattr(self.model_config, "canvas_length", 256) * 2),
             "attn_out":   mk(T * max_q_dim * 2),
             "o_proj_out": mk(T * H * 2),
             "ffn_normed": mk(T * H * 2),
@@ -841,26 +841,4 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         self._hstate = (self._hstate + 2) % 3
         return out
 
-    # ── Superseded Gemma4 batch-prefill paths ────────────────────────────────
-    # The parent class routes multi-token inputs through _prefill_batch_forward
-    # and _prefill_sequential_fallback from Gemma4WebGPUModel.forward() (line 289).
-    # DiffusionGemmaWebGPUModel.forward() fully replaces that entry point and
-    # handles all token counts natively in _decoder_layer.  These overrides exist
-    # solely to prevent a future caller from accidentally reaching the Gemma4
-    # implementations, which carry incompatible weight-key assumptions
-    # (model.layers.* vs model.decoder.layers.*) and would silently produce
-    # wrong results or KeyErrors.
-
-    def _prefill_batch_forward(self, *args, **kwargs):
-        raise NotImplementedError(
-            "DiffusionGemma prefill runs through forward() / _decoder_layer, not "
-            "_prefill_batch_forward. Parent's implementation uses model.layers.* keys "
-            "which are wrong for this model (model.decoder.layers.*)."
-        )
-
-    def _prefill_sequential_fallback(self, *args, **kwargs):
-        raise NotImplementedError(
-            "DiffusionGemma prefill runs through forward() / _decoder_layer, not "
-            "_prefill_sequential_fallback."
-        )
 

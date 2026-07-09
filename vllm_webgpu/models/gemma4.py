@@ -1017,8 +1017,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         _v_src = sc["k_buf"]  # global attention: V = K
                     _k_src = sc["k_buf"]
                 else:
-                    _k_src = sc["k_buf"]   # unused in KV-shared path
-                    _v_src = sc["k_buf"]   # unused in KV-shared path
+                    pass  # KV-shared path: _k_src/_v_src are not used
                 _q_src = sc["q_buf"]
                 _v_src_offset = 0
 

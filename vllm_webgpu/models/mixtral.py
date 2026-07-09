@@ -292,8 +292,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 layer_idx, expert_indices,
                 [f"{w:.3f}" for w in expert_weights],
             )
-        else:
-            logger.debug("L%02d MoE experts: %s", layer_idx, expert_indices)
 
         # Guard: verify scratch buffers are large enough for both inter sizes.
         # _init_scratch_buffers (or __init__) must allocate with the maximum

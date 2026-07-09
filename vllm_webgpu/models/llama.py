@@ -179,18 +179,36 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         pre = self._pre
         dev = self.wgpu_device.wgpu_device
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
-        dev.queue.write_buffer(
-            pre["slot_map"].buf, 0,
-            np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = self._bt_arr(attn_metadata)
-        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+        self._write_token_bufs(
+            input_ids, positions,
+            np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes(),
+            bt_arr.tobytes(),
+        )
         ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len is not None else int(positions[-1]) + 1
         return (
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
         )
+
+    def _write_token_bufs(
+        self,
+        ids_1d: "np.ndarray",
+        pos_1d: "np.ndarray",
+        slot_1d: bytes,
+        bt_bytes: bytes,
+    ) -> None:
+        """Write the four per-token input buffers (ids, pos, slot_map, bt).
+
+        Extracted so _decode_setup and _prefill_sequential_fallback share the
+        same write pattern without duplicating queue.write_buffer calls.
+        """
+        pre = self._pre
+        dev = self.wgpu_device.wgpu_device
+        dev.queue.write_buffer(pre["ids"].buf,      0, ids_1d.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf,      0, pos_1d.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_1d)
+        dev.queue.write_buffer(pre["bt"].buf,       0, bt_bytes)
 
     def _decode_teardown(
         self,
@@ -584,10 +602,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             pos_t  = positions[t : t + 1]
             slot_t = np.array(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32)
 
-            dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32, copy=False).tobytes())
-            dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32, copy=False).tobytes())
-            dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
-            dev.queue.write_buffer(pre["bt"].buf,       0, bt_bytes)
+            self._write_token_bufs(ids_t, pos_t, slot_t.tobytes(), bt_bytes)
 
             with self._batched_dispatch():
                 self._dispatch(

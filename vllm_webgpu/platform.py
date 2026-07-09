@@ -8,10 +8,11 @@ from vllm.logger import init_logger
 from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
 from vllm.utils.mem_utils import get_cpu_memory
 
+from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE
+
 if TYPE_CHECKING:
     import torch
     from vllm.config import VllmConfig
-    from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE
     from vllm.v1.attention.selector import AttentionSelectorConfig
 
 logger = init_logger(__name__)
@@ -129,7 +130,7 @@ class WebGPUPlatform(_Platform):
         attn_selector_config: AttentionSelectorConfig,
         num_heads: int | None = None,
     ) -> str:
-        return "vllm.v1.attention.backends.cpu_attn.CPUAttentionBackend"
+        return _ABE.CPU_ATTN.get_path()
 
     @classmethod
     def is_pin_memory_available(cls) -> bool:

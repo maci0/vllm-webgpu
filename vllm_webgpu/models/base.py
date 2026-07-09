@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from transformers.utils import SAFE_WEIGHTS_NAME as _SAFE_WEIGHTS_NAME
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -315,6 +315,48 @@ class BaseWebGPUModel(ABC):
     def _quant_info(self, base_key: str) -> dict:
         """Return quantization metadata for a weight base key, or empty dict."""
         return self.weights.get("__quant_meta__", {}).get(base_key, {})
+
+    def _readback_recurrent_states(
+        self, bufs: "list[tuple[str, int, object]]"
+    ) -> "dict[str, dict]":
+        """Copy an iterable of (kind, layer_idx, WebGPUBuffer) triples to CPU.
+
+        All buffers are batched into a single staging buffer and submitted in
+        one command encoder, avoiding N separate GPU-to-CPU round trips.
+
+        Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
+        Subclasses build the `bufs` list from their own buffer collections
+        (dict.items() for NemotronH, enumerate() with None-guard for Qwen35).
+        """
+        import wgpu
+        dev = self.wgpu_device.wgpu_device
+
+        if not bufs:
+            return {"conv": {}, "ssm": {}}
+
+        offsets: list[int] = []
+        total = 0
+        for _, _, buf in bufs:
+            offsets.append(total)
+            total += buf.nbytes
+
+        staging = dev.create_buffer(
+            size=max(total, 4),
+            usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ,
+        )
+        enc = dev.create_command_encoder()
+        for (_, _, buf), off in zip(bufs, offsets):
+            enc.copy_buffer_to_buffer(buf.buf, 0, staging, off, buf.nbytes)
+        dev.queue.submit([enc.finish()])
+
+        staging.map_sync(mode=wgpu.MapMode.READ)
+        raw = bytes(staging.read_mapped())
+        staging.unmap()
+
+        result: dict[str, dict] = {"conv": {}, "ssm": {}}
+        for (kind, i, buf), off in zip(bufs, offsets):
+            result[kind][i] = raw[off : off + buf.nbytes]
+        return result
 
     # ── GPU sampler helpers ───────────────────────────────────────────────────
 

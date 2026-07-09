@@ -335,13 +335,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def save_recurrent_states(self) -> dict:
         """Snapshot all GDN conv/SSM state buffers to CPU in one GPU readback.
 
-        All layer buffers are copied into a single staging buffer in one command
-        encoder submission, avoiding N separate GPU-to-CPU round trips.
         Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
         """
-        import wgpu
-        dev = self.wgpu_device.wgpu_device
-
         bufs: list[tuple[str, int, object]] = []
         for i, buf in enumerate(self._conv_gpu):
             if buf is not None:
@@ -349,33 +344,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         for i, buf in enumerate(self._ssm_gpu):
             if buf is not None:
                 bufs.append(("ssm", i, buf))
-
-        if not bufs:
-            return {"conv": {}, "ssm": {}}
-
-        offsets: list[int] = []
-        total = 0
-        for _, _, buf in bufs:
-            offsets.append(total)
-            total += buf.nbytes
-
-        staging = dev.create_buffer(
-            size=max(total, 4),
-            usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ,
-        )
-        enc = dev.create_command_encoder()
-        for (_, _, buf), off in zip(bufs, offsets):
-            enc.copy_buffer_to_buffer(buf.buf, 0, staging, off, buf.nbytes)
-        dev.queue.submit([enc.finish()])
-
-        staging.map_sync(mode=wgpu.MapMode.READ)
-        raw = bytes(staging.read_mapped())
-        staging.unmap()
-
-        result: dict[str, dict] = {"conv": {}, "ssm": {}}
-        for (kind, i, buf), off in zip(bufs, offsets):
-            result[kind][i] = raw[off : off + buf.nbytes]
-        return result
+        return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:
         """Write saved state bytes back into GDN conv/SSM GPU buffers.
@@ -426,15 +395,16 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         that are mutated in-place each call.
 
         Pipeline:
-          1. rms_norm(x)                   → normed        [hidden f16]
-          2. matmul_quant(normed, qkv_w)   → qkv_buf       [8192 f16]
-          3. causal_conv_step(qkv_buf)     → qkv_conv      [8192 f16], updates conv_state
-          4. matmul_quant(x, a_proj_w)     → a_buf         [32 f16]
-          5. matmul_quant(x, z_proj_w)     → z_buf         [4096 f16]
-          6. gdn_state_update(qkv_conv, a) → gdn_out       [4096 f16], updates ssm_state
-          7. linear_attn_norm_gate(gdn,z)  → gated         [4096 f16]
-          8. matmul_quant(gated, out_proj) → out_buf       [hidden f16]
-          9. add(x, out_buf)               → residual
+          1. normed_x is passed in pre-normed by caller
+          2. matmul_quant(normed_x, qkv_w)   → qkv_buf    [8192 f16]
+          3. causal_conv_step(qkv_buf)        → qkv_conv   [8192 f16], updates conv_state
+          4. matmul_quant(normed_x, a_proj_w) → a_buf      [32 f16]
+          5a. matmul_quant(normed_x, b_proj_w) → b_buf     [K_HEADS f16]
+          5b. matmul_quant(normed_x, z_proj_w) → z_buf     [4096 f16]
+          6. gdn_state_update(qkv_conv, a)    → gdn_out    [4096 f16], updates ssm_state
+          7. linear_attn_norm_gate(gdn,z)     → gated      [4096 f16]
+          8. matmul_quant(gated, out_proj)    → out_buf    [hidden f16]
+          9. add(x, out_buf)                  → residual
           10. FFN (rms_norm → gate/up → gelu → down → add)
         """
         sc = self._sc
