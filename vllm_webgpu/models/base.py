@@ -200,10 +200,9 @@ class BaseWebGPUModel(ABC):
         self._active_encoder = encoder
         try:
             yield
-            if self.profiling and label:
-                t0 = time.perf_counter()
             dev.queue.submit([encoder.finish()])
             if self.profiling and label:
+                t0 = time.perf_counter()
                 dev.queue.on_submitted_work_done_sync()
                 self._prof_stats[label].append((time.perf_counter() - t0) * 1000.0)
         finally:
