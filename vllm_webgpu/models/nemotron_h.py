@@ -617,14 +617,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         num_tokens = len(input_ids)
         self._hstate = 0
 
-        if (
-            hasattr(attn_metadata, "block_tables")
-            and len(attn_metadata.block_tables) > 1
-        ):
-            raise RuntimeError(
-                f"multi-sequence batching not supported: "
-                f"{len(attn_metadata.block_tables)} block tables"
-            )
+        self._check_single_sequence(attn_metadata)
 
         vocab = self.vocab_size
 

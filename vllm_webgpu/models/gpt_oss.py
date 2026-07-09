@@ -36,6 +36,10 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._attn_bias: bool = bool(getattr(model_config, "attention_bias", False))
         self._layer_types: list[str] = getattr(model_config, "layer_types", None) or []
         self._clamp_extra: dict = {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
+        self._moe_inter: int = (
+            getattr(model_config, "moe_intermediate_size", None)
+            or model_config.intermediate_size
+        )
 
         # _prefill_batch_forward bypasses _attn_block entirely, so it cannot
         # apply attention biases or per-layer layer_types context overrides.
@@ -45,7 +49,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # CTX_LEN to flash_attn_decode and wraps to max-u32 on the GPU side.
         self._force_sequential_prefill: bool = bool(self._attn_bias or self._layer_types)
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-        self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or self.intermediate_size
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.

@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -125,6 +124,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # dimension validation, then calls self._init_scratch_buffers() and
         # self._init_rope_freq_buf().
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
+
+        # Seed _rms_consts with GEMMA_NORM so all add_rms_norm dispatches (including
+        # GDN layers, which read _rms_consts directly) have the constant from the moment
+        # the object is constructed. _postprocess_weights updates it after load_weights()
+        # detects the actual format from the checkpoint weights.
+        self._rms_consts["GEMMA_NORM"] = self._gemma_norm
 
         # Mixtral.__init__ reads num_local_experts (0 for Qwen35) and overwrites _is_moe.
         # Re-assert the correct values from Qwen35-specific config fields.
@@ -266,23 +271,14 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         """
         dev = self.wgpu_device.wgpu_device
 
-        # Use vLLM's canonical shape calculator (same pattern as nemotron_h.py).
-        # gdn_state_update.wgsl lays out state as [NUM_V_HEADS, K_DIM, V_DIM] f32,
-        # while vLLM returns (num_v_heads, head_v_dim, head_k_dim), with the inner two
-        # dims transposed relative to the shader's stride order.  The byte
-        # allocation is identical regardless (multiplication is commutative), so the
-        # buffers sized here are correct.  The stride difference only matters inside
-        # the shader's index arithmetic, which is a separate concern.
-        conv_shape, ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            tp_world_size=1,
-            num_k_heads=self._lin_k_heads,
-            num_v_heads=self._lin_v_heads,
-            head_k_dim=self._lin_k_dim,
-            head_v_dim=self._lin_v_dim,
-            conv_kernel_size=self._lin_conv_kernel,
-        )
-        ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
-        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        # Byte sizes derived directly from architecture dimensions.
+        # Reference: MambaStateShapeCalculator.gated_delta_net_state_shape returns
+        # conv_shape=(conv_kernel-1, conv_dim) and ssm_shape=(v_heads, v_dim, k_dim);
+        # the product of each is unchanged regardless of tuple ordering.
+        # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, K_DIM, V_DIM] f32
+        # (inner two dims transposed vs. vLLM's shape) — bytes are the same.
+        ssm_bytes  = self._lin_v_heads * self._lin_v_dim * self._lin_k_dim * _ELEM_BYTES["f32"]
+        conv_bytes = (self._lin_conv_kernel - 1) * self._lin_conv_dim * _ELEM_BYTES["f16"]
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers
@@ -749,8 +745,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         num_tokens = len(input_ids)
 
-        if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
-            raise RuntimeError("multi-sequence batching not supported in this build")
+        self._check_single_sequence(attn_metadata)
 
         if num_tokens > 1:
             return self._prefill_chunked_forward(

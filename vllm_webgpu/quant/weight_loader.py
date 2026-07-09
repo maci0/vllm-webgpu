@@ -51,12 +51,11 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
     bases = {
-        base
+        k.removesuffix(".weight")
         for k in header
         if k.endswith(".weight")
         and header[k].get("dtype") == "U8"
-        and (base := k.removesuffix(".weight"))
-        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
+        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
     }
     return sorted(bases)
 
@@ -487,7 +486,6 @@ def load_safetensors_weights(
         # pack-quantized INT4 format where weight dtype alone is insufficient).
         # Use the caller-supplied ct_meta when available to avoid re-parsing per shard.
         _config_json = Path(path).parent / "config.json"
-        _raw_quant_cfg = _load_quant_cfg(_config_json) if _config_json.exists() else {}
         if ct_meta is None:
             ct_meta = detect_compressed_tensors_fmt(_config_json)
 
@@ -579,6 +577,7 @@ def load_safetensors_weights(
             fmt = "bnb_nf4"
         elif has_mx_u8_pair:
             # MXFP4 or MXFP8: U8 weight + U8 exponent scale. Distinguish via config files.
+            _raw_quant_cfg = _load_quant_cfg(_config_json) if _config_json.exists() else {}
             _mx = _detect_mx_quant(Path(path).parent, quant_cfg=_raw_quant_cfg)
             fmt = _mx if _mx in ("mxfp4", "mxfp8") else "plain"
         elif has_ct_pack_int4:
@@ -1404,6 +1403,8 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                     arr = weight_transforms[local_key](arr)
                 weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
 
-    _apply_multimodal_remap(weights)
+    n_remapped = _apply_multimodal_remap(weights)
+    if n_remapped:
+        logger.info("Remapped %d language_model.* keys", n_remapped)
     logger.info("Loaded %d tensors from MLX int4 dir %s", len(weights), model_dir)
     return weights

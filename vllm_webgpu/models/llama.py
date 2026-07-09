@@ -270,14 +270,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         hidden = self.hidden_size
         self._hstate = 0
 
-        if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
-            # Each forward() call handles exactly one sequence. The model runner
-            # calls forward() once per decode request. Batching N sequences requires
-            # N separate pre-alloc buffer sets and per-sequence attention dispatch.
-            raise RuntimeError(
-                f"multi-sequence batching not supported: got {len(attn_metadata.block_tables)} "
-                "block tables; call forward() once per decode request"
-            )
+        self._check_single_sequence(attn_metadata)
 
         vocab = self.vocab_size
         _rms_base = self._rms_consts
@@ -388,7 +381,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "logits":    alloc(vocab),
         }
 
-        slot_map_arr = np.array(attn_metadata.slot_mapping, dtype=np.uint32)
+        slot_map_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
         slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr)
         pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
         ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32, copy=False))

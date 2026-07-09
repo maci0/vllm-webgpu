@@ -44,7 +44,10 @@ def sample_token(
     p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None
     # allow_cpu_sync=True enables the faster partial-topk path (apply_top_k_only)
     # when only top-k is needed (p_t is None). WebGPU tensors always live on CPU.
-    filtered = apply_top_k_top_p_pytorch(logits_t, k_t, p_t, allow_cpu_sync=True)
+    if k_t is not None or p_t is not None:
+        filtered = apply_top_k_top_p_pytorch(logits_t, k_t, p_t, allow_cpu_sync=True)
+    else:
+        filtered = logits_t
 
     generators = {0: torch.Generator().manual_seed(seed)} if seed is not None else {}
 

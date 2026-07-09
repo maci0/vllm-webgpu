@@ -145,6 +145,13 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
+    # Lines below are a direct transcription of YaRNScalingRotaryEmbedding._compute_inv_freq
+    # from vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py (lines 49-73).
+    # Instantiating YaRNScalingRotaryEmbedding.__init__ is impractical here because it calls
+    # _compute_cos_sin_cache(), which builds a [max_pos * factor, rotary_dim] tensor we
+    # don't need. The SHA-256 hash guard above detects upstream drift.
+    # If the guard fires at startup: diff the vLLM source at the path above against these
+    # lines and re-verify the formula before updating _KNOWN_HASH.
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
@@ -308,14 +315,24 @@ class BaseWebGPUModel(ABC):
     def profile_reset(self) -> None:
         self._prof_stats.clear()
 
+    def _check_single_sequence(self, attn_metadata: object) -> None:
+        """Raise RuntimeError if more than one sequence is present in attn_metadata.
+
+        Each forward() call handles exactly one sequence. Batching N sequences
+        requires N separate pre-allocated buffer sets and per-sequence attention
+        dispatch, which is not currently implemented.
+        """
+        if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
+            raise RuntimeError(
+                f"multi-sequence batching not supported: got {len(attn_metadata.block_tables)} "
+                "block tables; call forward() once per decode request"
+            )
+
     def _compute_ctx_len(self, attn_metadata: object, positions: "np.ndarray") -> int:
         """Derive the decode context length from attn_metadata, falling back to position."""
-        ctx_len = int(attn_metadata.max_decode_seq_len
-                      if attn_metadata.max_decode_seq_len is not None
-                      else positions[-1] + 1)
-        if ctx_len <= 0:
-            ctx_len = int(positions[-1]) + 1
-        return ctx_len
+        return int(attn_metadata.max_decode_seq_len
+                   if attn_metadata.max_decode_seq_len is not None
+                   else positions[-1] + 1)
 
     def _bt_arr(self, attn_metadata: object) -> "np.ndarray":
         """Return the block-table as a uint32 numpy array.

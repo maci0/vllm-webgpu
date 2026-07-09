@@ -344,14 +344,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         self._hstate = 0
 
-        if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
-            # Each forward() call handles exactly one sequence. The model runner
-            # calls forward() once per decode request. Batching N sequences requires
-            # N separate pre-alloc buffer sets and per-sequence attention dispatch.
-            raise RuntimeError(
-                f"multi-sequence batching not supported: got {len(attn_metadata.block_tables)} "
-                "block tables; call forward() once per decode request"
-            )
+        self._check_single_sequence(attn_metadata)
 
         # Prefill path: T>1 tokens use matmul_quant_mr4 (batch GEMM) and flash_attn_prefill.
         if num_tokens > 1:

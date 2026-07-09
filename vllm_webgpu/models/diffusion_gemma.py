@@ -219,8 +219,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         vocab = self.vocab_size
         self._hstate = 0
 
-        if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
-            raise RuntimeError("multi-sequence batching not supported in this build")
+        self._check_single_sequence(attn_metadata)
 
         ctx_len = self._compute_ctx_len(attn_metadata, positions)
         if ctx_len > 65535:

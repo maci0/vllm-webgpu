@@ -7,7 +7,6 @@ import torch
 import torch.nn.functional as F  # F.pad used for logprob stacking in _make_model_output
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
