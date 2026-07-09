@@ -202,11 +202,13 @@ if stats:
             inter_list = raw_inter if isinstance(raw_inter, list) else None
 
             total_w_bytes = 0
+            _mlp_idx = 0
             for idx, lt in enumerate(layer_types):
                 if lt == 'attention':
                     total_w_bytes += attn_w
                 elif lt in ('mlp', 'ffn'):
-                    layer_inter = inter_list[idx] if inter_list else inter_sz
+                    layer_inter = inter_list[_mlp_idx] if inter_list else inter_sz
+                    _mlp_idx += 1
                     # NemotronH '-' (mlp) layers: up_proj + down_proj only (relu^2, no gate_proj).
                     layer_ffn_matrices = 2 if (lt == 'mlp' and 'NemotronH' in arch) else ffn_matrices
                     total_w_bytes += 2 * (hid * layer_inter * layer_ffn_matrices)
