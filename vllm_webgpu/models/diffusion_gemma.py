@@ -146,7 +146,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 p = self._layer_key_prefix(i)
                 pes_w = self.weights.get(f"{p}.router.per_expert_scale")
                 if pes_w is not None:
-                    self._pes_cache.append(pes_w.to_numpy().astype(np.float32))
+                    self._pes_cache.append(pes_w.to_numpy().view(np.float16).astype(np.float32))
                 else:
                     self._pes_cache.append(None)
         else:
