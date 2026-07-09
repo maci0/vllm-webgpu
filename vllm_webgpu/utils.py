@@ -5,7 +5,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy as np
+import torch
 from vllm.utils.mem_constants import MiB_bytes
+from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
 
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
@@ -34,9 +36,6 @@ def sample_token(
             a seeded torch.Generator is passed to random_sample so that
             the draw is deterministic and reproducible across runs.
     """
-    import torch
-    from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
-
     if temperature < 1e-5:
         return int(logits_1d.argmax())
 

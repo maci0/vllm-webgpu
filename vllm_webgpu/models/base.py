@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
+from transformers.utils import SAFE_WEIGHTS_NAME as _SAFE_WEIGHTS_NAME
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -108,6 +108,11 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
+    # Formula inlined from YaRNScalingRotaryEmbedding._compute_inv_freq.
+    # On each vLLM version bump, verify this still matches that method:
+    #   from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import YaRNScalingRotaryEmbedding
+    #   ref = YaRNScalingRotaryEmbedding(head_dim, ...).inv_freq.numpy()
+    #   assert np.allclose(ref, compute_yarn_freqs(...)[0], rtol=1e-5)
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     inv_freq_extrapolation = 1.0 / pos_freqs
     inv_freq_interpolation = 1.0 / (factor * pos_freqs)
@@ -288,7 +293,7 @@ class BaseWebGPUModel(ABC):
             load_safetensors_weights_sharded,
         )
         fmt = detect_weight_format(path)
-        transforms = self._weight_transforms or None
+        transforms = self._weight_transforms
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             p = Path(path)

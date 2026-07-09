@@ -34,7 +34,7 @@ pipeline_cache = PipelineCache(wgpu_dev.wgpu_device, SHADERS_DIR)
 model_path = args.model if os.path.isdir(args.model) else snapshot_download(args.model)
 print(f"Model: {model_path}")
 
-from transformers import AutoConfig
+from transformers import AutoConfig, AutoTokenizer
 hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
 arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
 num_layers = hf_cfg.num_hidden_layers
@@ -54,7 +54,6 @@ print(f"Weights loaded in {time.perf_counter()-t0:.1f}s")
 
 # ── Tokenize prompt ──────────────────────────────────────────────────────────
 try:
-    from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     tok_ids = tok.encode(args.prompt)
     print(f"Prompt: {len(tok_ids)} tokens")

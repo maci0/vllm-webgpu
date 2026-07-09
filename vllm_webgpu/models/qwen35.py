@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math
+from itertools import batched
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -662,15 +663,13 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         if greedy:
             self._ensure_sample_buf()
 
-        for chunk_start in range(0, num_tokens, _CHUNK):
-            chunk_end = min(chunk_start + _CHUNK, num_tokens)
-
+        for chunk_toks in batched(range(num_tokens), _CHUNK):
             # Open one encoder for this chunk.
             # Layer method _batched_dispatch calls become re-entrant no-ops
             # because _active_encoder is already set, so all dispatches land here.
             self._active_encoder = dev.create_command_encoder()
 
-            for tc in range(chunk_start, chunk_end):
+            for tc in chunk_toks:
                 ctx_t = int(positions[tc]) + 1
                 ids_buf  = tok_ids_bufs[tc]
                 pos_buf  = tok_pos_bufs[tc]

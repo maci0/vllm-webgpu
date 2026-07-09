@@ -62,7 +62,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nLoading weights (this may take a while)...")
     t0 = time.perf_counter()
     model.load_weights(model_dir)
-    print(f"  Loaded {len(model.weights)} tensors in {time.perf_counter() - t0:.1f}s")
+    print(f"  Loaded {sum(1 for k in model.weights if not k.startswith('__'))} tensors in {time.perf_counter() - t0:.1f}s")
 
     # KV cache
     from vllm_webgpu.config import get_config

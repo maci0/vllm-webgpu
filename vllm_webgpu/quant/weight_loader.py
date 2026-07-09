@@ -265,17 +265,15 @@ def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
     )
 
 
-def _awq_qzeros_symmetric(qzeros: np.ndarray) -> bool:
-    """Return True only when every AWQ qzero nibble is exactly 8 (symmetric midpoint).
+def _qzeros_symmetric(qzeros: np.ndarray) -> bool:
+    """Return True when every int32 word in qzeros equals 0x88888888.
 
-    AWQ packs zero-points with nibble order [0,4,1,5,2,6,3,7], i.e. bit
-    offsets [0,16,4,20,8,24,12,28].  Symmetric checkpoints produced by
-    standard AWQ have all zero-points equal to 8 (midpoint of uint4).
-    All-zero qzeros encode zero_point=0, which the GPU shader cannot handle
-    correctly because the shader hardcodes `nibble - 8` and never receives
-    qzeros. Those checkpoints must fall through to CPU dequantisation.
-    Any other value means the checkpoint uses per-group asymmetric zeros
-    and must also fall back to CPU dequantisation.
+    0x88888888 encodes every nibble as 8, the uint4 midpoint and the
+    zero-point for symmetric int4 quantization. This check is valid for
+    both AWQ and GPTQ packing orders because 0x88888888 encodes all nibbles
+    as 8 regardless of interleaving. Checkpoints with all-zero qzeros
+    (zero_point=0) or any per-group asymmetric zeros cannot use the GPU
+    shader path and must fall back to CPU dequantization.
     """
     return bool(np.all(qzeros == _SYM_ZEROS_INT32))
 
@@ -798,7 +796,7 @@ def load_safetensors_weights(
                     # GPU dequant path: upload raw quantized data directly.
                     # GPTQ qweight [K//8, N] is transposed to [N, K//8] so all 256
                     # threads in split-K read consecutive INT32s (coalesced access).
-                    if fmt == "gptq" and g_idx is None and (qz is None or _awq_qzeros_symmetric(qz)):
+                    if fmt == "gptq" and g_idx is None and (qz is None or _qzeros_symmetric(qz)):
                         # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
                         K8, N_ = qw.shape
                         group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else 128
@@ -809,7 +807,7 @@ def load_safetensors_weights(
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
                     elif (fmt == "awq" and g_idx is None
-                          and (qz is None or _awq_qzeros_symmetric(qz))):
+                          and (qz is None or _qzeros_symmetric(qz))):
                         # GPU AWQ: either qzeros absent (implicit symmetric, all zero-points = 8)
                         # or qzeros verified all-8 (every nibble equals exactly 8, i.e., zero_point=8).
                         # The shader hardcodes nibble - 8, which only produces 0 when nibble==8.
@@ -1312,11 +1310,17 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
         weight_map = index["weight_map"]
 
     config_path = p / "config.json"
-    quant_section = (
-        _load_quant_cfg(config_path)
-        or (json.loads(config_path.read_text()).get("quantization") if config_path.exists() else None)
-        or {}
-    )
+    try:
+        raw = json.loads(config_path.read_text()) if config_path.exists() else {}
+        quant_section = (
+            raw.get("quantization_config")
+            or (raw.get("text_config") or {}).get("quantization_config")
+            or raw.get("compression_config")
+            or raw.get("quantization")
+            or {}
+        )
+    except Exception:
+        quant_section = {}
     group_size = int(quant_section.get("group_size") or 64)
 
     # Pass 1: build key -> shard_path index without loading any tensor data.

@@ -339,7 +339,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
         qmeta = self.weights.get("__quant_meta__")
         if qmeta:
-            self.weights["__quant_meta__"] = self._hf_to_vllm_mapper.apply_dict(qmeta)
+            qmeta = self._hf_to_vllm_mapper.apply_dict(qmeta)
+            # Drop metadata for weight buffers that were filtered out (e.g. mtp.*).
+            qmeta = {k: v for k, v in qmeta.items() if k in self.weights or k.startswith("__")}
+            self.weights["__quant_meta__"] = qmeta
         self._pack_attn_weights()
         self._postprocess_mamba_weights()
         self._init_mamba_states()
@@ -448,11 +451,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 scales_buf = WebGPUBuffer.from_numpy(dev, packed_sc)
 
             qkv_key = f"{p}.qkv_proj.weight"
-            packed_buf = qkv_raw_buf if _is_awq else WebGPUBuffer(
-                buf=qkv_raw, device=dev,
-                shape=(total_nb // _ELEM_BYTES[src_dtype],),
-                dtype=src_dtype,
-            )
+            if _is_awq:
+                packed_buf = qkv_raw_buf
+            else:
+                packed_buf = WebGPUBuffer(
+                    buf=qkv_raw, device=dev,
+                    shape=(total_nb // _ELEM_BYTES[src_dtype],),
+                    dtype=src_dtype,
+                )
             self.weights[qkv_key] = packed_buf
 
             # Propagate quant_meta from q_proj to qkv_proj so _uq_for_key

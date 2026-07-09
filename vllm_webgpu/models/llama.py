@@ -420,9 +420,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _pfill_rope_base = self._rope_consts
         _freq_buf = self._rope_freq_buf
 
-        chunks = list(batched(range(self.num_layers), _CHUNK))
-
-        for chunk_idx, chunk_layers in enumerate(chunks):
+        for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), _CHUNK)):
             with self._batched_dispatch():
                 if chunk_idx == 0:
                     # ── Embedding (T tokens) ──────────────────────────────────────────
