@@ -91,7 +91,7 @@ def compute_yarn_freqs(
     factor               = float(rope_scaling.get("factor", 1.0))
     beta_fast            = int(rope_scaling.get("beta_fast", 32))
     beta_slow            = int(rope_scaling.get("beta_slow", 1))
-    orig_ctx             = int(rope_scaling.get("original_max_position_embeddings", 4096))
+    orig_ctx             = int(rope_scaling["original_max_position_embeddings"])
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
     attn_factor          = float(rope_scaling.get("attn_factor", 1.0))
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
