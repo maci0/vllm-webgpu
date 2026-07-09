@@ -423,7 +423,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 "WG_SIZE": min(head_dim, 128),
                                 "V_IN_OFFSET": 0},
                                (num_kv_heads, num_tokens, 1), shader_subdir="gemma")
-            v_to_cache = sc["v_normed"]
+                v_to_cache = sc["v_normed"]
             # Write all T tokens' KV to cache before the attention loop.
             # Each query token then attends to the full ctx_len cache (all T tokens),
             # which is non-causal (bidirectional). For the diffusion denoising use-case

@@ -243,9 +243,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                             f"Q+gate rows cannot be split. Use fp16 weights or pre-split "
                             f"the checkpoint offline."
                         )
-                    arr = buf.to_numpy().view(np.float16).reshape(self.num_q_heads, 2 * hd, buf.shape[1])
-                    q_arr = np.ascontiguousarray(arr[:, :hd, :].reshape(q_dim, buf.shape[1]))
-                    gate_arr = np.ascontiguousarray(arr[:, hd:, :].reshape(q_dim, buf.shape[1]))
+                    arr = buf.to_numpy().view(np.float16).reshape(self.num_q_heads, 2 * hd, self.hidden_size)
+                    q_arr = np.ascontiguousarray(arr[:, :hd, :].reshape(q_dim, self.hidden_size))
+                    gate_arr = np.ascontiguousarray(arr[:, hd:, :].reshape(q_dim, self.hidden_size))
                     self.weights[q_proj_key] = WebGPUBuffer.from_numpy(dev, q_arr)
                     gate_key = f"{p}.self_attn.q_gate_proj.weight"
                     self.weights[gate_key] = WebGPUBuffer.from_numpy(dev, gate_arr)

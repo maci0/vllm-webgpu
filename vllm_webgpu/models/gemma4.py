@@ -200,7 +200,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "h1":         mk(T * H * 4),           # f32
             "h2":         mk(T * H * 4),           # f32
         }
-        self._dummy_scales_buf: "WebGPUBuffer" = mk(4)
         self._hstate: int = 0
 
     def _postprocess_weights(self) -> None:

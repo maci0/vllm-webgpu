@@ -6,19 +6,9 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import torch
 
-try:
-    from vllm.v1.kv_cache_interface import FullAttentionSpec
-    from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
-except ImportError:
-    FullAttentionSpec = None  # type: ignore[assignment,misc]
-    ModelRunnerOutput = None  # type: ignore[assignment,misc]
-    LogprobsTensors = None  # type: ignore[assignment,misc]
-    EMPTY_MODEL_RUNNER_OUTPUT = None  # type: ignore[assignment,misc]
-
-try:
-    from vllm.v1.sample.sampler import Sampler
-except ImportError:
-    Sampler = None  # type: ignore[assignment,misc]
+from vllm.v1.kv_cache_interface import FullAttentionSpec
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.sample.sampler import Sampler
 
 from vllm.logger import init_logger
 from vllm_webgpu.config import get_config
@@ -152,9 +142,6 @@ class WebGPUModelRunner:
         mc = self.vllm_config.model_config.hf_config
         block_size = self.webgpu_config.block_size
         spec: dict[str, Any] = {}
-        if FullAttentionSpec is None:
-            return spec
-
         _dtype = torch.float16
 
         def _make_spec(num_kv_heads: int, head_size: int) -> Any:
@@ -272,8 +259,6 @@ class WebGPUModelRunner:
         top-k tokens by log probability, matching the layout expected by
         LogprobsLists), or None when logprobs cannot be computed.
         """
-        if Sampler is None:
-            return None
         k = min(num_logprobs, logits_1d.shape[0])
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
@@ -292,8 +277,6 @@ class WebGPUModelRunner:
         LogprobsTensors of shape [T-1, num_prompt_logprobs+1], or None when
         Sampler is unavailable or T < 2.
         """
-        if Sampler is None:
-            return None
         T = len(tok_ids)
         if T < 2:
             return None
@@ -333,9 +316,6 @@ class WebGPUModelRunner:
         logprobs_data: "list[LogprobsTensors | None] | None" = None,
         prompt_logprobs_dict: "dict[str, LogprobsTensors] | None" = None,
     ) -> Any:
-        if ModelRunnerOutput is None:
-            return None
-
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
@@ -414,9 +394,6 @@ class WebGPUModelRunner:
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> Any:
         """vLLM >= 0.24 SchedulerOutput format."""
-        if ModelRunnerOutput is None:
-            return None
-
         # Prune state for requests that completed in the previous step.
         for rid in scheduler_output.finished_req_ids:
             self._req_state.pop(rid, None)

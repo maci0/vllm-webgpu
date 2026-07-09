@@ -143,6 +143,10 @@ class BaseWebGPUModel(ABC):
         # The shader always declares binding 4; callers that don't use HAS_BIAS
         # must still provide a buffer so the bind group layout matches.
         self._dummy_bias_buf: "WebGPUBuffer" = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
+        # Dummy scales buffer for the scales slot on USE_QUANT=0 dispatches.
+        # Subclasses that do not override this must still bind something at the
+        # scales slot so the bind group layout matches.
+        self._dummy_scales_buf: "WebGPUBuffer" = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
         # Precomputed RoPE inverse frequencies for USE_FREQ_BUF=1 (YaRN and similar).
         # All rope/fused-rope shaders declare an inv_freq_buf binding unconditionally
         # (wgpu-native does not eliminate dead bindings even at USE_FREQ_BUF=0), so
@@ -391,6 +395,14 @@ class BaseWebGPUModel(ABC):
             # NF4: GROUP_K = absmax block size (BnB default 64).
             return {"GROUP_K": self._quant_info(base_key).get("group_size", 64)}
         return {}
+
+    def _lm_head_key(self) -> str:
+        """Return the weight key for the LM head.
+
+        Falls back to the embedding key for models with tied weights that have
+        no separate lm_head.weight tensor in the checkpoint.
+        """
+        return "lm_head.weight" if "lm_head.weight" in self.weights else "model.embed_tokens.weight"
 
     def _uq_for_key(self, key: str) -> int:
         """Return USE_QUANT for a weight key (closure-free helper)."""

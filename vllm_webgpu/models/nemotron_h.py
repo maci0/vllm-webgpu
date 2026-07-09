@@ -126,11 +126,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # tracking the running MLP count to look up the correct entry in the
         # (possibly heterogeneous) intermediate_size list.
         _layer_int_sizes: list[int] = []
+        _mlp_count = 0
         for _li, _lt in enumerate(self._layer_types):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = self._layer_types[:_li + 1].count("mlp") - 1
+            _mlp_idx = _mlp_count
+            _mlp_count += 1
             if isinstance(_raw_int, list):
                 _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
             else:
@@ -222,10 +224,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "up_buf":  mk(I * 2),
             "ffn_act": mk(I * 2),
         }
-        # Small dummy buffer for binding slot 2 (scales) on USE_QUANT=0 dispatches.
-        # Prevents a live computation buffer from aliasing the scales slot (read-read,
-        # but architecturally wrong). Matches the pattern in LlamaWebGPUModel.
-        self._dummy_scales_buf: "WebGPUBuffer" = mk(4)
 
     # ── Mamba state management ────────────────────────────────────────────────
 
@@ -523,7 +521,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self._rms_base,
             (num_tokens, 1, 1),
         )
-        lm_key = "lm_head.weight" if "lm_head.weight" in self.weights else "model.embed_tokens.weight"
+        lm_key = self._lm_head_key()
         lm_head_w = self.weights[lm_key]
         uq = self._uq_for_key(lm_key)
         self._dispatch(

@@ -136,8 +136,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "h1":         mk(T * H * 2),
             "h2":         mk(T * H * 2),
         }
-        # Small dummy buffer for binding slot 2 (scales) on USE_QUANT=0 lm_head dispatches.
-        self._dummy_scales_buf: "WebGPUBuffer" = mk(4)
         # Index into hidden-state rotation: the layer output cycles h0 -> h1 -> h2 -> h0 ...
         self._hstate: int = 0
 
@@ -232,16 +230,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
         )
-
-    def _lm_head_key(self) -> str:
-        """Return the actual weight key for the LM head.
-
-        When the model uses tied embeddings there is no separate lm_head.weight
-        tensor in the checkpoint. Fall back to the embedding key so that quant
-        lookups (_uq_for_key, _scales_buf) operate on the correct key and do not
-        silently treat a quantized weight as raw f16.
-        """
-        return "lm_head.weight" if "lm_head.weight" in self.weights else "model.embed_tokens.weight"
 
     def _decode_teardown(
         self,

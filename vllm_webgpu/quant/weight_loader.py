@@ -113,9 +113,9 @@ def _apply_multimodal_remap(weights: dict) -> int:
     remapped = {}
     for k, v in weights.items():
         if k.startswith("model.language_model."):
-            remapped["model." + k[len("model.language_model."):]] = v
+            remapped["model." + k.removeprefix("model.language_model.")] = v
         elif k.startswith("language_model."):
-            remapped[k[len("language_model."):]] = v
+            remapped[k.removeprefix("language_model.")] = v
     weights.update(remapped)
     return len(remapped)
 
@@ -1311,16 +1311,10 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
 
     config_path = p / "config.json"
     raw_cfg = json.loads(config_path.read_text()) if config_path.exists() else {}
-    # Extract the quantization section without re-reading config.json via _load_quant_cfg.
-    # Mirrors the cascade that compressed_tensors.get_quantization_config implements,
-    # plus the MLX-specific "quantization" fallback that follows in the chain.
-    quant_section = (
-        raw_cfg.get("quantization_config")
-        or raw_cfg.get("text_config", {}).get("quantization_config")
-        or raw_cfg.get("compression_config")
-        or raw_cfg.get("quantization")
-        or {}
-    )
+    # Use _load_quant_cfg for the standard cascade (quantization_config,
+    # text_config.quantization_config, compression_config), then fall back to
+    # the MLX-specific "quantization" key that compressed_tensors does not handle.
+    quant_section = _load_quant_cfg(config_path) or raw_cfg.get("quantization") or {}
     group_size = int(quant_section.get("group_size") or 64)
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
