@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _H_NAMES
 
@@ -213,13 +214,18 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         dev = self.wgpu_device.wgpu_device
 
-        # Buffer sizes derived directly from the Mamba-2 state layout used by
-        # the WGSL shaders. The conv state is f16 (2 bytes); the SSM state is
-        # f32 (4 bytes). tp_world_size=1 and num_spec=0 so no TP sharding or
-        # speculative-decode padding applies, and math.prod of the shape tuple
-        # returned by MambaStateShapeCalculator equals these direct expressions.
-        conv_bytes = (self.conv_kernel - 1) * self.conv_dim * 2
-        ssm_bytes  = self.mamba_num_heads * self.mamba_head_dim * self.ssm_state_size * 4
+        conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
+            tp_world_size=1,
+            intermediate_size=self.mamba_int,
+            n_groups=self.n_groups,
+            num_heads=self.mamba_num_heads,
+            head_dim=self.mamba_head_dim,
+            state_size=self.ssm_state_size,
+            conv_kernel=self.conv_kernel,
+            num_spec=0,
+        )
+        conv_bytes = math.prod(conv_shape) * 2
+        ssm_bytes  = math.prod(ssm_shape) * 4
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
