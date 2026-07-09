@@ -29,6 +29,17 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
         return t.numpy()
     return t.to(_torch.float32).clamp(-_F16_MAX, _F16_MAX).to(_torch.float16).numpy()
 
+def _fp8_e4m3_to_f32(raw: "np.ndarray") -> "np.ndarray":
+    """Decode FP8 E4M3 (OCP format, exponent bias=7) byte array to float32.
+
+    Uses torch's native float8_e4m3fn dtype for correct OCP semantics.
+    Input: uint8 array of any shape. Output: float32 array, same shape.
+    """
+    import torch as _torch
+    flat = np.ascontiguousarray(raw).ravel().view(np.uint8)
+    return _torch.frombuffer(flat.tobytes(), dtype=_torch.float8_e4m3fn).to(_torch.float32).numpy().reshape(raw.shape)
+
+
 def _is_gdn_weight_key(key: str) -> bool:
     """True for GDN linear-attention projection weights that benefit from bf16 storage."""
     return "linear_attn" in key and any(
