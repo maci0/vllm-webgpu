@@ -363,7 +363,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     self._dispatch(
                         "gelu_mul",
                         [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
-                        {"N": _sinter},
+                        {"N": _sinter, **extra_gate_consts},
                         _vec4_wg(_sinter),
                     )
                 uq_sd = self._uq_for_key(sdw_k)
@@ -427,7 +427,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 self._dispatch(
                     "gelu_mul",
                     [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
-                    {"N": inter},
+                    {"N": inter, **extra_gate_consts},
                     _vec4_wg(inter),
                 )
 
