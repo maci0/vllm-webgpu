@@ -486,6 +486,11 @@ class WebGPUModelRunner:
                     "use logprobs=N instead"
                 )
             num_logprobs = sp.logprobs if sp is not None else None
+            if num_logprobs == -1:
+                raise NotImplementedError(
+                    f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
+                    "use a positive integer instead"
+                )
             num_prompt_logprobs = getattr(sp, "prompt_logprobs", None) if sp is not None else None
 
             # Warn early when full-vocab prompt logprobs are requested. The CPU
