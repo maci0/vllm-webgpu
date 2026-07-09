@@ -1266,23 +1266,9 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     with open(index_path) as f:
         index = json.load(f)
 
-    group_size = 64
     config_path = p / "config.json"
-    if config_path.exists():
-        try:
-            cfg_raw = json.loads(config_path.read_text())
-            qcfg = (
-                cfg_raw.get("quantization_config")
-                or (cfg_raw.get("text_config") or {}).get("quantization_config")
-                or cfg_raw.get("compression_config")
-                or cfg_raw.get("quantization")
-                or {}
-            )
-            qs = qcfg.get("group_size")
-        except Exception:
-            qs = None
-        if qs:
-            group_size = int(qs)
+    qcfg = _load_quant_cfg(config_path) if config_path.exists() else {}
+    group_size = int(qcfg.get("group_size", None) or 64)
 
     weight_map: dict = index["weight_map"]
 

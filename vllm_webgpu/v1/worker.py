@@ -4,8 +4,6 @@ import time
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from vllm.config import VllmConfig
-
 import torch
 
 # vLLM v1 internals verified against vllm>=0.24,<0.25.
@@ -28,6 +26,7 @@ except ImportError:
     WebGPUDevice = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
+    from vllm.config import VllmConfig
     from vllm.lora.request import LoRARequest
     from vllm.tasks import SupportedTask
     from vllm.v1.kv_cache_interface import KVCacheSpec

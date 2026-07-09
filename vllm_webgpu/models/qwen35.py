@@ -613,17 +613,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
 
-    def _decode_teardown(
-        self,
-        norm_out: "WebGPUBuffer",
-        logits_buf: "WebGPUBuffer",
-        vocab: int,
-        greedy: bool,
-    ) -> None:
-        # Qwen3.5 vocab (151936) exceeds the 65535 workgroup-per-dimension limit.
-        # Force SPLIT_K=0 (row-per-thread) regardless of the caller's default.
-        super()._decode_teardown(norm_out, logits_buf, vocab, greedy, split_k=0)
-
     def forward(
         self,
         input_ids: np.ndarray,
@@ -724,7 +713,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # The gate is applied as sigmoid(gate)*attn_out before o_proj (step below).
         if self._attn_output_gate:
             gate_wk = f"{p}.self_attn.q_gate_proj.weight"
-            if self.weights.get(gate_wk) is not None:
+            gate_buf = self.weights.get(gate_wk)
+            if gate_buf is not None:
                 uq_gate = _uq(gate_wk)
                 qi_gate = self._quant_extra(f"{p}.self_attn.q_gate_proj", uq_gate)
                 self._dispatch("matmul_quant",
@@ -786,7 +776,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         # Apply attention output gate: gated = sigmoid(gate) * attn_out.
         # q_buf is free at this point (last read in RoPE), reused as the gated output.
-        if self._attn_output_gate and self.weights.get(f"{p}.self_attn.q_gate_proj.weight") is not None:
+        if self._attn_output_gate and gate_buf is not None:
             gate_n = num_tokens * q_dim
             self._dispatch("sigmoid_gate",
                            [sc["q_gate_buf"], sc["attn_out"], sc["q_buf"]],

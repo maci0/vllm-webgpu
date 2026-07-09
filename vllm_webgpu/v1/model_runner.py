@@ -308,9 +308,9 @@ class WebGPUModelRunner:
         For T prompt tokens, produces T-1 rows: row i uses full_logits[i]
         to evaluate the probability of tok_ids[i+1].  Returns a
         LogprobsTensors of shape [T-1, num_prompt_logprobs+1], or None when
-        torch or LogprobsTensors are unavailable or T < 2.
+        Sampler is unavailable or T < 2.
         """
-        if LogprobsTensors is None or Sampler is None:
+        if Sampler is None:
             return None
         T = len(tok_ids)
         if T < 2:

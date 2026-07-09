@@ -90,7 +90,7 @@ class WebGPUPlatform(_Platform):
         # and after fork the child cannot call request_device_sync() on Metal.
         # Force spawn so the EngineCore subprocess starts with a clean state.
         if sys.platform == "darwin":
-            os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+            os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
         parallel_config = vllm_config.parallel_config
         if parallel_config.worker_cls == "auto":
             parallel_config.worker_cls = "vllm_webgpu.v1.worker.WebGPUWorker"

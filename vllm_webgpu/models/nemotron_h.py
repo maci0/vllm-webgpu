@@ -135,6 +135,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "HIDDEN_DIM": self.hidden_size,
             "VALS_PER_THREAD": self._vals_per_thread(self.hidden_size),
         }
+        self._hstate: int = 0
         self._init_scratch_buffers()
 
     # ── Scratch buffer allocation ─────────────────────────────────────────────
@@ -459,7 +460,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              **self._quant_extra("lm_head", uq)},
             ((vocab + 255) // 256, 1, 1),
         )
-        greedy = getattr(self, "_greedy_decode", True)
+        greedy = self._greedy_decode
         if greedy:
             self._dispatch(
                 "argmax_f16",
@@ -547,7 +548,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         self._last_logit_buf = pre["logits"]
         self._last_vocab = vocab
-        greedy = getattr(self, "_greedy_decode", True)
+        greedy = self._greedy_decode
         if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
@@ -917,7 +918,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         self._last_logit_buf = pre["logits"]
         self._last_vocab     = vocab
-        greedy = getattr(self, "_greedy_decode", True)
+        greedy = self._greedy_decode
         if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)

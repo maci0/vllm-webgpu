@@ -40,9 +40,10 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq so that any
-    upstream formula changes are picked up automatically instead of silently
-    diverging.
+    Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq by calling the same
+    vLLM helpers: yarn_find_correction_range, yarn_get_mscale, and
+    yarn_linear_ramp_mask. Cross-check this function whenever vLLM bumps the
+    YaRN formula in case the helpers or their composition change.
 
     Args:
         head_dim:    Full attention head dimension.
