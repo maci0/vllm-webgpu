@@ -45,7 +45,8 @@ from vllm_webgpu.v1.model_runner import _build_model
 from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config, get_num_kv_heads, get_head_size_from_config
 head_dim = get_head_size_from_config(hf_cfg)
 num_kv_heads = get_num_kv_heads(hf_cfg)
-model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache)
+block_size = get_config().block_size
+model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
 
 print("Loading weights...")
 t0 = time.perf_counter()
@@ -63,7 +64,6 @@ except Exception as e:
 
 # ── Setup fake KV pool ────────────────────────────────────────────────────────
 dev = wgpu_dev.wgpu_device
-block_size = get_config().block_size
 num_blocks = 512  # enough for profiling
 
 allocate_kv_from_hf_config(dev, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
