@@ -269,7 +269,8 @@ class BaseWebGPUModel(ABC):
         return np.asarray(getattr(attn_metadata, "block_tables", [[0]])[0], dtype=np.uint32)
 
     def load_weights(
-        self, path: str, f32_keys: "frozenset[str] | None" = None
+        self, path: str, f32_keys: "frozenset[str] | None" = None,
+        skip_prefixes: "frozenset[str] | None" = None,
     ) -> None:
         """Load model weights from a HuggingFace safetensors directory.
 
@@ -280,6 +281,9 @@ class BaseWebGPUModel(ABC):
         Args:
             f32_keys: Optional set of checkpoint key names that must be uploaded as float32
                       instead of the default float16. Passed through to the safetensors loader.
+            skip_prefixes: Optional set of key prefixes to skip entirely. Keys whose names
+                           start with any of these prefixes are excluded before any GPU buffer
+                           allocation, keeping them out of VRAM for the lifetime of the load.
         """
         from vllm_webgpu.quant.weight_loader import (
             detect_weight_format, load_safetensors_weights,
@@ -293,14 +297,14 @@ class BaseWebGPUModel(ABC):
             actual = str(p / _SAFE_WEIGHTS_NAME) if p.is_dir() else path
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
-                weight_transforms=transforms)
+                weight_transforms=transforms, skip_prefixes=skip_prefixes)
         elif fmt == "safetensors_sharded":
             # MLX affine int4 directories also return "safetensors_sharded" from
             # detect_weight_format; load_safetensors_weights_sharded detects the
             # .biases keys in the already-loaded index and dispatches accordingly.
             self.weights = load_safetensors_weights_sharded(
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
-                weight_transforms=transforms)
+                weight_transforms=transforms, skip_prefixes=skip_prefixes)
         elif fmt == "gguf":
             raise ValueError(
                 f"GGUF format not supported by this plugin — use the vllm-gguf plugin: {path}"

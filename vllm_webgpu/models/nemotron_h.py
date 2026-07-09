@@ -319,11 +319,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if lt == "mamba"
             for wk in ("D", "dt_bias", "A_log")
         )
-        super().load_weights(path, f32_keys=f32_keys)
-        # Drop MTP weights before remapping to avoid uploading them to GPU VRAM.
-        # vLLM's own NemotronHForCausalLM skips these via skip_prefixes=["mtp"].
-        # The raw HF keys use the "mtp." prefix; none are accessed during inference.
-        self.weights = {k: v for k, v in self.weights.items() if not k.startswith("mtp.")}
+        # Skip mtp.* keys before any GPU buffer allocation. The raw HF keys use
+        # the "mtp." prefix; none are accessed during inference.
+        # vLLM's own NemotronHForCausalLM skips these the same way.
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=frozenset(["mtp."]))
         self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
         qmeta = self.weights.get("__quant_meta__")
         if qmeta:

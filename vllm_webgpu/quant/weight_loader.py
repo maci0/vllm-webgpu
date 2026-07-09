@@ -151,6 +151,7 @@ def load_safetensors_weights_sharded(
     wgpu_device,
     f32_keys: "frozenset[str] | None" = None,
     weight_transforms: "dict | None" = None,
+    skip_prefixes: "frozenset[str] | None" = None,
 ) -> dict:
     """Load multi-shard safetensors from a directory with model.safetensors.index.json.
 
@@ -199,7 +200,8 @@ def load_safetensors_weights_sharded(
         logger.info("Loading shard %s", shard)
         shard_weights = load_safetensors_weights(
             shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys,
-            skip_remap=True, weight_transforms=weight_transforms)
+            skip_remap=True, weight_transforms=weight_transforms,
+            skip_prefixes=skip_prefixes)
 
         # Commit all pending write_buffer operations by submitting a dummy command encoder.
         # queue.write_buffer() is only committed before the NEXT queue.submit(), not by
@@ -439,6 +441,7 @@ def load_safetensors_weights(
     f32_keys: "frozenset[str] | None" = None,
     skip_remap: bool = False,
     weight_transforms: "dict | None" = None,
+    skip_prefixes: "frozenset[str] | None" = None,
 ) -> dict:
     """Load safetensors weights and upload to GPU as F16.
 
@@ -468,8 +471,12 @@ def load_safetensors_weights(
     with sft.safe_open(path, framework="pt") as sf:
         # Build header from the already-open safe_open handle instead of opening
         # the file again via parse_safetensors_file_metadata.
+        # Keys matching any skip_prefixes entry are excluded before any buffer
+        # allocation so they never touch GPU memory.
         header = {}
         for k in sf.keys():
+            if skip_prefixes and any(k.startswith(pfx) for pfx in skip_prefixes):
+                continue
             slc = sf.get_slice(k)
             header[k] = {"dtype": slc.get_dtype(), "shape": list(slc.get_shape())}
 
