@@ -10,8 +10,6 @@ from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, rand
 
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
-OVERHEAD_BYTES = 512 << 20  # 512 MiB buffer for driver overhead + activations
-
 
 def sample_token(
     logits_1d: np.ndarray,

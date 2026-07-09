@@ -5,10 +5,11 @@ from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
+import torch
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 
-from vllm_webgpu.utils import OVERHEAD_BYTES
+OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
 
 if TYPE_CHECKING:
     from vllm_webgpu.v1.worker import WebGPUWorker
@@ -16,9 +17,6 @@ if TYPE_CHECKING:
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
-
-# WebGPU KV cache always uses float16; torch.float16 is always 2 bytes.
-_F16_BYTES: int = 2
 
 # Layer type strings that carry KV state and require cache allocation.
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
@@ -46,7 +44,7 @@ def _allocate_kv_pool_hybrid(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
-    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * _F16_BYTES
+    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * torch.float16.itemsize
 
     if layer_types is not None and len(layer_types) != num_layers:
         raise ValueError(
@@ -111,7 +109,7 @@ def _allocate_kv_pool_per_layer(
             raise ValueError(
                 f"num_kv_heads={lp['num_kv_heads']} but head_dim=0; invalid KV spec"
             )
-        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * _F16_BYTES
+        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * torch.float16.itemsize
         model.kv_pool.append((
             WebGPUBuffer.empty(dev, kv_bytes),
             WebGPUBuffer.empty(dev, kv_bytes),
@@ -195,7 +193,7 @@ def allocate_kv_from_tensors(
                     "accessible to WebGPU shaders.",
                     half, naive, first_name,
                 )
-        else:
+        elif spec is None:
             half = tensor.size // 2
             k_bytes = half
             v_bytes = half
@@ -205,6 +203,15 @@ def allocate_kv_from_tensors(
                     "May over-allocate for quantized KV cache with scale bytes.",
                     first_name or "<unknown>",
                 )
+        else:
+            half = tensor.size // 2
+            k_bytes = half
+            v_bytes = half
+            logger.warning(
+                "Spec for layer %r (%s) has no real_page_size_bytes; falling back to tensor.size // 2.",
+                first_name or "<unknown>",
+                type(spec).__name__,
+            )
         for layer_name in tensor.shared_by:
             try:
                 idx = extract_layer_index(layer_name)

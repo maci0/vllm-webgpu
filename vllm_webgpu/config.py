@@ -9,7 +9,7 @@ import vllm_webgpu.envs as envs
 VALID_POWER_PREFERENCES = frozenset({"low-power", "high-performance"})
 
 
-@dataclass
+@dataclass(frozen=True)
 class WebGPUConfig:
     memory_fraction: float | None
     power_preference: str

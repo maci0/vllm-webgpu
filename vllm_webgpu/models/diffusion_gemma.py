@@ -483,27 +483,28 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 **self._quant_extra(ow.removesuffix(".weight"), uq_ow)},
                                _gemv_wg(hidden))
 
-            # post_attention norm + residual add
+            # post_attention norm + residual add + pre_feedforward norm
             pan_w = self.weights.get(f"{p}.post_attention_layernorm.weight")
-            if pan_w is not None:
-                self._dispatch("rms_norm", [sc["o_proj_out"], pan_w, sc["ffn_normed"]], _rms,
-                               (num_tokens, 1, 1))
-                self._dispatch("add_f32", [x_buf, sc["ffn_normed"], residual],
-                               {"N": add_n}, _vec4_wg(add_n))
-            else:
-                self._dispatch("add_f32", [x_buf, sc["o_proj_out"], residual],
-                               {"N": add_n}, _vec4_wg(add_n))
-
-            # ── Shared expert FFN ─────────────────────────────────────────────
-            gelu_n_shared = num_tokens * inter_shared
             pfn_w = self.weights.get(f"{p}.pre_feedforward_layernorm.weight")
             if pfn_w is None:
                 raise ValueError(
                     f"Layer {layer_idx} missing pre_feedforward_layernorm.weight "
                     "— f32 residual cannot be fed to f16 FFN projection"
                 )
-            self._dispatch("rms_norm_f32in", [residual, pfn_w, sc["normed"]],
-                           _rms, (num_tokens, 1, 1))
+
+            # ── Shared expert FFN ─────────────────────────────────────────────
+            gelu_n_shared = num_tokens * inter_shared
+            if pan_w is not None:
+                # Fuse rms_norm + add_f32 + rms_norm_f32in into one dispatch,
+                # matching the parent Gemma4WebGPUModel._transformer_layer path.
+                self._dispatch("rms_norm_add_f32_rms_norm",
+                               [sc["o_proj_out"], pan_w, x_buf, pfn_w, residual, sc["normed"]],
+                               _rms, (num_tokens, 1, 1))
+            else:
+                self._dispatch("add_f32", [x_buf, sc["o_proj_out"], residual],
+                               {"N": add_n}, _vec4_wg(add_n))
+                self._dispatch("rms_norm_f32in", [residual, pfn_w, sc["normed"]],
+                               _rms, (num_tokens, 1, 1))
             ffn_in = sc["normed"]
 
             # Shared expert gate + up → tanh-GELU activation

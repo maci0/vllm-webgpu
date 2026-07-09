@@ -33,7 +33,6 @@ del _mapper
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
 # 0 = F16 (no quantization), 3 = GPTQ int4, 4 = AWQ sym int4.
-_UQ_AWQ: int = 4
 
 
 
@@ -98,7 +97,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # MambaMixer2.conv_dim, vllm/model_executor/layers/mamba/mamba_mixer2.py L313
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
-        # MambaMixer2 in_proj output_size (tp=1), mamba_mixer2.py L353-355
+        # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
+        # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
+        # gives the same total for the n_groups%tp!=0 edge case, which does not occur at tp=1)
         self.in_proj_dim: int = (
             self.mamba_int + self.conv_dim + self.mamba_num_heads
         )
@@ -152,15 +153,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
 
         # Build per-layer intermediate sizes in a single O(num_layers) pass.
-        # MLP index is derived from hybrid_override_pattern (same string vLLM's
-        # NemotronHMLPDecoderLayer.__init__ uses: pattern[:layer_idx+1].count("-") - 1).
+        # MLP index is the count of "mlp" entries up to and including this layer, minus 1.
         _layer_int_sizes: list[int] = []
-        _hybrid_pat: str = model_config.hybrid_override_pattern
         for _li, _lt in enumerate(self._layer_types):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = _hybrid_pat[: _li + 1].count("-") - 1
+            _mlp_idx = self._layer_types[:_li + 1].count("mlp") - 1
             if isinstance(_raw_int, list):
                 _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
             else:
@@ -421,7 +420,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # GPTQ weights are [N, K//8] (N-major after the load-time transpose),
             # so byte concat along the flat sequence is equivalent to axis=0
             # concat and is correct without any special handling.
-            _is_awq = self._uq_for_key(q_key) == _UQ_AWQ
+            _is_awq = self._uq_for_key(q_key) == 4  # awq_sym
 
             if _is_awq:
                 # CPU-side axis=1 concat produces [K, N_total//8] so every row

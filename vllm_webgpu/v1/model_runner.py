@@ -294,6 +294,19 @@ class WebGPUModelRunner:
         return None
 
     @staticmethod
+    def _gather_logprobs_i32(
+        logprobs: "torch.Tensor", k: int, token_ids: "torch.Tensor"
+    ) -> "LogprobsTensors":
+        """Call Sampler.gather_logprobs and coerce selected_token_ranks to int32.
+
+        Sampler.gather_logprobs returns token_ranks as int64 (from
+        batched_count_greater_than); LogprobsTensors.empty_cpu documents int32.
+        Both call sites require the same coercion, so it is factored out here.
+        """
+        lp = Sampler.gather_logprobs(logprobs, k, token_ids)
+        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
+
+    @staticmethod
     def _compute_request_logprobs(
         logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
     ) -> "LogprobsTensors | None":
@@ -307,10 +320,10 @@ class WebGPUModelRunner:
         logprobs cannot be computed.
         """
         k = min(num_logprobs, logits_1d.shape[0])
-
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
-        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
-        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
+        return WebGPUModelRunner._gather_logprobs_i32(
+            lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64)
+        )
 
     @staticmethod
     def _compute_prompt_logprobs(
@@ -352,18 +365,15 @@ class WebGPUModelRunner:
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
-        lp = Sampler.gather_logprobs(
-            lp_t,
-            k,
-            torch.tensor(tok_ids[1:num_positions + 1], dtype=torch.int64),
+        return WebGPUModelRunner._gather_logprobs_i32(
+            lp_t, k, torch.tensor(tok_ids[1:num_positions + 1], dtype=torch.int64)
         )
-        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
 
     def _make_model_output(
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "list[LogprobsTensors | None] | None" = None,
+        logprobs_data: "list[LogprobsTensors | None]" = (),
         prompt_logprobs_dict: "dict[str, LogprobsTensors] | None" = None,
     ) -> Any:
         if not req_ids:
@@ -378,7 +388,7 @@ class WebGPUModelRunner:
         # in large batches where most requests have no logprobs.
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
-        has_topk = logprobs_data and any(d is not None for d in logprobs_data)
+        has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
             max_k = max(d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None)
             pieces = []

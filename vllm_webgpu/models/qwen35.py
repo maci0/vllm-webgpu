@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -745,9 +744,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         num_tokens = len(input_ids)
 
-        self._check_single_sequence(attn_metadata)
-
         if num_tokens > 1:
+            self._check_single_sequence(attn_metadata)
             return self._prefill_chunked_forward(
                 input_ids, positions, attn_metadata, num_tokens)
 

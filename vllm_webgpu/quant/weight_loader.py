@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -51,11 +51,12 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
     bases = {
-        k.removesuffix(".weight")
+        base
         for k in header
         if k.endswith(".weight")
         and header[k].get("dtype") == "U8"
-        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+        and (base := k.removesuffix(".weight"))
+        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
     }
     return sorted(bases)
 
@@ -257,7 +258,7 @@ def _fp8_e4m3_to_f32(data: np.ndarray) -> np.ndarray:
         )
     import torch
     return (
-        torch.from_numpy(np.ascontiguousarray(data))
+        torch.from_numpy(data)
         .view(torch.float8_e4m3fn)
         .to(torch.float32)
         .numpy()
