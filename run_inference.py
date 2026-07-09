@@ -57,7 +57,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Build model
     print("\nBuilding model...")
     from vllm_webgpu.v1.model_runner import _build_model
-    model = _build_model(arch, cfg, device, pipeline_cache)
+    block_size = get_config().block_size
+    model = _build_model(arch, cfg, device, pipeline_cache, block_size)
 
     # Load weights
     print("\nLoading weights (this may take a while)...")
@@ -67,8 +68,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # KV cache
     from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config
-
-    block_size = get_config().block_size
     max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
     num_blocks = min((max_ctx + block_size - 1) // block_size + 4, 4096)
 
