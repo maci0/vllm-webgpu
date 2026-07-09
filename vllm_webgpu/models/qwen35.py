@@ -725,7 +725,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._dispatch("kv_cache_store_both",
                        [sc["k_rope"], k_cache, sc["v_buf"], v_cache, slot_map],
                        {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                        "HEAD_DIM": self.head_dim},
+                        "HEAD_DIM": self.head_dim, "V_IN_OFFSET": 0},
                        (num_tokens, self.num_kv_heads, 1))
 
         self._dispatch("flash_attn_decode",
