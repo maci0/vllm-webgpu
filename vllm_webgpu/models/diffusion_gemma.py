@@ -831,3 +831,27 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         self._hstate = (self._hstate + 2) % 3
         return out
+
+    # ── Superseded Gemma4 batch-prefill paths ────────────────────────────────
+    # The parent class routes multi-token inputs through _prefill_batch_forward
+    # and _prefill_sequential_fallback from Gemma4WebGPUModel.forward() (line 289).
+    # DiffusionGemmaWebGPUModel.forward() fully replaces that entry point and
+    # handles all token counts natively in _decoder_layer.  These overrides exist
+    # solely to prevent a future caller from accidentally reaching the Gemma4
+    # implementations, which carry incompatible weight-key assumptions
+    # (model.layers.* vs model.decoder.layers.*) and would silently produce
+    # wrong results or KeyErrors.
+
+    def _prefill_batch_forward(self, *args, **kwargs):
+        raise NotImplementedError(
+            "_prefill_batch_forward is a Gemma4-specific path and is not reachable "
+            "from DiffusionGemmaWebGPUModel; multi-token prefill is handled directly "
+            "in forward() via _decoder_layer."
+        )
+
+    def _prefill_sequential_fallback(self, *args, **kwargs):
+        raise NotImplementedError(
+            "_prefill_sequential_fallback is a Gemma4-specific path and is not "
+            "reachable from DiffusionGemmaWebGPUModel; multi-token prefill is handled "
+            "directly in forward() via _decoder_layer."
+        )
