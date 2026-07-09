@@ -483,11 +483,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             # A_log → -exp(A). HF checkpoints store raw log values; the SSM
             # shader reads the discrete state transition coefficient A = -exp(A_log).
-            # Applied here after weight loading since A_log is in f32_keys and
-            # arrives as a float32 buffer.
-            a_log_key = f"{p}.A_log"
-            if a_log_key in self.weights:
-                _a_buf = self.weights[a_log_key]
+            # The mapper renames A_log → A before this runs, so look up the
+            # already-renamed key. Applied here since A arrives as a float32 buffer.
+            a_key = f"{p}.A"
+            if a_key in self.weights:
+                _a_buf = self.weights[a_key]
                 _dev = self.wgpu_device.wgpu_device
                 _raw = _a_buf.to_numpy().view(np.float32)
                 _a_val = np.ascontiguousarray(-np.exp(_raw))
