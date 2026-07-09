@@ -99,6 +99,10 @@ def _allocate_kv_pool_per_layer(
                 WebGPUBuffer.empty(dev, 16),
             ))
             continue
+        if lp["head_dim"] == 0:
+            raise ValueError(
+                f"num_kv_heads={lp['num_kv_heads']} but head_dim=0; invalid KV spec"
+            )
         kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2  # f16
         model.kv_pool.append((
             WebGPUBuffer.empty(dev, kv_bytes),
