@@ -238,6 +238,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 q_dim = self.num_q_heads * self.head_dim
                 hd = self.head_dim
                 q_proj_key = f"{p}.self_attn.q_proj.weight"
+                if self._uq_for_key(q_proj_key) != 0:
+                    # Quantized q_proj with attn_output_gate is not supported:
+                    # packed bytes cannot be safely reinterpreted as fp16 for
+                    # the Q/gate split. Skip and leave the weight as-is.
+                    continue
                 buf = self.weights.get(q_proj_key)
                 if buf is not None and buf.shape[0] == 2 * q_dim:
                     arr = buf.to_numpy().view(np.float16).reshape(self.num_q_heads, 2 * hd, buf.shape[1])
