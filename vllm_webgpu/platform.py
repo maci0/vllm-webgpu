@@ -66,7 +66,8 @@ class WebGPUPlatform(_Platform):
                     "WebGPU adapter is a CPU/software renderer, not selecting WebGPU platform",
                 )
                 return False
-        except Exception:
+        except Exception as exc:
+            logger.debug("WebGPU adapter probe failed: %s", exc)
             return False
         return True
 

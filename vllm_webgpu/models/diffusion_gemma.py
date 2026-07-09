@@ -40,6 +40,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # forward() returns full float32 logits [num_tokens, vocab], not a (1,1) token ID.
     logit_returns_token_id: bool = False
 
+    # V norm is applied unconditionally in _decoder_layer (not gated by self._apply_v_norm).
+    # The parent class flag is always True for DiffusionGemma (layer_types is present in its
+    # config), but _decoder_layer here does not consult it — V norm is structural, not optional.
+    _apply_v_norm: bool = True
+
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         # Set moe_intermediate_size before super().__init__ because Gemma4.__init__
@@ -219,10 +224,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         if hasattr(attn_metadata, "block_tables") and len(attn_metadata.block_tables) > 1:
             raise RuntimeError("multi-sequence batching not supported in this build")
 
-        ctx_len = int(attn_metadata.max_decode_seq_len
-                      if attn_metadata.max_decode_seq_len is not None else int(positions[-1]) + 1)
-        if ctx_len <= 0:
-            ctx_len = int(positions[-1]) + 1
+        ctx_len = self._compute_ctx_len(attn_metadata, positions)
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds 65535")
 

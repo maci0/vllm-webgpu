@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.lora.request import LoRARequest
     from vllm.tasks import SupportedTask
-    from vllm.v1.kv_cache_interface import KVCacheSpec
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
 
 logger = init_logger(__name__)
@@ -91,7 +91,7 @@ class WebGPUWorker(WorkerBase):
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         return self.model_runner.get_kv_cache_spec()
 
-    def initialize_from_config(self, kv_cache_config: Any) -> None:
+    def initialize_from_config(self, kv_cache_config: "KVCacheConfig") -> None:
         self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
         self.model_runner.initialize_kv_cache(kv_cache_config)
 

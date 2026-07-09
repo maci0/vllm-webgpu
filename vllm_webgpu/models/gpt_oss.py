@@ -34,9 +34,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
     ) -> None:
         self._swiglu_limit: float = getattr(model_config, "swiglu_limit", 0.0)
         self._attn_bias: bool = bool(getattr(model_config, "attention_bias", False))
-        self._layer_types: list[str] = list(
-            getattr(model_config, "layer_types", None) or []
-        )
+        self._layer_types: list[str] = getattr(model_config, "layer_types", None) or []
         self._clamp_extra: dict = {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
 
         # _prefill_batch_forward bypasses _attn_block entirely, so it cannot

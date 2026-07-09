@@ -10,12 +10,11 @@ from vllm_webgpu.utils import OVERHEAD_BYTES
 if TYPE_CHECKING:
     from vllm_webgpu.v1.worker import WebGPUWorker
 
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
 
 logger = init_logger(__name__)
 
-# Float16 element size in bytes.
-_F16_BYTES: int = 2
+_F16_BYTES: int = _ELEM_BYTES["f16"]
 
 # Layer type strings that carry KV state and require cache allocation.
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports

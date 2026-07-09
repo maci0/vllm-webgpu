@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -188,6 +189,14 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
 
+    def _ensure_moe_expert_bufs(self, dev) -> None:
+        """Lazily allocate expert_gate and expert_up scratch buffers on first quantized call."""
+        msc = self._moe_sc
+        if "expert_gate" not in msc:
+            _act_sz = self._moe_act_sz
+            msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
+            msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
+
     def _moe_ffn_layer(
         self,
         normed_x: "WebGPUBuffer",
@@ -268,7 +277,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(10)
+        _debug_weights = logger.isEnabledFor(logging.DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(
@@ -342,10 +351,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     )
                 else:
                     # Lazy-allocate expert_gate and expert_up on first quantized call.
-                    if "expert_gate" not in msc:
-                        _act_sz = self._moe_act_sz
-                        msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
-                        msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
+                    self._ensure_moe_expert_bufs(dev)
                     qi_sg = self._quant_extra(f"{sp}.{gate_key}", uq_sg)
                     qi_su = self._quant_extra(f"{sp}.{up_key}", uq_su)
                     self._dispatch(
@@ -409,10 +415,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             else:
                 # Quantized path: separate gate and up matmuls then SiLU.
                 # Lazy-allocate expert_gate and expert_up on first quantized call.
-                if "expert_gate" not in msc:
-                    _act_sz = self._moe_act_sz
-                    msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
-                    msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
+                self._ensure_moe_expert_bufs(dev)
                 qi_g = self._quant_extra(f"{ep}.{gate_key}", uq_g)
                 qi_u = self._quant_extra(f"{ep}.{up_key}", uq_u)
                 self._dispatch(

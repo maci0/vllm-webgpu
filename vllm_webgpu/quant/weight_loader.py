@@ -1037,16 +1037,15 @@ def load_safetensors_weights(
 
             for base in mxfp8_bases:
                 try:
-                    w_u8  = _load_raw(f"{base}.weight")        # (N, K) U8 FP8 E4M3 bytes
+                    w_f32 = _load_raw(f"{base}.weight", as_float=True)  # (N, K) float32
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                    N_, K_ = w_u8.shape
+                    N_, K_ = w_f32.shape
                     block_scale = np.exp2(ws_u8.astype(np.float32) - 127.0)  # E8M0: 2^(u8-127)
                     n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
                     block_size = K_ // n_blocks if n_blocks > 0 else K_
                     # Expand block scales to (N, K) for element-wise multiply
                     block_scale_exp = np.repeat(block_scale, block_size, axis=1)
-                    # FP8 E4M3 → F32, scale, clip, cast to F16
-                    w_f32 = _fp8_e4m3_to_f32(w_u8)
+                    # Scale, clip, cast to F16
                     w_f16 = np.ascontiguousarray(
                         np.clip(w_f32 * block_scale_exp, -_F16_MAX, _F16_MAX).astype(np.float16))
                     _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)

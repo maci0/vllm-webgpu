@@ -31,6 +31,12 @@ assert _mapper.orig_to_new_substr == {"A_log": "A", "embeddings": "embed_tokens"
 del _mapper
 
 
+# USE_QUANT values returned by _uq_for_key for each quantization scheme.
+# 0 = F16 (no quantization), 3 = GPTQ int4, 4 = AWQ sym int4.
+_UQ_GPTQ: int = 3
+_UQ_AWQ:  int = 4
+
+
 def _neg_exp_transform(x: "np.ndarray") -> "np.ndarray":
     """A_log → -exp(A) weight transform applied CPU-side before GPU upload."""
     return -np.exp(x)
@@ -417,7 +423,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # GPTQ weights are [N, K//8] (N-major after the load-time transpose),
             # so byte concat along the flat sequence is equivalent to axis=0
             # concat and is correct without any special handling.
-            _is_awq = self._uq_for_key(q_key) == 4
+            _is_awq = self._uq_for_key(q_key) == _UQ_AWQ
 
             if _is_awq:
                 # CPU-side axis=1 concat produces [K, N_total//8] so every row

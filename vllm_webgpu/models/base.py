@@ -256,8 +256,8 @@ class BaseWebGPUModel(ABC):
         if not self._prof_stats:
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
-        rows = [(lbl, sum(t), len(t)) for lbl, t in self._prof_stats.items()]
-        rows.sort(key=lambda r: r[1], reverse=True)
+        rows = sorted([(lbl, sum(t), len(t)) for lbl, t in self._prof_stats.items()],
+                      key=lambda r: r[1], reverse=True)
         total = sum(r[1] for r in rows)
         for label, sum_t, n in rows:
             avg = sum_t / n
@@ -268,6 +268,15 @@ class BaseWebGPUModel(ABC):
 
     def profile_reset(self) -> None:
         self._prof_stats.clear()
+
+    def _compute_ctx_len(self, attn_metadata: object, positions: "np.ndarray") -> int:
+        """Derive the decode context length from attn_metadata, falling back to position."""
+        ctx_len = int(attn_metadata.max_decode_seq_len
+                      if attn_metadata.max_decode_seq_len is not None
+                      else int(positions[-1]) + 1)
+        if ctx_len <= 0:
+            ctx_len = int(positions[-1]) + 1
+        return ctx_len
 
     def _bt_arr(self, attn_metadata: object) -> "np.ndarray":
         """Return the block-table as a uint32 numpy array.
@@ -406,7 +415,8 @@ class BaseWebGPUModel(ABC):
             self._gpu_sample_staging = dev.create_buffer(
                 size=4,
                 usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
-        return self._gpu_sample_tok  # type: ignore[return-value]
+        assert self._gpu_sample_tok is not None
+        return self._gpu_sample_tok
 
     def logit_readback(self) -> "np.ndarray":
         """Full vocab logits GPU->CPU (only for temperature sampling or analysis)."""

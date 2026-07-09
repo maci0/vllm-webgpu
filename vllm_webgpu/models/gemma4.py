@@ -138,6 +138,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Compute max dimensions across all layers for scratch buffer sizing
         self._max_q_dim = max(lp["q_dim"] for lp in self._lp)
         self._max_kv_dim = max(lp["kv_dim"] for lp in self._lp)
+        self._max_inter = self._scratch_inter_size()
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         self._init_scratch_buffers(max_ctx, self._max_q_dim, self._max_kv_dim)
 
@@ -299,11 +300,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         if num_tokens > 1:
             return self._prefill_batch_forward(input_ids, positions, attn_metadata, num_tokens)
 
-        ctx_len = int(attn_metadata.max_decode_seq_len
-                      if attn_metadata.max_decode_seq_len is not None
-                      else int(positions[-1]) + 1)
-        if ctx_len <= 0:
-            ctx_len = int(positions[-1]) + 1
+        ctx_len = self._compute_ctx_len(attn_metadata, positions)
 
         # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
         pre = self._pre
@@ -428,7 +425,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         hidden = self.hidden_size
         vocab  = self.vocab_size
-        max_inter  = max(lp["intermediate_size"] for lp in self._lp)
+        max_inter  = self._max_inter
         max_q_dim  = self._max_q_dim
         max_kv_dim = self._max_kv_dim
 
@@ -1007,10 +1004,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     else:
                         _v_src = sc["k_buf"]  # global attention: V = K
                     _k_src = sc["k_buf"]
+                    _v_src_offset = 0
                 else:
                     pass  # KV-shared path: _k_src/_v_src are not used
                 _q_src = sc["q_buf"]
-                _v_src_offset = 0
 
             # Per-head RMSNorm + RoPE for Q and K.
             # When both norm weights exist: fused_qk_norm_rope handles both in one dispatch.
