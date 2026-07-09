@@ -121,8 +121,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # checkpoints) expose get_nemotron_h_config_for_layer() on the model_config
         # to return per-layer overrides, including a different intermediate_size.
         _sizes = _raw_int if isinstance(_raw_int, list) else [_raw_int]
-        _it = iter(_sizes)
-        _last = _sizes[-1]
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
         _layer_int_size_list: list[int] = []
         _mlp_idx = 0
@@ -130,7 +128,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _lt != "mlp":
                 _layer_int_size_list.append(0)
             else:
-                _fallback = next(_it, _last)
+                _fallback = _sizes[min(_mlp_idx, len(_sizes) - 1)]
                 if _get_layer_cfg is not None:
                     _lcfg = _get_layer_cfg(_li)
                     _isize = getattr(_lcfg, 'intermediate_size', _fallback)
