@@ -426,7 +426,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # MixtralWebGPUModel). flash_attn_prefill applies standard causal masking
         # and has no WINDOW_SIZE constant, so batch prefill would attend across the
         # full context and produce wrong attention beyond the window.
-        if getattr(self, "_sw", None):
+        # _force_sequential_prefill is a separate flag (set by GptOssWebGPUModel)
+        # that requests the sequential path without touching _sw, keeping
+        # _effective_ctx_len semantics correct.
+        if getattr(self, "_force_sequential_prefill", False) or getattr(self, "_sw", None):
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T, hidden, vocab, rms_base,
             )

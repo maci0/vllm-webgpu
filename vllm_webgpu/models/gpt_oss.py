@@ -43,8 +43,10 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # _prefill_batch_forward bypasses _attn_block entirely, so it cannot
         # apply attention biases or per-layer layer_types context overrides.
         # Force the sequential fallback path whenever either feature is active.
-        if self._attn_bias or self._layer_types:
-            self._sw = self._sw or -1
+        # Use a dedicated flag rather than mutating _sw: setting _sw = -1 poisons
+        # _effective_ctx_len (min(ctx_len, -1) == -1), which then passes -1 as
+        # CTX_LEN to flash_attn_decode and wraps to max-u32 on the GPU side.
+        self._force_sequential_prefill: bool = bool(self._attn_bias or self._layer_types)
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
