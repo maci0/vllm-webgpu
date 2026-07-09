@@ -340,9 +340,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # u8 with fmt tag).
             src_dtype = self.weights[q_key].dtype
 
-            # Concatenate Q/K/V weights on the GPU side using copy_buffer_to_buffer,
-            # avoiding three GPU→CPU readbacks (to_numpy) followed by a CPU→GPU
-            # re-upload. All weight buffers are 4-byte aligned from the loader.
             q_nb = self.weights[q_key].nbytes
             k_nb = self.weights[k_key].nbytes
             v_nb = self.weights[v_key].nbytes
@@ -351,12 +348,41 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             k_s = f"{k_key}.scales"
             v_s = f"{v_key}.scales"
             has_scales = q_s in self.weights and k_s in self.weights and v_s in self.weights
-            qkv_raw = dev.create_buffer(size=max(total_nb, 4), usage=_wgpu_usage)
-            _enc = dev.create_command_encoder()
-            _enc.copy_buffer_to_buffer(self.weights[q_key].buf, 0, qkv_raw, 0, q_nb)
-            _enc.copy_buffer_to_buffer(self.weights[k_key].buf, 0, qkv_raw, q_nb, k_nb)
-            _enc.copy_buffer_to_buffer(self.weights[v_key].buf, 0, qkv_raw, q_nb + k_nb, v_nb)
-            dev.queue.submit([_enc.finish()])
+
+            # AWQ weights are stored K-major as [K, N//8]. GPU-side byte
+            # concatenation of three such buffers produces column-block layout
+            # (all K rows of Q, then all K rows of K, then V), but the shader
+            # indexes weights[k_idx * (N_total//8) + n_group], which requires
+            # row-interleaved [K, N_total//8]. With GQA (k_dim < q_dim) every
+            # k and v output group reads the wrong nibble words.
+            # GPTQ weights are [N, K//8] (N-major after the load-time transpose),
+            # so byte concat along the flat sequence is equivalent to axis=0
+            # concat and is correct without any special handling.
+            _qmeta_early = self.weights.get("__quant_meta__")
+            _q_base_early = q_key.removesuffix(".weight")
+            _is_awq = (
+                _qmeta_early is not None
+                and _q_base_early in _qmeta_early
+                and _qmeta_early[_q_base_early].get("fmt") == "awq_sym"
+            )
+
+            if _is_awq:
+                # CPU-side axis=1 concat produces [K, N_total//8] so every row
+                # interleaves q, k, v output groups in the order the shader expects.
+                q_w = self.weights[q_key].to_numpy().view(np.int32).reshape(self.weights[q_key].shape)
+                k_w = self.weights[k_key].to_numpy().view(np.int32).reshape(self.weights[k_key].shape)
+                v_w = self.weights[v_key].to_numpy().view(np.int32).reshape(self.weights[v_key].shape)
+                packed_w = np.ascontiguousarray(np.concatenate([q_w, k_w, v_w], axis=1))
+                qkv_raw = dev.create_buffer_with_data(data=packed_w.tobytes(), usage=_wgpu_usage)
+            else:
+                # Non-AWQ (GPTQ, FP16, FP8, etc.): GPU-side byte concat is correct.
+                # All weight buffers are 4-byte aligned from the loader.
+                qkv_raw = dev.create_buffer(size=max(total_nb, 4), usage=_wgpu_usage)
+                _enc = dev.create_command_encoder()
+                _enc.copy_buffer_to_buffer(self.weights[q_key].buf, 0, qkv_raw, 0, q_nb)
+                _enc.copy_buffer_to_buffer(self.weights[k_key].buf, 0, qkv_raw, q_nb, k_nb)
+                _enc.copy_buffer_to_buffer(self.weights[v_key].buf, 0, qkv_raw, q_nb + k_nb, v_nb)
+                dev.queue.submit([_enc.finish()])
 
             if has_scales:
                 # Scales have shape [G, N] (G = K // group_size, N = output neurons).
