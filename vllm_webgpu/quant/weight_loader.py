@@ -684,6 +684,8 @@ def load_safetensors_weights(
                 else:
                     arr_f32 = np.ascontiguousarray(
                         sf.get_tensor(name).numpy().astype(np.float32))
+                if weight_transforms and name in weight_transforms:
+                    arr_f32 = weight_transforms[name](arr_f32)
                 _upload(arr_f32, np.float32, 'f32', name, weights)
                 return True
 
