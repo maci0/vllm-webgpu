@@ -1048,8 +1048,9 @@ def load_safetensors_weights(
                     block_scale = np.exp2(ws_u8.astype(np.float32) - 127.0)  # E8M0: 2^(u8-127)
                     n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
                     block_size = K_ // n_blocks if n_blocks > 0 else K_
-                    # Expand block scales to (N, K) for element-wise multiply
-                    block_scale_exp = np.repeat(block_scale, block_size, axis=1)
+                    # Expand block scales to (N, K) for element-wise multiply.
+                    # Ensure block_scale is 2D before repeat; ws_u8 may be 1D or scalar.
+                    block_scale_exp = np.repeat(block_scale.reshape(N_, -1), block_size, axis=1)
                     # Scale, clip, cast to F16
                     w_f16 = np.ascontiguousarray(
                         np.clip(w_f32 * block_scale_exp, -_F16_MAX, _F16_MAX).astype(np.float16))
