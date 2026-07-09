@@ -155,7 +155,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "sm_buf":     mk(NQ * max_ctx * 2),
             "attn_out":   mk(T * max_q_dim * 2),
             "o_proj_out": mk(T * H * 2),
-            "ffn_normed": mk(T * H * 2),
             "gate_buf":   mk(T * I * 2),
             "up_buf":     mk(T * I * 2),
             "ffn_act":    mk(T * I * 2),

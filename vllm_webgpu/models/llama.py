@@ -256,6 +256,51 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._last_logit_buf = logits_buf
         self._last_vocab = vocab
 
+    def _run_decode_dispatches(
+        self,
+        ids_buf, pos_buf, slot_map, bt_buf, x_buf,
+        norm_out, logits_buf, ctx_len, num_tokens, vocab, greedy,
+    ) -> None:
+        """Emit all GPU dispatches for a single-token decode step.
+
+        Must be called inside an active command encoder (either via
+        _batched_dispatch() or with _active_encoder set manually, as
+        MixtralWebGPUModel does for MoE expert routing).
+        """
+        sc = self._sc
+        _rms_base = self._rms_consts
+
+        # Embed (single dispatch; removed the duplicate standalone dispatch)
+        self._dispatch(
+            "embedding_lookup",
+            [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
+            {"HIDDEN_DIM": self.hidden_size},
+            (num_tokens, 1, 1),
+        )
+
+        # Pre-norm for layer 0 - subsequent layers' pre-norms are fused into
+        # the previous layer's final add_rms_norm dispatch.
+        self._dispatch(
+            "rms_norm",
+            [x_buf, self.weights["model.layers.0.input_layernorm.weight"], sc["normed"]],
+            _rms_base, (num_tokens, 1, 1),
+        )
+
+        normed_x = sc["normed"]
+        for i in range(self.num_layers):
+            normed_x, x_buf = self._transformer_layer(
+                i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+
+        # Final norm
+        self._dispatch(
+            "rms_norm",
+            [x_buf, self.weights["model.norm.weight"], norm_out],
+            _rms_base,
+            (num_tokens, 1, 1),
+        )
+
+        self._decode_teardown(norm_out, logits_buf, vocab, greedy)
+
     def forward(
         self,
         input_ids: np.ndarray,
@@ -296,36 +341,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         greedy = self._greedy_decode
         with self._batched_dispatch():
-            # Embed (single dispatch; removed the duplicate standalone dispatch)
-            self._dispatch(
-                "embedding_lookup",
-                [self.weights["model.embed_tokens.weight"], ids_buf, x_buf],
-                {"HIDDEN_DIM": hidden},
-                (num_tokens, 1, 1),
+            self._run_decode_dispatches(
+                ids_buf, pos_buf, slot_map, bt_buf, x_buf,
+                norm_out, logits_buf, ctx_len, num_tokens, vocab, greedy,
             )
-
-            # Pre-norm for layer 0 - subsequent layers' pre-norms are fused into
-            # the previous layer's final add_rms_norm dispatch.
-            self._dispatch(
-                "rms_norm",
-                [x_buf, self.weights["model.layers.0.input_layernorm.weight"], sc["normed"]],
-                _rms_base, (num_tokens, 1, 1),
-            )
-
-            normed_x = sc["normed"]
-            for i in range(self.num_layers):
-                normed_x, x_buf = self._transformer_layer(
-                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
-
-            # Final norm
-            self._dispatch(
-                "rms_norm",
-                [x_buf, self.weights["model.norm.weight"], norm_out],
-                _rms_base,
-                (num_tokens, 1, 1),
-            )
-
-            self._decode_teardown(norm_out, logits_buf, vocab, greedy)
 
         if greedy:
             # Greedy path: 4-byte readback from staging buffer (mapped during main sync).

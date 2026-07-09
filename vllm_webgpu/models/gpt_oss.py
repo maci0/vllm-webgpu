@@ -133,16 +133,19 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         _freq_buf = self._rope_freq_buf
 
         # GPT-OSS has no q_norm/k_norm weights; dispatch rope directly.
+        # INPUT_OFFSET=0 is explicit to share the compiled pipeline with other
+        # rope call sites that always pass it (omitting it yields a distinct
+        # PipelineKey that never gets reused, wasting JIT compilation).
         self._dispatch(
             "rope",
             [_q_src, pos_buf, sc["q_rope"], _freq_buf],
-            {**_rope_consts, "NUM_HEADS": self.num_q_heads},
+            {**_rope_consts, "NUM_HEADS": self.num_q_heads, "INPUT_OFFSET": 0},
             (num_tokens, self.num_q_heads, 1),
         )
         self._dispatch(
             "rope",
             [_k_src, pos_buf, sc["k_rope"], _freq_buf],
-            {**_rope_consts, "NUM_HEADS": self.num_kv_heads},
+            {**_rope_consts, "NUM_HEADS": self.num_kv_heads, "INPUT_OFFSET": 0},
             (num_tokens, self.num_kv_heads, 1),
         )
 

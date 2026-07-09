@@ -83,11 +83,24 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Total QKV packed dimension: K + K + V heads (Q_heads = K_heads for GDN)
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
         _lin_key_dim: int       = self._lin_k_heads * self._lin_k_dim   # total key dim (= Q dim)
-        self._lin_conv_dim: int = 2 * _lin_key_dim + self._lin_val_dim  # QKV (Q_dim == K_dim)
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0 (leading element in packed QKV buffer).
         self._gdn_k_base: int = _lin_key_dim
         self._gdn_v_base: int = 2 * _lin_key_dim
+        # Cache state shapes so _alloc_lin_states reuses them without a second call.
+        # Derive _lin_conv_dim from the shape (works for both DS and SD conv layouts
+        # since math.prod(conv_shape) == conv_dim * (kernel_size - 1) in both cases).
+        _lin_conv_shape, _lin_ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads,
+            num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim,
+            head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel,
+        )
+        self._lin_conv_shape = _lin_conv_shape
+        self._lin_ssm_shape = _lin_ssm_shape
+        self._lin_conv_dim: int = math.prod(_lin_conv_shape) // (self._lin_conv_kernel - 1)
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
@@ -272,14 +285,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         """
         dev = self.wgpu_device.wgpu_device
 
-        conv_shape, ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            tp_world_size=1,
-            num_k_heads=self._lin_k_heads,
-            num_v_heads=self._lin_v_heads,
-            head_k_dim=self._lin_k_dim,
-            head_v_dim=self._lin_v_dim,
-            conv_kernel_size=self._lin_conv_kernel,
-        )
+        # Reuse shapes cached in __init__ to avoid a redundant call to
+        # gated_delta_net_state_shape (the parameters haven't changed).
+        conv_shape, ssm_shape = self._lin_conv_shape, self._lin_ssm_shape
         # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, K_DIM, V_DIM] f32
         # (inner two dims transposed vs. vLLM's shape) — byte count is the same.
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
@@ -834,12 +842,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 if norm_w is not None:
                     self._dispatch("fused_per_head_norm_rope",
                                    [src, norm_w, pos_buf, dst, _freq_buf],
-                                   {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 1},
+                                   {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 1, "INPUT_OFFSET": 0},
                                    (n_heads, num_tokens, 1))
                 else:
                     self._dispatch("fused_per_head_norm_rope",
                                    [src, self._dummy_scales_buf, pos_buf, dst, _freq_buf],
-                                   {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 0},
+                                   {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 0, "INPUT_OFFSET": 0},
                                    (n_heads, num_tokens, 1))
 
         # Fused K+V cache store. V always lives in its own _v_src buffer (no offset needed).

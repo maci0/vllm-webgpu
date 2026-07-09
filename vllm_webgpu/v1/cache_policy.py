@@ -66,18 +66,17 @@ def _allocate_kv_pool_hybrid(
             v_buf = WebGPUBuffer.empty(dev, 16)
         model.kv_pool.append((k_buf, v_buf))
 
-    dtype_str = str(dtype).split(".")[-1]
     if layer_types is None:
         total_mb = (bytes_per_layer * num_layers * 2) // MiB_bytes
         logger.info(
             "KV cache: %d blocks × %d tokens/block × %d layers × %d KV heads × %d head_dim (%s, K+V) = %dMB",
-            num_blocks, block_size, num_layers, num_kv_heads, head_dim, dtype_str, total_mb,
+            num_blocks, block_size, num_layers, num_kv_heads, head_dim, dtype, total_mb,
         )
     else:
         total_mb = (bytes_per_layer * kv_layer_count * 2) // MiB_bytes
         logger.info(
             "KV cache (hybrid): %d kv-attn × %d blocks × %d tokens/block × %d KV heads × %d head_dim (%s, K+V) = %dMB",
-            kv_layer_count, num_blocks, block_size, num_kv_heads, head_dim, dtype_str, total_mb,
+            kv_layer_count, num_blocks, block_size, num_kv_heads, head_dim, dtype, total_mb,
         )
 
 
@@ -251,7 +250,6 @@ def allocate_kv_from_hf_config(
     hf_config,
     num_blocks: int,
     block_size: int,
-    model_config=None,
 ) -> None:
     """Allocate KV cache from a HuggingFace config object.
 
@@ -263,15 +261,9 @@ def allocate_kv_from_hf_config(
     Priority order:
       1. model._lp (populated at load time for heterogeneous-dim models)
       2. hf_config._layer_attention_params (absent for safetensors checkpoints)
-      3. Uniform allocation via model_config canonical accessors (when provided)
-         or raw hf_config scalar fields (standalone scripts without vLLM engine)
-
-    Pass model_config (a vLLM ModelConfig) whenever the vLLM engine is running.
-    Its get_head_size() and get_total_num_kv_heads() handle non-standard attribute
-    names across architectures (PLaMo2.1, Falcon, DeepSeek-MLA, etc.), keeping
-    this path consistent with get_kv_cache_spec().
+      3. Raw hf_config scalar fields via the vLLM model-arch convertor
     """
-    kv_dtype = model_config.dtype if model_config is not None else torch.float16
+    kv_dtype = torch.float16
 
     lp_list = getattr(model, "_lp", None)
     if lp_list is None:
@@ -286,23 +278,16 @@ def allocate_kv_from_hf_config(
         )
         return
 
-    if model_config is not None:
-        num_kv_heads = model_config.get_total_num_kv_heads()
-        head_dim = model_config.get_head_size()
-        _num_layers = model_config.get_total_num_hidden_layers()
-    else:
-        # Fallback for standalone scripts (run_inference.py, profile_kernels.py)
-        # that call allocate_kv_from_hf_config without a vLLM ModelConfig.
-        # hf_config.num_key_value_heads may diverge from what ModelConfig
-        # reports for architectures with TP-remapped or MLA-style heads.
-        # Pass model_config when possible to get the canonical values.
-        _conv = _make_convertor(hf_config)
-        num_kv_heads = _conv.get_total_num_kv_heads()
-        head_dim = _conv.get_head_size()
-        # For multimodal configs, hf_config.num_hidden_layers is the outer
-        # wrapper's count, which may differ from the text model. Use the
-        # convertor (which reads from _hf_text) to get the correct value.
-        _num_layers = _conv.get_num_hidden_layers()
+    # Standalone scripts (run_inference.py, profile_kernels.py) call this without
+    # a vLLM ModelConfig. Use the convertor for canonical KV head/dim values that
+    # handle non-standard attribute names across architectures.
+    _conv = _make_convertor(hf_config)
+    num_kv_heads = _conv.get_total_num_kv_heads()
+    head_dim = _conv.get_head_size()
+    # For multimodal configs, hf_config.num_hidden_layers is the outer
+    # wrapper's count, which may differ from the text model. Use the
+    # convertor (which reads from _hf_text) to get the correct value.
+    _num_layers = _conv.get_num_hidden_layers()
     # model._layer_types wins; fall back to hf_config fields used by different
     # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
     layer_types = get_layer_types(model, hf_config)
@@ -329,12 +314,20 @@ def get_layer_types(model, hf_config) -> list | None:
     Priority: model._layer_types (set at load time) > hf_config.layer_types
     (Gemma4 and similar) > hf_config.layers_block_type (NemotronH/Falcon).
     Returns None when none of the three attributes is present.
+
+    Uses explicit `is not None` guards (not `or`) so that an empty list, which
+    is a valid value distinct from "attribute absent", is not silently skipped.
+    vLLM's ModelConfig.get_num_layers_by_block_type uses the same pattern.
     """
-    return (
-        getattr(model, "_layer_types", None)
-        or getattr(hf_config, "layer_types", None)
-        or getattr(hf_config, "layers_block_type", None)
-    )
+    for obj, attr in [
+        (model, "_layer_types"),
+        (hf_config, "layer_types"),
+        (hf_config, "layers_block_type"),
+    ]:
+        val = getattr(obj, attr, None)
+        if val is not None:
+            return val
+    return None
 
 
 def _make_convertor(hf_cfg):

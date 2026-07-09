@@ -506,8 +506,15 @@ class BaseWebGPUModel(ABC):
     ) -> None:
         # matmul_quant always declares binding 4 (bias). Callers that don't set
         # HAS_BIAS=1 still need to provide a buffer so the bind group layout matches.
-        if shader_name == "matmul_quant" and len(bindings) == 4:
-            bindings = list(bindings) + [self._dummy_bias_buf]
+        # The auto-append is an invariant of the dispatch protocol for this shader:
+        # all call sites pass exactly 4 bindings (HAS_BIAS=0 is always the default).
+        # The assertion guards against silent misuse if the binding count ever changes.
+        if shader_name == "matmul_quant":
+            assert len(bindings) in (4, 5), (
+                f"matmul_quant expects 4 or 5 bindings, got {len(bindings)}"
+            )
+            if len(bindings) == 4:
+                bindings = list(bindings) + [self._dummy_bias_buf]
 
         key = PipelineKey(
             shader_name=f"{shader_subdir}/{shader_name}",

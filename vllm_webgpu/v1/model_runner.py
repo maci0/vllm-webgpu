@@ -8,6 +8,7 @@ import torch
 from torch.nn.functional import pad as _fpad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
+from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
@@ -29,16 +30,20 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
-    """Sample one token from a 1-D float32 logit vector using SamplingParams."""
-    if sp is None or sp.sampling_type == SamplingType.GREEDY:
+    """Sample one token from a 1-D float32 logit vector using SamplingParams.
+
+    When sp is None, fall back to argmax. Otherwise delegate to _sample_token,
+    which already checks temperature < 1e-5 and returns argmax for greedy;
+    the SamplingType.GREEDY branch here would be redundant.
+    """
+    if sp is None:
         return int(np.argmax(logits_1d))
-    seed = sp.seed
     return _sample_token(
         logits_1d,
         temperature=sp.temperature,
         top_p=sp.top_p,
         top_k=sp.top_k,
-        seed=seed,
+        seed=sp.seed,
     )
 
 
@@ -239,12 +244,9 @@ class WebGPUModelRunner:
         if lp_list:
             head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
             num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)
-        return FullAttentionSpec(
-            block_size=block_size,
-            num_kv_heads=num_kv_heads,
-            head_size=head_dim,
-            dtype=torch.float16,
-        ).page_size_bytes
+        # K + V: factor of 2. Equivalent to FullAttentionSpec(...).page_size_bytes for
+        # an unpadded f16 spec (no page_size_padded, no per-token-head quant scales).
+        return 2 * block_size * num_kv_heads * head_dim * get_dtype_size(torch.float16)
 
     def warm_up(self) -> None:
         if self.model is not None:

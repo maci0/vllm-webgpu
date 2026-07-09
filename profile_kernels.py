@@ -46,7 +46,6 @@ from vllm_webgpu.v1.cache_policy import (
     allocate_kv_from_hf_config, get_kv_dims_from_config,
     get_layer_types,
 )
-num_kv_heads, head_dim = get_kv_dims_from_config(hf_cfg)
 import vllm_webgpu.envs as _envs
 block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
@@ -158,6 +157,7 @@ if stats:
     print(f"\nBottleneck analysis:")
     hid = hf_cfg.hidden_size
     if hasattr(hf_cfg, 'num_attention_heads'):
+        num_kv_heads, head_dim = get_kv_dims_from_config(hf_cfg)
         raw_inter_sz = hf_cfg.intermediate_size
         inter_sz = max(raw_inter_sz) if isinstance(raw_inter_sz, list) else raw_inter_sz
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim

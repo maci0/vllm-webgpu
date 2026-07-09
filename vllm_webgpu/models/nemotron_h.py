@@ -370,7 +370,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         if qmeta:
             qmeta = self._hf_to_vllm_mapper.apply_dict(qmeta)
             # Drop metadata for weight buffers that were filtered out (e.g. mtp.*).
-            qmeta = {k: v for k, v in qmeta.items() if (k + ".weight") in self.weights or k.startswith("__")}
+            qmeta = {k: v for k, v in qmeta.items() if (k + ".weight") in self.weights}
             self.weights["__quant_meta__"] = qmeta
         self._pack_attn_weights()
         self._validate_mamba_weights()

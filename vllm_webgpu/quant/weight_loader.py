@@ -34,6 +34,10 @@ def _fp8_e4m3_to_f32(raw: "np.ndarray") -> "np.ndarray":
 
     Uses torch's native float8_e4m3fn dtype for correct OCP semantics.
     Input: uint8 array of any shape. Output: float32 array, same shape.
+
+    TEST-ONLY UTILITY. No production callers exist; the FP8 GPU loading path
+    uploads raw uint8 bytes via _upload_u8 and decodes them inside the WGSL
+    shader. This function is used only by tests/test_kernels_matmul.py.
     """
     import torch as _torch
     flat = np.ascontiguousarray(raw).ravel().view(np.uint8)
@@ -67,7 +71,7 @@ def _collect_mx_bases(header: dict) -> list:
             base = k.removesuffix(".weight")
             if header.get(base + ".weight_scale", {}).get("dtype") == "U8":
                 bases.append(base)
-    return sorted(set(bases))
+    return sorted(bases)
 
 
 def _load_quant_cfg(config_path: Path) -> dict:
@@ -371,12 +375,15 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     return ""
 
 
-def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
+def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | None" = None) -> dict:
     """Read config.json and return compressed-tensors quantization metadata.
 
     compressed-tensors models embed a quantization_config with config_groups that
     describes the actual format. Returns a dict with key '__global__' mapped to
     {fmt, group_size} when detected, otherwise empty dict.
+
+    Pass quant_cfg to skip the disk read (avoids a redundant _load_quant_cfg call
+    when the caller has already loaded the config for other purposes).
 
     Routing:
       8-bit int  + channel        -> fmt='int8_gpu'
@@ -394,9 +401,10 @@ def detect_compressed_tensors_fmt(config_path: "str | Path") -> dict:
     than '__global__'.
     """
     p = Path(config_path)
-    if not p.exists():
-        return {}
-    quant_cfg = _load_quant_cfg(p)
+    if quant_cfg is None:
+        if not p.exists():
+            return {}
+        quant_cfg = _load_quant_cfg(p)
     if not quant_cfg.get("config_groups"):
         return {}
     try:
@@ -471,9 +479,12 @@ def load_safetensors_weights(
         # Detect compressed-tensors config from the model directory (needed for
         # pack-quantized INT4 format where weight dtype alone is insufficient).
         # Use the caller-supplied ct_meta when available to avoid re-parsing per shard.
+        # Load config.json once here so that detect_compressed_tensors_fmt and
+        # _detect_mx_quant (for MXFP4/MXFP8) share the same parsed dict.
         _config_json = Path(path).parent / "config.json"
+        _raw_quant_cfg = _load_quant_cfg(_config_json) if _config_json.exists() else {}
         if ct_meta is None:
-            ct_meta = detect_compressed_tensors_fmt(_config_json)
+            ct_meta = detect_compressed_tensors_fmt(_config_json, quant_cfg=_raw_quant_cfg)
 
         # Detect quantization format from header.
         # NOTE: detection is file-level, not per-layer. A checkpoint that mixes
@@ -563,7 +574,7 @@ def load_safetensors_weights(
             fmt = "bnb_nf4"
         elif has_mx_u8_pair:
             # MXFP4 or MXFP8: U8 weight + U8 exponent scale. Distinguish via config files.
-            _raw_quant_cfg = _load_quant_cfg(_config_json) if _config_json.exists() else {}
+            # _raw_quant_cfg was loaded once above; pass it here to skip a second disk read.
             _mx = _detect_mx_quant(Path(path).parent, quant_cfg=_raw_quant_cfg)
             fmt = _mx if _mx in ("mxfp4", "mxfp8") else "plain"
         elif has_ct_pack_int4:
