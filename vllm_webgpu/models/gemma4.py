@@ -669,7 +669,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         {"NUM_Q_HEADS":  self.num_q_heads,
                          "NUM_KV_HEADS": num_kv_heads,
                          "HEAD_DIM":     head_dim,
-                         "NUM_T":        T},
+                         "NUM_T":        T,
+                         "SCALE":        1.0 if self._apply_v_norm else (1.0 / head_dim ** 0.5)},
                         (self.num_q_heads, T, 1))
 
                     # Output projection (batch GEMM)
@@ -1132,7 +1133,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                            "CTX_LEN": ctx_len},
+                            "CTX_LEN": ctx_len,
+                            "SCALE": 1.0 if self._apply_v_norm else (1.0 / head_dim ** 0.5)},
                            (self.num_q_heads, 1, 1))
 
             # Output projection → sc["o_proj_out"]

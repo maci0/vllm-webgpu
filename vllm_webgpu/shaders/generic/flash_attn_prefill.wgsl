@@ -30,6 +30,7 @@ override NUM_KV_HEADS: u32 = 8u;
 override HEAD_DIM:     u32 = 128u;
 override NUM_T:        u32 = 64u;
 override WINDOW_SIZE:  u32 = 0u;  // 0 = full causal; >0 = sliding-window prefix length
+override SCALE:        f32 = 1.0;
 
 @group(0) @binding(0) var<storage, read>       Q   : array<f16>;
 @group(0) @binding(1) var<storage, read>       K   : array<f16>;
@@ -51,7 +52,7 @@ fn main(
     let kv_head = q_head / (NUM_Q_HEADS / NUM_KV_HEADS);
     let tid     = lid.x;
     let WS      = 128u;  // workgroup size constant (matches @workgroup_size above)
-    let scale   = 1.0f / sqrt(f32(HEAD_DIM));
+    let scale   = SCALE;
 
     // ── Phase 1: Load Q[t_q, q_head, :] into shared memory ─────────────────
     // All 128 threads collaborate. For HEAD_DIM=128: each thread loads 1 dim.

@@ -472,6 +472,7 @@ def test_flash_attn_decode(wgpu_device):
         ("HEAD_DIM", HEAD_DIM),
         ("CTX_LEN", CTX_LEN),
         ("BLOCK_SIZE", BLOCK_SIZE),
+        ("SCALE", scale),
     ))
     pipeline = cache.get_or_create(key)
 

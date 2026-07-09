@@ -39,6 +39,7 @@ override NUM_Q_HEADS:  u32 = 32u;
 override NUM_KV_HEADS: u32 = 8u;
 override HEAD_DIM:     u32 = 128u;
 override CTX_LEN:      u32 = 512u;
+override SCALE:        f32 = 1.0;
 // WG_SIZE is always 128 (matches attn_score.wgsl). Handles HEAD_DIM > 128 by
 // having each thread accumulate multiple dimensions (acc0/acc1/acc2/acc3).
 
@@ -61,7 +62,7 @@ fn main(
     let kv_head = q_head / (NUM_Q_HEADS / NUM_KV_HEADS);
     let tid     = lid.x;
     let WS      = 128u;  // workgroup size constant (matches @workgroup_size above)
-    let scale   = 1.0f / sqrt(f32(HEAD_DIM));
+    let scale   = SCALE;
 
     // ── Phase 1: Load Q into shared memory ──────────────────────────────────
     var d = tid;
