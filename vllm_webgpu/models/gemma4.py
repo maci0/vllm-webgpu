@@ -208,6 +208,23 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "USE_FREQ_BUF": int(self._use_freq_buf),
         }
 
+        # Register q_norm/k_norm tiling transforms so load_weights tiles at upload time,
+        # avoiding a GPU roundtrip (to_numpy → tile → re-upload) per weight per layer.
+        # Gemma4 checkpoints store shared norm as (head_dim,); the shader expects
+        # (num_heads * head_dim,) with each head repeating the same values.
+        # Per-layer head_dim and num_heads are captured at registration time.
+        for _i, _lp in enumerate(self._lp):
+            _p = self._layer_key_prefix(_i)
+            _hd = _lp["head_dim"]
+            _nq = _lp["num_q_heads"]
+            _nkv = _lp["num_kv_heads"]
+            self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = (
+                lambda a, hd=_hd, n=_nq: np.tile(a, n) if a.shape == (hd,) else a
+            )
+            self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
+                lambda a, hd=_hd, n=_nkv: np.tile(a, n) if a.shape == (hd,) else a
+            )
+
     def _scratch_token_count(self) -> int:
         """Number of tokens to size T-dependent scratch buffers for. Override in subclasses."""
         return 1
@@ -267,37 +284,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         }
         self._hstate: int = 0
 
-    def _postprocess_weights(self) -> None:
-        """Tile per-head norm weights that have shape (head_dim,) to (num_heads * head_dim,).
-
-        Gemma4 q_norm/k_norm weights are per-head (shape = head_dim) but the
-        fused_per_head_norm_rope shader indexes weight[head_idx * HEAD_DIM + i],
-        requiring shape (num_heads * head_dim). Tile to match, using per-layer params.
-        """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-        dev = self.wgpu_device.wgpu_device
-
-        for i, lp in enumerate(self._lp):
-            p = self._layer_key_prefix(i)
-            hd = lp["head_dim"]
-            for norm_key, num_heads in [
-                (f"{p}.self_attn.q_norm.weight", lp["num_q_heads"]),
-                (f"{p}.self_attn.k_norm.weight", lp["num_kv_heads"]),
-            ]:
-                buf = self.weights.get(norm_key)
-                if buf is None:
-                    continue
-                expected_len = num_heads * hd
-                raw = buf.to_numpy().view(np.float16)
-                if len(raw) == expected_len:
-                    continue
-                if len(raw) == hd:
-                    tiled = np.tile(raw, num_heads)
-                    self.weights[norm_key] = WebGPUBuffer.from_numpy(dev, tiled)
-                else:
-                    logger.warning("Unexpected q/k_norm shape for %s: got %d, expected %d or %d",
-                                   norm_key, len(raw), expected_len, hd)
-
     def _layer_key_prefix(self, layer_idx: int) -> str:
         """Return the weight key prefix for layer i. Subclasses may override."""
         return f"model.layers.{layer_idx}"
@@ -328,7 +314,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
     def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None) -> None:
         super().load_weights(path, f32_keys=f32_keys)
-        self._postprocess_weights()
         self._load_layer_scales()
 
     def forward(

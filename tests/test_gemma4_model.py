@@ -127,8 +127,6 @@ def test_gemma4_gptq_forward(wgpu_device):
 
     model.weights["__quant_meta__"] = quant_meta
 
-    # _postprocess_weights tiles q/k norm weights; no norm weights here, so it's a no-op.
-    model._postprocess_weights()
     model._layer_scales = [1.0] * layers
 
     # KV cache
@@ -223,7 +221,6 @@ def test_gemma4_prefill_forward(wgpu_device):
     ]:
         model.weights[key] = f16(shape)
 
-    model._postprocess_weights()
     model._layer_scales = [1.0] * layers
 
     for _ in range(layers):

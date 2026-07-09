@@ -160,8 +160,6 @@ def test_diffusion_gemma_moe_forward(wgpu_device):
         model.weights[f"{ep}.up_proj.weight"]   = f16((moe_inter, hidden))
         model.weights[f"{ep}.down_proj.weight"] = f16((hidden, moe_inter))
 
-    # _postprocess_weights tiles q/k_norm weights — no-op here since we skip norms.
-    model._postprocess_weights()
     # _layer_scales is populated by load_weights(); set manually for the test.
     model._layer_scales = [1.0] * layers
 
