@@ -265,6 +265,8 @@ class WebGPUModelRunner:
         by log probability (num_logprobs+1 columns total), matching the layout
         expected by LogprobsLists.
         """
+        if Sampler is None:
+            return None
         vocab_size = logits_1d.shape[0]
         if num_logprobs < 0:
             logger.warning(
@@ -295,7 +297,7 @@ class WebGPUModelRunner:
         LogprobsTensors of shape [T-1, num_prompt_logprobs+1], or None when
         torch or LogprobsTensors are unavailable or T < 2.
         """
-        if LogprobsTensors is None:
+        if LogprobsTensors is None or Sampler is None:
             return None
         T = len(tok_ids)
         if T < 2:
