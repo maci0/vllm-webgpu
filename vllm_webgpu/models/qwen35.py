@@ -291,22 +291,18 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes)
             self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes)
 
-            p = f"model.layers.{i}.linear_attn"
-
-            # Upgrade SSM parameter precision: A_log and dt_bias are small per-head
-            # arrays originally in bf16 but stored as f16. Keeping them as f32 avoids
-            # ~3-bit mantissa loss in the decay computation.
-            for key_suffix in ("A_log", "dt_bias"):
-                key = f"{p}.{key_suffix}"
-                w = self.weights.get(key)
-                if w is None:
-                    continue
-                f16_np = w.to_numpy().view(np.float16)
-                f32_np = f16_np.astype(np.float32)
-                self.weights[key] = WebGPUBuffer.from_numpy(dev, f32_np)
-
     def load_weights(self, path: str) -> None:
-        super().load_weights(path)
+        # A_log and dt_bias are small per-head arrays originally in bf16 but stored
+        # as f16. Keeping them as f32 avoids ~3-bit mantissa loss in the decay
+        # computation. Pass their checkpoint key names so they are uploaded as f32
+        # directly, without a GPU round-trip. Matches the nemotron_h.py pattern.
+        f32_keys = frozenset(
+            f"model.layers.{i}.linear_attn.{wk}"
+            for i in range(self.num_layers)
+            if not self._is_full_attn(i)
+            for wk in ("A_log", "dt_bias")
+        )
+        super().load_weights(path, f32_keys=f32_keys)
         self._postprocess_weights()
         self._alloc_lin_states()
         # Confirm MoE detection against actual weight keys.
