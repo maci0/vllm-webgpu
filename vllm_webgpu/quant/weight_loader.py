@@ -580,18 +580,24 @@ def load_safetensors_weights(
         if fmt != "plain":
             logger.info("Detected %s quantization in %s", fmt.upper(), path)
 
-        def _load_raw(name: str) -> np.ndarray:
+        def _load_raw(name: str, as_float: bool = False) -> np.ndarray:
             """Load a tensor from the open safetensors file as numpy.
 
             Returns float32 for BF16 tensors (bit-shifted from uint16), uint8 for
             F8_E4M3 (raw bytes for the FP8 LUT decoder), and the native numpy dtype
             for all other formats (F16, F32, I32, U8, I8).
+
+            When as_float=True and dtype is F8_E4M3, returns float32 values instead
+            of raw uint8 bytes. Use this for scale tensors that need float32 values
+            rather than raw byte uploads.
             """
             dtype_str = header[name]["dtype"]
             t = sf.get_tensor(name)        # torch.Tensor on CPU
             if dtype_str == "BF16":
                 return t.to(torch.float32).numpy()
             if dtype_str == "F8_E4M3":
+                if as_float:
+                    return t.to(torch.float32).numpy()
                 # Only OCP float8_e4m3fn is handled by _fp8_e4m3_to_f32.
                 # Other FP8 variants (E5M2, FNUZ) have different bit layouts and
                 # must not be passed through this path.
@@ -845,7 +851,7 @@ def load_safetensors_weights(
             for base in nvfp4_bases:
                 try:
                     wp = _load_raw(f"{base}.weight_packed")    # (N, K//2) U8
-                    ws = sf.get_tensor(f"{base}.weight_scale").to(torch.float32).numpy()  # (N, K//16) f32
+                    ws = _load_raw(f"{base}.weight_scale", as_float=True)  # (N, K//16) f32
                     wgs_key = f"{base}.weight_global_scale"
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
                     N_, K2_ = wp.shape
@@ -888,7 +894,7 @@ def load_safetensors_weights(
             for base in dnvfp4_bases:
                 try:
                     wp = _load_raw(f"{base}.weight")        # (N, K//2) U8
-                    ws = sf.get_tensor(f"{base}.weight_scale").to(torch.float32).numpy()  # (N, K//group_size) f32
+                    ws = _load_raw(f"{base}.weight_scale", as_float=True)  # (N, K//group_size) f32
                     wgs_key = f"{base}.weight_scale_2"
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
                     N_, K2_ = wp.shape
