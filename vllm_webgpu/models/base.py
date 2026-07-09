@@ -60,8 +60,25 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq from vLLM so
-    that this function automatically tracks any upstream changes.
+    Calls YaRNScalingRotaryEmbedding._compute_inv_freq directly from vLLM so
+    the formula is never duplicated here.
+
+    Why the SimpleNamespace trick: _compute_inv_freq is an instance method.
+    Calling it through __init__ would invoke _compute_cos_sin_cache(), which
+    allocates a [max_pos * factor, rotary_dim] tensor that is not needed here
+    and would be expensive at startup. The SimpleNamespace avoids __init__
+    entirely by acting as a minimal fake self that provides exactly the
+    attributes the method reads.
+
+    Maintenance note: if the vLLM pin is bumped, re-check the SimpleNamespace
+    fields below against YaRNScalingRotaryEmbedding._compute_inv_freq in the
+    new vLLM version. Any attribute added to self.xxx inside that method must
+    be added to _obj here, or the call will raise AttributeError at runtime.
+    The method currently reads: base, rotary_dim, max_position_embeddings,
+    beta_fast, beta_slow, extrapolation_factor, truncate.
+
+    Future: request that vLLM expose _compute_inv_freq as a @classmethod or
+    standalone function so this fake-self pattern can be eliminated.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -104,6 +121,9 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
+    # Minimal fake self for YaRNScalingRotaryEmbedding._compute_inv_freq.
+    # Fields verified against yarn_scaling_rope.py _compute_inv_freq body.
+    # Re-verify these when bumping the vLLM pin (see docstring above).
     _obj = SimpleNamespace(
         base=rope_theta,
         rotary_dim=rotary_dim,
