@@ -272,6 +272,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Returns:
             logits: [num_tokens, vocab_size]  float32
         """
+        if self.profiling:
+            raise RuntimeError(
+                "profiling=True is not supported in forward(); "
+                "set model.profiling=False before calling forward()"
+            )
+
         num_tokens = len(input_ids)
         hidden = self.hidden_size
         self._hstate = 0
