@@ -365,12 +365,10 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     hf_quant = model_dir / "hf_quant_config.json"
     if hf_quant.exists():
         try:
-            from vllm.model_executor.layers.quantization.modelopt import (
-                ModelOptQuantConfigBase,
-            )
             with open(hf_quant) as f:
                 cfg = json.load(f)
-            algo = ModelOptQuantConfigBase._extract_modelopt_quant_algo(cfg) or ""
+            quant_sect = cfg.get("quantization", cfg)
+            algo = str(quant_sect.get("quant_algo", "")).upper() if isinstance(quant_sect, dict) else ""
             if "MXFP4" in algo:
                 return "mxfp4"
             if "MXFP8" in algo:
