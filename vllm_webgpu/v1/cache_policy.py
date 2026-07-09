@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING
 
 import torch
 from vllm.logger import init_logger
+from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_utils import get_cpu_memory
 
 from vllm_webgpu.utils import OVERHEAD_BYTES
@@ -143,10 +144,9 @@ def allocate_kv_from_tensors(
             )
         per_buf = tensor.size // 2
         for layer_name in tensor.shared_by:
-            parts = layer_name.split(".")
             try:
-                idx = int(parts[2])
-            except (IndexError, ValueError):
+                idx = extract_layer_index(layer_name)
+            except Exception:
                 logger.warning("Cannot parse layer index from KVCacheTensor.shared_by entry %r", layer_name)
                 continue
             layer_kv_bytes[idx] = per_buf
