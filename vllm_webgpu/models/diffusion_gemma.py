@@ -334,8 +334,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         out      = sc[_H_NAMES[(self._hstate + 2) % 3]]
         add_n    = num_tokens * hidden
         _rms = self._rms_consts
+        is_kv_shared    = lp.get("is_kv_shared", False)
+        kv_shared_target = lp.get("kv_shared_target", -1)
+        _kv_layer = kv_shared_target if (is_kv_shared and kv_shared_target >= 0) else layer_idx
 
-        k_cache, v_cache = self.kv_pool[layer_idx]
+        k_cache, v_cache = self.kv_pool[_kv_layer]
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # ── Attention sublayer ────────────────────────────────────────────
@@ -424,11 +427,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # to all other tokens in the canvas. If causal attention is ever needed
             # (e.g., for an encoder-only pass), store and attend one token at a time
             # (like _prefill_sequential_fallback) or port flash_attn_prefill here.
-            self._dispatch("kv_cache_store_both",
-                           [sc["k_rope"], k_cache, v_to_cache, v_cache, slot_map],
-                           {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
-                            "HEAD_DIM": head_dim, "V_IN_OFFSET": 0},
-                           (num_tokens, num_kv_heads, 1))
+            # KV-shared layers reuse the target layer's already-populated cache; skip store.
+            if not is_kv_shared:
+                self._dispatch("kv_cache_store_both",
+                               [sc["k_rope"], k_cache, v_to_cache, v_cache, slot_map],
+                               {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
+                                "HEAD_DIM": head_dim, "V_IN_OFFSET": 0},
+                               (num_tokens, num_kv_heads, 1))
             # Multi-token path: loop over tokens using Q_TOKEN_OFFSET / ATTN_TOKEN_OFFSET.
             # Each iteration reuses scores_buf and sm_buf (sized NQ * max_ctx for one token);
             # this is safe because every _dispatch ends its compute pass before the next begins,
