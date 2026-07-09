@@ -16,6 +16,79 @@ if TYPE_CHECKING:
 logger = init_logger(__name__)
 
 
+def _build_layer_params_from_config(
+    model_config,
+    num_layers: int,
+    num_q_heads: int,
+    intermediate_size: int,
+    layer_types: list[str],
+    default_hd: int,
+    default_kv: int,
+    global_hd: int,
+    global_kv: int,
+    k_eq_v: bool,
+) -> list[dict]:
+    """Build per-layer attention/FFN params from a Gemma4 safetensors config.
+
+    Transcribes three formulas from vLLM's Gemma4 model implementation.
+    Pin these line references when upgrading vLLM:
+
+    (1) first_kv_shared boundary:
+        vLLM vllm/model_executor/models/gemma4.py lines 463, 601
+        ``self.num_layers - getattr(model_config, 'num_kv_shared_layers', 0)``
+
+    (2) kv_shared_target reversed-search generator:
+        vLLM vllm/model_executor/models/gemma4.py lines 467-474
+        ``next((j for j in range(len(...)-1, -1, -1) if ...[j] == lt), -1)``
+
+    (3) head_dim / num_kv_heads / has_v_proj per attention type:
+        vLLM vllm/model_executor/models/gemma4.py lines 561-577
+        full_attention uses global_head_dim + num_global_key_value_heads;
+        sliding_attention uses default head_dim + num_key_value_heads.
+    """
+    # (1) vLLM gemma4.py L463/601
+    first_kv_shared = num_layers - getattr(model_config, "num_kv_shared_layers", 0)
+    use_dwm = getattr(model_config, "use_double_wide_mlp", False)
+
+    lp: list[dict] = []
+    for i, lt in enumerate(layer_types):
+        inter_l = intermediate_size * (
+            2 if use_dwm and 0 < first_kv_shared < num_layers and i >= first_kv_shared else 1
+        )
+        is_kv_shared = (first_kv_shared < num_layers) and (i >= first_kv_shared)
+
+        # (2) vLLM gemma4.py L467-474: find last non-shared layer of the same type.
+        kv_shared_target = -1
+        if is_kv_shared:
+            _prev = layer_types[:first_kv_shared]
+            kv_shared_target = next(
+                (j for j in range(len(_prev) - 1, -1, -1) if _prev[j] == lt), -1
+            )
+
+        # (3) vLLM gemma4.py L561-577: select dims by attention type.
+        if lt == "full_attention":
+            hd_l = global_hd
+            nkv_l = global_kv if k_eq_v else default_kv
+            hv = not k_eq_v
+        else:
+            hd_l = default_hd
+            nkv_l = default_kv
+            hv = True
+
+        lp.append({
+            "head_dim":          hd_l,
+            "num_q_heads":       num_q_heads,
+            "num_kv_heads":      nkv_l,
+            "q_dim":             num_q_heads * hd_l,
+            "kv_dim":            nkv_l * hd_l,
+            "has_v_proj":        hv,
+            "intermediate_size": inter_l,
+            "is_kv_shared":      is_kv_shared,
+            "kv_shared_target":  kv_shared_target,
+        })
+    return lp
+
+
 class Gemma4WebGPUModel(BaseWebGPUModel):
     """
     Gemma 4 transformer with heterogeneous per-layer attention.
@@ -81,36 +154,19 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # use_double_wide_mlp: the last num_kv_shared_layers layers have FFN width * 2.
             # is_kv_shared: the last num_kv_shared_layers layers share KV with an earlier
             # layer of the same type (mirrors vLLM Gemma4Attention.is_kv_shared_layer).
-            first_kv_shared = self.num_layers - getattr(model_config, "num_kv_shared_layers", 0)
-            use_dwm = getattr(model_config, "use_double_wide_mlp", False)
-            self._lp = []
-            for i, lt in enumerate(layer_types):
-                inter_l = self.intermediate_size * (2 if use_dwm and 0 < first_kv_shared < self.num_layers and i >= first_kv_shared else 1)
-                is_kv_shared = (first_kv_shared < self.num_layers) and (i >= first_kv_shared)
-                kv_shared_target = -1
-                if is_kv_shared:
-                    # Find the last non-shared layer with the same layer_type (matches vLLM).
-                    _prev = layer_types[:first_kv_shared]
-                    kv_shared_target = next((j for j in range(len(_prev)-1, -1, -1) if _prev[j] == lt), -1)
-                if lt == "full_attention":
-                    hd_l  = global_hd
-                    nkv_l = global_kv if _k_eq_v else default_kv
-                    hv    = not _k_eq_v
-                else:
-                    hd_l = default_hd
-                    nkv_l = default_kv
-                    hv = True
-                self._lp.append({
-                    "head_dim":         hd_l,
-                    "num_q_heads":      self.num_q_heads,
-                    "num_kv_heads":     nkv_l,
-                    "q_dim":            self.num_q_heads * hd_l,
-                    "kv_dim":           nkv_l * hd_l,
-                    "has_v_proj":       hv,
-                    "intermediate_size": inter_l,
-                    "is_kv_shared":     is_kv_shared,
-                    "kv_shared_target": kv_shared_target,
-                })
+            # Formulas transcribed from vLLM -- see _build_layer_params_from_config docstring.
+            self._lp = _build_layer_params_from_config(
+                model_config=model_config,
+                num_layers=self.num_layers,
+                num_q_heads=self.num_q_heads,
+                intermediate_size=self.intermediate_size,
+                layer_types=layer_types,
+                default_hd=default_hd,
+                default_kv=default_kv,
+                global_hd=global_hd,
+                global_kv=global_kv,
+                k_eq_v=_k_eq_v,
+            )
         else:
             # Uniform fallback: all layers use the config defaults.
             # For Gemma3 safetensors (uniform attention) this is correct.
