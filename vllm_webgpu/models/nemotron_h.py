@@ -417,9 +417,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # scales[grp * N_total + row], which requires row-interleaved [G, N_total].
                 # For G > 1 (e.g. K=4096, group_size=128 -> G=32) every grp > 0 lookup
                 # would land in the wrong projection's data. Stack on axis=1 on the CPU.
-                q_sc = self.weights[q_s].to_numpy().view(np.float32).reshape(self.weights[q_s].shape)
-                k_sc = self.weights[k_s].to_numpy().view(np.float32).reshape(self.weights[k_s].shape)
-                v_sc = self.weights[v_s].to_numpy().view(np.float32).reshape(self.weights[v_s].shape)
+                q_sc = np.frombuffer(self.weights[q_s].to_numpy(), dtype=np.float32).reshape(self.weights[q_s].shape)
+                k_sc = np.frombuffer(self.weights[k_s].to_numpy(), dtype=np.float32).reshape(self.weights[k_s].shape)
+                v_sc = np.frombuffer(self.weights[v_s].to_numpy(), dtype=np.float32).reshape(self.weights[v_s].shape)
                 if q_sc.ndim == 2:
                     # [G, N] layout: concatenate along N axis to get [G, N_total].
                     packed_sc = np.ascontiguousarray(np.concatenate([q_sc, k_sc, v_sc], axis=1))
@@ -678,6 +678,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         add_n = num_tokens * self.hidden_size
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
+            assert self._active_encoder is not None, "_layer_dispatch must be called inside _batched_dispatch"
             if lt == "mamba":
                 self._mamba_layer(layer_idx, normed_x)
             elif lt == "attention":
@@ -759,7 +760,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # x_B_C:  bytes [MI*2      .. (MI+CD)*2)   -> sc["mamba_conv_in"]
         # dt:     bytes [(MI+CD)*2 .. (MI+CD+MNH)*2) -> sc["mamba_dt"]
         enc = self._active_encoder
-        assert enc is not None, "_mamba_layer/_attn_layer must be called inside _batched_dispatch"
         enc.copy_buffer_to_buffer(
             sc["mamba_inproj"].buf, 0,
             sc["mamba_gate"].buf,   0,
@@ -859,7 +859,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         # GPU-side extraction: split QKV buffer into Q, K, V.
         enc = self._active_encoder
-        assert enc is not None, "_mamba_layer/_attn_layer must be called inside _batched_dispatch"
         enc.copy_buffer_to_buffer(
             sc["qkv_buf"].buf, 0,           sc["q_buf"].buf, 0, q_dim * 2)
         enc.copy_buffer_to_buffer(

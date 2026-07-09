@@ -1,5 +1,4 @@
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -76,16 +75,15 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 "expert_out":   mk(self.hidden_size * 2),    # [hidden] f16 accumulated
                 "expert_tmp":   mk(self.hidden_size * 2),    # [hidden] f16 per-expert
             }
-            # Pre-allocated MAP_READ staging buffers for topk readback.
+            # Pre-allocated MAP_READ staging buffer for topk idx readback.
             # Copies are recorded into the Phase A encoder so no extra GPU submit
             # is needed after on_submitted_work_done_sync().
             _staging_sz = max(self._top_k * 4, 8)
             self._topk_idx_staging = dev.create_buffer(
                 size=_staging_sz,
                 usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
-            self._topk_w_staging = dev.create_buffer(
-                size=_staging_sz,
-                usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+            # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
+            self._topk_w_staging = None
 
     def _effective_ctx_len(self, ctx_len: int) -> int:
         """Cap ctx_len at the sliding window size when SWA is configured."""
@@ -269,8 +267,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(logging.DEBUG)
+        _debug_weights = logger.isEnabledFor(10)
         if _debug_weights:
+            if self._topk_w_staging is None:
+                self._topk_w_staging = dev.create_buffer(
+                    size=max(self._top_k * 4, 8),
+                    usage=self._wgpu_lib.BufferUsage.COPY_DST | self._wgpu_lib.BufferUsage.MAP_READ)
             self._active_encoder.copy_buffer_to_buffer(
                 msc["topk_w"].buf, 0, self._topk_w_staging, 0, K * 4)
 

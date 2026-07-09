@@ -1313,7 +1313,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
 
     config_path = p / "config.json"
     quant_cfg = _load_quant_cfg(config_path)
-    if not quant_cfg and config_path.exists():
+    if not quant_cfg:
         try:
             quant_cfg = json.loads(config_path.read_text()).get("quantization") or {}
         except Exception:

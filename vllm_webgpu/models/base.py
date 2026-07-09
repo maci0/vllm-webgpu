@@ -1,4 +1,5 @@
 from __future__ import annotations
+import statistics
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -249,7 +250,7 @@ class BaseWebGPUModel(ABC):
         if not self._prof_stats:
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
-        rows = [(lbl, sum(t) / len(t), len(t)) for lbl, t in self._prof_stats.items()]
+        rows = [(lbl, statistics.mean(t), len(t)) for lbl, t in self._prof_stats.items()]
         rows.sort(key=lambda r: r[1] * r[2], reverse=True)
         total = sum(r[1] * r[2] for r in rows)
         for label, avg, n in rows:
@@ -432,9 +433,14 @@ class BaseWebGPUModel(ABC):
             elif gs == 1:
                 # Per-channel FP8: GROUP_K=1 signals the shader to read scales[row].
                 d["GROUP_K"] = 1
-            elif gs is not None:
+            elif gs is None:
+                # Per-tensor FP8: GROUP_K != 1 routes to the per-tensor branch.
+                # Explicit value guards against a future shader default change.
+                d["GROUP_K"] = 128
+            else:
                 raise ValueError(
-                    f"fp8_gpu with group_size={gs} > 1 is not supported by this shader path"
+                    f"fp8_gpu with group_size={gs!r} is not supported "
+                    f"(expected None for per-tensor or 1 for per-channel)"
                 )
             return d
         if uq == 8:

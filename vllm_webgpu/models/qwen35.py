@@ -1,6 +1,5 @@
 from __future__ import annotations
-import math
-from itertools import batched
+from itertools import batched, chain
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -279,8 +278,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        ssm_bytes  = math.prod(ssm_shape) * 4   # f32
-        conv_bytes = math.prod(conv_shape) * 2   # f16
+        ssm_bytes  = ssm_shape[0] * ssm_shape[1] * ssm_shape[2] * 4   # f32
+        conv_bytes = conv_shape[0] * conv_shape[1] * 2                # f16
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers
@@ -380,10 +379,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def reset_recurrent_states(self) -> None:
         """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
         dev = self.wgpu_device.wgpu_device
-        for lst in (self._ssm_gpu, self._conv_gpu):
-            for buf in lst:
-                if buf is not None:
-                    dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
+        for buf in chain(self._ssm_gpu, self._conv_gpu):
+            if buf is not None:
+                dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
 
     def save_recurrent_states(self) -> dict:
         """Snapshot all GDN conv/SSM state buffers to CPU in one GPU readback.

@@ -84,7 +84,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             use_dwm = getattr(model_config, "use_double_wide_mlp", False)
             self._lp = []
             for i, lt in enumerate(layer_types):
-                inter_l = self.intermediate_size * (2 if use_dwm and i >= first_kv_shared else 1)
+                inter_l = self.intermediate_size * (2 if use_dwm and 0 < first_kv_shared < self.num_layers and i >= first_kv_shared else 1)
                 is_kv_shared = (first_kv_shared < self.num_layers) and (i >= first_kv_shared)
                 kv_shared_target = -1
                 if is_kv_shared:

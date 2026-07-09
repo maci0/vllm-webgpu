@@ -431,15 +431,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 "V_IN_OFFSET": 0},
                                (num_kv_heads, num_tokens, 1), shader_subdir="gemma")
                 v_to_cache = sc["v_normed"]
-            # Write all T tokens' KV to cache before the attention loop.
-            # Each query token then attends to the full ctx_len cache (all T tokens),
-            # which is non-causal (bidirectional). For the diffusion denoising use-case
-            # this is intentional: the denoising process allows each token to attend
-            # to all other tokens in the canvas. If causal attention is ever needed
-            # (e.g., for an encoder-only pass), store and attend one token at a time
-            # (like _prefill_sequential_fallback) or port flash_attn_prefill here.
-            # KV-shared layers reuse the target layer's already-populated cache; skip store.
-            if not is_kv_shared:
+                # Write all T tokens' KV to cache before the attention loop.
+                # Each query token then attends to the full ctx_len cache (all T tokens),
+                # which is non-causal (bidirectional). For the diffusion denoising use-case
+                # this is intentional: the denoising process allows each token to attend
+                # to all other tokens in the canvas. If causal attention is ever needed
+                # (e.g., for an encoder-only pass), store and attend one token at a time
+                # (like _prefill_sequential_fallback) or port flash_attn_prefill here.
+                # KV-shared layers reuse the target layer's already-populated cache; skip store.
                 self._dispatch("kv_cache_store_both",
                                [sc["k_rope"], k_cache, v_to_cache, v_cache, slot_map],
                                {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,

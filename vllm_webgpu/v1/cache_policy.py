@@ -106,7 +106,7 @@ def _allocate_kv_pool_per_layer(
             raise ValueError(
                 f"num_kv_heads={lp['num_kv_heads']} but head_dim=0; invalid KV spec"
             )
-        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2  # f16
+        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * _F16_BYTES
         model.kv_pool.append((
             WebGPUBuffer.empty(dev, kv_bytes),
             WebGPUBuffer.empty(dev, kv_bytes),
@@ -258,15 +258,6 @@ def _make_convertor(hf_cfg):
         getattr(hf_cfg, "model_type", ""), ModelArchConfigConvertorBase
     )(hf_cfg, hf_text)
 
-
-def get_kv_dims(hf_cfg) -> "tuple[int, int]":
-    """Return (num_kv_heads, head_size) from one convertor instantiation.
-
-    Avoids creating two separate ModelArchConfigConvertorBase objects (each
-    including a get_hf_text_config call) when both values are needed together.
-    """
-    conv = _make_convertor(hf_cfg)
-    return conv.get_total_num_kv_heads(), conv.get_head_size()
 
 
 def get_num_kv_heads(hf_cfg) -> int:
