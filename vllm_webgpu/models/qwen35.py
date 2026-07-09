@@ -88,8 +88,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._gdn_k_base: int = _lin_key_dim
         self._gdn_v_base: int = 2 * _lin_key_dim
         # Cache state shapes so _alloc_lin_states reuses them without a second call.
-        # Derive _lin_conv_dim from the shape (works for both DS and SD conv layouts
-        # since math.prod(conv_shape) == conv_dim * (kernel_size - 1) in both cases).
         _lin_conv_shape, _lin_ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
             tp_world_size=1,
             num_k_heads=self._lin_k_heads,
@@ -100,7 +98,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         )
         self._lin_conv_shape = _lin_conv_shape
         self._lin_ssm_shape = _lin_ssm_shape
-        self._lin_conv_dim: int = math.prod(_lin_conv_shape) // (self._lin_conv_kernel - 1)
+        self._lin_conv_dim: int = 2 * self._lin_k_heads * self._lin_k_dim + self._lin_v_heads * self._lin_v_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;

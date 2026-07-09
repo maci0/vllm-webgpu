@@ -81,7 +81,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # canvas_length is the max batch size during diffusion inference (default 256).
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
-            max_canvas_len = getattr(model_config, "canvas_length", 256)
+            max_canvas_len = self._scratch_token_count()
             self._shared_res_buf = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2)  # F16
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
             self._topk_idx_buf     = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
@@ -169,10 +169,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     def _layer_key_prefix(self, layer_idx: int) -> str:
         return f"model.decoder.layers.{layer_idx}"
-
-    def _first_weight_key(self, *candidates: str) -> str:
-        """Return the first candidate key present in self.weights, or the last candidate as fallback."""
-        return next((k for k in candidates if k in self.weights), candidates[-1])
 
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""

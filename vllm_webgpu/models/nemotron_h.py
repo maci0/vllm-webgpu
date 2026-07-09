@@ -148,7 +148,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # hybrid_override_pattern would load all weights, fill GPU memory, then
         # raise an unguarded NotImplementedError on the first forward pass.
         # Fail here instead, before any GPU allocation happens.
-        if any(lt == "moe" for lt in self._layer_types):
+        if "moe" in self._layer_types:
             raise NotImplementedError(
                 "NemotronHWebGPUModel does not support MoE layers "
                 "(hybrid_override_pattern contains 'E')."

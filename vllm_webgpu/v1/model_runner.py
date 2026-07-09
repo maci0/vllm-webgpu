@@ -8,7 +8,6 @@ import torch
 from torch.nn.functional import pad as _fpad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
@@ -244,9 +243,12 @@ class WebGPUModelRunner:
         if lp_list:
             head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
             num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)
-        # K + V: factor of 2. Equivalent to FullAttentionSpec(...).page_size_bytes for
-        # an unpadded f16 spec (no page_size_padded, no per-token-head quant scales).
-        return 2 * block_size * num_kv_heads * head_dim * get_dtype_size(torch.float16)
+        return FullAttentionSpec(
+            block_size=block_size,
+            num_kv_heads=num_kv_heads,
+            head_size=head_dim,
+            dtype=torch.float16,
+        ).real_page_size_bytes
 
     def warm_up(self) -> None:
         if self.model is not None:
@@ -368,19 +370,21 @@ class WebGPUModelRunner:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
         # Build LogprobsLists for top-k sampled-token logprob entries.
-        # Each non-None entry in logprobs_data is a LogprobsTensors of shape
-        # [1, k+1]. Stack them (preserving req alignment with placeholder rows
-        # for requests that did not ask for logprobs), then call tolists() once.
-        # TODO: only stack non-None entries and build a req_id->row index
-        # restricted to logprob-requested reqs; current approach wastes memory
-        # in large batches where most requests have no logprobs.
+        # Stack only non-None entries (one row per logprob-having request).
+        # cu_num_generated_tokens acts as a row-start index per request:
+        # it advances for each request that has logprobs, stays flat for
+        # those that don't. The downstream scheduler only reads logprobs
+        # for requests that asked for them, so non-logprob rows are safe to omit.
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
             max_k = max(d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None)
             pieces = []
+            cu = []   # cumulative row count, one entry per request
+            row = 0
             for d in logprobs_data:
+                cu.append(row)
                 if d is not None:
                     pad = max_k - d.logprob_token_ids.shape[1]
                     pieces.append(LogprobsTensors(
@@ -388,18 +392,13 @@ class WebGPUModelRunner:
                         _fpad(d.logprobs, (0, pad), value=-float("inf")),
                         d.selected_token_ranks,
                     ))
-                else:
-                    pieces.append(LogprobsTensors(
-                        torch.zeros((1, max_k), dtype=torch.int32),
-                        torch.full((1, max_k), -float("inf"), dtype=torch.float32),
-                        torch.zeros(1, dtype=torch.int32),
-                    ))
+                    row += 1
             stacked = LogprobsTensors(
                 torch.cat([p.logprob_token_ids for p in pieces]),
                 torch.cat([p.logprobs for p in pieces]),
                 torch.cat([p.selected_token_ranks for p in pieces]),
             )
-            built_logprobs = stacked.tolists()
+            built_logprobs = stacked.tolists(cu_num_generated_tokens=cu)
 
         out = ModelRunnerOutput(
             req_ids=req_ids,

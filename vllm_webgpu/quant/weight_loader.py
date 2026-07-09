@@ -29,20 +29,6 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
         return t.numpy()
     return t.to(_torch.float32).clamp(-_F16_MAX, _F16_MAX).to(_torch.float16).numpy()
 
-def _fp8_e4m3_to_f32(raw: "np.ndarray") -> "np.ndarray":
-    """Decode FP8 E4M3 (OCP format, exponent bias=7) byte array to float32.
-
-    Uses torch's native float8_e4m3fn dtype for correct OCP semantics.
-    Input: uint8 array of any shape. Output: float32 array, same shape.
-
-    TEST-ONLY UTILITY. No production callers exist; the FP8 GPU loading path
-    uploads raw uint8 bytes via _upload_u8 and decodes them inside the WGSL
-    shader. This function is used only by tests/test_kernels_matmul.py.
-    """
-    import torch as _torch
-    flat = np.ascontiguousarray(raw).ravel().view(np.uint8)
-    return _torch.frombuffer(flat.tobytes(), dtype=_torch.float8_e4m3fn).to(_torch.float32).numpy().reshape(raw.shape)
-
 
 def _is_gdn_weight_key(key: str) -> bool:
     """True for GDN linear-attention projection weights that benefit from bf16 storage."""
@@ -65,13 +51,13 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
-    bases = []
-    for k in header:
-        if k.endswith(".weight") and header[k].get("dtype") == "U8":
-            base = k.removesuffix(".weight")
-            if header.get(base + ".weight_scale", {}).get("dtype") == "U8":
-                bases.append(base)
-    return sorted(bases)
+    return sorted(
+        k.removesuffix(".weight")
+        for k in header
+        if k.endswith(".weight")
+        and header[k].get("dtype") == "U8"
+        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+    )
 
 
 def _load_quant_cfg(config_path: Path) -> dict:
@@ -264,7 +250,7 @@ def _qzeros_symmetric(qzeros: np.ndarray) -> bool:
     (zero_point=0) or any per-group asymmetric zeros cannot use the GPU
     shader path and must fall back to CPU dequantization.
     """
-    return bool(np.all(qzeros == _SYM_ZEROS_INT32))
+    return bool(np.all(qzeros.view(np.int32) == _SYM_ZEROS_INT32))
 
 
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:

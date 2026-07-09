@@ -269,7 +269,7 @@ def test_matmul_fp8_per_channel_scale(wgpu_device):
     import wgpu
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
-    from vllm_webgpu.quant.weight_loader import _fp8_e4m3_to_f32
+    from tests.utils import _fp8_e4m3_to_f32
 
     K, N = 32, 8
     rng = np.random.default_rng(42)
