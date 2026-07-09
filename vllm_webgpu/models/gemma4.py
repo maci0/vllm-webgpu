@@ -164,9 +164,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "v_normed":   mk(T * max_kv_dim * 2),                     # f16
             "q_rope":     mk(T * max_q_dim * 2),  # f16
             "k_rope":     mk(T * max_kv_dim * 2), # f16
-            "scores_buf": mk(NQ * max_ctx * 2),   # f16
-            "sm_buf":     mk(NQ * max_ctx * 2),   # f16
-            "attn_out":   mk(T * max_q_dim * 2),  # f16
+"attn_out":   mk(T * max_q_dim * 2),  # f16
             "o_proj_out": mk(T * H * 2),           # f16
             "ffn_normed": mk(T * H * 2),           # f16
             "gate_buf":   mk(T * I * 2),           # f16
