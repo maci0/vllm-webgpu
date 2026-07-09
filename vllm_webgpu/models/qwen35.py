@@ -306,6 +306,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
     def load_weights(self, path: str) -> None:
         super().load_weights(path)
+        self._postprocess_weights()
         self._alloc_lin_states()
         # Confirm MoE detection against actual weight keys.
         # Check any layer rather than pinning to layer 0.
