@@ -35,6 +35,7 @@ def _allocate_kv_pool_hybrid(
     num_kv_heads: int,
     head_dim: int,
     layer_types: list | None = None,
+    dtype: torch.dtype = torch.float16,
 ) -> None:
     """Allocate KV pool for all layers.
 
@@ -44,7 +45,7 @@ def _allocate_kv_pool_hybrid(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
-    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * torch.float16.itemsize
+    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * get_dtype_size(dtype)
 
     if layer_types is not None and len(layer_types) != num_layers:
         raise ValueError(
@@ -65,17 +66,18 @@ def _allocate_kv_pool_hybrid(
             v_buf = WebGPUBuffer.empty(dev, 16)
         model.kv_pool.append((k_buf, v_buf))
 
+    dtype_str = str(dtype).split(".")[-1]
     if layer_types is None:
         total_mb = (bytes_per_layer * num_layers * 2) // MiB_bytes
         logger.info(
-            "KV cache: %d blocks × %d tokens/block × %d layers × %d KV heads × %d head_dim (f16, K+V) = %dMB",
-            num_blocks, block_size, num_layers, num_kv_heads, head_dim, total_mb,
+            "KV cache: %d blocks × %d tokens/block × %d layers × %d KV heads × %d head_dim (%s, K+V) = %dMB",
+            num_blocks, block_size, num_layers, num_kv_heads, head_dim, dtype_str, total_mb,
         )
     else:
         total_mb = (bytes_per_layer * kv_layer_count * 2) // MiB_bytes
         logger.info(
-            "KV cache (hybrid): %d kv-attn × %d blocks × %d tokens/block × %d KV heads × %d head_dim (f16, K+V) = %dMB",
-            kv_layer_count, num_blocks, block_size, num_kv_heads, head_dim, total_mb,
+            "KV cache (hybrid): %d kv-attn × %d blocks × %d tokens/block × %d KV heads × %d head_dim (%s, K+V) = %dMB",
+            kv_layer_count, num_blocks, block_size, num_kv_heads, head_dim, dtype_str, total_mb,
         )
 
 
@@ -85,6 +87,7 @@ def _allocate_kv_pool_per_layer(
     num_blocks: int,
     block_size: int,
     layer_params: list,
+    dtype: torch.dtype = torch.float16,
 ) -> None:
     """Allocate KV pool for models with per-layer KV dims (e.g. Gemma4 with mixed local/global attention dims).
 
@@ -109,7 +112,7 @@ def _allocate_kv_pool_per_layer(
             raise ValueError(
                 f"num_kv_heads={lp['num_kv_heads']} but head_dim=0; invalid KV spec"
             )
-        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * torch.float16.itemsize
+        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * get_dtype_size(dtype)
         model.kv_pool.append((
             WebGPUBuffer.empty(dev, kv_bytes),
             WebGPUBuffer.empty(dev, kv_bytes),
@@ -268,6 +271,8 @@ def allocate_kv_from_hf_config(
     names across architectures (PLaMo2.1, Falcon, DeepSeek-MLA, etc.), keeping
     this path consistent with get_kv_cache_spec().
     """
+    kv_dtype = model_config.dtype if model_config is not None else torch.float16
+
     lp_list = getattr(model, "_lp", None)
     if lp_list is None:
         lp_list = getattr(hf_config, "_layer_attention_params", None)
@@ -277,6 +282,7 @@ def allocate_kv_from_hf_config(
             num_blocks=num_blocks,
             block_size=block_size,
             layer_params=lp_list,
+            dtype=kv_dtype,
         )
         return
 
@@ -313,6 +319,7 @@ def allocate_kv_from_hf_config(
         num_kv_heads=num_kv_heads,
         head_dim=head_dim,
         layer_types=layer_types,
+        dtype=kv_dtype,
     )
 
 
