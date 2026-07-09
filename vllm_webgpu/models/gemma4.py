@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -142,7 +143,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _vpt = self._vals_per_thread(self.hidden_size)
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
-        self._ln_rope_theta: float = float(np.log(float(self.rope_theta)))
+        self._ln_rope_theta: float = math.log(self.rope_theta)
         self._g4_rope_base = {
             "ROPE_BASE": float(self.rope_theta),
             "LN_ROPE_BASE": self._ln_rope_theta,
@@ -496,11 +497,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _CHUNK   = 4
         _hstate  = 0
         _freq_buf = self._rope_freq_buf
-        _g4_rope_base = {
-            "ROPE_BASE":    float(self.rope_theta),
-            "LN_ROPE_BASE": self._ln_rope_theta,
-            "USE_FREQ_BUF": int(self._use_freq_buf),
-        }
+        _g4_rope_base = self._g4_rope_base
 
         for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), _CHUNK)):
             with self._batched_dispatch():

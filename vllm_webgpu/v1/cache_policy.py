@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 import torch
 from vllm.logger import init_logger
 from vllm.utils.mem_utils import get_cpu_memory
-from vllm.utils.torch_utils import get_dtype_size
+
 from vllm_webgpu.utils import OVERHEAD_BYTES
 
 if TYPE_CHECKING:
@@ -16,7 +16,7 @@ logger = init_logger(__name__)
 
 # Float16 element size in bytes. Derived from dtype so it tracks any future
 # KV dtype change rather than being a silent magic constant.
-_F16_BYTES: int = get_dtype_size(torch.float16)
+_F16_BYTES: int = torch.float16.itemsize
 
 # Layer type strings that carry KV state and require cache allocation.
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
@@ -280,34 +280,9 @@ def _make_convertor(hf_cfg):
 
 
 def get_kv_dims_from_config(hf_cfg) -> tuple[int, int]:
-    """Return (num_kv_heads, head_size) from an hf_config in a single convertor pass.
-
-    Builds ModelArchConfigConvertorBase once and returns both dimensions, avoiding
-    the duplicate _make_convertor calls that occur when get_num_kv_heads and
-    get_head_size_from_config are called back-to-back on the same config.
-    """
+    """Return (num_kv_heads, head_size) from an hf_config in a single convertor pass."""
     conv = _make_convertor(hf_cfg)
     return conv.get_total_num_kv_heads(), conv.get_head_size()
-
-
-def get_num_kv_heads(hf_cfg) -> int:
-    """Read num_kv_heads from an hf_config using vLLM's authoritative lookup.
-
-    Delegates to ModelArchConfigConvertorBase.get_total_num_kv_heads() so the
-    attribute priority list stays in sync with vLLM as new architecture aliases
-    are added (e.g. 'num_attention_groups' for Step3p5).
-    """
-    return _make_convertor(hf_cfg).get_total_num_kv_heads()
-
-
-def get_head_size_from_config(hf_cfg) -> int:
-    """Read head_dim from an hf_config using vLLM's authoritative lookup.
-
-    Parallel to get_num_kv_heads — delegates to ModelArchConfigConvertorBase
-    so architecture-specific overrides (e.g. Gemma4's max(head_dim, global_head_dim))
-    are applied correctly rather than falling back to hidden_size // num_heads.
-    """
-    return _make_convertor(hf_cfg).get_head_size()
 
 
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:

@@ -67,6 +67,12 @@ def compute_yarn_freqs(
     RotaryEmbedding object. The torch dependency is forced by yarn_find_correction_range
     and yarn_linear_ramp_mask, which accept only torch tensors.
 
+    Formula transcribed from vLLM 0.24.0:
+    vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
+    YaRNScalingRotaryEmbedding._compute_inv_freq (lines 49-73) and
+    __init__ mscale computation (lines 40-44).
+    When upgrading vLLM, diff this function against those lines to catch drift.
+
     Args:
         head_dim:    Full attention head dimension.
         rope_theta:  RoPE base frequency (e.g. 10000.0).
@@ -250,13 +256,13 @@ class BaseWebGPUModel(ABC):
         if not self._prof_stats:
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
-        rows = [(lbl, sum(t) / len(t), len(t)) for lbl, t in self._prof_stats.items()]
-        rows.sort(key=lambda r: r[1] * r[2], reverse=True)
-        total = sum(r[1] * r[2] for r in rows)
-        for label, avg, n in rows:
-            label_total = avg * n
-            pct = 100.0 * label_total / total if total else 0
-            lines.append(f"  {label:<40s} {avg:7.3f} ms  x{n:4d}  {label_total:8.3f} ms  {pct:5.1f}%")
+        rows = [(lbl, sum(t), len(t)) for lbl, t in self._prof_stats.items()]
+        rows.sort(key=lambda r: r[1], reverse=True)
+        total = sum(r[1] for r in rows)
+        for label, sum_t, n in rows:
+            avg = sum_t / n
+            pct = 100.0 * sum_t / total if total else 0
+            lines.append(f"  {label:<40s} {avg:7.3f} ms  x{n:4d}  {sum_t:8.3f} ms  {pct:5.1f}%")
         lines.append(f"  {'TOTAL':<40s} {'':7s}       {'':6s}  {total:8.3f} ms")
         return "\n".join(lines)
 

@@ -328,7 +328,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         q_dim = lp["q_dim"]
         kv_dim = lp["kv_dim"]
         num_kv_heads = lp["num_kv_heads"]
-        ln_rope = self._ln_rope_theta
         p = self._layer_key_prefix(layer_idx)
 
         residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
@@ -397,8 +396,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     v_src = sc["k_buf"]  # global attention: V = K
 
             _freq_buf = self._rope_freq_buf
-            _dg_rope_base = {"ROPE_BASE": float(self.rope_theta), "LN_ROPE_BASE": ln_rope,
-                             "USE_FREQ_BUF": int(self._use_freq_buf)}
+            _dg_rope_base = self._g4_rope_base
             # Q: norm+RoPE unconditionally (KV-shared layers still project and use Q).
             # K: norm+RoPE only for non-shared layers; shared layers read K from cache directly.
             _heads_specs = [(sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight")]
@@ -646,7 +644,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    {"K": hidden, "N": self.num_experts,
                                     "USE_QUANT": uq_rw, "SPLIT_K": 0,
                                     **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},
-                                   ((self.num_experts + 255) // 256, 1, 1))
+                                   _rows_wg(self.num_experts))
                 # GPU top-K: per-token top-K selection from [T, N_EXPERTS] logits.
                 # Dispatch (num_tokens, 1, 1): each workgroup handles one token's logits.
                 self._dispatch("topk_sort",

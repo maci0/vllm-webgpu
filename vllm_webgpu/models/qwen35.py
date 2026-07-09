@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched, chain
+from itertools import batched
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -168,9 +168,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             return WebGPUBuffer.empty(dev, max(n, 8))
 
         # Attention output gate: silu(gate)*attn_out before o_proj.
-        # Not present in the parent; added only for models with attn_output_gate=True,
-        # but always allocated so dispatch bindings are stable.
-        self._sc["q_gate_buf"] = mk(Q * 2)
+        # Only allocated for models with attn_output_gate=True; no shader dispatch
+        # unconditionally binds this slot, so the allocation must be conditional.
+        if self._attn_output_gate:
+            self._sc["q_gate_buf"] = mk(Q * 2)
 
         # GDN linear-attention scratch buffers (sized from config, not hardcoded).
         self._sc.update({
@@ -379,7 +380,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def reset_recurrent_states(self) -> None:
         """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
         dev = self.wgpu_device.wgpu_device
-        for buf in chain(self._ssm_gpu, self._conv_gpu):
+        for buf in self._ssm_gpu + self._conv_gpu:
             if buf is not None:
                 dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
 

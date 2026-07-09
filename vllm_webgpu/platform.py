@@ -36,7 +36,7 @@ def _get_wgpu_adapter():
 
 class WebGPUPlatform(_Platform):
     _enum = _PlatformEnum.OOT
-    device_name: str = "cpu"
+    device_name: str = "webgpu"
     device_type: str = "cpu"
 
     @classmethod

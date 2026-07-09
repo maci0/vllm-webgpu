@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
-from vllm.model_executor.models.utils import WeightsMapper
+from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import _ELEM_BYTES
@@ -17,10 +17,23 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+# Verify that the upstream mapper fields match the snapshot this code was written
+# against (vLLM 0.24.0). Catches upstream changes at import time.
+_mapper = _NemotronHForCausalLM.hf_to_vllm_mapper
+assert _mapper.orig_to_new_prefix == {"backbone": "model"}, (
+    f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_prefix changed upstream: "
+    f"{_mapper.orig_to_new_prefix!r}. Review load_weights before removing this assertion."
+)
+assert _mapper.orig_to_new_substr == {"A_log": "A", "embeddings": "embed_tokens"}, (
+    f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_substr changed upstream: "
+    f"{_mapper.orig_to_new_substr!r}. Review load_weights before removing this assertion."
+)
+del _mapper
+
 
 def _neg_exp_transform(x: "np.ndarray") -> "np.ndarray":
     """A_log → -exp(A) weight transform applied CPU-side before GPU upload."""
-    return np.ascontiguousarray(-np.exp(x))
+    return -np.exp(x)
 
 
 class NemotronHWebGPUModel(BaseWebGPUModel):
@@ -296,16 +309,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     # ── Weight loading ────────────────────────────────────────────────────────
 
-    # Pinned snapshot of NemotronHForCausalLM.hf_to_vllm_mapper as of vLLM 0.9.x.
-    # Do NOT replace with NemotronHForCausalLM.hf_to_vllm_mapper directly: if vLLM
-    # adds new orig_to_new_substr rules in a future release, they could silently mangle
-    # WebGPU weight keys or __quant_meta__ sub-dict entries without any error.
-    # When upgrading vLLM, diff this against NemotronHForCausalLM.hf_to_vllm_mapper
-    # and update intentionally.
-    _hf_to_vllm_mapper = WeightsMapper(
-        orig_to_new_prefix={"backbone": "model"},
-        orig_to_new_substr={"A_log": "A", "embeddings": "embed_tokens"},
-    )
+    # Use the upstream mapper directly. The assertion below catches any upstream
+    # changes at import time so weight-key mangling is caught early rather than
+    # silently producing wrong inference results.
+    _hf_to_vllm_mapper = _NemotronHForCausalLM.hf_to_vllm_mapper
 
     def load_weights(self, path: str) -> None:
         """Load weights with key remapping and Mamba-specific postprocessing."""
@@ -400,7 +407,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 q_w = self.weights[q_key].to_numpy().view(np.int32).reshape(self.weights[q_key].shape)
                 k_w = self.weights[k_key].to_numpy().view(np.int32).reshape(self.weights[k_key].shape)
                 v_w = self.weights[v_key].to_numpy().view(np.int32).reshape(self.weights[v_key].shape)
-                packed_w = np.ascontiguousarray(np.concatenate([q_w, k_w, v_w], axis=1))
+                packed_w = np.concatenate([q_w, k_w, v_w], axis=1)
                 qkv_raw_buf = WebGPUBuffer.from_numpy(dev, packed_w)
             else:
                 # Non-AWQ (GPTQ, FP16, FP8, etc.): GPU-side byte concat is correct.
@@ -424,11 +431,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 v_sc = self.weights[v_s].to_numpy().view(np.float32).reshape(self.weights[v_s].shape)
                 if q_sc.ndim == 2:
                     # [G, N] layout: concatenate along N axis to get [G, N_total].
-                    packed_sc = np.ascontiguousarray(np.concatenate([q_sc, k_sc, v_sc], axis=1))
+                    packed_sc = np.concatenate([q_sc, k_sc, v_sc], axis=1)
                 else:
                     # 1D per-channel scales (G=1): axis=0 concat is correct since
                     # grp is always 0, so scales[0*N_total+row] == scales[row].
-                    packed_sc = np.ascontiguousarray(np.concatenate([q_sc, k_sc, v_sc]))
+                    packed_sc = np.concatenate([q_sc, k_sc, v_sc])
                 scales_buf = WebGPUBuffer.from_numpy(dev, packed_sc)
 
             qkv_key = f"{p}.qkv_proj.weight"

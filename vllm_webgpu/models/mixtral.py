@@ -219,7 +219,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             router_subkey: Sub-key for the router weight, e.g. 'gate'
                            (Mixtral/Qwen35) or 'router' (GPT-OSS).
             extra_gate_consts: Extra shader constants merged into fused_gate_act
-                               dispatches, e.g. {'CLAMP_MAX': limit}.
+                               and gelu_mul dispatches (quantized path); all keys
+                               must be declared as overrides in both shaders.
             gate_key: Expert weight sub-key for the gate projection, e.g.
                       'w1' (Mixtral/GPT-OSS) or 'gate_proj' (Qwen35).
             up_key: Expert weight sub-key for the up projection, e.g.

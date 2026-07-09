@@ -46,7 +46,8 @@ from vllm_webgpu.v1.cache_policy import (
     get_layer_types,
 )
 num_kv_heads, head_dim = get_kv_dims_from_config(hf_cfg)
-block_size = int(os.getenv('VLLM_WEBGPU_BLOCK_SIZE', '16'))
+import vllm_webgpu.envs as _envs
+block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
 model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
 
 print("Loading weights...")

@@ -13,7 +13,6 @@ from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
-from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
 from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_tensors
 from vllm_webgpu.webgpu.pipeline import PipelineCache
@@ -94,7 +93,6 @@ class WebGPUModelRunner:
     def __init__(self, vllm_config: Any, wgpu_device: "WebGPUDevice") -> None:
         self.vllm_config = vllm_config
         self.wgpu_device = wgpu_device
-        self.webgpu_config = get_config()
         self.pipeline_cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
         self.model: "BaseWebGPUModel | None" = None
         self._last_model_output: Any = EMPTY_MODEL_RUNNER_OUTPUT  # cached for sample_tokens()
@@ -308,7 +306,7 @@ class WebGPUModelRunner:
         """
         k = min(num_logprobs, logits_1d.shape[0])
 
-        lp_t = torch.from_numpy(logits_1d).unsqueeze(0).log_softmax(dim=-1, dtype=torch.float32)
+        lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
         return Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
 
     @staticmethod
@@ -350,7 +348,7 @@ class WebGPUModelRunner:
             num_prompt_logprobs = full_logits.shape[-1]
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
-        lp_t = torch.from_numpy(full_logits[:num_positions]).log_softmax(dim=-1, dtype=torch.float32)
+        lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
         return Sampler.gather_logprobs(
             lp_t,
             k,
