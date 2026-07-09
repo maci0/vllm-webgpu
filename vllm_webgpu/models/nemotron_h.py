@@ -258,6 +258,61 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         for buf in self._ssm_states.values():
             dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
 
+    def save_recurrent_states(self) -> dict:
+        """Snapshot all Mamba conv/SSM state buffers to CPU in one GPU readback.
+
+        All layer buffers are copied into a single staging buffer in one command
+        encoder submission, avoiding N separate GPU-to-CPU round trips.
+        Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
+        """
+        import wgpu
+        dev = self.wgpu_device.wgpu_device
+
+        bufs: list[tuple[str, int, object]] = []
+        for i, buf in self._conv_states.items():
+            bufs.append(("conv", i, buf))
+        for i, buf in self._ssm_states.items():
+            bufs.append(("ssm", i, buf))
+
+        if not bufs:
+            return {"conv": {}, "ssm": {}}
+
+        offsets: list[int] = []
+        total = 0
+        for _, _, buf in bufs:
+            offsets.append(total)
+            total += buf.nbytes
+
+        staging = dev.create_buffer(
+            size=max(total, 4),
+            usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ,
+        )
+        enc = dev.create_command_encoder()
+        for (_, _, buf), off in zip(bufs, offsets):
+            enc.copy_buffer_to_buffer(buf.buf, 0, staging, off, buf.nbytes)
+        dev.queue.submit([enc.finish()])
+
+        staging.map_sync(mode=wgpu.MapMode.READ)
+        raw = bytes(staging.read_mapped())
+        staging.unmap()
+
+        result: dict[str, dict] = {"conv": {}, "ssm": {}}
+        for (kind, i, buf), off in zip(bufs, offsets):
+            result[kind][i] = raw[off : off + buf.nbytes]
+        return result
+
+    def restore_recurrent_states(self, states: dict) -> None:
+        """Write saved state bytes back into Mamba conv/SSM GPU buffers.
+
+        queue.write_buffer enqueues writes without blocking, so all layers
+        are uploaded before the next GPU dispatch without an explicit submit.
+        """
+        dev = self.wgpu_device.wgpu_device
+        for i, data in states.get("conv", {}).items():
+            dev.queue.write_buffer(self._conv_states[i].buf, 0, data)
+        for i, data in states.get("ssm", {}).items():
+            dev.queue.write_buffer(self._ssm_states[i].buf, 0, data)
+
     # ── Weight loading ────────────────────────────────────────────────────────
 
     _hf_to_vllm_mapper = NemotronHForCausalLM.hf_to_vllm_mapper

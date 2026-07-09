@@ -403,13 +403,6 @@ class WebGPUModelRunner:
         prompt_logprobs_dict: dict[str, Any] = {}  # req_id -> LogprobsTensors for prefill
 
         # ── Prefill: new requests ──────────────────────────────────────────────
-        # Reset recurrent state once before processing any new requests.
-        # Doing this inside the loop would zero shared conv/SSM buffers after
-        # the first request's prefill writes them, corrupting that request's
-        # accumulated context when it enters decode on the next step.
-        if new_reqs and hasattr(self.model, "reset_recurrent_states"):
-            self.model.reset_recurrent_states()
-
         for req in new_reqs:
             rid = req.req_id
             tok_ids = list(req.prompt_token_ids or [])
@@ -488,11 +481,24 @@ class WebGPUModelRunner:
             if hasattr(self.model, "_greedy_decode"):
                 self.model._greedy_decode = sp is None or sp.sampling_type == SamplingType.GREEDY
 
+            # Each prefill request starts from zero recurrent state. Reset here
+            # (inside the loop) so that multiple new requests in the same step
+            # each get a clean slate rather than inheriting the previous request's
+            # post-prefill state.
+            if hasattr(self.model, "reset_recurrent_states"):
+                self.model.reset_recurrent_states()
+
             last_logits = self.model.forward(
                 np.array(chunk_toks, dtype=np.uint32),
                 np.arange(num_computed, num_computed + T, dtype=np.uint32),
                 _batch_pm,
             )
+
+            # Save recurrent state so the decode path can restore it before this
+            # request's first (and every subsequent) decode step.
+            prefill_recurrent_states = None
+            if hasattr(self.model, "save_recurrent_states"):
+                prefill_recurrent_states = self.model.save_recurrent_states()
 
             if last_logits is None:
                 continue
@@ -536,6 +542,7 @@ class WebGPUModelRunner:
                 "pos": num_computed + T, "block_ids": blk_ids,
                 "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
                 "sampling_params": sp,
+                "recurrent_states": prefill_recurrent_states,
             }
 
         # ── Decode: cached requests ────────────────────────────────────────────
@@ -595,11 +602,30 @@ class WebGPUModelRunner:
                 if hasattr(self.model, "_greedy_decode"):
                     self.model._greedy_decode = sp is None or sp.sampling_type == SamplingType.GREEDY
 
+                # Restore this request's recurrent (Mamba/SSM) state before the
+                # forward pass. Without this, each request in the batch reads the
+                # in-place-updated state left by the previous request instead of
+                # its own saved state, producing wrong recurrent outputs for every
+                # request beyond the first in a multi-sequence decode batch.
+                if hasattr(self.model, "restore_recurrent_states"):
+                    saved_recurrent = state.get("recurrent_states")
+                    if saved_recurrent is not None:
+                        self.model.restore_recurrent_states(saved_recurrent)
+                    elif hasattr(self.model, "reset_recurrent_states"):
+                        # No snapshot yet (e.g. interrupted before first save).
+                        self.model.reset_recurrent_states()
+
                 logits = self.model.forward(
                     np.array([tok], dtype=np.uint32),
                     np.array([pos], dtype=np.uint32),
                     _sm,
                 )
+
+                # Save recurrent state immediately after the forward pass, before
+                # any other request's forward can overwrite the shared GPU buffers.
+                decode_recurrent_states = None
+                if hasattr(self.model, "save_recurrent_states"):
+                    decode_recurrent_states = self.model.save_recurrent_states()
 
                 if logits is None:
                     continue
@@ -619,6 +645,7 @@ class WebGPUModelRunner:
                     "pos": pos + 1, "block_ids": blk_ids,
                     "last_tok": stok, "num_logprobs": num_logprobs,
                     "sampling_params": state.get("sampling_params"),
+                    "recurrent_states": decode_recurrent_states,
                 }
                 all_req_ids.append(rid)
                 all_sampled.append(stok)
