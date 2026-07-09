@@ -367,6 +367,11 @@ class WebGPUModelRunner:
                     pieces.append(LogprobsTensors(
                         torch.zeros((1, max_k), dtype=torch.int32),
                         torch.full((1, max_k), -float("inf"), dtype=torch.float32),
+                        # int64 matches gather_logprobs output (batched_count_greater_than
+                        # returns int64 via .sum(-1) on a bool tensor).
+                        # Do NOT use LogprobsTensors.empty_cpu() here — it uses int32 for
+                        # selected_token_ranks and would break torch.cat when mixed with the
+                        # int64 tensors produced by real gather_logprobs calls.
                         torch.zeros(1, dtype=torch.int64),
                     ))
             stacked = LogprobsTensors(
