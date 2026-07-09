@@ -563,23 +563,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            [b["last_tok"], self.weights["model.norm.weight"], b["last_norm"]],
                            rms_base, (1, 1, 1))
 
-            # LM head (SPLIT_K=0: row-per-thread for large vocab)
-            uq = self._uq_for_key("lm_head.weight")
-            self._dispatch("matmul_quant",
-                           [b["last_norm"], self._lm_head_weight,
-                            self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
-                            b["logits"]],
-                           {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra("lm_head", uq)},
-                           ((vocab + 255) // 256, 1, 1))
+            # LM head + optional argmax (mirrors _decode_teardown; sets _last_logit_buf/_last_vocab)
+            self._decode_teardown(b["last_norm"], b["logits"], vocab, self._greedy_decode)
 
-            greedy = self._greedy_decode
-            if greedy:
-                self._dispatch("argmax_f16", [b["logits"], self._ensure_sample_buf()],
-                               {"N": vocab}, (1, 1, 1))
-                self._copy_sample_to_staging()
-
-        self._last_logit_buf = b["logits"]
-        self._last_vocab     = vocab
+        greedy = self._greedy_decode
         if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
@@ -655,23 +642,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 [x_buf, self.weights["model.norm.weight"], pre["norm_out"]],
                 rms_base, (1, 1, 1),
             )
-            uq = self._uq_for_key("lm_head.weight")
-            self._dispatch(
-                "matmul_quant",
-                [pre["norm_out"], self._lm_head_weight,
-                 self._scales_buf("lm_head.weight", uq, self._dummy_scales_buf),
-                 pre["logits"]],
-                {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra("lm_head", uq)},
-                ((vocab + 255) // 256, 1, 1),
-            )
-            greedy = self._greedy_decode
-            if greedy:
-                self._dispatch("argmax_f16", [pre["logits"], self._ensure_sample_buf()],
-                               {"N": vocab}, (1, 1, 1))
-                self._copy_sample_to_staging()
+            # LM head + optional argmax (mirrors _decode_teardown; sets _last_logit_buf/_last_vocab)
+            self._decode_teardown(pre["norm_out"], pre["logits"], vocab, self._greedy_decode)
 
-        self._last_logit_buf = pre["logits"]
-        self._last_vocab     = vocab
+        greedy = self._greedy_decode
         if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
