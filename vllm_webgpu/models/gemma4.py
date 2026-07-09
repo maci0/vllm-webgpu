@@ -423,8 +423,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         }
         if self.softcap is not None and self.softcap > 0:
             b["capped"] = alloc(vocab * 2)             # f16 softcapped logits (Gemma4)
-        _dummy = alloc(8)
-
         slot_map_buf = WebGPUBuffer.from_numpy(
             dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
         pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
@@ -438,7 +436,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             """Dispatch matmul_quant_mr4: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T."""
             uq = self._uq_for_key(w_key)
             if uq == 3:
-                sc_b = self._scales_buf(w_key, uq, _dummy)
+                sc_b = self._scales_buf(w_key, uq, self._dummy_scales_buf)
                 self._dispatch("matmul_quant_mr4",
                                [x_b, self.weights[w_key], sc_b, out_b],
                                {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 3,
@@ -446,7 +444,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                (N_out, T, 1))
             elif uq == 0:
                 self._dispatch("matmul_quant_mr4",
-                               [x_b, self.weights[w_key], _dummy, out_b],
+                               [x_b, self.weights[w_key], self._dummy_scales_buf, out_b],
                                {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
                                (N_out, T, 1))
             else:
@@ -716,7 +714,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [b["last_norm"], lm_head_w,
-                 self._scales_buf(_lm_key, uq_lm, _dummy), b["logits"]],
+                 self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), b["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0},
                 ((vocab + 255) // 256, 1, 1))
 

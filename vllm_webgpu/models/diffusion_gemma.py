@@ -93,8 +93,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         return getattr(self.model_config, "canvas_length", 256)
 
     def _scratch_inter_size(self) -> int:
-        moe_inter = getattr(self.model_config, "moe_intermediate_size", self.intermediate_size)
-        return max(self.intermediate_size, moe_inter)
+        return max(
+            self.intermediate_size,
+            getattr(self.model_config, "moe_intermediate_size", self.intermediate_size),
+        )
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Skip qkv_buf and v_normed: the fused-QKV decode path is unreachable here.
@@ -112,25 +114,22 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def _layer_key_prefix(self, layer_idx: int) -> str:
         return f"model.decoder.layers.{layer_idx}"
 
-    def _first_weight_key(self, candidates: tuple, default: str) -> str:
-        return next((k for k in candidates if k in self.weights), default)
-
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
-        return self._first_weight_key(
-            ("model.decoder.embed_tokens.weight", "model.embed_tokens.weight"),
+        return next(
+            (k for k in ("model.decoder.embed_tokens.weight", "model.embed_tokens.weight") if k in self.weights),
             "model.embed_tokens.weight",
         )
 
     def _norm_key(self) -> str:
-        return self._first_weight_key(
-            ("model.decoder.norm.weight", "model.norm.weight"),
+        return next(
+            (k for k in ("model.decoder.norm.weight", "model.norm.weight") if k in self.weights),
             "model.norm.weight",
         )
 
     def _lm_head_key(self) -> str:
-        return self._first_weight_key(
-            ("lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight"),
+        return next(
+            (k for k in ("lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight") if k in self.weights),
             self._embed_key(),  # tied weights fallback
         )
 

@@ -146,11 +146,9 @@ def allocate_kv_from_hf_config(
              if getattr(hf_config, a, None) is not None),
             hf_config.num_attention_heads,
         )
-        head_dim = next(
-            (getattr(hf_config, a, None) for a in ('head_dim',)
-             if getattr(hf_config, a, None) is not None),
-            hf_config.hidden_size // hf_config.num_attention_heads,
-        )
+        head_dim = getattr(hf_config, 'head_dim', None)
+        if head_dim is None:
+            head_dim = hf_config.hidden_size // hf_config.num_attention_heads
     # model._layer_types wins; fall back to hf_config fields used by different
     # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
     layer_types = (

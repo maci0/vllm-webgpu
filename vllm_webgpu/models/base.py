@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from transformers.utils import SAFE_WEIGHTS_NAME
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 if TYPE_CHECKING:
@@ -234,7 +233,7 @@ class BaseWebGPUModel(ABC):
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             p = Path(path)
-            actual = str(p / SAFE_WEIGHTS_NAME) if p.is_dir() else path
+            actual = str(p / "model.safetensors") if p.is_dir() else path
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys)
         elif fmt == "safetensors_sharded":

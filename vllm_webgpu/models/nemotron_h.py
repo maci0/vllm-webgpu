@@ -116,11 +116,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Precomputed per-layer intermediate size for heterogeneous MLP configs.
         # Index by layer_idx; 0 for non-MLP layers. Avoids O(num_layers) slice-
         # and-count inside _mlp_layer on every forward pass.
-        _sizes = _raw_int if isinstance(_raw_int, list) else [_raw_int]
-        _mlp_indices = [i for i, lt in enumerate(self._layer_types) if lt == "mlp"]
-        _sizes_padded = _sizes if len(_sizes) > 1 else _sizes * len(_mlp_indices)
-        _mlp_size_map = {layer_idx: _sizes_padded[mlp_rank] for mlp_rank, layer_idx in enumerate(_mlp_indices)}
-        self._layer_int_size: list[int] = [_mlp_size_map.get(i, 0) for i in range(len(self._layer_types))]
+        _sizes_list = _raw_int if isinstance(_raw_int, list) else [_raw_int]
+        _mlp_rank = -1
+        self._layer_int_size: list[int] = []
+        for _lt in self._layer_types:
+            if _lt == "mlp":
+                _mlp_rank += 1
+                self._layer_int_size.append(_sizes_list[min(_mlp_rank, len(_sizes_list) - 1)])
+            else:
+                self._layer_int_size.append(0)
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
@@ -160,7 +164,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Fixed pre-allocated decode buffers (zero-alloc hot path for T=1).
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      mk(4),                # [1] u32
-            "pos":      mk(4),                # [1] u32
             "slot_map": mk(4),                # [1] u32
             "bt":       mk(max_bt_blocks * 4),  # block table
             "x":        mk(H * 2),       # [H] f16 embedding output
@@ -313,7 +316,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             qkv_key = f"{p}.qkv_proj.weight"
             packed_buf = WebGPUBuffer.from_numpy(
-                dev, np.ascontiguousarray(qkv_bytes)            )
+                dev, np.ascontiguousarray(qkv_bytes))
             # Override the dtype that from_numpy() inferred from the uint8
             # concatenation; the underlying GPU bytes are correct already.
             packed_buf.dtype = src_dtype
@@ -373,7 +376,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     self.weights[v_s].to_numpy(),
                 ])
                 scales_buf = WebGPUBuffer.from_numpy(
-                    dev, np.ascontiguousarray(packed_scales)                )
+                    dev, np.ascontiguousarray(packed_scales))
                 scales_buf.dtype = scales_dtype
                 self.weights[f"{qkv_key}.scales"] = scales_buf
                 del self.weights[q_s], self.weights[k_s], self.weights[v_s]
@@ -500,7 +503,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes(),
@@ -877,8 +879,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             dev.queue.write_buffer(
                 pre["ids"].buf, 0, input_ids[t:t+1].astype(np.uint32, copy=False).tobytes())
-            dev.queue.write_buffer(
-                pre["pos"].buf, 0, positions[t:t+1].astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(
                 pre["slot_map"].buf, 0,
                 np.array(attn_metadata.slot_mapping[t:t+1], dtype=np.uint32).tobytes())

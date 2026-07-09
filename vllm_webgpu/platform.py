@@ -126,7 +126,7 @@ class WebGPUPlatform(_Platform):
             raise ValueError(f"WebGPU only supports device 0, got {device}")
 
     @classmethod
-    def synchronize(cls, device_id: int = 0) -> None:
+    def synchronize(cls) -> None:
         pass
 
     @classmethod
