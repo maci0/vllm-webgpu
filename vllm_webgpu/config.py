@@ -14,7 +14,6 @@ VALID_POWER_PREFERENCES = frozenset(wgpu.enums.PowerPreference)
 class WebGPUConfig:
     memory_fraction: float
     power_preference: str
-    block_size: int
 
     def __post_init__(self) -> None:
         if not self.is_auto_memory and not (0 < self.memory_fraction <= 1):
@@ -26,10 +25,6 @@ class WebGPUConfig:
             raise ValueError(
                 f"VLLM_WEBGPU_POWER_PREFERENCE={self.power_preference!r}. "
                 f"Valid: {sorted(VALID_POWER_PREFERENCES)}"
-            )
-        if self.block_size <= 0:
-            raise ValueError(
-                f"VLLM_WEBGPU_BLOCK_SIZE={self.block_size!r} must be a positive integer."
             )
 
     @property
@@ -51,7 +46,6 @@ class WebGPUConfig:
         return cls(
             memory_fraction=memory_fraction,
             power_preference=envs.VLLM_WEBGPU_POWER_PREFERENCE,
-            block_size=envs.VLLM_WEBGPU_BLOCK_SIZE,
         )
 
 

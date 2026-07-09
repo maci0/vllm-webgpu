@@ -41,7 +41,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     logit_returns_token_id: bool = False
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
-                 pipeline_cache: "PipelineCache") -> None:
+                 pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         # Set moe_intermediate_size before super().__init__ because Gemma4.__init__
         # calls _init_scratch_buffers which dispatches to _scratch_inter_size().
         # Use model_config.intermediate_size as fallback (same value as self.intermediate_size
@@ -49,7 +49,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         self.moe_intermediate_size: int = getattr(model_config, "moe_intermediate_size",
                                                    getattr(model_config, "expert_intermediate_size",
                                                            model_config.intermediate_size))
-        super().__init__(model_config, wgpu_device, pipeline_cache)
+        super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5

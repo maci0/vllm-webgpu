@@ -31,7 +31,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
     logit_returns_token_id: bool = True
 
-    def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
+    def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
         self.num_layers: int = model_config.num_hidden_layers
         self.num_q_heads: int = model_config.num_attention_heads
@@ -41,8 +41,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Softcap is optional — Gemma4 uses 30.0, Gemma3 uses None (no cap)
         self.softcap: float | None = getattr(model_config, "final_logit_softcapping", None)
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
-        from vllm_webgpu.config import get_config
-        self.block_size: int = get_config().block_size
+        self.block_size: int = block_size
 
         # Gemma3 vs Gemma4 capability flags:
         # - GEMMA_NORM=1: all Gemma models use (1+w) RMSNorm (weights trained as deviations from 0)

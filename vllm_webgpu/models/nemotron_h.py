@@ -44,6 +44,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         model_config,
         wgpu_device: "WebGPUDevice",
         pipeline_cache: "PipelineCache",
+        block_size: int = 16,
     ) -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
@@ -81,9 +82,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self.mamba_int + self.conv_dim + self.mamba_num_heads
         )
 
-        from vllm_webgpu.config import get_config
-
-        self.block_size: int = get_config().block_size
+        self.block_size: int = block_size
 
         self._layer_types: list[str] = model_config.layers_block_type
         # Length invariant is enforced by NemotronHConfig.__init__ asserting

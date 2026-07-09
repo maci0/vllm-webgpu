@@ -30,8 +30,9 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         model_config,
         wgpu_device: "WebGPUDevice",
         pipeline_cache: "PipelineCache",
+        block_size: int = 16,
     ) -> None:
-        super().__init__(model_config, wgpu_device, pipeline_cache)
+        super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
         self._swiglu_limit: float = getattr(model_config, "swiglu_limit", 0.0)
         self._attn_bias: bool = bool(getattr(model_config, "attention_bias", False))
         self._layer_types: list[str] = list(

@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm_webgpu.config import get_config
 from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -31,7 +30,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
     # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
     logit_returns_token_id: bool = True
 
-    def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
+    def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
         self.num_layers: int = model_config.num_hidden_layers
         self.num_q_heads: int = model_config.num_attention_heads
@@ -43,7 +42,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # so hidden//heads=80 but actual Q dim per head is 128).
         self.head_dim: int = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
-        self.block_size: int = get_config().block_size
+        self.block_size: int = block_size
         # matmul_quant f16 path packs two f16 values per u32. Row boundaries only
         # align to u32 boundaries when K is even; odd K silently produces wrong results.
         for name, val in [("hidden_size", self.hidden_size),

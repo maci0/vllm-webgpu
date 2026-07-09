@@ -40,8 +40,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         model_config,
         wgpu_device: "WebGPUDevice",
         pipeline_cache: "PipelineCache",
+        block_size: int = 16,
     ) -> None:
-        super().__init__(model_config, wgpu_device, pipeline_cache)
+        super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
         self._sw: int | None = getattr(model_config, "sliding_window", None)
         self._num_experts: int = getattr(model_config, "num_local_experts", 0)
         self._top_k: int = getattr(model_config, "num_experts_per_tok", 0)

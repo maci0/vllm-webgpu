@@ -10,7 +10,7 @@ def setup_function():
 def teardown_function():
     reset_config()
     for key in ["VLLM_WEBGPU_MEMORY_FRACTION", "VLLM_WEBGPU_POWER_PREFERENCE",
-                "VLLM_WEBGPU_QUANTIZATION", "VLLM_WEBGPU_BLOCK_SIZE"]:
+                "VLLM_WEBGPU_QUANTIZATION"]:
         os.environ.pop(key, None)
 
 
@@ -18,7 +18,6 @@ def test_defaults():
     cfg = WebGPUConfig.from_env()
     assert cfg.is_auto_memory
     assert cfg.power_preference == "high-performance"
-    assert cfg.block_size == 16
 
 
 def test_memory_fraction_float(monkeypatch):

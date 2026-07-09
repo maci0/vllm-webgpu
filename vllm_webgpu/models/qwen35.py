@@ -48,7 +48,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     hot path.
     """
 
-    def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
+    def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         # Set GDN + MoE + other Qwen3.5-specific attributes BEFORE calling
         # super().__init__(). LlamaWebGPUModel.__init__() calls
         # self._init_scratch_buffers() via Python's dynamic dispatch, which
@@ -125,7 +125,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # _rope_consts (containing LN_ROPE_BASE), _rms_consts (without GEMMA_NORM), runs
         # dimension validation, then calls self._init_scratch_buffers() and
         # self._init_rope_freq_buf().
-        super().__init__(model_config, wgpu_device, pipeline_cache)
+        super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
         # Mixtral.__init__ reads num_local_experts (0 for Qwen35) and overwrites _is_moe.
         # Re-assert the correct values from Qwen35-specific config fields.

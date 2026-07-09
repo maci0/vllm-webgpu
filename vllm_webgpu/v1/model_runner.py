@@ -61,29 +61,29 @@ ARCH_MAP = {
 }
 
 
-def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache: Any) -> "BaseWebGPUModel":
+def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache: Any, block_size: int) -> "BaseWebGPUModel":
     family = ARCH_MAP.get(arch)
     if family == "llama":
         from vllm_webgpu.models.llama import LlamaWebGPUModel
-        return LlamaWebGPUModel(model_config, wgpu_device, pipeline_cache)
+        return LlamaWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
     if family == "mixtral":
         from vllm_webgpu.models.mixtral import MixtralWebGPUModel
-        return MixtralWebGPUModel(model_config, wgpu_device, pipeline_cache)
+        return MixtralWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
     if family == "gemma4":
         from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
-        return Gemma4WebGPUModel(model_config, wgpu_device, pipeline_cache)
+        return Gemma4WebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
     if family == "qwen35":
         from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
-        return Qwen35WebGPUModel(model_config, wgpu_device, pipeline_cache)
+        return Qwen35WebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
     if family == "diffusion_gemma":
         from vllm_webgpu.models.diffusion_gemma import DiffusionGemmaWebGPUModel
-        return DiffusionGemmaWebGPUModel(model_config, wgpu_device, pipeline_cache)
+        return DiffusionGemmaWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
     if family == "gpt_oss":
         from vllm_webgpu.models.gpt_oss import GptOssWebGPUModel
-        return GptOssWebGPUModel(model_config, wgpu_device, pipeline_cache)
+        return GptOssWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
     if family == "nemotron_h":
         from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel
-        return NemotronHWebGPUModel(model_config, wgpu_device, pipeline_cache)
+        return NemotronHWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
     raise NotImplementedError(
         f"Architecture {arch!r} is not supported. "
         f"Supported: {sorted(ARCH_MAP)}"
@@ -106,7 +106,8 @@ class WebGPUModelRunner:
         arch = (mc.architectures or ["LlamaForCausalLM"])[0]
         hf_config = mc.hf_config
 
-        self.model = _build_model(arch, hf_config, self.wgpu_device, self.pipeline_cache)
+        block_size = self.vllm_config.cache_config.block_size
+        self.model = _build_model(arch, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
         self.model.load_weights(mc.model)
         logger.info("Model loaded: arch=%s", arch)
 
@@ -136,7 +137,7 @@ class WebGPUModelRunner:
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
-        block_size = self.webgpu_config.block_size
+        block_size = self.vllm_config.cache_config.block_size
         spec: dict[str, Any] = {}
         _dtype = torch.float16
 
@@ -211,7 +212,7 @@ class WebGPUModelRunner:
 
     def get_cache_block_size_bytes(self) -> int:
         mc = self.vllm_config.model_config.hf_config
-        block_size = self.webgpu_config.block_size
+        block_size = self.vllm_config.cache_config.block_size
         head_dim = self.vllm_config.model_config.get_head_size()
         num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
         # Use the maximum per-layer values when heterogeneous layer params are available
@@ -444,7 +445,7 @@ class WebGPUModelRunner:
 
         cached = scheduler_output.scheduled_cached_reqs
         new_reqs = scheduler_output.scheduled_new_reqs
-        block_size = self.webgpu_config.block_size
+        block_size = self.vllm_config.cache_config.block_size
 
         all_req_ids: list[str] = []
         all_sampled: list[int] = []
