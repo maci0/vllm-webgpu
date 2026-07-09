@@ -363,10 +363,11 @@ class WebGPUModelRunner:
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
-        # Build LogprobsLists for top-k entries and route full-vocab entries
-        # (num_logprobs == -1, where d[0] is None) through prompt_logprobs_dict
-        # as LogprobsTensors, since the fixed-width matrix cannot represent a
-        # vocab-size array per request.
+        # Build LogprobsLists for top-k sampled-token logprob entries.
+        # Full-vocab decode logprobs (num_logprobs == -1, d[0] is None) cannot
+        # be stored in LogprobsLists (fixed width) and must not be routed into
+        # prompt_logprobs_dict either, since the scheduler reads that field only
+        # as prompt logprobs. Drop them with a warning.
         built_logprobs = None
         merged_prompt_logprobs: dict = dict(prompt_logprobs_dict) if prompt_logprobs_dict else {}
         has_topk = (
@@ -393,24 +394,18 @@ class WebGPUModelRunner:
                     tok_ids_arr[i, :k] = ids
                     logprobs_arr[i, :k] = lp
                     ranks_arr[i] = rank
-                elif LogprobsTensors is not None:
-                    # full-vocab entry: store as LogprobsTensors keyed by req_id
-                    merged_prompt_logprobs[req_ids[i]] = LogprobsTensors(
-                        torch.empty(0, dtype=torch.int32),
-                        torch.from_numpy(lp).unsqueeze(0),
-                        torch.empty(0, dtype=torch.int32),
-                    )
+                else:
+                    # full-vocab decode logprob: unsupported, drop silently per
+                    # the mixed-batch warning issued below.
+                    pass
             built_logprobs = LogprobsLists(tok_ids_arr, logprobs_arr, ranks_arr)
-        elif LogprobsTensors is not None and logprobs_data:
-            # No top-k entries; handle any full-vocab entries.
-            for i, d in enumerate(logprobs_data):
-                if d is not None and d[0] is None:
-                    _, lp, _ = d
-                    merged_prompt_logprobs[req_ids[i]] = LogprobsTensors(
-                        torch.empty(0, dtype=torch.int32),
-                        torch.from_numpy(lp).unsqueeze(0),
-                        torch.empty(0, dtype=torch.int32),
-                    )
+        if logprobs_data and any(
+            d is not None and d[0] is None for d in logprobs_data
+        ):
+            logger.warning(
+                "full-vocab sampled logprobs (num_logprobs=-1) are not supported "
+                "for decode steps and will be dropped; use a finite num_logprobs value"
+            )
 
         out = ModelRunnerOutput(
             req_ids=req_ids,
