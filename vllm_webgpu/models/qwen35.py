@@ -197,15 +197,23 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             }
 
     def _postprocess_weights(self) -> None:
-        """Post-load weight transformations for full-attn layers:
+        """Post-load weight fixups for full-attn layers.
 
-        1. When attn_output_gate=True: split q_proj.weight [2*q_dim, hidden] into
-           q_proj.weight [q_dim, hidden] (Q part) and q_gate_proj.weight [q_dim, hidden]
-           (gate part). The gate is applied as silu(gate)*attn_out before o_proj.
+        When attn_output_gate=True, the q_proj.weight split is now handled entirely
+        at load time via _weight_transforms (registered in load_weights above).  The
+        transform returns only the Q half; the gate half is stashed in a local dict and
+        uploaded immediately after super().load_weights() returns, with no GPU round-trip.
 
-        Note: q_norm/k_norm tiling and GEMMA_NORM detection are both handled at load
-        time via _weight_transforms (registered in load_weights / LlamaWebGPUModel.__init__)
-        for all checkpoint formats. No GPU readback happens here.
+        This method retains the split logic as a safety net for two edge cases:
+          - Checkpoints where the weight was not reached by the transform (e.g., the key
+            was absent in one shard and present in another with a mismatched shape).
+          - Quantized (I8) q_proj weights: the loader ignores transforms for those keys,
+            so the weight arrives here with its original [2*q_dim, H] shape and the
+            existing error is raised.
+
+        Note: q_norm/k_norm tiling and GEMMA_NORM detection are handled at load time
+        via _weight_transforms for all checkpoint formats. No GPU readback happens here
+        for correctly split fp16 weights.
         """
         dev = self.wgpu_device.wgpu_device
 
@@ -312,7 +320,49 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             if _key not in self._weight_transforms:
                 self._weight_transforms[_key] = _gemma_norm_detect
 
+        # Register CPU-side split transforms for q_proj.weight when attn_output_gate
+        # is enabled.  The loader calls weight_transforms[name](arr) with the fp16
+        # numpy array before uploading; by returning only the Q half here, the gate
+        # half is stashed without any GPU round-trip.  _postprocess_weights sees
+        # shape[0] == q_dim (not 2*q_dim) and skips the GPU download/split/reupload.
+        # Quantized q_proj weights are NOT split here — the loader ignores transforms
+        # for I8 keys, so the weight lands with its original shape and _postprocess_weights
+        # raises the existing error for that case.
+        _q_gate_pending: dict[str, np.ndarray] = {}
+        if self._attn_output_gate:
+            _q_dim = self.num_q_heads * self.head_dim
+            _hd = self.head_dim
+            _nh = self.num_q_heads
+            _hs = self.hidden_size
+            for _i in range(self.num_layers):
+                if not self._is_full_attn(_i):
+                    continue
+                _q_key = f"model.layers.{_i}.self_attn.q_proj.weight"
+                _g_key = f"model.layers.{_i}.self_attn.q_gate_proj.weight"
+
+                def _make_split(gk, pending=_q_gate_pending,
+                                nh=_nh, hd=_hd, q_dim=_q_dim, hs=_hs):
+                    def _split(arr):
+                        if arr.shape[0] != 2 * q_dim:
+                            return arr  # already split or unexpected shape; pass through
+                        a = arr.view(np.float16).reshape(nh, 2 * hd, hs)
+                        q_half   = np.ascontiguousarray(a[:, :hd, :].reshape(q_dim, hs))
+                        gate_half = np.ascontiguousarray(a[:, hd:, :].reshape(q_dim, hs))
+                        pending[gk] = gate_half
+                        return q_half
+                    return _split
+
+                self._weight_transforms[_q_key] = _make_split(_g_key)
+
         super().load_weights(path, f32_keys=f32_keys)
+
+        # Upload gate halves that were split on CPU during the weight transforms above.
+        if _q_gate_pending:
+            _dev = self.wgpu_device.wgpu_device
+            for _gk, _gate_arr in _q_gate_pending.items():
+                self.weights[_gk] = WebGPUBuffer.from_numpy(_dev, _gate_arr)
+            _q_gate_pending.clear()
+
         self._postprocess_weights()
         self._alloc_lin_states()
         # Confirm MoE detection against actual weight keys.
