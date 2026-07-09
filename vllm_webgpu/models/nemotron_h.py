@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
-from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM
+from vllm.model_executor.models.utils import WeightsMapper
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import _ELEM_BYTES
@@ -294,7 +294,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     # ── Weight loading ────────────────────────────────────────────────────────
 
-    _hf_to_vllm_mapper = NemotronHForCausalLM.hf_to_vllm_mapper
+    # Pinned snapshot of NemotronHForCausalLM.hf_to_vllm_mapper as of vLLM 0.9.x.
+    # Do NOT replace with NemotronHForCausalLM.hf_to_vllm_mapper directly: if vLLM
+    # adds new orig_to_new_substr rules in a future release, they could silently mangle
+    # WebGPU weight keys or __quant_meta__ sub-dict entries without any error.
+    # When upgrading vLLM, diff this against NemotronHForCausalLM.hf_to_vllm_mapper
+    # and update intentionally.
+    _hf_to_vllm_mapper = WeightsMapper(
+        orig_to_new_prefix={"backbone": "model"},
+        orig_to_new_substr={"A_log": "A", "embeddings": "embed_tokens"},
+    )
 
     def load_weights(self, path: str) -> None:
         """Load weights with key remapping and Mamba-specific postprocessing."""
