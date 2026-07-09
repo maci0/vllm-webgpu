@@ -237,9 +237,9 @@ class BaseWebGPUModel(ABC):
             # self._active_encoder is still `encoder`.  For the outer CM, inner
             # blocks may have replaced self._active_encoder with a fresh
             # replacement encoder that holds post-layer commands; submit that one.
+            t0 = time.perf_counter() if (self.profiling and label) else 0.0
             dev.queue.submit([self._active_encoder.finish()])
             if self.profiling and label:
-                t0 = time.perf_counter()
                 dev.queue.on_submitted_work_done_sync()
                 self._prof_stats[label].append((time.perf_counter() - t0) * 1000.0)
         finally:
