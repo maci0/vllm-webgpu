@@ -104,15 +104,65 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         )
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
-        """Skip qkv_buf: the fused-QKV decode path is unreachable here.
+        """Allocate scratch buffers without qkv_buf, which _decoder_layer never uses.
 
         DiffusionGemma overrides forward() and _decoder_layer() entirely; the parent
         _transformer_layer() that reads qkv_buf is never called from this model.
-        v_normed is kept because _decoder_layer() uses it for per-head V normalization.
-        Omitting qkv_buf saves roughly (T * max_q_dim * 4) bytes of GPU memory.
+        Calling super() and then deleting qkv_buf wastes a GPU allocation of
+        T * (max_q_dim + 2 * max_kv_dim) * 2 bytes (4+ MB at canvas_length=256)
+        that is immediately freed. This override replicates only what _decoder_layer
+        actually uses.
         """
-        super()._init_scratch_buffers(max_ctx, max_q_dim, max_kv_dim)
-        del self._sc["qkv_buf"]
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+        dev = self.wgpu_device.wgpu_device
+        T = self._scratch_token_count()
+        H = self.hidden_size
+        I = self._scratch_inter_size()
+        NQ = self.num_q_heads
+        V = self.vocab_size
+
+        def mk(n: int) -> "WebGPUBuffer":
+            return WebGPUBuffer.empty(dev, n)
+
+        self._pre: dict[str, "WebGPUBuffer"] = {
+            "ids":      mk(T * 4),
+            "pos":      mk(T * 4),
+            "slot_map": mk(T * 4),
+            "bt":       mk(max(4096, (max_ctx + self.block_size - 1) // self.block_size) * 4),
+            "x":        mk(T * H * 4),
+            "norm_out": mk(T * H * 2),
+            "logits":   mk(T * V * 2),
+        }
+        if self.softcap is not None and self.softcap > 0:
+            self._pre["capped"] = mk(T * V * 2)
+
+        # qkv_buf omitted: _decoder_layer projects Q, K, V separately into q_buf,
+        # k_buf, v_buf; the fused [Q|K|V] buffer used by _transformer_layer is
+        # never written or read in this model.
+        self._sc: dict[str, "WebGPUBuffer"] = {
+            "normed":     mk(T * H * 2),
+            "q_buf":      mk(T * max_q_dim * 2),
+            "k_buf":      mk(T * max_kv_dim * 2),
+            "v_buf":      mk(T * max_kv_dim * 2),
+            "v_normed":   mk(T * max_kv_dim * 2),
+            "q_rope":     mk(T * max_q_dim * 2),
+            "k_rope":     mk(T * max_kv_dim * 2),
+            "scores_buf": mk(NQ * max_ctx * 2),
+            "sm_buf":     mk(NQ * max_ctx * 2),
+            "attn_out":   mk(T * max_q_dim * 2),
+            "o_proj_out": mk(T * H * 2),
+            "ffn_normed": mk(T * H * 2),
+            "gate_buf":   mk(T * I * 2),
+            "up_buf":     mk(T * I * 2),
+            "ffn_act":    mk(T * I * 2),
+            "ffn_out":    mk(T * H * 2),
+            "h0":         mk(T * H * 4),
+            "h1":         mk(T * H * 4),
+            "h2":         mk(T * H * 4),
+        }
+        self._dummy_scales_buf: "WebGPUBuffer" = mk(4)
+        self._hstate: int = 0
 
     # ── Weight key helpers ───────────────────────────────────────────────────
 
