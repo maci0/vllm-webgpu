@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm_webgpu.config import get_config
-from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
@@ -204,7 +204,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
-        ctx_len = int(attn_metadata.max_decode_seq_len) if attn_metadata.max_decode_seq_len is not None else int(positions[-1]) + 1
+        ctx_len = int(attn_metadata.max_decode_seq_len)
         return (
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
@@ -429,7 +429,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _rep_keys = [
             k for k in self.weights
             if k.endswith(".weight") and "model.layers." in k
-            and any(p in k for p in ("_proj", "gate_proj", "up_proj", "down_proj"))
+            and "_proj" in k
         ]
         if any(self._uq_for_key(k) not in (0, 3) for k in _rep_keys):
             return self._prefill_sequential_fallback(
@@ -542,7 +542,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     self._dispatch("gelu_mul",
                                    [b["gate_buf"], b["up_buf"], b["ffn_act"]],
                                    {"N": T * inter},
-                                   ((T * inter // 4 + 255) // 256, 1, 1))
+                                   _vec4_wg(T * inter))
                     gemm_batch(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden)
 
                     # ── Residual add (cross-layer fused if not last) ──────────────
@@ -557,7 +557,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                         self._dispatch("add",
                                        [residual, b["ffn_out"], out_h],
                                        {"N": add_n},
-                                       ((add_n // 4 + 255) // 256, 1, 1))
+                                       _vec4_wg(add_n))
 
                     x_res   = out_h
                     _hstate = (_hstate + 2) % 3
@@ -896,7 +896,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 normed_out = sc["normed"]
             else:
                 self._dispatch("add", [residual, ffn_out, out],
-                               {"N": add_n}, ((add_n // 4 + 255) // 256, 1, 1))
+                               {"N": add_n}, _vec4_wg(add_n))
                 # Callers ignore the first return element after the last layer;
                 # yield out as a harmless placeholder to satisfy the return tuple.
                 normed_out = out
@@ -945,7 +945,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                {"K": hidden, "N": inter, "USE_QUANT": uq2, **qi2},
                                _gemv_wg(inter))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                           {"N": gelu_n}, ((gelu_n // 4 + 255) // 256, 1, 1))
+                           {"N": gelu_n}, _vec4_wg(gelu_n))
 
         # Down projection
         w_k = f"{p}.mlp.down_proj.weight"

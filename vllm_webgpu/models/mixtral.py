@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm_webgpu.models.base import _gemv_wg
+from vllm_webgpu.models.base import _gemv_wg, _vec4_wg
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 
 if TYPE_CHECKING:
@@ -366,7 +366,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                         "gelu_mul",
                         [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
                         {"N": _sinter},
-                        ((_sinter // 4 + 255) // 256, 1, 1),
+                        _vec4_wg(_sinter),
                     )
                 uq_sd = self._uq_for_key(sdw_k)
                 qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)
@@ -430,7 +430,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     "gelu_mul",
                     [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
                     {"N": inter},
-                    ((inter // 4 + 255) // 256, 1, 1),
+                    _vec4_wg(inter),
                 )
 
             # Down projection + weighted accumulate.

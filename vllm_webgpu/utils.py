@@ -1,8 +1,12 @@
 """Utility helpers for vllm-webgpu."""
 from __future__ import annotations
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import torch
+
+if TYPE_CHECKING:
+    import numpy as np
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
 

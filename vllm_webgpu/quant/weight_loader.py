@@ -5,7 +5,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 # AWQ nibble reorder table (Lin et al., AWQ: Activation-aware Weight Quantization,
@@ -19,7 +19,14 @@ _F16_MAX: float = np.finfo(np.float16).max
 
 
 def _mx_scale_u8_to_f32(ws_u8: "np.ndarray") -> "np.ndarray":
-    """Decode E8M0 MX scale exponents to float32: scale = 2^(u8 - 127)."""
+    """Decode E8M0 MX scale exponents to float32: scale = 2^(u8 - 127).
+
+    compressed_tensors provides an equivalent as
+    `compressed_tensors.compressors.mx_utils.decompress_mx_scale`, but that
+    function takes a torch.uint8 tensor and returns bfloat16.  The two-way
+    tensor conversion (numpy→torch in, torch→float32→numpy out) would cost
+    more than this one-liner, so we keep the numpy path here intentionally.
+    """
     return np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)
 
 def _is_gdn_weight_key(key: str) -> bool:

@@ -472,7 +472,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     raise RuntimeError(
                         "Shared FFN multi-token path requires f16 or GPTQ weights; "
                         "got uq_g=%d uq_u=%d" % (uq_g, uq_u))
-                for out_b, proj, wk, uq in [
+                for out_b, _, wk, uq in [
                         (sc["gate_buf"], "gate_proj", gw_k, uq_g),
                         (sc["up_buf"],   "up_proj",   uw_k, uq_u)]:
                     self._dispatch("matmul_quant",

@@ -1,6 +1,5 @@
 from __future__ import annotations
 import itertools
-import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -27,6 +26,7 @@ try:
 except ImportError:
     Sampler = None  # type: ignore[assignment,misc]
 
+from vllm.logger import init_logger
 from vllm_webgpu.config import get_config
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
 from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_hf_config
@@ -47,7 +47,7 @@ if TYPE_CHECKING:
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
 
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 def _is_greedy(sp) -> bool:
     """Return True when sampling params request greedy (argmax) decoding."""

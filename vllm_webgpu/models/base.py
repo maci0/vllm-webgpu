@@ -28,6 +28,15 @@ def _gemv_wg(N: int) -> tuple:
     """
     return (N, 1, 1)
 
+
+def _vec4_wg(N: int) -> tuple:
+    """Workgroup count for element-wise vec4 dispatches (gelu_mul, add, ...).
+
+    Each thread handles 4 elements packed as vec4<f16>.  The formula rounds N
+    up to the nearest multiple of 4 then divides by the workgroup size (256).
+    """
+    return ((N // 4 + 255) // 256, 1, 1)
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,14 +91,14 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    # Mirrors YaRNScalingRotaryEmbedding.__init__
+    # Mirrors YaRNScalingRotaryEmbedding.__init__ (yarn_scaling_rope.py:40-43)
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
         else float(attn_factor)
     )
 
-    # Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq
+    # Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq (yarn_scaling_rope.py:49-73)
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float32) / rotary_dim
     )
