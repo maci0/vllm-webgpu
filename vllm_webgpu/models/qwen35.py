@@ -84,7 +84,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_key_dim: int  = self._lin_k_heads * self._lin_k_dim   # total key dim (= Q dim)
         self._lin_conv_dim: int = 2 * self._lin_key_dim + self._lin_val_dim  # QKV (Q_dim == K_dim)
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
-        self._gdn_q_base: int = 0
+        # Q is always at offset 0 (leading element in packed QKV buffer).
         self._gdn_k_base: int = self._lin_key_dim
         self._gdn_v_base: int = 2 * self._lin_key_dim
 
@@ -285,7 +285,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             w = self.weights.get(conv_w_key)
             if w is not None and len(w.shape) == 3 and w.shape[1] == 1:
                 # [CONV_DIM, 1, KERNEL] → [CONV_DIM, KERNEL]: squeeze the groups dim.
-                arr = w.to_numpy().view(np.float16).reshape(w.shape[0], w.shape[2])
+                arr = np.ascontiguousarray(w.to_numpy().view(np.float16).squeeze(1))
                 self.weights[conv_w_key] = WebGPUBuffer.from_numpy(dev, arr)
 
             # Upgrade SSM parameter precision: A_log and dt_bias are small per-head
@@ -359,7 +359,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         # GDN linear attention has no KV cache — state is in ssm_gpu/conv_gpu buffers.
         # Offsets into flat QKV buffer (f16 elements), precomputed in __init__.
-        q_base = self._gdn_q_base
         k_base = self._gdn_k_base
         v_base = self._gdn_v_base
 
@@ -426,7 +425,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                             self._ssm_gpu[layer_idx], sc["gdn_out"]],
                            {"K_DIM": kd, "V_DIM": vdh,
                             "NUM_K_HEADS": kh, "NUM_V_HEADS": vh,
-                            "Q_BASE": q_base, "K_BASE": k_base, "V_BASE": v_base},
+                            "Q_BASE": 0, "K_BASE": k_base, "V_BASE": v_base},
                            (vh, 1, 1))
 
             # 7. Per-head RMSNorm + sigmoid gate → gated
@@ -601,7 +600,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                    [x_buf, self.weights["model.norm.weight"],
                                     pre["norm_out"]],
                                    _rms_base, (1, 1, 1))
-                    self._decode_teardown(pre["norm_out"], pre["logits"], vocab, greedy, split_k=0)
+                    self._decode_teardown(pre["norm_out"], pre["logits"], vocab, greedy)
 
             # Submit all dispatches for this chunk.
             dev.queue.submit([self._active_encoder.finish()])
@@ -618,7 +617,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         logits_buf: "WebGPUBuffer",
         vocab: int,
         greedy: bool,
-        split_k: int = 1,
     ) -> None:
         # Qwen3.5 vocab (151936) exceeds the 65535 workgroup-per-dimension limit.
         # Force SPLIT_K=0 (row-per-thread) regardless of the caller's default.

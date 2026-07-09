@@ -31,7 +31,7 @@ def sample_token(
         top_k: Keep at most top_k tokens. 0 disables.
     """
     if temperature < 1e-5:
-        return int(np.argmax(logits_1d))
+        return int(logits_1d.argmax())
 
     logits_t = torch.from_numpy(logits_1d.astype(np.float32, copy=False)).unsqueeze(0)
     logits_t = logits_t / temperature

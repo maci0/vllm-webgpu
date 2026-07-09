@@ -44,6 +44,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                  pipeline_cache: "PipelineCache") -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
 
+        # Router scale: constant across all layers and tokens.
+        self._router_root_size: float = self.hidden_size ** -0.5
+
         # MoE configuration
         self.num_experts: int = getattr(model_config, "num_experts", 0)
         self.top_k_experts: int = getattr(model_config, "top_k_experts", 8)
@@ -515,19 +518,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 router_scale_w = self.weights.get(f"{p}.router.scale")
                 router_in = sc["o_proj_out"]   # reuse free scratch (hidden, f16)
                 if router_scale_w is not None:
-                    root_size = hidden ** -0.5
                     self._dispatch("router_norm_f32in",
                                    [residual, router_scale_w, router_in],
                                    {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": self._rms_consts["VALS_PER_THREAD"],
-                                    "ROOT_SIZE": root_size},
+                                    "ROOT_SIZE": self._router_root_size},
                                    (num_tokens, 1, 1))
                 else:
                     logger.warning("L%d: router.scale missing, routing will be suboptimal (no learned scale)", layer_idx)
-                    root_size = hidden ** -0.5
                     self._dispatch("router_norm_f32in",
                                    [residual, pfn2_w, router_in],
                                    {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": self._rms_consts["VALS_PER_THREAD"],
-                                    "ROOT_SIZE": root_size, "NO_SCALE": 1},
+                                    "ROOT_SIZE": self._router_root_size, "NO_SCALE": 1},
                                    (num_tokens, 1, 1))
 
                 rw_ = f"{p}.router.proj.weight"

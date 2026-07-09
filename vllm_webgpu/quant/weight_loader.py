@@ -15,6 +15,11 @@ _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=np.int
 _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 
+
+def _mx_scale_u8_to_f32(ws_u8: "np.ndarray") -> "np.ndarray":
+    """Decode E8M0 MX scale exponents to float32: scale = 2^(u8 - 127)."""
+    return np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)
+
 # GDN_BF16 is read lazily from envs.py so the environment variable is always
 # evaluated at the time of the upload call, not at module import time.
 def _gdn_bf16() -> bool:
@@ -988,8 +993,7 @@ def load_safetensors_weights(
                     wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                     # Convert U8 exponents to F32: scale = 2^(u8 - 127)
-                    ws_f32 = np.ascontiguousarray(
-                        (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0)).astype(np.float32))
+                    ws_f32 = np.ascontiguousarray(_mx_scale_u8_to_f32(ws_u8).astype(np.float32))
                     N_, K2_ = wp.shape
                     K_ = K2_ * 2
                     _upload_u8(wp, f"{base}.weight", weights)
@@ -1025,7 +1029,7 @@ def load_safetensors_weights(
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                     N_, K_ = w_u8.shape
                     # Convert U8 exponents to F32 block scales: scale = 2^(u8 - 127)
-                    block_scale = (np.float32(2.0) ** (ws_u8.astype(np.float32) - 127.0))
+                    block_scale = _mx_scale_u8_to_f32(ws_u8)
                     n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
                     block_size = K_ // n_blocks if n_blocks > 0 else K_
                     # Expand block scales to (N, K) for element-wise multiply
@@ -1258,23 +1262,29 @@ def _dequant_mlx_int4(
     biases_f32: [out_rows, in_cols/group_size]
     Returns float32 [out_rows, in_cols].
 
-    mlx.core.dequantize() covers the same operation, but mlx is not required
-    at inference time (MLX-format checkpoints can be loaded without mlx installed,
-    as long as the weights are dequantized to f16 before upload). The numpy path
-    keeps mlx optional and avoids the Metal-device init that mlx triggers on import.
-
-    # ponytail: replace with mlx.core.dequantize(w_u32, scales_f32, biases_f32,
-    #           bits=4, group_size=group_size) when mlx becomes an optional dep.
+    Uses mlx.core.dequantize when mlx is available (avoids the numpy nibble
+    unpacking loop). Falls back to numpy when mlx is not installed, keeping
+    mlx optional and avoiding the Metal-device init it triggers on import.
     """
-    out_rows, packed_cols = weight_u32.shape
-    in_cols = packed_cols * 8
-    w = weight_u32.astype(np.uint32)
-    shifts = _GPTQ_NIBBLE_SHIFTS
-    nibbles = ((w[:, :, np.newaxis] >> shifts) & 0xF).reshape(out_rows, in_cols).astype(np.float32)
-    n_groups = in_cols // group_size
-    scales_bc = np.repeat(scales_f32.reshape(out_rows, n_groups), group_size, axis=1)
-    biases_bc = np.repeat(biases_f32.reshape(out_rows, n_groups), group_size, axis=1)
-    return scales_bc * nibbles + biases_bc
+    try:
+        import mlx.core as mx
+        import numpy as _np
+        w_mlx = mx.array(weight_u32)
+        s_mlx = mx.array(scales_f32)
+        b_mlx = mx.array(biases_f32)
+        result = mx.dequantize(w_mlx, s_mlx, b_mlx, bits=4, group_size=group_size)
+        mx.eval(result)
+        return _np.array(result, dtype=_np.float32)
+    except (ImportError, RuntimeError):
+        out_rows, packed_cols = weight_u32.shape
+        in_cols = packed_cols * 8
+        w = weight_u32.astype(np.uint32)
+        shifts = _GPTQ_NIBBLE_SHIFTS
+        nibbles = ((w[:, :, np.newaxis] >> shifts) & 0xF).reshape(out_rows, in_cols).astype(np.float32)
+        n_groups = in_cols // group_size
+        scales_bc = np.repeat(scales_f32.reshape(out_rows, n_groups), group_size, axis=1)
+        biases_bc = np.repeat(biases_f32.reshape(out_rows, n_groups), group_size, axis=1)
+        return scales_bc * nibbles + biases_bc
 
 
 def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
@@ -1292,10 +1302,11 @@ def load_mlx_weights(model_dir: str, wgpu_device) -> dict:
     if config_path.exists():
         with open(config_path) as f:
             cfg_raw = json.load(f)
-        # _load_quant_cfg handles the standard three-location traversal
-        # (quantization_config, text_config.quantization_config, compression_config).
-        # The fourth fallback covers the 'quantization' key used by some MLX checkpoints.
-        qcfg = _load_quant_cfg(config_path)
+        # Standard three-location CT traversal, plus the 'quantization' key used by MLX checkpoints.
+        qcfg = (cfg_raw.get("quantization_config")
+                or cfg_raw.get("text_config", {}).get("quantization_config")
+                or cfg_raw.get("compression_config")
+                or {})
         qs = qcfg.get("group_size") or cfg_raw.get("quantization", {}).get("group_size")
         if qs:
             group_size = int(qs)

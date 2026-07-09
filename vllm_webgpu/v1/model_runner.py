@@ -448,7 +448,7 @@ class WebGPUModelRunner:
                 )
 
             # Extract per-request logprob counts from SamplingParams.
-            sp = getattr(req, "sampling_params", None)
+            sp = req.sampling_params
             num_logprobs = getattr(sp, "num_logprobs", None) if sp is not None else None
             num_prompt_logprobs = getattr(sp, "prompt_logprobs", None) if sp is not None else None
 

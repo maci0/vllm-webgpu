@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -198,8 +199,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        conv_bytes = np.prod(conv_shape) * 2   # f16: 2 bytes per element
-        ssm_bytes  = np.prod(ssm_shape) * 4    # f32: 4 bytes per element
+        conv_bytes = math.prod(conv_shape) * 2   # f16: 2 bytes per element
+        ssm_bytes  = math.prod(ssm_shape) * 4    # f32: 4 bytes per element
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -543,7 +544,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         ctx_len: int,
         num_tokens: int,
         rms_base: dict,
-    ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
+    ) -> "tuple[WebGPUBuffer | None, WebGPUBuffer]":
         """Dispatch one Nemotron-H layer (Mamba, Attention, or MLP).
 
         The layer:
@@ -595,7 +596,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     {"N": add_n},
                     ((add_n // 4 + 255) // 256, 1, 1),
                 )
-                normed_out = sc["normed"]  # stale; unused after last layer
+                _stale_normed = sc["normed"]  # noqa: F841 — stale ref, unused after last layer
+                normed_out = None
 
         self._hstate = (self._hstate + 2) % 3
         return normed_out, out
