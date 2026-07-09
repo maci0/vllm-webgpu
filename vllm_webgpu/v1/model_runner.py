@@ -320,10 +320,6 @@ class WebGPUModelRunner:
             return None
 
         if num_prompt_logprobs < 0:
-            logger.warning(
-                "num_prompt_logprobs=%d will return full-vocab logprobs; this is very slow on CPU",
-                num_prompt_logprobs,
-            )
             num_prompt_logprobs = full_logits.shape[-1]
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
@@ -475,6 +471,20 @@ class WebGPUModelRunner:
             sp = req.sampling_params
             num_logprobs = getattr(sp, "num_logprobs", None) if sp is not None else None
             num_prompt_logprobs = getattr(sp, "prompt_logprobs", None) if sp is not None else None
+
+            # Warn early when full-vocab prompt logprobs are requested. The CPU
+            # topk over the entire vocabulary (O(T * V log V)) can stall inference
+            # for several seconds on large-vocab models. Surface the cost here at
+            # request admission time rather than inside _compute_prompt_logprobs.
+            if num_prompt_logprobs is not None and num_prompt_logprobs < 0:
+                logger.warning(
+                    "req %s: prompt_logprobs=%d requests full-vocabulary logprobs "
+                    "at every prompt position. This runs on CPU and is O(T * V log V); "
+                    "expect multi-second stalls for long prompts or large vocabularies. "
+                    "Use a small positive value instead.",
+                    rid,
+                    num_prompt_logprobs,
+                )
 
             # Reset recurrent state for models with persistent state (Qwen3.5 GDN SSM).
             if hasattr(self.model, "reset_recurrent_states"):
