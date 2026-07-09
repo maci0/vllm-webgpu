@@ -218,6 +218,7 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
 
     vllm_config = MagicMock()
     vllm_config.model_config.hf_config = hf_config
+    vllm_config.model_config.get_total_num_kv_heads.return_value = default_kv
 
     runner = MagicMock(spec=WebGPUModelRunner)
     runner.model = None  # not yet loaded
