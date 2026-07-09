@@ -709,7 +709,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         uq_q, uq_k, uq_v = self._uq_for_key(q_wk), self._uq_for_key(k_wk), self._uq_for_key(v_wk)
         q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
         k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
-        _use_fused_qkv = uq_q == 0 and uq_k == 0 and uq_v == 0 and q_norm_w is not None
+        _use_fused_qkv = uq_q == 0 and uq_k == 0 and uq_v == 0
 
         if _use_fused_qkv:
             # All f16 + per-head norms: single fused_qkv -> qkv_buf[Q|K|V].
