@@ -827,10 +827,17 @@ def load_safetensors_weights(
                             qz_sym = np.full((sc.shape[0], qw.shape[1]), fill_value=_SYM_ZEROS_INT32, dtype=np.int32)
                             w_f16 = _dequant_awq(qw, sc, qz_sym)
                         else:
-                            w_f16 = _dequant_gptq(
-                                qw, sc,
-                                qz if qz is not None else np.full((sc.shape[0], qw.shape[1] // 8), _SYM_ZEROS_INT32, dtype=np.int32),
-                                g_idx)
+                            if qz is None:
+                                if g_idx is not None:
+                                    logger.warning(
+                                        "%s: desc_act GPTQ layer has no qzeros — assuming zero_point=8 "
+                                        "(AutoGPTQ symmetric convention). If this checkpoint uses "
+                                        "zero_point=0, every weight value will be wrong by 8 steps. "
+                                        "Include qzeros in the checkpoint to fix this.", base)
+                                qz_gptq = np.full((sc.shape[0], qw.shape[1] // 8), _SYM_ZEROS_INT32, dtype=np.int32)
+                            else:
+                                qz_gptq = qz
+                            w_f16 = _dequant_gptq(qw, sc, qz_gptq, g_idx)
                         _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
                 except Exception as exc:
                     logger.warning("Failed to process %s: %s", base, exc)
