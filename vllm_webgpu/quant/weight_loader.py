@@ -699,6 +699,8 @@ def load_safetensors_weights(
                 # Upload raw bytes; shader does sign extension via int8_to_f32().
                 # dtype="u8" so _uq_weight() detects it via fmt="int8_gpu".
                 arr_u8 = sf.get_tensor(name).numpy().view(np.uint8)
+                if weight_transforms and name in weight_transforms:
+                    logger.warning("weight_transforms ignored for I8 key %s", name)
                 _upload_u8(arr_u8, name, weights)
                 # Record int8 format in quant_meta for _uq() detection.
                 qmeta = weights.setdefault("__quant_meta__", {})
