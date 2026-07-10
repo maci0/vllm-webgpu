@@ -363,7 +363,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     if quant_cfg is None:
         config_json = model_dir / "config.json"
         quant_cfg = _load_quant_cfg(config_json) if config_json.exists() else {}
-    qt = quant_cfg.get("quant_type", "").lower()
+    qt = (quant_cfg.get("quant_type") or quant_cfg.get("quant_method") or "").lower()
     if qt == "mxfp4":
         return "mxfp4"
     if qt == "mxfp8":
