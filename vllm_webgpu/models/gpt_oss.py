@@ -210,6 +210,27 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
         return _o_proj_src
 
+    def _ffn_dispatch(
+        self,
+        normed_x: "WebGPUBuffer",
+        layer_idx: int,
+        num_tokens: int,
+    ) -> "WebGPUBuffer":
+        """GPT-OSS FFN dispatch. GPT-OSS is always MoE; raise if that invariant breaks.
+
+        Without this guard, a non-MoE fallback would silently use standard SiLU
+        activation instead of SwigluOAI (ACTIVATION=1, UP_BIAS=1.0), producing
+        wrong outputs with no error.
+        """
+        if not self._is_moe:
+            raise AssertionError(
+                "GptOssWebGPUModel._ffn_dispatch: _is_moe is False. "
+                "GPT-OSS is always MoE; a non-MoE path would produce wrong "
+                "outputs (standard SiLU instead of SwigluOAI). Check the "
+                "model config (num_local_experts, num_experts_per_tok)."
+            )
+        return super()._ffn_dispatch(normed_x, layer_idx, num_tokens)
+
     def _moe_ffn_layer(
         self,
         normed_x: "WebGPUBuffer",

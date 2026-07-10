@@ -470,7 +470,7 @@ class WebGPUModelRunner:
 
         all_req_ids: list[str] = []
         all_sampled: list[int] = []
-        all_logprobs_data: list = []  # per-request logprob tuples or None
+        all_logprobs_data: list[LogprobsTensors | None] = []  # per-request logprob data
         prompt_logprobs_dict: dict[str, Any] = {}  # req_id -> LogprobsTensors for prefill
 
         # ── Prefill: new requests ──────────────────────────────────────────────

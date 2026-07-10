@@ -394,13 +394,25 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     G = scales.shape[0]
     group_size = K // G
 
-    qw = qweight.astype(np.int32)  # (K//8, N)
-    qz = qzeros.astype(np.int32)   # (G, N//8)
     sc = scales.astype(np.float32)  # (G, N)
 
-    # Unpack 8 nibbles per int32 along K → (K, N) and zeros (G, N//8) → (G, N)
-    w_int4 = ((qw[:, np.newaxis, :] >> _GPTQ_NIBBLE_SHIFTS[:, np.newaxis]) & 0xF).reshape(K, N).astype(np.uint8)
-    z_int4 = ((qz[:, :, np.newaxis] >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(G, N).astype(np.uint8)
+    # Unpack 8 nibbles per int32 using compressed_tensors.unpack_from_int32.
+    # qweight is packed along K (packed_dim=0): (K//8, N) → (K, N).
+    # qzeros are packed along N (packed_dim=1): (G, N//8) → (G, N).
+    import torch as _torch
+    from compressed_tensors import unpack_from_int32 as _unpack_int32
+    w_int4 = _unpack_int32(
+        _torch.from_numpy(qweight.astype(np.int32)),
+        num_bits=4,
+        shape=_torch.Size([K, N]),
+        packed_dim=0,
+    ).numpy().astype(np.uint8)
+    z_int4 = _unpack_int32(
+        _torch.from_numpy(qzeros.astype(np.int32)),
+        num_bits=4,
+        shape=_torch.Size([G, N]),
+        packed_dim=1,
+    ).numpy().astype(np.uint8)
 
     # Group index: which group each input dim belongs to.
     # For the uniform-groups path, np.repeat avoids the intermediate index array
@@ -720,16 +732,8 @@ def load_safetensors_weights(
             Used for FP8 E4M3 and NVFP4 packed weights. The shader reads via
             rd_byte_at() which unpacks individual bytes from the u32 array.
             """
-            nonlocal _pending_bytes
             arr_flat = np.ascontiguousarray(arr.ravel().view(np.uint8))
-            # Pad to multiple of 4 bytes so u32 reinterpretation is clean.
-            data = _pad4(arr_flat.tobytes())
-            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-            wgpu_device.queue.write_buffer(buf, 0, data)
-            _pending_bytes += len(data)
-            _maybe_flush()
-            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                         shape=tuple(arr.shape), dtype="u8")
+            _upload(arr_flat, np.uint8, 'u8', name, weights, logical_shape=tuple(arr.shape))
 
         def _upload(arr: np.ndarray, np_dtype, wgpu_dtype: str, name: str, weights: dict,
                     logical_shape: "tuple | None" = None) -> None:
@@ -944,11 +948,13 @@ def load_safetensors_weights(
                         else:
                             if qz is None:
                                 if g_idx is not None:
-                                    logger.warning(
-                                        "%s: desc_act GPTQ layer has no qzeros, assuming zero_point=8 "
-                                        "(AutoGPTQ symmetric convention). If this checkpoint uses "
-                                        "zero_point=0, every weight value will be wrong by 8 steps. "
-                                        "Include qzeros in the checkpoint to fix this.", base)
+                                    raise ValueError(
+                                        f"{base}: desc_act GPTQ layer (g_idx present) has no qzeros. "
+                                        "Cannot determine whether zero_point=8 (AutoGPTQ symmetric) "
+                                        "or zero_point=0 (raw HF format) was intended. Include qzeros "
+                                        "in the checkpoint; dequantizing without them would silently "
+                                        "shift every weight value by 8 scale units."
+                                    )
                                 qz_gptq = np.full((sc.shape[0], qw.shape[1] // 8), _SYM_ZEROS_INT32, dtype=np.int32)
                             else:
                                 qz_gptq = qz

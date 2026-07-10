@@ -20,11 +20,7 @@ from vllm_webgpu.config import get_config
 from vllm_webgpu.v1.cache_policy import determine_available_memory
 
 # Import WebGPUDevice at module level so it can be patched in tests.
-# The actual wgpu library is optional; if unavailable, a sentinel is set.
-try:
-    from vllm_webgpu.webgpu.device import WebGPUDevice
-except ImportError:
-    WebGPUDevice = None  # type: ignore[assignment,misc]
+from vllm_webgpu.webgpu.device import WebGPUDevice
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig

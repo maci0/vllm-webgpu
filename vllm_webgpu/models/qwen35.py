@@ -293,6 +293,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         )
         # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, V_DIM, K_DIM] f32,
         # matching vLLM's gated_delta_net_state_shape convention.
+        #
+        # Only the total element count (math.prod) is used from conv_shape, not its
+        # axis layout. gated_delta_net_state_shape may return (conv_dim, kernel-1) or
+        # (kernel-1, conv_dim) depending on VLLM_SSM_CONV_STATE_LAYOUT, but both
+        # orderings produce the same product, so the buffer size is correct regardless.
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 

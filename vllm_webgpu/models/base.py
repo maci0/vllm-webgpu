@@ -160,7 +160,7 @@ def compute_yarn_freqs(
         if apply_yarn_scaling
         else float(attn_factor)
     )
-    return inv_freq.numpy().astype("float32"), mscale
+    return inv_freq.numpy(), mscale
 
 
 
@@ -214,7 +214,8 @@ class BaseWebGPUModel(ABC):
         # to avoid a GPU roundtrip (to_numpy → tile → re-upload) in _postprocess_weights.
         self._weight_transforms: dict = {}
 
-    def _buf_np_dtype(self, buf) -> "type":
+    @staticmethod
+    def _buf_np_dtype(buf) -> "type":
         """Return the numpy scalar type matching a WebGPUBuffer's dtype string.
 
         Covers all five dtypes in active use by the weight loader and shaders

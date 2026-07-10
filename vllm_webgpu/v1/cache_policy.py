@@ -52,11 +52,7 @@ def allocate_kv_from_tensors(
 
     # Build layer_name -> KVCacheSpec map so we can use real_page_size_bytes,
     # which excludes the per-token-head scale overhead that page_size_bytes adds.
-    layer_spec_map: dict[str, object] = {}
-    if kv_cache_groups is not None:
-        for group in kv_cache_groups:
-            for name in group.layer_names:
-                layer_spec_map[name] = group.kv_cache_spec
+    layer_spec_map = {name: group.kv_cache_spec for group in (kv_cache_groups or []) for name in group.layer_names}
 
     # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".

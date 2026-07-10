@@ -793,9 +793,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        ((add_n + 255) // 256, 1, 1))
                     else:
                         # Single-token GEMV path (num_tokens==1).
-                        for ob, ew_key in [(sc["gate_buf"], f"{ep}.gate_proj.weight"),
-                                           (sc["up_buf"],   f"{ep}.up_proj.weight")]:
-                            uq = self._uq_for_key(ew_key)
+                        # uq_g and uq_u were computed at lines above; reuse to avoid redundant dict lookups.
+                        for ob, ew_key, uq in [(sc["gate_buf"], f"{ep}.gate_proj.weight", uq_g),
+                                               (sc["up_buf"],   f"{ep}.up_proj.weight",   uq_u)]:
                             self._dispatch("matmul_quant",
                                            [moe_in, self.weights[ew_key],
                                             self._scales_buf(ew_key, uq, self._dummy_scales_buf), ob],
