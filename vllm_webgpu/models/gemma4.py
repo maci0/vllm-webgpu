@@ -40,7 +40,7 @@ try:
         "Gemma4DecoderLayer no longer references 'num_global_key_value_heads'. "
         "Review _build_layer_params_from_config formula (3) before removing this assertion."
     )
-except ImportError:
+except (ImportError, OSError):
     pass  # vLLM not importable in this environment; skip assertion
 
 
