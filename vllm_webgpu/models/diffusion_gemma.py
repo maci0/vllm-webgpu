@@ -199,7 +199,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 p = self._layer_key_prefix(i)
                 pes_w = self.weights.get(f"{p}.router.per_expert_scale")
                 if pes_w is not None:
-                    self._pes_cache[i] = pes_w.to_numpy().view(np.float16).astype(np.float32)
+                    np_dt = np.float32 if pes_w.dtype == 'f32' else np.float16
+                    self._pes_cache[i] = pes_w.to_numpy().view(np_dt).astype(np.float32)
 
     # ── Batch prefill path (not supported) ──────────────────────────────────
 
