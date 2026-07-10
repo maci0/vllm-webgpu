@@ -7,7 +7,8 @@ from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
-                                         HiddenStateCacheSpec, MLAAttentionSpec)
+                                         HiddenStateCacheSpec, MLAAttentionSpec,
+                                         SlidingWindowMLASpec)
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
 _MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
@@ -101,6 +102,13 @@ def allocate_kv_from_tensors(
                     "accessible to WebGPU shaders.",
                     k_bytes + v_bytes, spec.real_page_size_bytes * num_blocks, first_name, k_bytes, v_bytes,
                 )
+        elif isinstance(spec, SlidingWindowMLASpec):
+            raise NotImplementedError(
+                f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
+                "SlidingWindowMLASpec stores a single MLA latent per position, so "
+                "real_page_size_bytes is the full per-position size, not a K+V pair. "
+                "Halving it would silently corrupt both cache buffers."
+            )
         elif isinstance(spec, AttentionSpec):
             if spec.kv_quant_mode.is_nvfp4:
                 raise NotImplementedError(
