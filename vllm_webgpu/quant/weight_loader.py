@@ -661,9 +661,21 @@ def load_safetensors_weights(
 
         weights: dict = {}
 
-        # Keys that _upload_plain consumed as I8 companion scales. These are
-        # re-encountered in the outer iteration but should not be re-uploaded.
+        # Pre-scan the header for I8 weight keys and collect their companion scale
+        # keys into the skip set before any iteration begins. Without this, a scale
+        # key that appears before its I8 weight in the safetensors header is uploaded
+        # as a plain F32 buffer under its original name, then re-uploaded under
+        # {weight_name}.scales when the I8 weight is processed — leaking a GPU
+        # buffer for the lifetime of inference. Header key order is determined at
+        # model-save time and is not guaranteed to have weight before scale.
         _i8_companion_skip: set = set()
+        for _k, _m in header.items():
+            if _m.get("dtype") == "I8" and _k.endswith(".weight"):
+                _base = _k.removesuffix(".weight")
+                for _sc in (f"{_base}.weight_scale", f"{_base}.scale", f"{_k}.SCB"):
+                    if _sc in header:
+                        _i8_companion_skip.add(_sc)
+                        break
 
         # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
         def _upload_plain(name: str, weights: dict) -> bool:  # noqa: E501

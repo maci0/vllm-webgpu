@@ -407,7 +407,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             _gemm_adaptive(sc["normed"], f"{p}.self_attn.q_proj.weight", sc["q_buf"], hidden, q_dim)
             if not is_kv_shared:
                 _gemm_adaptive(sc["normed"], f"{p}.self_attn.k_proj.weight", sc["k_buf"], hidden, kv_dim)
-            if not is_kv_shared:
                 # v_proj: global attention layers (no separate V; V=K) have no v_proj weight.
                 # Use the precomputed flag from _build_layer_params_from_config as source of truth.
                 has_v_proj = lp.get("has_v_proj", True)
@@ -569,6 +568,15 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 hidden_states_1 = sc["ffn_out"]
 
         layer_scalar = self._layer_scales[layer_idx]
+
+        def _add_and_scale(src) -> None:
+            """Residual add + optional layer scalar, shared by MoE and dense tails."""
+            self._dispatch("add_f32", [residual, src, out],
+                           {"N": add_n}, _vec4_wg(add_n))
+            if abs(layer_scalar - 1.0) > 1e-6:
+                self._dispatch("f32_scale_inplace", [out],
+                               {"N": add_n, "SCALE": layer_scalar},
+                               ((add_n + 255) // 256, 1, 1))
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe and f"{p}.router.proj.weight" in self.weights:
@@ -819,13 +827,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 else:
                     combined_normed = sc["normed"]
 
-                self._dispatch("add_f32", [residual, combined_normed, out],
-                               {"N": add_n},
-                               _vec4_wg(add_n))
-                if abs(layer_scalar - 1.0) > 1e-6:
-                    self._dispatch("f32_scale_inplace", [out],
-                                   {"N": add_n, "SCALE": layer_scalar},
-                                   ((add_n + 255) // 256, 1, 1))
+                _add_and_scale(combined_normed)
         else:
             # Apply post_feedforward_layernorm before residual add, matching vLLM's
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
@@ -835,12 +837,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     self._dispatch("rms_norm", [hidden_states_1, pfn_w, sc["normed"]], _rms,
                                    (num_tokens, 1, 1))
                     hidden_states_1 = sc["normed"]
-                self._dispatch("add_f32", [residual, hidden_states_1, out],
-                               {"N": add_n}, _vec4_wg(add_n))
-                if abs(layer_scalar - 1.0) > 1e-6:
-                    self._dispatch("f32_scale_inplace", [out],
-                                   {"N": add_n, "SCALE": layer_scalar},
-                                   ((add_n + 255) // 256, 1, 1))
+                _add_and_scale(hidden_states_1)
 
         self._hstate = (self._hstate + 2) % 3
         return out

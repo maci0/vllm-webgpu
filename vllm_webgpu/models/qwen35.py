@@ -131,7 +131,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._gdn_bf16: bool = _webgpu_envs.GDN_BF16
 
         # Persistent GPU buffers for recurrent state (allocated after load_weights).
-        # SSM state:  [NUM_V_HEADS, K_DIM, V_DIM] f32 = 2MB per linear-attn layer
+        # SSM state:  [NUM_V_HEADS, V_DIM, K_DIM] f32 = 2MB per linear-attn layer
         # Conv state: [CONV_KERNEL-1, CONV_DIM] f16 = 49KB per linear-attn layer
         self._ssm_gpu: list = []   # one WebGPUBuffer per layer (or None for full-attn)
         self._conv_gpu: list = []  # one WebGPUBuffer per layer

@@ -6,6 +6,7 @@ Usage:
     python3 profile_kernels.py [--model MODEL_PATH] [--tokens N]
 """
 import argparse
+import math
 import os
 import time
 from collections import defaultdict
@@ -69,7 +70,7 @@ dev = wgpu_dev.wgpu_device
 
 # Compute block count before allocating so the pool covers every block ID in bt.
 total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
-bt_blocks = (total_toks + block_size - 1) // block_size
+bt_blocks = math.ceil(total_toks / block_size)
 num_blocks = max(512, bt_blocks)
 
 allocate_kv_from_hf_config(dev, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
@@ -105,8 +106,11 @@ for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra 
     if step >= args.warmup_steps:
         prod_times.append(elapsed_ms)
 
-prod_avg_ms = np.mean(prod_times)
-print(f"Production throughput: {prod_avg_ms:.1f} ms/tok = {1000/prod_avg_ms:.1f} tok/s")
+if not prod_times:
+    print("No production steps measured")
+else:
+    prod_avg_ms = np.mean(prod_times)
+    print(f"Production throughput: {prod_avg_ms:.1f} ms/tok = {1000/prod_avg_ms:.1f} tok/s")
 
 # ── Profiled decode steps ──────────────────────────────────────────────────────
 print(f"Profiling {args.decode_steps} decode steps...")
@@ -125,8 +129,11 @@ for step in range(args.decode_steps):
     pos += 1
 
 model.profiling = False
-avg_step_ms = np.mean(decode_times)
-print(f"\nAverage decode step: {avg_step_ms:.1f} ms  ({1000/avg_step_ms:.1f} tok/s)")
+if not decode_times:
+    print("\nNo profiled decode steps measured")
+else:
+    avg_step_ms = np.mean(decode_times)
+    print(f"\nAverage decode step: {avg_step_ms:.1f} ms  ({1000/avg_step_ms:.1f} tok/s)")
 print()
 print(model.profile_report())
 print()
