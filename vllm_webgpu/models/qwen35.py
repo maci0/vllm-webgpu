@@ -61,7 +61,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         )
         # Partial RoPE: some models only rotate a fraction of head dimensions.
         # partial_rotary_factor=0.25 → rotary_dim = head_dim * 0.25.
-        _prf = getattr(model_config, "partial_rotary_factor", None) or 1.0
+        _prf = getattr(model_config, "partial_rotary_factor", None)
+        _prf = 1.0 if _prf is None else _prf
         # Read head_dim from model_config directly — self.head_dim not set yet.
         _head_dim_raw = getattr(model_config, "head_dim",
                                 model_config.hidden_size // model_config.num_attention_heads)
