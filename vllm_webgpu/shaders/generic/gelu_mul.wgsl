@@ -1,8 +1,9 @@
 enable f16;
 
 // N:          total element count; must be divisible by 4.
-// ACTIVATION: 0 = SiLU (default), 1 = x*sigmoid(1.702*x) (SwigluOAI).
-//             Matches the ACTIVATION semantic in fused_gate_act.wgsl.
+// ACTIVATION: 0 = SiLU (default), 1 = x*sigmoid(1.702*x) (SwigluOAI), 2 = ReLU² (Nemotron-3).
+//             Matches the ACTIVATION semantic in fused_gate_act.wgsl exactly — both shaders
+//             must implement every ACTIVATION value identically.
 // CLAMP_MAX:  0 = no clamp; >0 = clamp gate activation (upper only) to this value (swiglu_limit).
 //             Matches the CLAMP_MAX semantic in fused_gate_act.wgsl so the f16 and
 //             quantized paths are numerically equivalent when extra_gate_consts is set.
@@ -10,7 +11,7 @@ enable f16;
 // UP_BIAS:    additive bias on up projection before multiply (SwigluOAI: 1.0).
 // Dispatch ceil(N/4 / 256) workgroups so each thread handles 4 elements.
 override N:          u32 = 4096u;
-override ACTIVATION: u32 = 0u;  // 0 = SiLU, 1 = x*sigmoid(1.702*x) (SwigluOAI)
+override ACTIVATION: u32 = 0u;  // 0 = SiLU, 1 = x*sigmoid(1.702*x) (SwigluOAI), 2 = ReLU²
 override CLAMP_MAX:  f32 = 0.0;  // 0 = no clamp; >0 = clamp gate activation (upper only)
 override CLAMP_MIN:  f32 = 0.0;  // 0 = no clamp; <0 = clamp up projection symmetrically
 override UP_BIAS:    f32 = 0.0;  // additive bias on up projection (SwigluOAI: 1.0)
@@ -31,6 +32,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (ACTIVATION == 1u) {
         // x * sigmoid(1.702 * x)  (SwigluOAI)
         act4 = g4 * (vec4<f32>(1.0) / (vec4<f32>(1.0) + exp(-1.702f * g4)));
+    } else if (ACTIVATION == 2u) {
+        // ReLU² (squared ReLU, Nemotron-3): max(x, 0)²
+        let r4 = max(g4, vec4<f32>(0.0));
+        act4 = r4 * r4;
     } else {
         // SiLU: x * sigmoid(x)  (Llama/Qwen default)
         act4 = g4 / (vec4<f32>(1.0) + exp(-g4));
