@@ -198,13 +198,22 @@ class BaseWebGPUModel(ABC):
     def _buf_np_dtype(self, buf) -> "type":
         """Return the numpy scalar type matching a WebGPUBuffer's dtype string.
 
-        Covers the two dtypes currently stored by the weight loader: 'f32'
-        (float32) and everything else (treated as float16). A single shared
-        helper avoids duplicating the same one-liner idiom across subclasses
-        and provides a single place to add coverage for future dtypes (e.g.
-        bfloat16).
+        Covers all five dtypes in active use by the weight loader and shaders:
+          f32  -> np.float32
+          f16  -> np.float16
+          i32  -> np.int32   (GPTQ quantized weights)
+          u8   -> np.uint8   (FP8 / NF4 / INT8 quantized weights)
+          u32  -> np.uint32  (BF16 companion / packed formats)
         """
-        return np.float32 if getattr(buf, "dtype", "f16") == "f32" else np.float16
+        _MAP = {
+            "f32": np.float32,
+            "f16": np.float16,
+            "i32": np.int32,
+            "u8": np.uint8,
+            "u32": np.uint32,
+        }
+        dtype = getattr(buf, "dtype", "f16")
+        return _MAP.get(dtype, np.float16)
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):
