@@ -261,11 +261,20 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 gate_key = f"{prefix}.q_gate_proj.weight"
                 if gate_key not in self.weights and q_key in self.weights:
                     buf = self.weights[q_key]
-                    if buf.shape[0] == 2 * q_dim:
+                    hidden = self.hidden_size
+                    # For fp16: shape is (2*q_dim, hidden), total = 2*q_dim*hidden.
+                    # For AWQ:  shape is (hidden, 2*q_dim//8), total = 2*q_dim*hidden//8.
+                    # For GPTQ: shape is (2*q_dim, hidden//8), total = 2*q_dim*hidden//8.
+                    # shape[0] == 2*q_dim only catches fp16 and GPTQ (not AWQ) on larger
+                    # variants where hidden != 2*q_dim. Use total element count instead.
+                    fp16_unsplit  = math.prod(buf.shape) == 2 * q_dim * hidden
+                    quant_unsplit = math.prod(buf.shape) == 2 * q_dim * (hidden // 8)
+                    if fp16_unsplit or quant_unsplit:
                         raise ValueError(
                             f"Layer {i}: q_gate_proj.weight is missing but "
-                            f"q_proj.weight has shape {buf.shape} == [2*q_dim, H]. "
-                            "This checkpoint appears to use quantized (I8) q_proj weights "
+                            f"q_proj.weight has shape {buf.shape}, which matches "
+                            "an unsplit combined q+gate tensor. "
+                            "This checkpoint appears to use quantized q_proj weights "
                             "whose split transform was skipped by the loader. "
                             "Load an fp16 checkpoint, or pre-split the q_proj tensor "
                             "before quantizing."
