@@ -34,13 +34,20 @@ def _locate_index(directory: "Path") -> "Path | None":
 
     Tries compressed_tensors' find_safetensors_index_path when available (handles
     non-standard index filenames), then falls back to the standard
-    model.safetensors.index.json path. Returns None when neither is found.
+    model.safetensors.index.json path, and finally globs for any
+    *.safetensors.index.json file to cover non-standard AutoHF-style shards.
+    Returns None when no index is found.
     """
     if _ct_find_index is not None:
         found = _ct_find_index(str(directory))
         return Path(found) if found else None
     fallback = directory / SAFETENSORS_INDEX_FILE
-    return fallback if fallback.exists() else None
+    if fallback.exists():
+        return fallback
+    # Some sharded repos use a non-standard index filename. Mirror what vLLM's
+    # weight_utils.py does: scan for any *.safetensors.index.json in the dir.
+    candidates = sorted(directory.glob("*.safetensors.index.json"))
+    return candidates[0] if candidates else None
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
