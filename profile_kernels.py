@@ -167,7 +167,7 @@ if stats:
         # Per-head QK-norm weights (Qwen3, Llama3.2): q_norm [num_q_heads*head_dim] f16
         # + k_norm [num_kv_heads*head_dim] f16. Add if the checkpoint carries q_norm weights.
         if model is not None and any('q_norm' in k for k in getattr(model, 'weights', {})):
-            attn_w += 2 * (q_dim2 + num_kv_heads * head_dim) * 2  # f16 = 2 bytes
+            attn_w += (q_dim2 + num_kv_heads * head_dim) * 2  # f16 = 2 bytes
 
         # For hybrid architectures (e.g. NemotronH, Gemma4), layer types differ per layer.
         # Use per-layer type weights rather than applying (attn_w + ffn_w) uniformly.

@@ -196,6 +196,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _layer_int_sizes.append(_fallback)
             _mlp_count += 1
         self._layer_int_size: list[int] = _layer_int_sizes
+        # Cache the maximum intermediate size once so _init_scratch_buffers does
+        # not re-derive it (and re-read model_config.intermediate_size) on every call.
+        self._max_int_size: int = max(
+            (s for s in _layer_int_sizes if s > 0),
+            default=(max(_raw_int) if isinstance(_raw_int, list) else _raw_int),
+        )
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
@@ -222,9 +228,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         CD  = self.conv_dim
         IPD = self.in_proj_dim
         MNH = self.mamba_num_heads
-        _raw_int_fb = self.model_config.intermediate_size
-        I   = max((s for s in self._layer_int_size if s > 0),
-                  default=(max(_raw_int_fb) if isinstance(_raw_int_fb, list) else _raw_int_fb))
+        I   = self._max_int_size
         V   = self.vocab_size
         qd  = self.num_q_heads * self.head_dim
         kd  = self.num_kv_heads * self.head_dim

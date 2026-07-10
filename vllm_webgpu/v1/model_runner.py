@@ -103,6 +103,7 @@ class WebGPUModelRunner:
         self._last_model_output: Any = EMPTY_MODEL_RUNNER_OUTPUT  # cached for sample_tokens()
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
+        self._zeros_cache: dict[int, bytes] = {}  # amortizes zero-byte alloc across scheduling steps
 
     def load_model(self) -> None:
         mc = self.vllm_config.model_config
@@ -274,7 +275,7 @@ class WebGPUModelRunner:
         if self.model is None or self._num_kv_blocks == 0:
             return
         queue = self.wgpu_device.wgpu_device.queue
-        _zeros_cache: dict[int, bytes] = {}
+        _zeros_cache = self._zeros_cache
         for k_buf, v_buf in self.model.kv_pool:
             if k_buf.nbytes <= 16:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)

@@ -300,7 +300,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "k_rope":     mk(T * max_kv_dim * 2), # f16
             "attn_out":   mk(T * max_q_dim * 2),  # f16
             "o_proj_out": mk(T * H * 2),           # f16
-            "ffn_normed": mk(T * H * 2),           # f16
             "gate_buf":   mk(T * I * 2),           # f16
             "up_buf":     mk(T * I * 2),           # f16
             "ffn_act":    mk(T * I * 2),

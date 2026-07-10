@@ -6,6 +6,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import numpy as np
 import torch
+# Import the private _pytorch suffix variant rather than the public dispatcher
+# apply_top_k_top_p. The dispatcher only passes allow_cpu_sync=True inside the
+# is_cpu() branch, which is never entered for PlatformEnum.OOT. Without that
+# flag the pure top-k path falls through to a full sort instead of the partial
+# top-k optimisation, losing performance on every batch-1 top-k-only decode
+# step. The _pytorch variant calls apply_top_k_only directly and is therefore
+# the correct choice for WebGPU's CPU-backed tensor workflow.
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
 
 SHADERS_DIR = Path(__file__).parent / "shaders"

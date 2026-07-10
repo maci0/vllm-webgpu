@@ -60,10 +60,10 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Calls yarn_find_correction_range, yarn_linear_ramp_mask, and yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.common directly, inlining
-    the logic from YaRNScalingRotaryEmbedding._compute_inv_freq without coupling
-    to that private method or its attribute layout.
+    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq so that formula
+    changes in vLLM are picked up automatically. __init__ is bypassed by
+    setting only the attributes that _compute_inv_freq reads; no torch buffers
+    or cos/sin cache are allocated.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -80,16 +80,9 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    # This function inlines the assembly logic from
-    # YaRNScalingRotaryEmbedding._compute_inv_freq (vLLM ≥0.8). Both this
-    # function and the private method use the same three helpers below. If
-    # vLLM changes the YaRN formula, update this function to match.
-    # Pinned against vLLM 0.24.x; review on every vLLM minor bump.
-    import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
     )
 
     if rotary_dim is None:
@@ -110,22 +103,20 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
-    pos_freqs = rope_theta ** (
-        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
-    )
-    inv_freq_extrapolation = 1.0 / pos_freqs
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
-    low, high = yarn_find_correction_range(
-        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
-    )
-    inv_freq_mask = (
-        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
-    ) * extrapolation_factor
-    inv_freq = (
-        inv_freq_interpolation * (1 - inv_freq_mask)
-        + inv_freq_extrapolation * inv_freq_mask
-    )
+    # Bypass YaRNScalingRotaryEmbedding.__init__ (which builds a full cos/sin
+    # cache and allocates torch buffers) by setting only the attributes that
+    # _compute_inv_freq reads. This is intentional: we only need the raw
+    # inv_freq tensor, not the embedding machinery.
+    obj = object.__new__(YaRNScalingRotaryEmbedding)
+    obj.base                 = rope_theta
+    obj.rotary_dim           = rotary_dim
+    obj.beta_fast            = beta_fast
+    obj.beta_slow            = beta_slow
+    obj.max_position_embeddings = orig_ctx
+    obj.extrapolation_factor = extrapolation_factor
+    obj.truncate             = truncate
 
+    inv_freq = obj._compute_inv_freq(factor)
     return inv_freq.numpy(), mscale
 
 
@@ -288,9 +279,8 @@ class BaseWebGPUModel(ABC):
 
     def _compute_ctx_len(self, attn_metadata: object, positions: "np.ndarray") -> int:
         """Derive the decode context length from attn_metadata, falling back to position."""
-        return int(attn_metadata.max_decode_seq_len
-                   if attn_metadata.max_decode_seq_len is not None
-                   else positions[-1] + 1)
+        v = attn_metadata.max_decode_seq_len
+        return int(v if v is not None else positions[-1] + 1)
 
     def _bt_arr(self, attn_metadata: object) -> "np.ndarray":
         """Return the block-table as a uint32 numpy array.

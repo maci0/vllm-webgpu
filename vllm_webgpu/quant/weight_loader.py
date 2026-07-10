@@ -279,10 +279,12 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) ->
     w_int4 = ((qw[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(K, N).astype(np.uint8)
     z_int4 = ((qz[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(G, N).astype(np.uint8)
 
-    # Expand scales/zeros to (K, N) shape
-    row_groups = np.arange(K) // group_size
-    sc_exp = sc[row_groups]   # (K, N)
-    z_exp  = z_int4[row_groups].astype(np.float32)  # (K, N)
+    # Expand scales/zeros to (K, N) shape using uniform group repeat.
+    # np.repeat(arr, group_size, axis=0) is equivalent to arr[np.arange(K)//group_size]
+    # when all groups have the same size (guaranteed by group_size = K // G above),
+    # avoids the intermediate index array, and is faster for large K.
+    sc_exp = np.repeat(sc, group_size, axis=0)           # (K, N)
+    z_exp  = np.repeat(z_int4, group_size, axis=0).astype(np.float32)  # (K, N)
 
     # Dequantize: weight(K, N) then transpose to (N, K) for our shader
     w_f32 = sc_exp * (w_int4.astype(np.float32) - z_exp)  # (K, N)
@@ -316,14 +318,16 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     w_int4 = ((qw[:, np.newaxis, :] >> shifts[:, np.newaxis]) & 0xF).reshape(K, N).astype(np.uint8)
     z_int4 = ((qz[:, :, np.newaxis] >> shifts) & 0xF).reshape(G, N).astype(np.uint8)
 
-    # Group index: which group each input dim belongs to
+    # Group index: which group each input dim belongs to.
+    # For the uniform-groups path, np.repeat avoids the intermediate index array
+    # (all groups have the same size by construction: group_size = K // G).
     if g_idx is not None:
         groups = g_idx.astype(np.int32)
+        sc_exp = sc[groups]
+        z_exp  = z_int4[groups].astype(np.float32)
     else:
-        groups = np.arange(K, dtype=np.int32) // group_size
-
-    sc_exp = sc[groups]             # (K, N)
-    z_exp  = z_int4[groups].astype(np.float32)  # (K, N)
+        sc_exp = np.repeat(sc, group_size, axis=0)          # (K, N)
+        z_exp  = np.repeat(z_int4, group_size, axis=0).astype(np.float32)  # (K, N)
 
     w_f32 = sc_exp * (w_int4.astype(np.float32) - z_exp)  # (K, N)
     return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
