@@ -128,6 +128,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                     "Mixtral MoE batch prefill is not yet supported on WebGPU"
                 )
             return self._moe_decode_forward(input_ids, positions, attn_metadata)
+        # Mistral dense (SWA, _is_moe=False): delegate to LlamaWebGPUModel.forward().
+        # For T > 1 (prefill), that calls _prefill_batch_forward(), which checks
+        # self._sw is not None and immediately falls back to _prefill_sequential_fallback.
+        # Sliding-window attention disqualifies batch-encoder chunking, so every prefill
+        # token gets its own command encoder carrying a full 32-layer forward pass.
+        # No batch matmul optimisation applies here.
         return super().forward(input_ids, positions, attn_metadata)
 
     def _moe_decode_forward(
