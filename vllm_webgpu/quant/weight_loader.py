@@ -1300,12 +1300,20 @@ def load_safetensors_weights(
             for _b in ct_bases:
                 ct_reserved.add(_ct_base_map[_b])
                 ct_reserved.add(f"{_b}.weight_scale")
+                if f"{_b}.weight_zero_point" in header:
+                    ct_reserved.add(f"{_b}.weight_zero_point")
 
             _upload_non_quant(header, ct_reserved, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 
             weights.setdefault("__quant_meta__", {})
             for base in ct_bases:
                 try:
+                    if f"{base}.weight_zero_point" in header:
+                        raise ValueError(
+                            f"{base}: asymmetric compressed-tensors W4A16 "
+                            f"(weight_zero_point present) is not supported; "
+                            f"only symmetric (no weight_zero_point) is handled"
+                        )
                     weight_key = _ct_base_map[base]
                     qw = _load_raw(weight_key)                 # [N, K//8] I32
                     sc_raw = _load_raw(f"{base}.weight_scale") # [N, G] F16/BF16/F32
