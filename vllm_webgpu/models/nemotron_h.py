@@ -32,7 +32,10 @@ del _mapper
 
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
-# 0 = F16 (no quantization), 3 = GPTQ int4, 4 = AWQ sym int4.
+# 0 = F16 (no quantization), 3 = GPTQ int4, 4 = AWQ sym int4,
+# 5 = fp8_gpu, 6 = nvfp4_gpu, 7 = int8_gpu, 8 = nf4_gpu.
+# Values 5-8 use the non-AWQ GPU-side byte-concat path in _pack_attn_weights;
+# the _is_awq == 4 check is the sole gate selecting AWQ-specific unpacking.
 
 
 

@@ -80,9 +80,8 @@ def compute_yarn_freqs(
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_get_mscale, yarn_find_correction_range, yarn_linear_ramp_mask,
     )
 
     if rotary_dim is None:
@@ -103,16 +102,12 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
-    stub = SimpleNamespace(
-        base=rope_theta,
-        rotary_dim=rotary_dim,
-        beta_fast=beta_fast,
-        beta_slow=beta_slow,
-        max_position_embeddings=orig_ctx,
-        truncate=truncate,
-        extrapolation_factor=extrapolation_factor,
-    )
-    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(stub, factor)
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    inv_freq_interp = 1.0 / (factor * pos_freqs)
+    inv_freq_extrap = 1.0 / pos_freqs
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx)
+    inv_freq_mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    inv_freq = inv_freq_interp * (1 - inv_freq_mask) + inv_freq_extrap * inv_freq_mask
     return inv_freq.numpy(), mscale
 
 

@@ -379,11 +379,6 @@ def get_kv_dims_from_hf_config(hf_cfg) -> tuple[int, int]:
     return conv.get_total_num_kv_heads(), conv.get_head_size()
 
 
-# Backward-compatible alias; get_kv_dims_from_hf_config is the canonical name.
-# get_kv_dims_from_config is deprecated.
-get_kv_dims_from_config = get_kv_dims_from_hf_config
-
-
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:
     """Sum of weight buffer sizes in bytes (excludes scratch/dummy/rope buffers)."""
     model = worker.model_runner.model if worker.model_runner is not None else None

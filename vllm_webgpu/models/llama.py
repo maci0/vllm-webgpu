@@ -176,8 +176,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
     def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
                      skip_prefixes: "frozenset[str] | None" = None) -> None:
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
-        self._batch_matmul_supported = not any(
-            self._uq_for_key(k) not in (0, 3)
+        self._batch_matmul_supported = all(
+            self._uq_for_key(k) in (0, 3)
             for k in self.weights
             if k.endswith(".weight") and "model.layers." in k and "_proj" in k
         )

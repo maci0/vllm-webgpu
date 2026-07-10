@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -19,7 +19,7 @@ _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
-_SYM_ZEROS_INT32: np.int32 = np.frombuffer(b'\x88\x88\x88\x88', dtype=np.int32)[0]
+_SYM_ZEROS_INT32: np.int32 = np.array([0x88888888], dtype=np.uint32).view(np.int32)[0]
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -211,7 +211,7 @@ def load_safetensors_weights_sharded(
         shard_weights = load_safetensors_weights(
             shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys,
             skip_remap=True, weight_transforms=weight_transforms,
-            skip_prefixes=skip_prefixes)
+            skip_prefixes=skip_prefixes, quant_cfg=quant_cfg)
 
         # Commit all pending write_buffer operations by submitting a dummy command encoder.
         # queue.write_buffer() is only committed before the NEXT queue.submit(), not by

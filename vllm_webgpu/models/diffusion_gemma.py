@@ -230,16 +230,20 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         """Not implemented for DiffusionGemma.
 
         The inherited Gemma4 implementation calls _transformer_layer(), which
-        reads self._sc['qkv_buf'] and self._sc['normed']. Both keys are
-        intentionally absent from DiffusionGemma._init_scratch_buffers() because
-        _transformer_layer() is never used by this model. Calling this method
-        would crash with KeyError. Raise here so any future caller gets a clear
-        error rather than an opaque crash.
+        reads self._sc['qkv_buf']. That key is intentionally absent from
+        DiffusionGemma._init_scratch_buffers() because _transformer_layer() is
+        never used by this model. self._sc['normed'] IS allocated.
+
+        For f16 checkpoints (_use_fused_qkv=True), calling this method would
+        crash with KeyError on self._sc['qkv_buf']. For quantized checkpoints
+        (_use_fused_qkv=False), it would run without a KeyError but produce
+        wrong logits because _transformer_layer() skips the MoE expert loop.
+        Raise here so any future caller gets a clear error in both cases.
         """
         raise NotImplementedError(
             "DiffusionGemmaWebGPUModel does not support _prefill_sequential_fallback. "
-            "_transformer_layer() references self._sc['qkv_buf'] and "
-            "self._sc['normed'], which are not allocated by this model. "
+            "f16 checkpoints crash with KeyError on self._sc['qkv_buf'] (not allocated); "
+            "quantized checkpoints run but produce wrong logits (MoE skipped). "
             "Use forward() directly; it handles both single-token decode and "
             "multi-token canvas prefill."
         )
@@ -400,11 +404,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Q projection: unconditional (KV-shared layers still need Q).
             # K and V projections: skip for KV-shared layers; they reuse the
             # target layer's already-populated cache and never consume these outputs.
-            _qk_list = [(sc["q_buf"], "q_proj", q_dim)]
+            _gemm_adaptive(sc["normed"], f"{p}.self_attn.q_proj.weight", sc["q_buf"], hidden, q_dim)
             if not is_kv_shared:
-                _qk_list.append((sc["k_buf"], "k_proj", kv_dim))
-            for out_buf, proj, dim in _qk_list:
-                _gemm_adaptive(sc["normed"], f"{p}.self_attn.{proj}.weight", out_buf, hidden, dim)
+                _gemm_adaptive(sc["normed"], f"{p}.self_attn.k_proj.weight", sc["k_buf"], hidden, kv_dim)
             if not is_kv_shared:
                 # v_proj: global attention layers (no separate V; V=K) have no v_proj weight.
                 # Use the precomputed flag from _build_layer_params_from_config as source of truth.
@@ -420,24 +422,35 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             _dg_plain = {k: _dg_rc[k] for k in ("ROPE_BASE", "LN_ROPE_BASE", "USE_FREQ_BUF")}
             # Q: norm+RoPE unconditionally (KV-shared layers still project and use Q).
             # K: norm+RoPE only for non-shared layers; shared layers read K from cache directly.
-            _heads_specs = [(sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight")]
+            _q_nw = self.weights.get(f"{p}.self_attn.q_norm.weight")
+            if _q_nw is not None:
+                # Binding 4 (inv_freq_buf): always provided.
+                self._dispatch("fused_per_head_norm_rope",
+                               [sc["q_buf"], _q_nw, pos_buf, sc["q_rope"], _freq_buf],
+                               {**_dg_rc, "HEAD_DIM": head_dim, "NUM_HEADS": self.num_q_heads,
+                                "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
+                                "INPUT_OFFSET": 0},
+                               (self.num_q_heads, num_tokens, 1))
+            else:
+                # Binding 3 (inv_freq_buf): always provided.
+                self._dispatch("rope", [sc["q_buf"], pos_buf, sc["q_rope"], _freq_buf],
+                               {**_dg_plain, "HEAD_DIM": head_dim, "NUM_HEADS": self.num_q_heads},
+                               (num_tokens, self.num_q_heads, 1))
             if not is_kv_shared:
-                _heads_specs.append((sc["k_buf"], sc["k_rope"], num_kv_heads, f"{p}.self_attn.k_norm.weight"))
-            for src, dst, n_heads, wk in _heads_specs:
-                nw = self.weights.get(wk)
-                if nw is not None:
+                _k_nw = self.weights.get(f"{p}.self_attn.k_norm.weight")
+                if _k_nw is not None:
                     # Binding 4 (inv_freq_buf): always provided.
                     self._dispatch("fused_per_head_norm_rope",
-                                   [src, nw, pos_buf, dst, _freq_buf],
-                                   {**_dg_rc, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
+                                   [sc["k_buf"], _k_nw, pos_buf, sc["k_rope"], _freq_buf],
+                                   {**_dg_rc, "HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads,
                                     "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
                                     "INPUT_OFFSET": 0},
-                                   (n_heads, num_tokens, 1))
+                                   (num_kv_heads, num_tokens, 1))
                 else:
                     # Binding 3 (inv_freq_buf): always provided.
-                    self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                   {**_dg_plain, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads},
-                                   (num_tokens, n_heads, 1))
+                    self._dispatch("rope", [sc["k_buf"], pos_buf, sc["k_rope"], _freq_buf],
+                                   {**_dg_plain, "HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads},
+                                   (num_tokens, num_kv_heads, 1))
 
             # Per-head RMSNorm (no weight) on V before caching — required for DiffusionGemma.
             # Matches DiffusionGemmaTextAttention.forward which calls self.v_norm(value_states)

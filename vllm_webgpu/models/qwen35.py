@@ -100,11 +100,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         )
         self._lin_conv_shape = _lin_conv_shape
         self._lin_ssm_shape = _lin_ssm_shape
-        # Derive conv_dim from the shape returned by vLLM rather than re-specifying
-        # the formula (which would silently diverge if vLLM changes it).
-        # For tp_world_size=1, math.prod(conv_state_shape) == conv_dim * (conv_kernel_size - 1)
-        # regardless of SD vs DS layout, so dividing recovers conv_dim exactly.
-        self._lin_conv_dim: int = math.prod(self._lin_conv_shape) // (self._lin_conv_kernel - 1)
+        # conv_dim = 2*key_dim + val_dim (matches vLLM's gated_delta_net_state_shape formula:
+        # conv_dim = head_k_dim*num_k_heads*2 + head_v_dim*num_v_heads).
+        self._lin_conv_dim: int = 2 * _lin_key_dim + self._lin_val_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
