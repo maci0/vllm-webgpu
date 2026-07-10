@@ -85,6 +85,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Mamba-2 parameters
         self.mamba_num_heads: int = model_config.mamba_num_heads
         self.mamba_head_dim: int = model_config.mamba_head_dim
+        if self.mamba_head_dim > 256:
+            raise NotImplementedError(
+                f"mamba_head_dim={self.mamba_head_dim} exceeds WG_SIZE=256; "
+                "mamba2_ssm_step Phase 2 requires WG_SIZE >= HEAD_DIM. "
+                "Increase WG_SIZE in the shader and this dispatch, or add a "
+                "second dispatch for the remaining elements."
+            )
         # mamba_int: the Mamba "intermediate size" = num_heads * head_dim
         self.mamba_int: int = self.mamba_num_heads * self.mamba_head_dim
         self.n_groups: int = model_config.n_groups
