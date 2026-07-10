@@ -177,10 +177,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         finally:
             self._active_encoder = None
 
-        if greedy:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return self._finish_forward(greedy)
 
     def _dispatch_expert_gate_up(
         self,

@@ -47,7 +47,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # Use a dedicated flag rather than mutating _sw: setting _sw = -1 poisons
         # _effective_ctx_len (min(ctx_len, -1) == -1), which then passes -1 as
         # CTX_LEN to flash_attn_decode and wraps to max-u32 on the GPU side.
-        self._force_sequential_prefill: bool = bool(self._attn_bias or ('full_attention' in (self._layer_types or [])))
+        self._force_sequential_prefill: bool = bool(self._attn_bias or ('full_attention' in self._layer_types))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
         # _moe_inter does not need to precede super().__init__() because no code

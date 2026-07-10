@@ -97,7 +97,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        self._lin_conv_dim: int = self._lin_conv_shape[0] if is_conv_state_dim_first() else self._lin_conv_shape[1]
+        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
@@ -273,7 +273,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     if unpack_shape_unsplit or quant_unsplit or quant_unsplit_half:
                         # uq 5/6/7/8: weight is already quantized (fp8_gpu,
                         # nvfp4, int8_gpu, nf4), so advising "load fp16" is wrong.
-                        if uq in (5, 6, 7, 8):
+                        if uq != 0:
                             hint = "Pre-split the q_proj tensor before quantizing."
                         else:
                             hint = ("Load an fp16 checkpoint, or pre-split the "

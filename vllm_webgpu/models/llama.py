@@ -362,12 +362,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 norm_out, logits_buf, ctx_len, num_tokens, vocab, greedy,
             )
 
-        if greedy:
-            # Greedy path: 4-byte readback from staging buffer (mapped during main sync).
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)  # shape (1, 1)
-        # Non-greedy path: return full float32 logits for CPU sampling.
-        return self.logit_readback()  # shape (1, vocab)
+        return self._finish_forward(greedy)
 
     def _prefill_batch_forward(  # noqa: C901
         self,
@@ -609,10 +604,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             greedy = self._greedy_decode
             self._decode_teardown(b["last_norm"], b["logits"], vocab, greedy)
 
-        if greedy:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()  # shape (1, vocab) for non-greedy
+        return self._finish_forward(greedy)
 
     def _prefill_sequential_fallback(
         self,
@@ -690,10 +682,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             greedy = self._greedy_decode
             self._decode_teardown(pre["norm_out"], pre["logits"], vocab, greedy)
 
-        if greedy:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return self._finish_forward(greedy)
 
     def _qkv_proj(
         self,

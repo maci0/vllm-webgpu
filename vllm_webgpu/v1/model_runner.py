@@ -299,7 +299,8 @@ class WebGPUModelRunner:
         validation enforces this via max_logprobs.
         """
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
-        lp = Sampler.gather_logprobs(lp_t, num_logprobs, torch.tensor([sampled_tok], dtype=torch.int64))
+        k = min(num_logprobs, logits_1d.shape[-1])
+        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
         return lp
 
     @staticmethod

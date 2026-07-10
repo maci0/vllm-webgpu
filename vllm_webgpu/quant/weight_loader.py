@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
+from huggingface_hub.constants import SAFETENSORS_INDEX_FILE
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -184,7 +184,7 @@ def detect_weight_format(path: str) -> str:
         if _ct_find_index is not None:
             _index_found = _ct_find_index(str(p)) is not None
         else:
-            _index_found = (p / SAFE_WEIGHTS_INDEX_NAME).exists()
+            _index_found = (p / SAFETENSORS_INDEX_FILE).exists()
         if _index_found:
             # MLX vs standard sharded detection is deferred to the loader,
             # which already reads the index and can check for .biases keys.
@@ -231,7 +231,7 @@ def load_safetensors_weights_sharded(
         _found = _ct_find_index(model_dir)
     else:
         _found = None
-    index_path = Path(_found) if _found else Path(model_dir) / SAFE_WEIGHTS_INDEX_NAME
+    index_path = Path(_found) if _found else Path(model_dir) / SAFETENSORS_INDEX_FILE
     with open(index_path) as f:
         index = json.load(f)
     weight_map = index.get("weight_map", {})
@@ -286,8 +286,7 @@ def load_safetensors_weights_sharded(
         # on_submitted_work_done_sync() alone. Without this, 24GB of accumulated writes
         # may be committed simultaneously at the first real submit, causing Metal to
         # silently drop some writes (embedding buffer shows zeros after readback).
-        wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
-        wgpu_device.queue.on_submitted_work_done_sync()
+        _flush_pending(wgpu_device)
 
         shard_qm = shard_weights.pop("__quant_meta__", {})
         weights.update(shard_weights)
@@ -1345,8 +1344,7 @@ def load_safetensors_weights(
                     logger.info("Remapped %d language_model.* keys", n_remapped)
 
         # Commit all pending write_buffer calls before returning.
-        wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
-        wgpu_device.queue.on_submitted_work_done_sync()
+        _flush_pending(wgpu_device)
         logger.info("Loaded %d tensors from %s", len(weights), path)
         return weights
 
@@ -1409,7 +1407,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
             _found = _ct_find_index(str(p))
         else:
             _found = None
-        index_path = Path(_found) if _found else p / SAFE_WEIGHTS_INDEX_NAME
+        index_path = Path(_found) if _found else p / SAFETENSORS_INDEX_FILE
         with open(index_path) as f:
             index = json.load(f)
         weight_map = index.get("weight_map", {})
@@ -1531,8 +1529,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 _upload_f16(arr, local_key)
 
     # Commit any remaining write_buffer calls before returning.
-    wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
-    wgpu_device.queue.on_submitted_work_done_sync()
+    _flush_pending(wgpu_device)
 
     n_remapped = _apply_multimodal_remap(weights)
     if n_remapped:

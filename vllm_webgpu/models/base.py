@@ -175,10 +175,7 @@ class BaseWebGPUModel(ABC):
         # Used for the matmul_quant bias slot (HAS_BIAS=0) and the scales slot
         # (USE_QUANT=0). WebGPU permits the same buffer at multiple read-only
         # STORAGE slots in one bind group, so a single allocation suffices.
-        self._dummy_buf: "WebGPUBuffer" = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
-        # Aliases kept for subclasses that reference these names directly.
-        self._dummy_bias_buf   = self._dummy_buf
-        self._dummy_scales_buf = self._dummy_buf
+        self._dummy_bias_buf = self._dummy_scales_buf = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
         # Precomputed RoPE inverse frequencies for USE_FREQ_BUF=1 (YaRN and similar).
         # All rope/fused-rope shaders declare an inv_freq_buf binding unconditionally
         # (wgpu-native does not eliminate dead bindings even at USE_FREQ_BUF=0), so
@@ -466,6 +463,12 @@ class BaseWebGPUModel(ABC):
                 size=4,
                 usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
         return self._gpu_sample_tok
+
+    def _finish_forward(self, greedy: bool) -> "np.ndarray":
+        """Return a (1, 1) int32 token id on the greedy path or full (1, vocab) float32 logits otherwise."""
+        if greedy:
+            return np.array([[self._read_sample_tok()]], dtype=np.int32)
+        return self.logit_readback()
 
     def logit_readback(self) -> "np.ndarray":
         """Full vocab logits GPU->CPU (only for temperature sampling or analysis)."""

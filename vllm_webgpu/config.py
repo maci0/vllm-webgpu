@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import functools
+from functools import cache
 from dataclasses import dataclass
 
 import vllm_webgpu.envs as envs
@@ -47,6 +47,6 @@ class WebGPUConfig:
         )
 
 
-@functools.cache
+@cache
 def get_config() -> WebGPUConfig:
     return WebGPUConfig.from_env()

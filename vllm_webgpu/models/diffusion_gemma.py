@@ -51,12 +51,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                            model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
-        # DiffusionGemma applies V-norm unconditionally in _decoder_layer.
-        # The parent sets _apply_v_norm=False for this subclass (model_type != 'gemma4'),
-        # but that is wrong: override here so _apply_v_norm correctly reflects behaviour
-        # if a future refactor ever routes through the parent _transformer_layer.
-        self._apply_v_norm = True
-
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
