@@ -137,7 +137,7 @@ class WebGPUPlatform(_Platform):
             raise NotImplementedError("MLA is not supported on WebGPU.")
         if attn_selector_config.use_sparse:
             raise NotImplementedError("Sparse attention is not supported on WebGPU.")
-        if selected_backend != _ABE.CPU_ATTN:
+        if selected_backend is not None and selected_backend != _ABE.CPU_ATTN:
             logger.warning(
                 "WebGPU platform only supports CPU_ATTN backend, "
                 "but selected_backend is %r. Overriding to CPU_ATTN.",
