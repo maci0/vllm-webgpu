@@ -385,6 +385,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         """Snapshot all GDN conv/SSM state buffers to CPU in one GPU readback.
 
         Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
+
+        IMPORTANT: SSM state bytes are stored in the shader's [V_HEADS, K_DIM, V_DIM]
+        layout (f32), NOT in the vLLM convention returned by gated_delta_net_state_shape,
+        which is (V_HEADS, V_DIM, K_DIM). The byte counts are identical, so the
+        difference is invisible when K_DIM == V_DIM (e.g. Qwen3-235B both dims = 128).
+        Any caller that re-shapes or interprets these bytes as a tensor must use the
+        shader layout [V_HEADS, K_DIM, V_DIM]. Interoperating with vLLM's own state
+        tensors (which use the vLLM convention) requires a transpose of the inner two
+        dims for models where K_DIM != V_DIM.
         """
         bufs: list[tuple[str, int, object]] = []
         for i, buf in enumerate(self._conv_gpu):
@@ -400,6 +409,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         queue.write_buffer enqueues writes without blocking, so all layers
         are uploaded before the next GPU dispatch without an explicit submit.
+
+        The SSM bytes in `states["ssm"]` must use the shader's [V_HEADS, K_DIM, V_DIM]
+        layout (see save_recurrent_states). Bytes sourced from vLLM state tensors, which
+        use (V_HEADS, V_DIM, K_DIM), need the inner two dims transposed before upload
+        for models where K_DIM != V_DIM.
         """
         dev = self.wgpu_device.wgpu_device
         for i, data in states.get("conv", {}).items():
