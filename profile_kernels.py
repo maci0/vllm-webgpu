@@ -73,6 +73,8 @@ def main() -> None:
     allocate_kv_from_hf_config(dev, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
 
     model.warmup()
+    if hasattr(model, 'reset_recurrent_states'):
+        model.reset_recurrent_states()
 
     # ── Run prefill ───────────────────────────────────────────────────────────────
     bt = np.arange(bt_blocks, dtype=np.uint32)
