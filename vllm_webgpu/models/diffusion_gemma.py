@@ -193,9 +193,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     # ── Weight loading ───────────────────────────────────────────────────────
 
-    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None) -> None:
+    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
+                     skip_prefixes: "frozenset[str] | None" = None) -> None:
         """Load weights and cache per_expert_scale arrays to avoid per-step GPU readbacks."""
-        super().load_weights(path, f32_keys=f32_keys)
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
         # Cache per_expert_scale for each MoE layer. Each to_numpy() is a blocking
         # GPU-CPU sync (~100 µs); caching once at load time avoids N syncs per step.
         if self.is_moe:

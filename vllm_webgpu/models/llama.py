@@ -183,15 +183,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                      skip_prefixes: "frozenset[str] | None" = None) -> None:
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
 
-        def _is_proj(k: str) -> bool:
-            return k.endswith(".weight") and "model.layers." in k and "_proj" in k
-
         # _uq_for_key returns 0 (f16) or 3 (GPTQ int4) for formats supported by
         # matmul_quant_mr4 batch-prefill path. Any other value (AWQ=4, FP8=5,
         # NVFP4=6, INT8=7, NF4=8) falls back to the sequential decode path.
         # Use bool(proj_keys) so that an architecture with no _proj-named weights
         # (empty iterator) does not vacuously return True from all().
-        proj_keys = [k for k in self.weights if _is_proj(k)]
+        proj_keys = [k for k in self.weights if k.endswith('.weight') and 'model.layers.' in k and '_proj' in k]
         self._batch_matmul_supported = bool(proj_keys) and all(
             self._uq_for_key(k) in (0, 3) for k in proj_keys
         )

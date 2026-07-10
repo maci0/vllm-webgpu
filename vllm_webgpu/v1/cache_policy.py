@@ -112,7 +112,7 @@ def allocate_kv_from_tensors(
                 "real_page_size_bytes is the full per-position size, not a K+V pair. "
                 "Halving it would silently corrupt both cache buffers."
             )
-        elif isinstance(spec, AttentionSpec):
+        elif spec is not None and isinstance(spec, AttentionSpec):
             if spec.kv_quant_mode.is_nvfp4:
                 raise NotImplementedError(
                     "NVFP4 KV cache is not supported by the WebGPU backend"

@@ -195,6 +195,8 @@ def load_safetensors_weights_sharded(
         has_biases   |= k.endswith(".biases")
         is_gemma_mm  |= k.startswith("language_model.")
         is_qwen35_mm |= k.startswith("model.language_model.")
+        if has_biases:
+            break
 
     if has_biases:
         if f32_keys:
@@ -1343,9 +1345,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     weight_map: when supplied by the caller (e.g. load_safetensors_weights_sharded
     which has already parsed the index), the index file is not re-read from disk.
 
-    group_size: quantization group size. Callers that already know this value can
-    pass it directly to skip the config.json re-read (use 0 as a sentinel to force
-    reading from disk even when a default would otherwise be used).
+    group_size: quantization group size. Callers that already know this value pass
+    it directly. Must be a positive integer; passing 0 causes a ZeroDivisionError
+    in the numpy dequant path and a runtime error in the MLX path.
     """
     import torch as _torch
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer

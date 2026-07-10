@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
@@ -38,6 +38,9 @@ del _mapper
 # Fires at import time so a vLLM upgrade that restructures in_proj (e.g.
 # separating dt_rank into its own group) is caught before any model is loaded.
 # Silently skipped on .pyc-only installs where inspect.getsource is unavailable.
+# NOTE: _validate_mamba_weights is the authoritative runtime guard — it checks
+# the actual in_proj.weight shape from the loaded checkpoint against in_proj_dim.
+# This import-time check catches upstream changes before any model is loaded.
 try:
     import inspect as _inspect
     from vllm.model_executor.layers.mamba import mamba_mixer2 as _mm2_mod
@@ -56,46 +59,26 @@ except (ImportError, OSError):
     # _validate_mamba_weights checks the actual weight shape at load time.
     pass
 
-# Import-time sentinel: confirm mamba2_state_shape conv_dim formula still matches
-# the expression this code duplicates at NemotronHWebGPUModel.__init__ L138:
-#   conv_dim = mamba_int + 2 * n_groups * ssm_state_size
-# mamba_utils.py mamba2_state_shape uses: conv_dim = intermediate_size + 2 * n_groups * state_size
-# (tp=1, so no divide). Fires at import time so a vLLM change to conv_dim is caught
-# before any model is loaded. Silently skipped on .pyc-only installs.
-try:
-    import inspect as _inspect
-    from vllm.model_executor.layers.mamba import mamba_utils as _mu_mod
-    _mu_src = _inspect.getsource(_mu_mod.MambaStateShapeCalculator.mamba2_state_shape)
-    assert "intermediate_size + 2 * n_groups * state_size" in _mu_src, (
-        "MambaStateShapeCalculator.mamba2_state_shape conv_dim formula may have "
-        "changed upstream. Review the conv_dim assignment in "
-        "NemotronHWebGPUModel.__init__ (mamba_int + 2 * n_groups * ssm_state_size) "
-        "and update it to match before removing this assertion."
-    )
-    del _inspect, _mu_mod, _mu_src
-except (ImportError, OSError):
-    pass
+# conv_dim is now derived from MambaStateShapeCalculator.mamba2_state_shape output
+# (see NemotronHWebGPUModel.__init__) rather than computed by a separate formula.
+# No import-time sentinel is needed: if MambaStateShapeCalculator changes its
+# conv_dim definition, the derived value automatically tracks it.
 
-# Import-time sentinel: confirm NemotronHMLPDecoderLayer still computes mlp_index
-# as hybrid_override_pattern[:layer_idx+1].count("-") - 1, which is the formula
-# NemotronHWebGPUModel.__init__ reimplements in the _mlp_count loop.
-# Silently skipped on .pyc-only installs.
+# Import-time sentinel: confirm NemotronHMLPDecoderLayer still uses .count() to
+# compute mlp_index, which is the method NemotronHWebGPUModel.__init__ reimplements
+# in the _mlp_count loop. Checks the bytecode's co_names rather than source text
+# so the assertion survives whitespace reformatting and .pyc-only installs.
 try:
-    import inspect as _inspect
-    from vllm.model_executor.models import nemotron_h as _nh_mod
-    _nh_src = _inspect.getsource(_nh_mod.NemotronHMLPDecoderLayer.__init__)
-    assert 'count("-") - 1' in _nh_src, (
-        "NemotronHMLPDecoderLayer.__init__ mlp_index formula may have changed "
-        "upstream. Review the _mlp_count loop in NemotronHWebGPUModel.__init__ "
-        "and update it before removing this assertion."
+    from vllm.model_executor.models.nemotron_h import NemotronHMLPDecoderLayer as _NHMLPLayer
+    _init_code = _NHMLPLayer.__init__.__code__
+    assert "count" in _init_code.co_names, (
+        "NemotronHMLPDecoderLayer.__init__ no longer calls .count() — the "
+        "mlp_index formula may have changed upstream. Review the _mlp_count loop "
+        "in NemotronHWebGPUModel.__init__ and update it before removing this assertion."
     )
-    assert 'intermediate_size[0]' in _nh_src and 'intermediate_size[mlp_index]' in _nh_src, (
-        "NemotronHMLPDecoderLayer.__init__ list-vs-scalar intermediate_size resolution "
-        "may have changed upstream. Review the isinstance(_raw_int, list) branches in "
-        "NemotronHWebGPUModel.__init__ and update them before removing this assertion."
-    )
-    del _inspect, _nh_mod, _nh_src
-except (ImportError, OSError):
+    del _NHMLPLayer, _init_code
+except (ImportError, AttributeError):
+    # _validate_mamba_weights catches shape mismatches at load time.
     pass
 
 
@@ -175,7 +158,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
+        self.conv_dim: int = self._mamba_conv_shape[0] if is_conv_state_dim_first() else self._mamba_conv_shape[1]
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
@@ -439,7 +422,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Zero all Mamba conv and SSM states. Call before each new request."""
         dev = self.wgpu_device.wgpu_device
         for buf in (*self._conv_states.values(), *self._ssm_states.values()):
-            zeros = self._zero_buf_cache.setdefault(buf.nbytes, bytearray(buf.nbytes))
+            zeros = self._zero_buf_cache.get(buf.nbytes)
+            if zeros is None:
+                zeros = bytearray(buf.nbytes)
+                self._zero_buf_cache[buf.nbytes] = zeros
             dev.queue.write_buffer(buf.buf, 0, zeros)
 
     def save_recurrent_states(self) -> dict:

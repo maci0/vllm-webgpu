@@ -6,6 +6,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import numpy as np
 import torch
+# vLLM v1 sampling internals verified against vllm>=0.24,<0.25.
+# These paths have no stability guarantees; a patch release may move or rename
+# them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
+# Update this comment and pyproject.toml when bumping the vLLM version.
+#
 # Use the internal module-level function apply_top_k_top_p_pytorch rather than
 # the public dispatcher apply_top_k_top_p. The dispatcher only passes
 # allow_cpu_sync=True inside the is_cpu() branch, which is never entered for
@@ -15,6 +20,10 @@ import torch
 # public module-level function in vllm.v1.sample.ops.topk_topp_sampler that
 # calls apply_top_k_only directly and is therefore the correct choice for
 # WebGPU's CPU-backed tensor workflow.
+# When vLLM fixes apply_top_k_top_p to pass allow_cpu_sync=True for OOT
+# platforms, replace with `from vllm.v1.sample.ops.topk_topp_sampler import
+# apply_top_k_top_p, random_sample` and call apply_top_k_top_p(logits_t, k_t,
+# p_t) — the dispatcher will handle allow_cpu_sync.
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p_pytorch, random_sample
 
 SHADERS_DIR = Path(__file__).parent / "shaders"

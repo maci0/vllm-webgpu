@@ -354,8 +354,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 self._layer_scales.append(1.0)
 
-    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None) -> None:
-        super().load_weights(path, f32_keys=f32_keys)
+    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
+                     skip_prefixes: "frozenset[str] | None" = None) -> None:
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
         self._load_layer_scales()
 
     def forward(
@@ -767,7 +768,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                          "NUM_KV_HEADS": num_kv_heads,
                          "HEAD_DIM":     head_dim,
                          "NUM_T":        T,
-                         "SCALE":        1.0 if self._apply_v_norm else (1.0 / head_dim ** 0.5)},
+                         "SCALE":        1.0 if self._apply_v_norm else (getattr(self.model_config, 'query_pre_attn_scalar', head_dim) ** -0.5)},
                         (self.num_q_heads, T, 1))
 
                     # Output projection (batch GEMM)
@@ -1196,7 +1197,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
                             "CTX_LEN": ctx_len,
-                            "SCALE": 1.0 if self._apply_v_norm else (1.0 / head_dim ** 0.5)},
+                            "SCALE": 1.0 if self._apply_v_norm else (getattr(self.model_config, 'query_pre_attn_scalar', head_dim) ** -0.5)},
                            (self.num_q_heads, 1, 1))
 
             # Output projection → sc["o_proj_out"]
