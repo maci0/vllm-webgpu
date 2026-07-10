@@ -30,6 +30,32 @@ assert _mapper.orig_to_new_substr == {"A_log": "A", "embeddings": "embed_tokens"
 )
 del _mapper
 
+# Import-time sentinel: confirm MambaMixer2's in_proj layout still matches the
+# formula used by in_proj_dim (mamba_int + conv_dim + mamba_num_heads).
+# The ColumnParallelLinear branch at mamba_mixer2.py L355 is the canonical
+# expression of this sum: intermediate_size + self.conv_dim + self.num_heads,
+# where conv_dim = intermediate_size + 2*groups_ssm_state_size (L313).
+# Fires at import time so a vLLM upgrade that restructures in_proj (e.g.
+# separating dt_rank into its own group) is caught before any model is loaded.
+# Silently skipped on .pyc-only installs where inspect.getsource is unavailable.
+try:
+    import inspect as _inspect
+    from vllm.model_executor.layers.mamba import mamba_mixer2 as _mm2_mod
+    _mm2_src = _inspect.getsource(_mm2_mod.MambaMixer2.__init__)
+    assert "self.conv_dim + self.num_heads" in _mm2_src, (
+        "MambaMixer2.__init__ in_proj layout may have changed upstream. "
+        "The ColumnParallelLinear branch (mamba_mixer2.py L355) no longer "
+        "contains 'self.conv_dim + self.num_heads'. Review the in_proj_dim "
+        "formula in NemotronHWebGPUModel.__init__ "
+        "(mamba_int + conv_dim + mamba_num_heads) and update "
+        "_validate_mamba_weights before removing this assertion."
+    )
+    del _inspect, _mm2_mod, _mm2_src
+except (ImportError, OSError):
+    # ImportError: mamba_mixer2 moved upstream; OSError: .pyc-only install.
+    # _validate_mamba_weights checks the actual weight shape at load time.
+    pass
+
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
 # 0 = F16 (no quantization), 3 = GPTQ int4, 4 = AWQ sym int4,
@@ -607,10 +633,18 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             # in_proj.weight: machine-check in_proj_dim formula against the
             # actual checkpoint (first Mamba layer only). The formula mirrors
-            # MambaMixer2Tp.in_proj output_sizes in mamba_mixer2.py L328-355
-            # and is pinned at init time with no upstream guard. A vLLM bump
-            # that changes conv_dim or adds an extra output group would
-            # silently mis-size mamba_inproj / mamba_conv_in / mamba_dt.
+            # MambaMixer2.__init__ in mamba_mixer2.py:
+            #   L313: self.conv_dim = intermediate_size + 2*groups_ssm_state_size
+            #   MergedColumnParallelLinear branch (L328-339, n_groups%tp==0):
+            #     output_sizes = [intermediate_size, intermediate_size,
+            #                     groups_ssm_state_size, groups_ssm_state_size,
+            #                     num_heads]
+            #   ColumnParallelLinear branch (L353-358, n_groups%tp!=0):
+            #     output_size = intermediate_size + self.conv_dim + self.num_heads
+            # Both branches sum to 2*intermediate_size + 2*groups_ssm_state_size
+            # + num_heads, mapped here as mamba_int + conv_dim + mamba_num_heads.
+            # A vLLM bump that changes conv_dim or adds an extra output group
+            # would silently mis-size mamba_inproj / mamba_conv_in / mamba_dt.
             if not _checked_inproj:
                 inproj_key = f"{p}.in_proj.weight"
                 if inproj_key in self.weights:
