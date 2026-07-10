@@ -288,10 +288,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         hidden = self.hidden_size
         uq_g = self._uq_for_key(gw_key)
         uq_u = self._uq_for_key(uw_key)
-        gw_base = gw_key.removesuffix(".weight")
-        uw_base = uw_key.removesuffix(".weight")
-        qi_g = self._quant_extra(gw_base, uq_g)
-        qi_u = self._quant_extra(uw_base, uq_u)
+        qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
+        qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
 
         self._dispatch(
             "matmul_quant",

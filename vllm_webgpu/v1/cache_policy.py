@@ -6,8 +6,7 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
-from vllm.v1.kv_cache_interface import (AttentionSpec,
-                                         FullAttentionSpec,
+from vllm.v1.kv_cache_interface import (FullAttentionSpec,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
                                          SlidingWindowSpec,
@@ -75,7 +74,7 @@ def allocate_kv_from_tensors(
         # per-token-head scale bytes that inflate the allocation beyond what
         # the K or V data actually occupies, and also averages head_size and
         # head_size_v instead of allocating each buffer at its correct size.
-        first_name = tensor.shared_by[0] if tensor.shared_by else None
+        first_name = tensor.shared_by[0]
         spec = layer_spec_map.get(first_name)
         if isinstance(spec, MLAAttentionSpec):
             raise NotImplementedError(
@@ -123,21 +122,20 @@ def allocate_kv_from_tensors(
                 f"Unsupported KV cache spec type {type(spec).__name__} for {first_name!r}; "
                 "add an explicit branch to handle it."
             )
-        if first_name is not None:
-            try:
-                idx = extract_layer_index(first_name)
-                layer_kv_bytes[idx] = (k_bytes, v_bytes)
-            except AssertionError as exc:
-                logger.error(
-                    "Cannot parse layer index from KVCacheTensor.shared_by entry %r "
-                    "(spec=%s, k=%d, v=%d bytes lost): %s",
-                    first_name,
-                    type(spec).__name__,
-                    k_bytes,
-                    v_bytes,
-                    exc,
-                )
-                raise
+        try:
+            idx = extract_layer_index(first_name)
+            layer_kv_bytes[idx] = (k_bytes, v_bytes)
+        except AssertionError as exc:
+            logger.error(
+                "Cannot parse layer index from KVCacheTensor.shared_by entry %r "
+                "(spec=%s, k=%d, v=%d bytes lost): %s",
+                first_name,
+                type(spec).__name__,
+                k_bytes,
+                v_bytes,
+                exc,
+            )
+            raise
 
     model.kv_pool.clear()
     total_bytes = 0

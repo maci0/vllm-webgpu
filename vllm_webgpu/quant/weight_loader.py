@@ -284,7 +284,7 @@ def load_safetensors_weights_sharded(
     """
     index_path = _locate_index(Path(model_dir))
     if index_path is None:
-        index_path = Path(model_dir) / SAFETENSORS_INDEX_FILE
+        raise ValueError(f"No safetensors index file found in {model_dir}")
     with open(index_path) as f:
         index = json.load(f)
     weight_map = index.get("weight_map", {})
@@ -922,7 +922,7 @@ def load_safetensors_weights(
                     # threads in split-K read consecutive INT32s (coalesced access).
                     # qz.view(np.int32) reinterprets bytes as signed int32, making the
                     # comparison correct for both int32 and uint32 source arrays (U32 safetensors dtype).
-                    if fmt == "gptq" and g_idx is None and (qz is None or bool(np.all(qz.view(np.int32) == _SYM_ZEROS_INT32))):
+                    if fmt == "gptq" and g_idx is None and (qz is None or np.all(qz.view(np.int32) == _SYM_ZEROS_INT32)):
                         # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
                         K8, N_ = qw.shape
                         group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else (K8 * 8)
@@ -938,7 +938,7 @@ def load_safetensors_weights(
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
                     elif (fmt == "awq" and g_idx is None
-                          and (qz is None or bool(np.all(qz.view(np.int32) == _SYM_ZEROS_INT32)))):
+                          and (qz is None or np.all(qz.view(np.int32) == _SYM_ZEROS_INT32))):
                         # GPU AWQ: either qzeros absent (implicit symmetric, all zero-points = 8)
                         # or qzeros verified all-8 (every nibble equals exactly 8, i.e., zero_point=8).
                         # The shader hardcodes nibble - 8, which only produces 0 when nibble==8.
@@ -1411,7 +1411,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     if weight_map is None:
         index_path = _locate_index(p)
         if index_path is None:
-            index_path = p / SAFETENSORS_INDEX_FILE
+            raise ValueError(f"No safetensors index file found in {model_dir}")
         with open(index_path) as f:
             index = json.load(f)
         weight_map = index.get("weight_map", {})

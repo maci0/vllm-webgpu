@@ -112,10 +112,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.num_kv_heads: int = model_config.num_key_value_heads
         hd = getattr(model_config, "head_dim", None)
         self.head_dim: int = hd if hd is not None else self.hidden_size // self.num_q_heads
-        # MLP parameters (used in '-' layers).
-        # intermediate_size may be a list for heterogeneous (puzzle) configs.
-        _raw_int = model_config.intermediate_size
-
         # Mamba-2 parameters
         self.mamba_num_heads: int = model_config.mamba_num_heads
         self.mamba_head_dim: int = model_config.mamba_head_dim
@@ -258,7 +254,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # logic has not changed.
         _layer_int_sizes: list[int] = []
         _mlp_count = 0
+        self._num_mamba_layers = 0
+        self._num_attn_layers = 0
         for _li, _lt in enumerate(self._layer_types):
+            if _lt == "mamba":
+                self._num_mamba_layers += 1
+            elif _lt == "attention":
+                self._num_attn_layers += 1
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
@@ -299,6 +301,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_count]
                 _layer_int_sizes.append(_isize)
             else:
+                # MLP parameters (used in '-' layers).
+                # intermediate_size may be a list for heterogeneous (puzzle) configs.
+                _raw_int = model_config.intermediate_size
                 if isinstance(_raw_int, list):
                     _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_count]
                 else:
@@ -493,8 +498,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         logger.info(
             "NemotronH: loaded %d weight tensors (%d Mamba layers, %d attn layers)",
             len(self.weights),
-            self._layer_types.count("mamba"),
-            self._layer_types.count("attention"),
+            self._num_mamba_layers,
+            self._num_attn_layers,
         )
 
     def _pack_attn_weights(self) -> None:
@@ -793,13 +798,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements
             # are in the same row-major order in both cases, so no GPU roundtrip needed.
             cw_key = f"{p}.conv1d.weight"
-            if cw_key in self.weights:
-                expected = self.conv_dim * self.conv_kernel
-                actual = math.prod(self.weights[cw_key].shape)
-                if actual != expected:
-                    raise ValueError(
-                        f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"
-                    )
+            if cw_key not in self.weights:
+                raise ValueError(f"{cw_key} missing from loaded weights")
+            expected = self.conv_dim * self.conv_kernel
+            actual = math.prod(self.weights[cw_key].shape)
+            if actual != expected:
+                raise ValueError(
+                    f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"
+                )
 
             # SSM parameters: verify presence and f32 dtype.
             # The mamba2_ssm_step shader binds A, D, and dt_bias as array<f32>;

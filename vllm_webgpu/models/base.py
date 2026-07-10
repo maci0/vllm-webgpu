@@ -9,11 +9,15 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME, CONFIG_NAME
 from vllm.logger import init_logger
-from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-from vllm.model_executor.layers.rotary_embedding import YaRNScalingRotaryEmbedding
+from vllm.model_executor.layers.rotary_embedding.common import (
+    yarn_find_correction_range,
+    yarn_get_mscale,
+    yarn_linear_ramp_mask,
+)
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
@@ -120,19 +124,12 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    # Delegate to vLLM's own implementation to avoid maintaining a manual copy.
-    # object.__new__ bypasses __init__ (which builds the cos/sin cache) so only
-    # the attributes required by _compute_inv_freq need to be set.
-    inst = object.__new__(YaRNScalingRotaryEmbedding)
-    inst.base                    = rope_theta
-    inst.rotary_dim              = rotary_dim
-    inst.beta_fast               = beta_fast
-    inst.beta_slow               = beta_slow
-    inst.max_position_embeddings = orig_ctx
-    inst.truncate                = truncate
-    inst.extrapolation_factor    = extrapolation_factor
-
-    inv_freq = inst._compute_inv_freq(factor)
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    inv_freq_extrap = 1.0 / pos_freqs
+    inv_freq_interp  = 1.0 / (factor * pos_freqs)
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    inv_freq = inv_freq_interp * (1 - mask) + inv_freq_extrap * mask
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)

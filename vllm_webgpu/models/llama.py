@@ -58,8 +58,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # matmul_quant f16 path packs two f16 values per u32; head_dim must be even.
         if self.head_dim % 2 != 0:
             raise ValueError(f"head_dim={self.head_dim} must be even for f16 GEMV")
-        _mml = getattr(model_config, "max_model_len", None)
-        max_ctx = _mml if isinstance(_mml, int) and _mml > 0 else getattr(model_config, "max_position_embeddings", 8192)
+        max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         # Precompute constants that are used every forward pass.
         _vpt = _vals_per_thread(self.hidden_size)
         self._rms_consts: dict = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt}

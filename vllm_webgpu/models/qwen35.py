@@ -93,6 +93,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Q is always at offset 0 (leading element in packed QKV buffer).
         self._gdn_k_base: int = _lin_key_dim
         self._gdn_v_base: int = 2 * _lin_key_dim
+        # conv_dim = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads, which
+        # mirrors gated_delta_net_state_shape's internal formula (mamba_utils.py line 223).
+        # A separate computation is needed here because the shader dispatch constant
+        # CONV_DIM is the raw integer; the shape calculator returns a 2-tuple.
         self._lin_conv_dim: int = 2 * _lin_key_dim + self._lin_val_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
@@ -491,9 +495,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         # GDN linear attention has no KV cache — state is in ssm_gpu/conv_gpu buffers.
         # Offsets into flat QKV buffer (f16 elements), precomputed in __init__.
-        k_base = self._gdn_k_base
-        v_base = self._gdn_v_base
-
         _rms_h = self._rms_consts
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
@@ -501,9 +502,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             cd = self._lin_conv_dim
             vd = self._lin_val_dim
             kh = self._lin_k_heads
-            kd = self._lin_k_dim
             vh = self._lin_v_heads
-            vdh = self._lin_v_dim
 
             # 2. QKV projection: [hidden] → [conv_dim]
             self._gdn_proj(p, "in_proj_qkv", normed_x, sc["qkv_buf"], hidden, cd)
@@ -530,16 +529,16 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                             self.weights[f"{p}.A_log"],
                             self.weights[f"{p}.dt_bias"],
                             self._ssm_gpu[layer_idx], sc["gdn_out"]],
-                           {"K_DIM": kd, "V_DIM": vdh,
+                           {"K_DIM": self._lin_k_dim, "V_DIM": self._lin_v_dim,
                             "NUM_K_HEADS": kh, "NUM_V_HEADS": vh,
-                            "Q_BASE": 0, "K_BASE": k_base, "V_BASE": v_base},
+                            "Q_BASE": 0, "K_BASE": self._gdn_k_base, "V_BASE": self._gdn_v_base},
                            _gemv_wg(vh))
 
             # 7. Per-head RMSNorm + SiLU gate (z * sigmoid(z)) → gated
             self._dispatch("linear_attn_norm_gate",
                            [sc["gdn_out"], self.weights[f"{p}.norm.weight"],
                             sc["z_buf"], sc["gated"]],
-                           {"NUM_V_HEADS": vh, "V_DIM": vdh},
+                           {"NUM_V_HEADS": vh, "V_DIM": self._lin_v_dim},
                            _gemv_wg(vh))
 
             # 8. Output projection: [val_dim] → [hidden]

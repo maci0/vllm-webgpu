@@ -50,6 +50,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                    getattr(model_config, "expert_intermediate_size",
                                                            model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
+        # _apply_v_norm is set by Gemma4WebGPUModel.__init__ via super().__init__() and
+        # is gated on model_type == "gemma4". DiffusionGemma overrides _decoder_layer()
+        # and forward() entirely, applying v_norm unconditionally (lines 452-457) without
+        # consulting this flag. The flag is therefore a no-op for all DiffusionGemma paths.
 
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
@@ -245,9 +249,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
-        ids_buf = pre["ids"]; pos_buf = pre["pos"]
-        slot_map = pre["slot_map"]; bt_buf = pre["bt"]
-        x_buf = pre["x"]; norm_out = pre["norm_out"]; logits_buf = pre["logits"]
+        ids_buf = pre["ids"]
+        pos_buf = pre["pos"]
+        slot_map = pre["slot_map"]
+        bt_buf = pre["bt"]
+        x_buf = pre["x"]
+        norm_out = pre["norm_out"]
+        logits_buf = pre["logits"]
 
         # Manage the command encoder manually so that _decoder_layer can flush
         # and sync mid-layer before reading back MoE router indices. An outer
