@@ -95,6 +95,7 @@ class WebGPUModelRunner:
         self._kv_cache_spec_cache = None
 
     def load_model(self) -> None:
+        self._kv_cache_spec_cache = None
         mc = self.vllm_config.model_config
         arch = (mc.architectures or ["LlamaForCausalLM"])[0]
         hf_config = mc.hf_config
