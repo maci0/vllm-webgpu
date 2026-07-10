@@ -626,10 +626,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if not _checked_inproj:
                 inproj_key = f"{p}.in_proj.weight"
                 if inproj_key in self.weights:
-                    # AWQ stores in_proj.weight as [K, N//8] (not transposed),
-                    # so shape[0] is K = hidden_size, not N = in_proj_dim.
-                    # Only F16 (0) and GPTQ (3) store shape[0] == N.
-                    if self._uq_for_key(inproj_key) not in (0, 3):
+                    # AWQ stores in_proj.weight as [K, N//8]; all other formats
+                    # (F16, GPTQ, FP8, INT8, NF4, NVFP4) store shape[0] == N.
+                    if self._uq_for_key(inproj_key) == 4:  # AWQ: shape[0]=K, not N
                         _checked_inproj = True
                     else:
                         actual_inproj_dim = self.weights[inproj_key].shape[0]
