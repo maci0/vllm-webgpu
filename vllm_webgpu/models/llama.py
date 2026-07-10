@@ -183,8 +183,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # _uq_for_key returns 0 (f16) or 3 (GPTQ int4) for formats supported by
         # matmul_quant_mr4 batch-prefill path. Any other value (AWQ=4, FP8=5,
         # NVFP4=6, INT8=7, NF4=8) falls back to the sequential decode path.
-        self._batch_matmul_supported = all(
-            self._uq_for_key(k) in (0, 3) for k in self.weights if _is_proj(k)
+        # Use bool(proj_keys) so that an architecture with no _proj-named weights
+        # (empty iterator) does not vacuously return True from all().
+        proj_keys = [k for k in self.weights if _is_proj(k)]
+        self._batch_matmul_supported = bool(proj_keys) and all(
+            self._uq_for_key(k) in (0, 3) for k in proj_keys
         )
 
     def _decode_setup(
@@ -250,7 +253,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Always use SPLIT_K=0 (row-per-thread, ceil(vocab/256) WGs) for the LM
         # head: SPLIT_K=1 dispatches (vocab, 1, 1) WGs which exceeds the 65535
         # per-dimension WebGPU limit for large vocabularies (Llama3: 128256,
-        # Qwen2.5/3: 152064). SPLIT_K=0 now supports all quant types (0,1,2,3,4).
+        # Qwen2.5/3: 152064). SPLIT_K=0 supports USE_QUANT values 0 (f16),
+        # 3 (gptq_sym), 4 (awq_sym), 5 (fp8_gpu), 6 (nvfp4_gpu), 7 (int8_gpu),
+        # 8 (nf4_gpu) — the full set that _uq_for_key() can return. Values 1 and
+        # 2 are phantom types that _uq_for_key never produces.
         self._dispatch(
             "matmul_quant",
             [norm_out,

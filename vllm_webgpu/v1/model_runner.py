@@ -656,7 +656,7 @@ class WebGPUModelRunner:
                         "registering state)"
                     )
                 pos = state["pos"]
-                blk_ids = list(state.get("block_ids", []))
+                blk_ids = list(state["block_ids"])
                 num_logprobs = state.get("num_logprobs")
 
                 # Update block table: preempted/resumed requests replace their
@@ -697,7 +697,7 @@ class WebGPUModelRunner:
                 # request beyond the first in a multi-sequence decode batch.
                 if hasattr(self.model, "restore_recurrent_states"):
                     saved_recurrent = state.get("recurrent_states")
-                    rolled_back = rid in resumed_req_ids and pos < state.get("pos", 0)
+                    rolled_back = rid in resumed_req_ids and pos < state["pos"]
                     if not rolled_back and saved_recurrent is not None:
                         self.model.restore_recurrent_states(saved_recurrent)
                     elif hasattr(self.model, "reset_recurrent_states"):

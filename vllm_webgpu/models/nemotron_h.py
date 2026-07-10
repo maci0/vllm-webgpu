@@ -226,6 +226,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Build per-layer intermediate sizes in a single O(num_layers) pass.
         # _mlp_count is a running counter that replaces the O(layer_idx) slice
         # _layer_types[:_li+1].count("mlp") that was used here previously.
+        # VERSION SYNC: this logic mirrors NemotronHMLPDecoderLayer.__init__
+        # lines 280-298 of vllm/model_executor/models/nemotron_h.py. Verify on
+        # each vLLM version bump that the intermediate_size resolution logic has
+        # not changed.
         _layer_int_sizes: list[int] = []
         _mlp_count = 0
         for _li, _lt in enumerate(self._layer_types):
@@ -528,9 +532,27 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # scales[grp * N_total + row], which requires row-interleaved [G, N_total].
                 # For G > 1 (e.g. K=4096, group_size=128 -> G=32) every grp > 0 lookup
                 # would land in the wrong projection's data. Stack on axis=1 on the CPU.
-                q_sb = self.weights[q_s]; q_sc = q_sb.to_numpy().view(np.float32).reshape(q_sb.shape)
-                k_sb = self.weights[k_s]; k_sc = k_sb.to_numpy().view(np.float32).reshape(k_sb.shape)
-                v_sb = self.weights[v_s]; v_sc = v_sb.to_numpy().view(np.float32).reshape(v_sb.shape)
+                # All three scales are read in a single staged command encoder to avoid
+                # three separate GPU-CPU round-trips.
+                import wgpu as _wgpu_lib
+                q_sb = self.weights[q_s]
+                k_sb = self.weights[k_s]
+                v_sb = self.weights[v_s]
+                _q_snb, _k_snb, _v_snb = q_sb.nbytes, k_sb.nbytes, v_sb.nbytes
+                _staging_s = dev.create_buffer(
+                    size=_q_snb + _k_snb + _v_snb,
+                    usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+                _enc_s = dev.create_command_encoder()
+                _enc_s.copy_buffer_to_buffer(q_sb.buf, 0, _staging_s, 0, _q_snb)
+                _enc_s.copy_buffer_to_buffer(k_sb.buf, 0, _staging_s, _q_snb, _k_snb)
+                _enc_s.copy_buffer_to_buffer(v_sb.buf, 0, _staging_s, _q_snb + _k_snb, _v_snb)
+                dev.queue.submit([_enc_s.finish()])
+                _staging_s.map_sync(mode=_wgpu_lib.MapMode.READ)
+                _raw_s = bytes(_staging_s.read_mapped())
+                _staging_s.unmap()
+                q_sc = np.frombuffer(_raw_s[:_q_snb], dtype=np.float32).reshape(q_sb.shape)
+                k_sc = np.frombuffer(_raw_s[_q_snb:_q_snb + _k_snb], dtype=np.float32).reshape(k_sb.shape)
+                v_sc = np.frombuffer(_raw_s[_q_snb + _k_snb:], dtype=np.float32).reshape(v_sb.shape)
                 if q_sc.ndim == 2:
                     # [G, N] layout: concatenate along N axis to get [G, N_total].
                     packed_sc = np.concatenate([q_sc, k_sc, v_sc], axis=1)

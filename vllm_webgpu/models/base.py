@@ -110,6 +110,9 @@ def compute_yarn_freqs(
     # calling a private vLLM method (which would break on any internal refactor).
     # The public helpers yarn_find_correction_range and yarn_linear_ramp_mask
     # are imported from vllm.model_executor.layers.rotary_embedding.common above.
+    # VERSION SYNC: on each vLLM version bump, verify this formula against
+    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
+    # (specifically _compute_inv_freq) and update tests/test_yarn_freqs.py.
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
@@ -330,8 +333,7 @@ class BaseWebGPUModel(ABC):
             # the loader, eliminating the redundant second parse in load_safetensors_weights.
             _cfg_json = (p if p.is_dir() else p.parent) / "config.json"
             _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
-            if p.is_dir():
-                _check_unsupported_quant(p, quant_cfg=_quant_cfg)
+            _check_unsupported_quant(p if p.is_dir() else p.parent, quant_cfg=_quant_cfg)
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,

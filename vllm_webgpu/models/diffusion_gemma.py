@@ -151,6 +151,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "v_normed":   mk(T * max_kv_dim * 2),
             "q_rope":     mk(T * max_q_dim * 2),
             "k_rope":     mk(T * max_kv_dim * 2),
+            # scores_buf and sm_buf are DiffusionGemma-specific: the parent
+            # Gemma4WebGPUModel does not allocate them. _decoder_layer uses
+            # them for per-token attention score and softmax scratch space.
             "scores_buf": mk(NQ * max_ctx * 2),
             "sm_buf":     mk(NQ * max_ctx * 2),
             "attn_out":   mk(T * max_q_dim * 2),

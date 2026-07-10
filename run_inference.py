@@ -69,7 +69,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print(f"  Loaded {sum(not k.startswith('__') for k in model.weights)} tensors in {time.perf_counter() - t0:.1f}s")
 
     # KV cache
-    from vllm_webgpu.v1.cache_policy import allocate_kv_from_hf_config
+    from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
     max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
     num_blocks = min(math.ceil(max_ctx / block_size) + 4, 4096)
 

@@ -243,13 +243,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         for correctly split fp16 weights.
         """
         self._rms_consts["GEMMA_NORM"] = self._gemma_norm
-        # Cache once so _attn_block does not rebuild this dict every token.
-        self._rope_base = {
-            **self._rope_consts,
-            "GEMMA_NORM": self._gemma_norm,
-            "ROTARY_DIM": self._rotary_dim,
-            "INTERLEAVED": self._rope_interleaved,
-        }
+        # Only GEMMA_NORM changes post-load; _rope_consts, _rotary_dim, and
+        # _rope_interleaved are set in __init__ and never mutated afterward.
+        # Update in place rather than rebuilding the entire dict.
+        self._rope_base["GEMMA_NORM"] = self._gemma_norm
 
         if self._attn_output_gate:
             q_dim = self.num_q_heads * self.head_dim

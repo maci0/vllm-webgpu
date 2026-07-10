@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -58,8 +58,14 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
 try:
     from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
+    from compressed_tensors import QuantizationConfig as _QuantizationConfig
+    from compressed_tensors.quantization import QuantizationType as _QuantizationType
+    from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
 except ImportError:
     _ct_get_quant_cfg = None
+    _QuantizationConfig = None
+    _QuantizationType = None
+    _QuantizationStrategy = None
 
 
 
@@ -405,20 +411,20 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
         quant_cfg = _load_quant_cfg(p)
     if not quant_cfg.get("config_groups"):
         return {}
+    if _QuantizationConfig is None:
+        return {}
     try:
-        from compressed_tensors import QuantizationConfig
-        from compressed_tensors.quantization import QuantizationType, QuantizationStrategy
-        cfg = QuantizationConfig.model_validate(quant_cfg)
+        cfg = _QuantizationConfig.model_validate(quant_cfg)
         w_args = next((s.weights for s in cfg.config_groups.values() if s.weights), None)
     except Exception:
         return {}
     if w_args is None:
         return {}
-    if w_args.num_bits == 8 and w_args.type == QuantizationType.INT and w_args.strategy == QuantizationStrategy.CHANNEL:
+    if w_args.num_bits == 8 and w_args.type == _QuantizationType.INT and w_args.strategy == _QuantizationStrategy.CHANNEL:
         return {"__global__": {"fmt": "int8_gpu", "group_size": None}}
-    if w_args.num_bits == 8 and w_args.type == QuantizationType.FLOAT and w_args.strategy in (QuantizationStrategy.TENSOR, QuantizationStrategy.CHANNEL):
+    if w_args.num_bits == 8 and w_args.type == _QuantizationType.FLOAT and w_args.strategy in (_QuantizationStrategy.TENSOR, _QuantizationStrategy.CHANNEL):
         return {"__global__": {"fmt": "fp8_gpu", "group_size": None}}
-    if w_args.num_bits == 4 and w_args.type == QuantizationType.INT and w_args.strategy == QuantizationStrategy.GROUP:
+    if w_args.num_bits == 4 and w_args.type == _QuantizationType.INT and w_args.strategy == _QuantizationStrategy.GROUP:
         return {"__global__": {"fmt": "gptq_gpu", "group_size": w_args.group_size or 128}}
     logger.warning(
         "compressed-tensors: unsupported format (num_bits=%d, type=%s, strategy=%s), "
@@ -429,11 +435,11 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
 def _find_u8_u8_bases(header: dict) -> list[str]:
     """Return sorted base names where both .weight and .weight_scale have dtype U8."""
     return sorted(
-        k.removesuffix(".weight")
+        base
         for k in header
-        if k.endswith(".weight")
-        and header[k].get("dtype") == "U8"
-        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+        if k.endswith(".weight") and header[k].get("dtype") == "U8"
+        for base in (k.removesuffix(".weight"),)
+        if header.get(base + ".weight_scale", {}).get("dtype") == "U8"
     )
 
 
@@ -512,7 +518,13 @@ def load_safetensors_weights(
             if k.endswith(".qweight"):
                 has_qweight = True
             if k.endswith(".weight_packed") and dtype == "U8":
-                has_wp = True  # standard NVFP4
+                has_wp = True  # standard NVFP4 (U8 dtype)
+                # NOTE: a checkpoint with both a U8 .weight_packed (NVFP4) and an I32
+                # .weight (CT pack-int4) would set both has_wp and _ct_has_i32_weight.
+                # The cascade below picks fmt='nvfp4' and silently ignores CT INT4 layers.
+                # All currently supported checkpoints are single-format; if multi-format
+                # support is needed, detection must be per-layer (same caveat as the
+                # detect_compressed_tensors_fmt docstring at the top of this file).
             if k.endswith(".weight"):
                 base = k.removesuffix(".weight")
                 if dtype == "U8" and base + ".weight_scale" in header:
@@ -647,12 +659,17 @@ def load_safetensors_weights(
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
                                          shape=tuple(arr.shape), dtype="u8")
 
-        def _upload(arr: np.ndarray, np_dtype, wgpu_dtype: str, name: str, weights: dict) -> None:
+        def _upload(arr: np.ndarray, np_dtype, wgpu_dtype: str, name: str, weights: dict,
+                    logical_shape: "tuple | None" = None) -> None:
             """Upload an array to GPU after casting to np_dtype.
 
             Scales are stored as f32 to avoid silent precision loss for values outside
             the f16 representable range (> 65504 or < ~6e-8). Both matmul_quant and
             matmul_quant_mr4 declare the scales binding as array<f32>.
+
+            logical_shape: when set, the WebGPUBuffer is tagged with this shape instead
+            of arr.shape. Use when uploading a packed representation (e.g. u16 pairs
+            stored as u32) but the shader expects the original element shape.
             """
             nonlocal _pending_bytes
             arr = np.ascontiguousarray(arr, dtype=np_dtype)
@@ -662,7 +679,8 @@ def load_safetensors_weights(
             _pending_bytes += len(data)
             _maybe_flush()
             weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                         shape=tuple(arr.shape), dtype=wgpu_dtype)
+                                         shape=tuple(logical_shape if logical_shape is not None else arr.shape),
+                                         dtype=wgpu_dtype)
 
         weights: dict = {}
 
@@ -761,6 +779,8 @@ def load_safetensors_weights(
                 # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
                 # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
                 # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
+                # logical_shape=arr.shape tags the buffer with the original f16 element
+                # shape even though the underlying storage is u32 (packed u16 pairs).
                 u16 = t_bf16.view(torch.int16).numpy().view(np.uint16)
                 if u16.shape != arr.shape:
                     u16 = u16.reshape(arr.shape)
@@ -768,21 +788,9 @@ def load_safetensors_weights(
                 if u16_flat.size % 2 != 0:
                     u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
                 arr_u32 = u16_flat.view(np.uint32)
-                data_u32 = _pad4(arr_u32.tobytes())
-                buf_bf16 = wgpu_device.create_buffer(size=len(data_u32), usage=usage)
-                wgpu_device.queue.write_buffer(buf_bf16, 0, data_u32)
-                _pending_bytes += len(data_u32)
-                _maybe_flush()
-                weights[name + "__bf16"] = WebGPUBuffer(buf=buf_bf16, device=wgpu_device,
-                                                        shape=tuple(arr.shape), dtype="u32")
-            arr = np.ascontiguousarray(arr)
-            data = _pad4(arr.tobytes())
-            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-            wgpu_device.queue.write_buffer(buf, 0, data)
-            _pending_bytes += len(data)
-            _maybe_flush()
-            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                         shape=tuple(arr.shape), dtype="f16")
+                _upload(arr_u32, np.uint32, "u32", name + "__bf16", weights,
+                        logical_shape=arr.shape)
+            _upload(arr, np.float16, "f16", name, weights)
             return True
 
         if fmt in ("awq", "gptq"):
