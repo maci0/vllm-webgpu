@@ -106,7 +106,10 @@ class WebGPUWorker(WorkerBase):
         return self.model_runner.sample_tokens(grammar_output)
 
     def get_model(self) -> Any:
-        return self.model_runner.model
+        raise NotImplementedError(
+            "WebGPU models are not nn.Module instances; "
+            "use model_runner.model directly."
+        )
 
     def apply_model(self, fn: Any) -> Any:
         raise NotImplementedError(
