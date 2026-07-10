@@ -134,7 +134,12 @@ def _apply_multimodal_remap(weights: dict) -> int:
 def detect_weight_format(path: str) -> str:
     p = Path(path)
     if p.is_dir():
-        if (p / _SAFE_WEIGHTS_INDEX_NAME).exists():
+        try:
+            from compressed_tensors.utils.safetensors_load import find_safetensors_index_path
+            _index_found = find_safetensors_index_path(str(p)) is not None
+        except Exception:
+            _index_found = (p / _SAFE_WEIGHTS_INDEX_NAME).exists()
+        if _index_found:
             # MLX vs standard sharded detection is deferred to the loader,
             # which already reads the index and can check for .biases keys.
             return "safetensors_sharded"
@@ -171,7 +176,12 @@ def load_safetensors_weights_sharded(
     This avoids parsing the index twice (detect_weight_format returns 'safetensors_sharded'
     for both formats and lets this function distinguish them using the already-loaded index).
     """
-    index_path = Path(model_dir) / _SAFE_WEIGHTS_INDEX_NAME
+    try:
+        from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _find_index
+        _found = _find_index(model_dir)
+    except Exception:
+        _found = None
+    index_path = Path(_found) if _found else Path(model_dir) / _SAFE_WEIGHTS_INDEX_NAME
     with open(index_path) as f:
         index = json.load(f)
     weight_map = index.get("weight_map", {})
