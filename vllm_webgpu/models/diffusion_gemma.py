@@ -65,7 +65,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 f"moe_intermediate_size={self.moe_intermediate_size} must be divisible by 4 "
                 f"for vec4<f16> shaders"
             )
-        self.is_moe: bool = self.num_experts > 0
+        self.is_moe: bool = (
+            getattr(model_config, "enable_moe_block", False)
+            or getattr(model_config, "use_second_mlp_block", False)
+        )
 
         if self.is_moe:
             # _pes_cache is populated by load_weights(); initialize here so that
