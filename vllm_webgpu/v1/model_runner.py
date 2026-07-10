@@ -375,24 +375,22 @@ class WebGPUModelRunner:
 
         # Build LogprobsLists for top-k sampled-token logprob entries.
         # Stack only non-None entries (one row per logprob-having request).
-        # cu_num_generated_tokens acts as a row-start index per request:
-        # it advances for each request that has logprobs, stays flat for
-        # those that don't. The downstream scheduler only reads logprobs
-        # for requests that asked for them, so non-logprob rows are safe to omit.
+        # cu_num_generated_tokens maps req_index -> row in the stacked tensor;
+        # only requests with logprobs are included. The scheduler already guards
+        # slice_request with `num_logprobs is not None`, so missing keys are
+        # never accessed. Requests without logprobs are excluded entirely,
+        # keeping all mapped values non-negative and the contract clean.
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
             max_k = max(d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None)
             pieces = []
-            cu = []   # cumulative row count, one entry per request; -1 sentinel for requests without logprobs
+            cu: dict[int, int] = {}  # req_index -> row in stacked tensor
             row = 0
-            for d in logprobs_data:
+            for i, d in enumerate(logprobs_data):
                 if d is not None:
-                    cu.append(row)
-                else:
-                    cu.append(-1)  # sentinel: slice_request must not be called for this request
-                if d is not None:
+                    cu[i] = row
                     pad = max_k - d.logprob_token_ids.shape[1]
                     pieces.append(LogprobsTensors(
                         _fpad(d.logprob_token_ids, (0, pad), value=0),
