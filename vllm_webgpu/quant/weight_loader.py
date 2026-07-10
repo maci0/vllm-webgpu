@@ -446,12 +446,11 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
 def _find_u8_u8_bases(header: dict) -> list[str]:
     """Return sorted base names where both .weight and .weight_scale have dtype U8."""
     return sorted(
-        base
+        k.removesuffix(".weight")
         for k in header
         if k.endswith(".weight")
-        for base in (k.removesuffix(".weight"),)
-        if header[k].get("dtype") == "U8"
-        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
+        and header[k].get("dtype") == "U8"
+        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
     )
 
 
@@ -726,7 +725,8 @@ def load_safetensors_weights(
             # F16, silently discarding 13 mantissa bits. Shaders that declare these
             # bindings as array<f32> need the full-precision values.
             if f32_keys and name in f32_keys and dtype_str in ("F32", "BF16", "F16"):
-                arr_f32 = np.ascontiguousarray(_load_raw(name).astype(np.float32))
+                arr_raw = _load_raw(name)
+                arr_f32 = np.ascontiguousarray(arr_raw if arr_raw.dtype == np.float32 else arr_raw.astype(np.float32))
                 if weight_transforms and name in weight_transforms:
                     arr_f32 = weight_transforms[name](arr_f32)
                 _upload(arr_f32, np.float32, 'f32', name, weights)
@@ -1358,11 +1358,6 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
         with open(index_path) as f:
             index = json.load(f)
         weight_map = index.get("weight_map", {})
-
-    if group_size == 0:
-        with open(p / "config.json") as f:
-            _raw_cfg = json.load(f)
-        group_size = int(_raw_cfg.get("quantization", {}).get("group_size", 64) or 64)
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
     key_to_shard: dict[str, str] = {k: str(p / v) for k, v in weight_map.items()}

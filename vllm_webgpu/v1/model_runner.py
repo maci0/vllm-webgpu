@@ -223,7 +223,7 @@ class WebGPUModelRunner:
 
     def get_cache_block_size_bytes(self) -> int:
         specs = self.get_kv_cache_spec()
-        return max((s.page_size_bytes for s in specs.values()), default=0)
+        return sum((s.page_size_bytes for s in specs.values()), 0)
 
     def warm_up(self) -> None:
         if self.model is not None:

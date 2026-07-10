@@ -350,11 +350,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         sc_buf = self._scales_buf(wk, uq, self._dummy_scales_buf)
         base = wk.removesuffix(".weight")
         if num_tokens > 1 and uq in (0, 3):
-            _ex: dict = {"K": K, "N": N, "M": num_tokens, "USE_QUANT": uq}
-            _ex.update(self._quant_extra(base, uq))
             self._dispatch("matmul_quant_mr4",
                            [src, self.weights[wk], sc_buf, out_b],
-                           _ex, (N, num_tokens, 1))
+                           {"K": K, "N": N, "M": num_tokens, "USE_QUANT": uq, **self._quant_extra(base, uq)},
+                           (N, num_tokens, 1))
         else:
             if num_tokens > 1:
                 raise RuntimeError(
@@ -644,12 +643,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 _rw_sc = self._scales_buf(rw_, uq_rw, self._dummy_scales_buf)
                 if num_tokens > 1 and uq_rw in (0, 3):
                     # Batched router projection: [T, hidden] x [num_experts, hidden]^T -> [T, E]
-                    _rw_extra: dict = {"K": hidden, "N": self.num_experts,
-                                       "M": num_tokens, "USE_QUANT": uq_rw}
-                    _rw_extra.update(self._quant_extra(rw_.removesuffix(".weight"), uq_rw))
                     self._dispatch("matmul_quant_mr4",
                                    [router_in, self.weights[rw_], _rw_sc, router_logits_buf],
-                                   _rw_extra,
+                                   {"K": hidden, "N": self.num_experts, "M": num_tokens,
+                                    "USE_QUANT": uq_rw,
+                                    **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},
                                    (self.num_experts, num_tokens, 1))
                 else:
                     if num_tokens > 1:
@@ -755,12 +753,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                             (sc["up_buf"],   f"{ep}.up_proj.weight",   uq_u),
                         ]:
                             _sc_e = self._scales_buf(ew_key, uq, self._dummy_scales_buf)
-                            _ex_e: dict = {"K": hidden, "N": inter_moe,
-                                           "M": num_tokens, "USE_QUANT": uq}
-                            _ex_e.update(self._quant_extra(ew_key.removesuffix(".weight"), uq))
                             self._dispatch("matmul_quant_mr4",
                                            [moe_in, self.weights[ew_key], _sc_e, ob],
-                                           _ex_e,
+                                           {"K": hidden, "N": inter_moe, "M": num_tokens,
+                                            "USE_QUANT": uq,
+                                            **self._quant_extra(ew_key.removesuffix(".weight"), uq)},
                                            (inter_moe, num_tokens, 1))
                         self._dispatch("gelu_mul",
                                        [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
@@ -769,12 +766,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        shader_subdir="gemma")
                         # down: [T, inter_moe] x [hidden, inter_moe]^T -> [T, hidden]
                         _sc_dk = self._scales_buf(dk, uq_dk, self._dummy_scales_buf)
-                        _ex_dk: dict = {"K": inter_moe, "N": hidden,
-                                        "M": num_tokens, "USE_QUANT": uq_dk}
-                        _ex_dk.update(self._quant_extra(dk.removesuffix(".weight"), uq_dk))
                         self._dispatch("matmul_quant_mr4",
                                        [sc["ffn_act"], self.weights[dk], _sc_dk, sc["ffn_out"]],
-                                       _ex_dk,
+                                       {"K": inter_moe, "N": hidden, "M": num_tokens,
+                                        "USE_QUANT": uq_dk,
+                                        **self._quant_extra(dk.removesuffix(".weight"), uq_dk)},
                                        (hidden, num_tokens, 1))
                         # Per-token weighted accumulate: moe_acc[t*H+j] += w[t] * ffn_out[t*H+j]
                         # EXPERT_SLOT selects row expert_slot from packed_w[num_unique, T].

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -136,6 +137,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Conv state: [CONV_KERNEL-1, CONV_DIM] f16 = 49KB per linear-attn layer
         self._ssm_gpu: list = []   # one WebGPUBuffer per layer (or None for full-attn)
         self._conv_gpu: list = []  # one WebGPUBuffer per layer
+        # Reusable zero-byte buffers for reset_recurrent_states, keyed by size.
+        # Avoids repeated allocation of the same zero buffer on every sequence reset.
+        self._zero_buf_cache: dict[int, bytearray] = {}
 
         # LlamaWebGPUModel.__init__() sets: num_layers, num_q_heads, num_kv_heads,
         # hidden_size, intermediate_size, vocab_size, head_dim, rope_theta, block_size,
@@ -263,8 +267,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     # For GPTQ: shape is (2*q_dim, hidden//8), total = 2*q_dim*hidden//8.
                     # shape[0] == 2*q_dim only catches fp16 and GPTQ (not AWQ) on larger
                     # variants where hidden != 2*q_dim. Use total element count instead.
-                    fp16_unsplit  = np.prod(buf.shape) == 2 * q_dim * hidden
-                    quant_unsplit = np.prod(buf.shape) == 2 * q_dim * (hidden // 8)
+                    fp16_unsplit  = math.prod(buf.shape) == 2 * q_dim * hidden
+                    quant_unsplit = math.prod(buf.shape) == 2 * q_dim * (hidden // 8)
                     if fp16_unsplit or quant_unsplit:
                         raise ValueError(
                             f"Layer {i}: q_gate_proj.weight is missing but "
@@ -295,8 +299,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         conv_shape, ssm_shape = self._lin_conv_shape, self._lin_ssm_shape
         # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, V_DIM, K_DIM] f32,
         # matching vLLM's gated_delta_net_state_shape convention.
-        conv_bytes = np.prod(conv_shape) * _ELEM_BYTES["f16"]
-        ssm_bytes  = np.prod(ssm_shape)  * _ELEM_BYTES["f32"]
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers
@@ -394,7 +398,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         for buf in self._ssm_gpu + self._conv_gpu:
             if buf is not None:
-                dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
+                zeros = self._zero_buf_cache.setdefault(buf.nbytes, bytearray(buf.nbytes))
+                dev.queue.write_buffer(buf.buf, 0, zeros)
 
     def save_recurrent_states(self) -> dict:
         """Snapshot all GDN conv/SSM state buffers to CPU in one GPU readback.

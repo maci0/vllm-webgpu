@@ -111,6 +111,20 @@ class WebGPUWorker(WorkerBase):
     ) -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         return self.model_runner.sample_tokens(grammar_output)
 
+    def reset_mm_cache(self) -> None:
+        # WebGPU has no multimodal cache; no-op.
+        pass
+
+    def apply_model(self, fn: Any) -> Any:
+        raise NotImplementedError(
+            "WebGPU models are not nn.Module instances; apply_model is not supported."
+        )
+
+    def get_model_inspection(self) -> str:
+        raise NotImplementedError(
+            "WebGPU models are not nn.Module instances; model inspection is not supported."
+        )
+
     def get_model(self) -> Any:
         raise NotImplementedError(
             "WebGPU models are not nn.Module instances; "

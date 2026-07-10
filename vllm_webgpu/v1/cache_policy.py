@@ -96,11 +96,11 @@ def allocate_kv_from_tensors(
             v_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size_v * dtype_bytes
             if k_bytes + v_bytes != spec.real_page_size_bytes * num_blocks:
                 logger.warning(
-                    "Spec-derived K+V (%d B) does not match spec.real_page_size_bytes*num_blocks (%d B) "
-                    "(layer %r); allocating separate K (%d B) and V (%d B) buffers "
-                    "-- overhead bytes (per-token-head scales) are not "
-                    "accessible to WebGPU shaders.",
-                    k_bytes + v_bytes, spec.real_page_size_bytes * num_blocks, first_name, k_bytes, v_bytes,
+                    "Spec-derived K (%d B) + V (%d B) does not match real_page_size_bytes*num_blocks (%d B) "
+                    "for layer %r; head_size=%d differs from head_size_v=%d "
+                    "-- allocating buffers independently.",
+                    k_bytes, v_bytes, spec.real_page_size_bytes * num_blocks, first_name,
+                    spec.head_size, spec.head_size_v,
                 )
         elif isinstance(spec, SlidingWindowMLASpec):
             raise NotImplementedError(

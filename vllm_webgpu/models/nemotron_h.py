@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
@@ -175,8 +175,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        # conv_dim: intermediate_size + 2 * n_groups * ssm_state_size (mamba_mixer2.py L313, tp=1)
-        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
+        # conv_dim is already embedded in _mamba_conv_shape by mamba2_state_shape; extract
+        # it using is_conv_state_dim_first() to select the correct axis (DS vs SD layout).
+        self.conv_dim: int = self._mamba_conv_shape[0] if is_conv_state_dim_first() else self._mamba_conv_shape[1]
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
