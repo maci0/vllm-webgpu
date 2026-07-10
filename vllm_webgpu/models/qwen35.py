@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
+from vllm.model_executor.layers.mamba.mamba_utils import (
+    MambaStateShapeCalculator,
+    is_conv_state_dim_first,
+)
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -296,6 +299,17 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # axis layout. gated_delta_net_state_shape may return (conv_dim, kernel-1) or
         # (kernel-1, conv_dim) depending on VLLM_SSM_CONV_STATE_LAYOUT, but both
         # orderings produce the same product, so the buffer size is correct regardless.
+        #
+        # Guard against vLLM changing the GDN conv_dim formula. The shader dispatch
+        # constant CONV_DIM is computed from the model config at init time; if vLLM's
+        # shape calculator diverges from that formula the buffer and the shader constant
+        # would silently disagree, corrupting every GDN layer. Catch it here at load
+        # time instead.
+        _derived_conv_dim = conv_shape[0] if is_conv_state_dim_first() else conv_shape[1]
+        assert _derived_conv_dim == self._lin_conv_dim, (
+            f"conv_dim mismatch: shape gave {_derived_conv_dim}, "
+            f"init computed {self._lin_conv_dim}"
+        )
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 
