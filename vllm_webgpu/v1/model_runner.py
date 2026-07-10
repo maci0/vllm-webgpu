@@ -398,8 +398,9 @@ class WebGPUModelRunner:
                 torch.cat([p.logprob_token_ids for p in pieces]),
                 torch.cat([p.logprobs for p in pieces]),
                 torch.cat([p.selected_token_ranks for p in pieces]),
+                cu,
             )
-            built_logprobs = stacked.tolists(cu_num_generated_tokens=cu)
+            built_logprobs = stacked.tolists()
 
         out = ModelRunnerOutput(
             req_ids=req_ids,
