@@ -125,10 +125,11 @@ def allocate_kv_from_tensors(
                 k_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size * dtype_bytes
                 v_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size_v * dtype_bytes
             else:
+                dtype_bytes = get_dtype_size(spec.dtype)
+                k_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size * dtype_bytes
+                v_bytes = k_bytes
                 naive = tensor.size // 2
-                half = spec.real_page_size_bytes * num_blocks // 2
-                k_bytes = half
-                v_bytes = half
+                half = k_bytes
                 if half != naive:
                     logger.warning(
                         "KV tensor size contains non-data bytes (per-token-head scale "

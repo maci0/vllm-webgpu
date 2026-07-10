@@ -97,7 +97,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
+        self._lin_conv_dim: int = (
+            self._lin_conv_shape[0] if is_conv_state_dim_first() else self._lin_conv_shape[1]
+        )
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
@@ -236,16 +238,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         never created.  This method detects that case and raises a clear error rather
         than letting the gate be silently bypassed at inference time.
 
-        Note: q_norm/k_norm tiling and GEMMA_NORM detection are handled at load time
-        via _weight_transforms for all checkpoint formats. No GPU readback happens here
-        for correctly split fp16 weights.
+        Note: q_norm/k_norm tiling is handled at load time via _weight_transforms for
+        all checkpoint formats. No GPU readback happens here for correctly split fp16 weights.
         """
-        self._rms_consts["GEMMA_NORM"] = self._gemma_norm
-        # Only GEMMA_NORM changes post-load; _rope_consts, _rotary_dim, and
-        # _rope_interleaved are set in __init__ and never mutated afterward.
-        # Update in place rather than rebuilding the entire dict.
-        self._rope_base["GEMMA_NORM"] = self._gemma_norm
-
         if self._attn_output_gate:
             q_dim = self.num_q_heads * self.head_dim
             for i in range(self.num_layers):

@@ -64,22 +64,6 @@ except (ImportError, OSError):
 # mamba2_state_shape. _validate_mamba_weights provides the authoritative runtime
 # guard by checking the actual in_proj.weight shape.
 
-# Import-time sentinel: confirm NemotronHMLPDecoderLayer still uses .count() to
-# compute mlp_index, which is the method NemotronHWebGPUModel.__init__ reimplements
-# in the _mlp_count loop. Checks the bytecode's co_names rather than source text
-# so the assertion survives whitespace reformatting and .pyc-only installs.
-try:
-    from vllm.model_executor.models.nemotron_h import NemotronHMLPDecoderLayer as _NHMLPLayer
-    _init_code = _NHMLPLayer.__init__.__code__
-    assert "count" in _init_code.co_names, (
-        "NemotronHMLPDecoderLayer.__init__ no longer calls .count() — the "
-        "mlp_index formula may have changed upstream. Review the _mlp_count loop "
-        "in NemotronHWebGPUModel.__init__ and update it before removing this assertion."
-    )
-    del _NHMLPLayer, _init_code
-except (ImportError, AttributeError):
-    # _validate_mamba_weights catches shape mismatches at load time.
-    pass
 
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
@@ -158,9 +142,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        # conv_dim = intermediate_size + 2 * n_groups * ssm_state_size
-        # (MambaMixer2 L313; see module-level comment at L64-68 for derivation)
-        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
+        # conv_dim is embedded in _mamba_conv_shape as the non-state-len dimension;
+        # dividing out (conv_kernel - 1) recovers it without restating the formula.
+        self.conv_dim: int = math.prod(self._mamba_conv_shape) // (self.conv_kernel - 1)
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353

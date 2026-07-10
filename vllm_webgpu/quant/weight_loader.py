@@ -21,7 +21,8 @@ _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
-_SYM_ZEROS_INT32: int = int(np.array(0x88888888, dtype=np.uint32).view(np.int32))  # all nibbles = 8
+import struct as _struct
+_SYM_ZEROS_INT32: int = _struct.unpack('<i', b'\x88\x88\x88\x88')[0]  # all nibbles = 8, bit pattern 0x88888888
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -486,11 +487,11 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
 def _find_u8_u8_bases(header: dict) -> list[str]:
     """Return sorted base names where both .weight and .weight_scale have dtype U8."""
     return sorted(
-        base
+        k.removesuffix(".weight")
         for k in header
-        if k.endswith(".weight") and header[k].get("dtype") == "U8"
-        for base in (k.removesuffix(".weight"),)
-        if header.get(base + ".weight_scale", {}).get("dtype") == "U8"
+        if k.endswith(".weight")
+        and header[k].get("dtype") == "U8"
+        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
     )
 
 
@@ -827,7 +828,7 @@ def load_safetensors_weights(
                 # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
                 # logical_shape=arr.shape tags the buffer with the original f16 element
                 # shape even though the underlying storage is u32 (packed u16 pairs).
-                u16 = t_bf16.view(torch.int16).numpy().view(np.uint16)
+                u16 = t_bf16.view(torch.uint16).numpy()
                 if u16.shape != arr.shape:
                     u16 = u16.reshape(arr.shape)
                 u16_flat = np.ascontiguousarray(u16.ravel())
