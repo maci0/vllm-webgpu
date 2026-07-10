@@ -29,6 +29,20 @@ _F16_MAX: float = np.finfo(np.float16).max
 _SYM_ZEROS_INT32: int = -2004318072  # 0x88888888 as int32: all eight nibbles = 8, the AutoGPTQ symmetric zero-point sentinel
 
 
+def _locate_index(directory: "Path") -> "Path | None":
+    """Return the safetensors index path for a directory, or None if absent.
+
+    Tries compressed_tensors' find_safetensors_index_path when available (handles
+    non-standard index filenames), then falls back to the standard
+    model.safetensors.index.json path. Returns None when neither is found.
+    """
+    if _ct_find_index is not None:
+        found = _ct_find_index(str(directory))
+        return Path(found) if found else None
+    fallback = directory / SAFETENSORS_INDEX_FILE
+    return fallback if fallback.exists() else None
+
+
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     """Convert a BF16, F32, or F16 torch tensor to a float16 numpy array."""
     import torch as _torch
@@ -175,13 +189,9 @@ def _apply_multimodal_remap(weights: dict) -> int:
     causes Metal memory corruption on adjacent embeddings).
     Returns the number of keys added.
     """
-    remapped = {}
-    for k, v in weights.items():
-        if k.startswith("model.language_model."):
-            remapped["model." + k.removeprefix("model.language_model.")] = v
-        elif k.startswith("language_model."):
-            remapped[k.removeprefix("language_model.")] = v
-    weights.update(remapped)
+    before = len(weights)
+    _remap_prefixes(weights)
+    n_remapped = len(weights) - before
 
     # Remap quant_meta keys with the same prefix rules so _uq_for_key
     # resolves the correct fmt after weight-key remapping. Without this,
@@ -189,25 +199,48 @@ def _apply_multimodal_remap(weights: dict) -> int:
     # key no longer matches the original prefixed base key stored at shard time.
     qmeta = weights.get("__quant_meta__")
     if qmeta:
-        remapped_meta = {}
-        for k, v in qmeta.items():
-            if k.startswith("model.language_model."):
-                remapped_meta["model." + k.removeprefix("model.language_model.")] = v
-            elif k.startswith("language_model."):
-                remapped_meta[k.removeprefix("language_model.")] = v
-        qmeta.update(remapped_meta)
+        _remap_prefixes(qmeta)
 
-    return len(remapped)
+    return n_remapped
+
+
+def _remap_prefixes(d: dict) -> None:
+    """Remap multimodal weight-key prefixes in-place.
+
+    Handles two prefix conventions used by multimodal checkpoints:
+      - Gemma3 MM: 'language_model.X' → 'X'
+      - Qwen3.5 MM: 'model.language_model.X' → 'model.X'
+    Adds remapped keys without removing originals.
+    """
+    remapped = {}
+    for k, v in d.items():
+        if k.startswith("model.language_model."):
+            remapped["model." + k.removeprefix("model.language_model.")] = v
+        elif k.startswith("language_model."):
+            remapped[k.removeprefix("language_model.")] = v
+    d.update(remapped)
+
+
+def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("F8_E4M3", "U8", "I32")):
+    """Upload all tensors in header that are not part of the quantized set.
+
+    Skips names in `reserved` (the quantized-weight keys) and `i8_skip` (int8
+    companion keys). For tensors that _upload_plain cannot handle, warns unless
+    the dtype is in `allowed_special` (known dtypes that are intentionally skipped).
+    """
+    for name in header:
+        if name in reserved or name in i8_skip:
+            continue
+        if not upload_fn(name):
+            dt = header[name].get("dtype", "?")
+            if dt not in allowed_special:
+                logger.warning("Skipping %s (dtype=%s)", name, dt)
 
 
 def detect_weight_format(path: str) -> str:
     p = Path(path)
     if p.is_dir():
-        if _ct_find_index is not None:
-            _index_found = _ct_find_index(str(p)) is not None
-        else:
-            _index_found = (p / SAFETENSORS_INDEX_FILE).exists()
-        if _index_found:
+        if _locate_index(p) is not None:
             # MLX vs standard sharded detection is deferred to the loader,
             # which already reads the index and can check for .biases keys.
             return "safetensors_sharded"
@@ -249,11 +282,9 @@ def load_safetensors_weights_sharded(
     This avoids parsing the index twice (detect_weight_format returns 'safetensors_sharded'
     for both formats and lets this function distinguish them using the already-loaded index).
     """
-    if _ct_find_index is not None:
-        _found = _ct_find_index(model_dir)
-    else:
-        _found = None
-    index_path = Path(_found) if _found else Path(model_dir) / SAFETENSORS_INDEX_FILE
+    index_path = _locate_index(Path(model_dir))
+    if index_path is None:
+        index_path = Path(model_dir) / SAFETENSORS_INDEX_FILE
     with open(index_path) as f:
         index = json.load(f)
     weight_map = index.get("weight_map", {})
@@ -876,13 +907,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         quant_set.add(f"{base}{suf}")
 
-            for name in header:
-                if name in quant_set or name in _i8_companion_skip:
-                    continue
-                if not _upload_plain(name, weights):
-                    dt = header[name].get("dtype", "?")
-                    if dt not in ("F8_E4M3", "U8", "I32"):
-                        logger.warning("Skipping %s (dtype=%s)", name, dt)
+            _upload_non_quant(header, quant_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 
             for base in quant_bases:
                 try:
@@ -977,13 +1002,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         nvfp4_set.add(f"{base}{suf}")
 
-            for name in header:
-                if name in nvfp4_set or name in _i8_companion_skip:
-                    continue
-                if not _upload_plain(name, weights):
-                    dt = header[name].get("dtype", "?")
-                    if dt not in ("F8_E4M3", "U8", "I32", "F32"):
-                        logger.warning("Skipping %s (dtype=%s)", name, dt)
+            _upload_non_quant(header, nvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("F8_E4M3", "U8", "I32", "F32"))
 
             for base in nvfp4_bases:
                 try:
@@ -1023,13 +1042,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         dnvfp4_set.add(f"{base}{suf}")
 
-            for name in header:
-                if name in dnvfp4_set or name in _i8_companion_skip:
-                    continue
-                if not _upload_plain(name, weights):
-                    dt = header[name].get("dtype", "?")
-                    if dt not in ("F8_E4M3", "U8", "I32", "F32"):
-                        logger.warning("Skipping %s (dtype=%s)", name, dt)
+            _upload_non_quant(header, dnvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("F8_E4M3", "U8", "I32", "F32"))
 
             for base in dnvfp4_bases:
                 try:
@@ -1061,13 +1074,7 @@ def load_safetensors_weights(
             }
             fp8_set = fp8_names | fp8_scale_names
 
-            for name in header:
-                if name in fp8_set or name in _i8_companion_skip:
-                    continue
-                if not _upload_plain(name, weights):
-                    dt = header[name].get("dtype", "?")
-                    if dt not in ("F8_E4M3", "U8", "I32"):
-                        logger.warning("Skipping %s (dtype=%s)", name, dt)
+            _upload_non_quant(header, fp8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 
             for wname in fp8_names:
                 base = wname.removesuffix(".weight")
@@ -1109,13 +1116,7 @@ def load_safetensors_weights(
             mxfp4_bases = _find_u8_u8_bases(header)
             mx4_set: set = {f"{b}.weight" for b in mxfp4_bases} | {f"{b}.weight_scale" for b in mxfp4_bases}
 
-            for name in header:
-                if name in mx4_set or name in _i8_companion_skip:
-                    continue
-                if not _upload_plain(name, weights):
-                    dt = header[name].get("dtype", "?")
-                    if dt not in ("U8", "I32", "F32"):
-                        logger.warning("Skipping %s (dtype=%s)", name, dt)
+            _upload_non_quant(header, mx4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))
 
             for base in mxfp4_bases:
                 try:
@@ -1140,13 +1141,7 @@ def load_safetensors_weights(
             mxfp8_bases = _find_u8_u8_bases(header)
             mx8_set: set = {f"{b}.weight" for b in mxfp8_bases} | {f"{b}.weight_scale" for b in mxfp8_bases}
 
-            for name in header:
-                if name in mx8_set or name in _i8_companion_skip:
-                    continue
-                if not _upload_plain(name, weights):
-                    dt = header[name].get("dtype", "?")
-                    if dt not in ("U8", "I32", "F32"):
-                        logger.warning("Skipping %s (dtype=%s)", name, dt)
+            _upload_non_quant(header, mx8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))
 
             try:
                 from vllm.model_executor.layers.quantization.utils.mxfp8_utils import dequant_mxfp8_to_bf16
@@ -1217,13 +1212,7 @@ def load_safetensors_weights(
                             bnb_set.add(absmax_k)
 
             # Upload all non-BnB tensors normally.
-            for name in header:
-                if name in bnb_set or name in _i8_companion_skip:
-                    continue
-                if not _upload_plain(name, weights):
-                    dt = header[name].get("dtype", "?")
-                    if dt not in ("U8", "I32", "F32"):
-                        logger.warning("Skipping %s (dtype=%s)", name, dt)
+            _upload_non_quant(header, bnb_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))
 
             for base in sorted(bnb_bases):
                 try:
@@ -1312,13 +1301,7 @@ def load_safetensors_weights(
                 ct_reserved.add(_ct_base_map[_b])
                 ct_reserved.add(f"{_b}.weight_scale")
 
-            for name in header:
-                if name in ct_reserved or name in _i8_companion_skip:
-                    continue
-                if not _upload_plain(name, weights):
-                    dt = header[name].get("dtype", "?")
-                    if dt not in ("F8_E4M3", "U8", "I32"):
-                        logger.warning("Skipping %s (dtype=%s)", name, dt)
+            _upload_non_quant(header, ct_reserved, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 
             weights.setdefault("__quant_meta__", {})
             for base in ct_bases:
@@ -1426,11 +1409,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     p = Path(model_dir)
 
     if weight_map is None:
-        if _ct_find_index is not None:
-            _found = _ct_find_index(str(p))
-        else:
-            _found = None
-        index_path = Path(_found) if _found else p / SAFETENSORS_INDEX_FILE
+        index_path = _locate_index(p)
+        if index_path is None:
+            index_path = p / SAFETENSORS_INDEX_FILE
         with open(index_path) as f:
             index = json.load(f)
         weight_map = index.get("weight_map", {})

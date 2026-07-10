@@ -53,10 +53,8 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def import_ir_kernels(cls) -> None:
-        # vllm.kernels imports successfully on CPU/WebGPU but registers IR op
-        # backends for CUDA/ROCm/XPU that cannot execute here. Suppress the
-        # import to avoid dead registrations and any side effects in
-        # vllm.kernels.__init__.
+        # Intentionally empty: WebGPU shaders are loaded lazily by PipelineCache.
+        # Suppresses vllm.kernels CUDA/ROCm side-effects.
         pass
 
     @classmethod

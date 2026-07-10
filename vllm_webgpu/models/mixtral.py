@@ -69,9 +69,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             # Copies are recorded into the Phase A encoder so no extra GPU submit
             # is needed after on_submitted_work_done_sync().
             _staging_sz = max(self._top_k * 4, 8)
+            self._wgpu_map_read = wgpu.MapMode.READ
+            self._wgpu_staging_usage = wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ
             self._topk_idx_staging = dev.create_buffer(
                 size=_staging_sz,
-                usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ)
+                usage=self._wgpu_staging_usage)
             # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
             # debug-only path, None on production log levels.
             self._topk_w_staging = None
@@ -343,7 +345,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """
         if extra_gate_consts is None:
             extra_gate_consts = {}
-        import wgpu
         dev = self.wgpu_device.wgpu_device
         msc = self._moe_sc
         hidden = self.hidden_size
@@ -387,7 +388,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(
                     size=max(self._top_k * 4, 8),
-                    usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ)
+                    usage=self._wgpu_staging_usage)
             self._active_encoder.copy_buffer_to_buffer(
                 msc["topk_w"].buf, 0, self._topk_w_staging, 0, K * 4)
 
@@ -396,12 +397,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         dev.queue.on_submitted_work_done_sync()
 
         # Map the pre-allocated staging buffers — no extra GPU submit needed.
-        self._topk_idx_staging.map_sync(mode=wgpu.MapMode.READ)
+        self._topk_idx_staging.map_sync(mode=self._wgpu_map_read)
         raw_idx = np.frombuffer(self._topk_idx_staging.read_mapped(), dtype=np.uint32).copy()
         self._topk_idx_staging.unmap()
         expert_indices = raw_idx[:K].tolist()
         if _debug_weights:
-            self._topk_w_staging.map_sync(mode=wgpu.MapMode.READ)
+            self._topk_w_staging.map_sync(mode=self._wgpu_map_read)
             raw_w = np.frombuffer(self._topk_w_staging.read_mapped(), dtype=np.float32).copy()
             self._topk_w_staging.unmap()
             logger.debug(

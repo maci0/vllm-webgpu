@@ -94,7 +94,7 @@ def main() -> None:
     pos = len(tok_ids)
     print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")
 
-    def _run_decode_step(tok, p, profiling=False):
+    def _run_decode_step(tok, p):
         """Run one decode step; returns (next_tok, elapsed_ms)."""
         _dm = SimpleNamespace(slot_mapping=[p], block_tables=[bt], max_decode_seq_len=p + 1)
         t_start = time.perf_counter()

@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import numpy as np
-import inspect
 import torch
 # vLLM v1 sampling internals verified against vllm>=0.24,<0.25.
 # These paths have no stability guarantees; a patch release may move or rename
@@ -28,13 +27,6 @@ import torch
 from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
-)
-
-# Guard against vLLM removing the allow_cpu_sync parameter from
-# apply_top_k_top_p_pytorch. If this assertion fires, the partial-topk
-# optimisation path is broken and the workaround must be re-evaluated.
-assert "allow_cpu_sync" in inspect.signature(apply_top_k_top_p_pytorch).parameters, (
-    "apply_top_k_top_p_pytorch lost allow_cpu_sync param, re-evaluate workaround"
 )
 
 SHADERS_DIR = Path(__file__).parent / "shaders"

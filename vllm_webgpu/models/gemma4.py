@@ -659,12 +659,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     out_h    = b[_H_NAMES[(_hstate + 2) % 3]]
 
                     qw = f"{p}.self_attn.q_proj.weight"
-                    kw = f"{p}.self_attn.k_proj.weight"
 
                     # QKV projections (always separate in batch path — no fused_qkv).
                     # For KV-shared layers only Q is used; K and V come from the target cache.
                     gemm_batch(normed_x, qw, b["q_buf"], hidden, q_dim)
                     if not is_kv_shared:
+                        kw = f"{p}.self_attn.k_proj.weight"
                         gemm_batch(normed_x, kw, b["k_buf"], hidden, kv_dim)
                         if has_v:
                             gemm_batch(normed_x, f"{p}.self_attn.v_proj.weight",

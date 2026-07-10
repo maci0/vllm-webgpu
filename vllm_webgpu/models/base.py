@@ -13,9 +13,7 @@ import numpy as np
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME, CONFIG_NAME
 from vllm.logger import init_logger
 from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-    YaRNScalingRotaryEmbedding,
-)
+from vllm.model_executor.layers.rotary_embedding import YaRNScalingRotaryEmbedding
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 

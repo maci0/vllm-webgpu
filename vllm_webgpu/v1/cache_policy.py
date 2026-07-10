@@ -63,6 +63,10 @@ def allocate_kv_from_tensors(
             raise NotImplementedError(
                 f"Packed KV cache layout (block_stride={tensor.block_stride}) is not supported by the WebGPU backend"
             )
+        if not tensor.shared_by:
+            raise NotImplementedError(
+                "KVCacheTensor with empty shared_by is not supported by the WebGPU backend"
+            )
         if len(tensor.shared_by) > 1:
             raise NotImplementedError(
                 f"Shared-block-table KV cache (shared_by={tensor.shared_by}) is not supported by the WebGPU backend"
@@ -175,8 +179,8 @@ def get_layer_types(model, hf_config) -> list | None:
     """
     for obj, attr in [
         (model, "_layer_types"),
-        (hf_config, "layer_types"),
         (hf_config, "layers_block_type"),
+        (hf_config, "layer_types"),
     ]:
         val = getattr(obj, attr, None)
         if val is not None:

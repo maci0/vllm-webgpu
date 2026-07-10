@@ -324,16 +324,16 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         uq = self._uq_for_key(wk)
         sc_buf = self._scales_buf(wk, uq, self._dummy_scales_buf)
         base = wk.removesuffix(".weight")
-        if num_tokens > 1 and uq in (0, 3):
+        if num_tokens > 1:
+            if uq not in (0, 3):
+                raise RuntimeError(
+                    f"_gemm_adaptive: multi-token requires uq in (0,3), got uq={uq} for {wk}"
+                )
             self._dispatch("matmul_quant_mr4",
                            [src, self.weights[wk], sc_buf, out_b],
                            {"K": K, "N": N, "M": num_tokens, "USE_QUANT": uq, **self._quant_extra(base, uq)},
                            (N, num_tokens, 1))
         else:
-            if num_tokens > 1:
-                raise RuntimeError(
-                    f"_gemm_adaptive: multi-token requires uq in (0,3), got uq={uq} for {wk}"
-                )
             self._dispatch("matmul_quant",
                            [src, self.weights[wk], sc_buf, out_b],
                            {"K": K, "N": N, "USE_QUANT": uq, **self._quant_extra(base, uq)},

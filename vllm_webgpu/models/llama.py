@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm.transformers_utils.config import patch_legacy_rope_type
 from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vals_per_thread, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -59,7 +58,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # matmul_quant f16 path packs two f16 values per u32; head_dim must be even.
         if self.head_dim % 2 != 0:
             raise ValueError(f"head_dim={self.head_dim} must be even for f16 GEMV")
-        max_ctx = getattr(model_config, "max_position_embeddings", 8192)
+        _mml = getattr(model_config, "max_model_len", None)
+        max_ctx = _mml if isinstance(_mml, int) and _mml > 0 else getattr(model_config, "max_position_embeddings", 8192)
         # Precompute constants that are used every forward pass.
         _vpt = _vals_per_thread(self.hidden_size)
         self._rms_consts: dict = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt}
@@ -152,7 +152,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
         """
         rope_scaling = dict(getattr(self.model_config, "rope_scaling", None) or {})
-        patch_legacy_rope_type(rope_scaling)
+        # Normalise legacy rope_scaling: "type" is the historical key, "rope_type" is canonical.
+        if "rope_type" not in rope_scaling and "type" in rope_scaling:
+            rope_scaling["rope_type"] = rope_scaling.pop("type")
         rope_type = rope_scaling.get("rope_type", "")
 
         if rope_type != "yarn":
@@ -416,9 +418,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         rms_base = self._rms_consts
         dev  = self.wgpu_device.wgpu_device
 
-        def alloc(n_f16: int) -> WebGPUBuffer:
-            return WebGPUBuffer.empty(dev, max(n_f16 * 2, 8))
-
         q_dim  = self.num_q_heads  * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
         inter  = self.intermediate_size
@@ -427,23 +426,23 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # only reached when the batch path is confirmed, so overhead is negligible
         # vs the GEMM savings.
         b: dict = {
-            "x":        alloc(T * hidden),
-            "normed":   alloc(T * hidden),
-            "q_buf":    alloc(T * q_dim),
-            "k_buf":    alloc(T * kv_dim),
-            "v_buf":    alloc(T * kv_dim),
-            "q_rope":   alloc(T * q_dim),
-            "k_rope":   alloc(T * kv_dim),
-            "attn_out": alloc(T * q_dim),
-            "o_proj":   alloc(T * hidden),
-            "ffn_n":    alloc(T * hidden),
-            "gate_buf": alloc(T * inter),
-            "up_buf":   alloc(T * inter),
-            "ffn_act":  alloc(T * inter),
-            "ffn_out":  alloc(T * hidden),
-            "h0":       alloc(T * hidden),
-            "h1":       alloc(T * hidden),
-            "h2":       alloc(T * hidden),
+            "x":        self._make_buf(T * hidden * 2),
+            "normed":   self._make_buf(T * hidden * 2),
+            "q_buf":    self._make_buf(T * q_dim * 2),
+            "k_buf":    self._make_buf(T * kv_dim * 2),
+            "v_buf":    self._make_buf(T * kv_dim * 2),
+            "q_rope":   self._make_buf(T * q_dim * 2),
+            "k_rope":   self._make_buf(T * kv_dim * 2),
+            "attn_out": self._make_buf(T * q_dim * 2),
+            "o_proj":   self._make_buf(T * hidden * 2),
+            "ffn_n":    self._make_buf(T * hidden * 2),
+            "gate_buf": self._make_buf(T * inter * 2),
+            "up_buf":   self._make_buf(T * inter * 2),
+            "ffn_act":  self._make_buf(T * inter * 2),
+            "ffn_out":  self._make_buf(T * hidden * 2),
+            "h0":       self._make_buf(T * hidden * 2),
+            "h1":       self._make_buf(T * hidden * 2),
+            "h2":       self._make_buf(T * hidden * 2),
             # Single-token scratch for final norm + LM head.
             # Reuse the decode-path pre-allocated buffers: _pre["x"] and _pre["norm_out"]
             # are both hidden*2 bytes and _pre["logits"] is vocab*2 bytes, matching exactly.

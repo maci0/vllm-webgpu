@@ -164,10 +164,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             # different config key), so it skips the allocation. Allocate them now.
             import wgpu as _wgpu_lib
             dev = self.wgpu_device.wgpu_device
+            self._wgpu_map_read = _wgpu_lib.MapMode.READ
+            self._wgpu_staging_usage = _wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ
             _staging_sz = max(self._top_k * 4, 8)
             self._topk_idx_staging = dev.create_buffer(
                 size=_staging_sz,
-                usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+                usage=self._wgpu_staging_usage)
             # Match Mixtral's lazy pattern: only allocate when debug logging is active.
             self._topk_w_staging = None
             self._expert_out_zeros = bytearray(self.hidden_size * 2)
@@ -298,8 +300,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         for i in range(self.num_layers):
             if self._is_full_attn(i):
                 continue
-            self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, ssm_bytes)
-            self._conv_gpu[i] = WebGPUBuffer.empty(dev, conv_bytes)
+            self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, max(ssm_bytes, 8))
+            self._conv_gpu[i] = WebGPUBuffer.empty(dev, max(conv_bytes, 8))
 
     def load_weights(self, path: str) -> None:
         # A_log and dt_bias are small per-head arrays originally in bf16 but stored
@@ -641,7 +643,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Shared scratch (sc["normed"], sc["h0/h1/h2"]) is safe to reuse because
         # the GPU executes dispatches within each encoder in submission order.
         bt_arr = self._bt_arr(attn_metadata)
-        bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
+        dev.queue.write_buffer(self._pre["bt"].buf, 0, bt_arr.tobytes())
+        bt_buf = self._pre["bt"]
 
         slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
         tok_ids_bufs: list = []

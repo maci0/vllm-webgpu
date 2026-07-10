@@ -87,7 +87,6 @@ class WebGPUModelRunner:
         self.wgpu_device = wgpu_device
         self.pipeline_cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
         self.model: "BaseWebGPUModel | None" = None
-        self._last_model_output: Any = EMPTY_MODEL_RUNNER_OUTPUT  # cached for sample_tokens()
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
         self._zeros_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc across scheduling steps; see also NemotronHWebGPUModel._zero_buf_cache for the analogous Mamba-state cache
@@ -279,7 +278,7 @@ class WebGPUModelRunner:
                 offset_v = block_id * bytes_per_block_v
                 queue.write_buffer(v_buf.buf, offset_v, zeros_v)
 
-    def execute_model(self, scheduler_output: "SchedulerOutput") -> None:
+    def execute_model(self, scheduler_output: "SchedulerOutput") -> Any:
         if scheduler_output.has_structured_output_requests:
             raise NotImplementedError(
                 "Guided/constrained decoding is not supported on the WebGPU backend. "
@@ -287,10 +286,8 @@ class WebGPUModelRunner:
                 "grammar token masks. Use unconstrained sampling or a CPU/CUDA backend."
             )
         if self.model is None:
-            self._last_model_output = EMPTY_MODEL_RUNNER_OUTPUT
-            return None
-        self._last_model_output = self._execute_model_v2(scheduler_output)
-        return None
+            return EMPTY_MODEL_RUNNER_OUTPUT
+        return self._execute_model_v2(scheduler_output)
 
     @staticmethod
     def _compute_request_logprobs(
@@ -501,7 +498,7 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            num_logprobs = sp.num_logprobs if sp is not None else None
+            num_logprobs = sp.logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -804,13 +801,8 @@ class WebGPUModelRunner:
         )
 
     def sample_tokens(self, grammar_output: "GrammarOutput | None") -> Any:
-        # In vLLM >= 0.24, the batch queue calls execute_model() then sample_tokens().
-        # execute_model() caches its output; sample_tokens() returns it here.
-        # Grammar/structured output (guided_json, guided_regex, guided_grammar) is not
-        # supported: the WebGPU backend performs argmax on-GPU and does not preserve
-        # the full logit distribution needed to apply token masks from the grammar FSM.
-        # Silently returning unconstrained tokens would produce output that violates
-        # the schema, so we raise early instead.
+        # execute_model() returns non-None, so the vLLM engine never calls this
+        # for normal requests. It exists for the grammar path, which is unsupported.
         if grammar_output is not None:
             raise NotImplementedError(
                 "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
@@ -818,7 +810,7 @@ class WebGPUModelRunner:
                 "the full logit distribution required to apply grammar token masks. "
                 "Use unconstrained sampling or switch to a CPU/CUDA backend."
             )
-        return self._last_model_output
+        return EMPTY_MODEL_RUNNER_OUTPUT
 
     def get_supported_tasks(self) -> "tuple[SupportedTask, ...]":
         return ("generate",)

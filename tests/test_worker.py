@@ -215,6 +215,10 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
     hf_config.layer_types = layer_types
     # Simulate safetensors: no _layer_attention_params on hf_config
     del hf_config._layer_attention_params
+    # Suppress layers_block_type so the get_layer_types probe falls through to layer_types.
+    # get_layer_types probes layers_block_type before layer_types (matching vLLM priority);
+    # without this delete, MagicMock auto-generates a truthy value for layers_block_type.
+    del hf_config.layers_block_type
 
     vllm_config = MagicMock()
     vllm_config.model_config.hf_config = hf_config
