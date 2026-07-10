@@ -358,7 +358,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         lp = self._lp[layer_idx]
         hidden = self.hidden_size
         inter_shared = lp["intermediate_size"]       # shared expert intermediate size (may be doubled for kv-shared layers with use_double_wide_mlp)
-        inter_moe = self.moe_intermediate_size     # MoE expert intermediate size
         head_dim = lp["head_dim"]
         q_dim = lp["q_dim"]
         kv_dim = lp["kv_dim"]
@@ -583,6 +582,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe:
+            inter_moe = self.moe_intermediate_size     # MoE expert intermediate size
             assert f"{p}.router.proj.weight" in self.weights, (
                 f"L{layer_idx}: is_moe=True but router.proj.weight missing"
             )

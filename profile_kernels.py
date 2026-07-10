@@ -6,7 +6,6 @@ Usage:
     python3 profile_kernels.py [--model MODEL_PATH] [--decode-steps N] [--warmup-steps N]
 """
 import argparse
-import math
 from pathlib import Path
 import time
 from types import SimpleNamespace
@@ -68,7 +67,7 @@ def main() -> None:
 
     # Compute block count before allocating so the pool covers every block ID in bt.
     total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
-    bt_blocks = math.ceil(total_toks / block_size)
+    bt_blocks = (total_toks + block_size - 1) // block_size
     num_blocks = max(512, bt_blocks)
 
     allocate_kv_from_hf_config(dev, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)

@@ -197,6 +197,11 @@ def get_layer_types(model, hf_config) -> list | None:
     Uses explicit `is not None` guards (not `or`) so that an empty list, which
     is a valid value distinct from "attribute absent", is not silently skipped.
     vLLM's ModelConfig.get_num_layers_by_block_type uses the same pattern.
+
+    Note: the model._layer_types probe is only exercised by scripts/kv_utils.py,
+    which passes a fully loaded model object. The vLLM engine path always calls
+    this function with model=None (before weight loading), so the first probe is
+    a permanent no-op in the engine code path.
     """
     for obj, attr in [
         (model, "_layer_types"),

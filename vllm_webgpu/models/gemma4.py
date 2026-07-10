@@ -47,19 +47,13 @@ except ImportError:
 def _build_layer_params_from_config(
     model_config,
     num_layers: int,
-    num_q_heads: int,
-    intermediate_size: int,
-    layer_types: list[str],
-    default_hd: int,
-    default_kv: int,
-    global_hd: int,
-    global_kv: int,
-    k_eq_v: bool,
 ) -> list[dict]:
     """Build per-layer attention/FFN params from a Gemma4 safetensors config.
 
-    Transcribes three formulas from vLLM's Gemma4 model implementation.
-    Pin these line references when upgrading vLLM:
+    Reads all required fields directly from model_config, applying the same
+    defaults as the caller's getattr chains. Transcribes three formulas from
+    vLLM's Gemma4 model implementation. Pin these line references when upgrading
+    vLLM:
 
     (1) first_kv_shared boundary:
         vLLM vllm/model_executor/models/gemma4.py lines 463, 601
@@ -76,6 +70,16 @@ def _build_layer_params_from_config(
         when k_eq_v=False (standard variant); sliding_attention uses default
         head_dim + num_key_value_heads.
     """
+    num_q_heads       = model_config.num_attention_heads
+    intermediate_size = model_config.intermediate_size
+    layer_types       = model_config.layer_types
+    _hd_fallback      = (getattr(model_config, "hidden_size", 0) // num_q_heads) or 256
+    default_hd        = getattr(model_config, "head_dim", _hd_fallback)
+    default_kv        = getattr(model_config, "num_key_value_heads", 1)
+    global_hd        = getattr(model_config, "global_head_dim", default_hd)
+    global_kv        = getattr(model_config, "num_global_key_value_heads", default_kv)
+    k_eq_v           = getattr(model_config, "attention_k_eq_v", False)
+
     # (1) vLLM gemma4.py L463/601
     first_kv_shared = num_layers - getattr(model_config, "num_kv_shared_layers", 0)
     use_dwm = getattr(model_config, "use_double_wide_mlp", False)
@@ -196,18 +200,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # is_kv_shared: the last num_kv_shared_layers layers share KV with an earlier
             # layer of the same type (mirrors vLLM Gemma4Attention.is_kv_shared_layer).
             # Formulas transcribed from vLLM -- see _build_layer_params_from_config docstring.
-            self._lp = _build_layer_params_from_config(
-                model_config=model_config,
-                num_layers=self.num_layers,
-                num_q_heads=self.num_q_heads,
-                intermediate_size=self.intermediate_size,
-                layer_types=layer_types,
-                default_hd=default_hd,
-                default_kv=default_kv,
-                global_hd=global_hd,
-                global_kv=global_kv,
-                k_eq_v=_k_eq_v,
-            )
+            self._lp = _build_layer_params_from_config(model_config, self.num_layers)
         else:
             # Uniform fallback: all layers use the config defaults.
             # For Gemma3 safetensors (uniform attention) this is correct.

@@ -261,13 +261,13 @@ class WebGPUModelRunner:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
                 continue
             bytes_per_block = k_buf.nbytes // self._num_kv_blocks
-            if bytes_per_block not in _zeros_cache:
-                _zeros_cache[bytes_per_block] = bytearray(bytes_per_block)
-            zeros = _zeros_cache[bytes_per_block]
+            zeros = _zeros_cache.get(bytes_per_block)
+            if zeros is None:
+                _zeros_cache[bytes_per_block] = zeros = bytearray(bytes_per_block)
             bytes_per_block_v = v_buf.nbytes // self._num_kv_blocks
-            if bytes_per_block_v not in _zeros_cache:
-                _zeros_cache[bytes_per_block_v] = bytearray(bytes_per_block_v)
-            zeros_v = _zeros_cache[bytes_per_block_v]
+            zeros_v = _zeros_cache.get(bytes_per_block_v)
+            if zeros_v is None:
+                _zeros_cache[bytes_per_block_v] = zeros_v = bytearray(bytes_per_block_v)
             for block_id in block_ids:
                 offset = block_id * bytes_per_block
                 queue.write_buffer(k_buf.buf, offset, zeros)

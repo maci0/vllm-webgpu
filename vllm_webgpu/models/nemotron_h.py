@@ -11,10 +11,9 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
-from vllm_webgpu.webgpu.buffer import _ELEM_BYTES
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
 
 if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -365,8 +364,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     # ── Scratch buffer allocation ─────────────────────────────────────────────
 
     def _init_scratch_buffers(self) -> None:
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self.wgpu_device.wgpu_device
 
 
@@ -432,8 +429,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def _init_mamba_states(self) -> None:
         """Allocate zero-initialized GPU buffers for each Mamba layer's state."""
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self.wgpu_device.wgpu_device
 
         conv_shape = self._mamba_conv_shape
@@ -524,6 +519,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             qmeta = {k: v for k, v in qmeta.items() if (k + ".weight") in self.weights}
             self.weights["__quant_meta__"] = qmeta
         self._pack_attn_weights()
+        # Release CPU-side scale accumulators and closures; they are only needed
+        # during load_weights and are never accessed after _pack_attn_weights returns.
+        self._scale_acc.clear()
+        self._scale_transforms.clear()
         self._validate_mamba_weights()
         self._init_mamba_states()
         logger.info(
@@ -544,7 +543,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         along axis 0 (i.e., their flat byte arrays are concatenated in order
         Q, K, V).  The originals are deleted after packing.
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+        import wgpu as _wgpu_lib
 
         dev = self.wgpu_device.wgpu_device
 
@@ -605,7 +604,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # interleaves q, k, v output groups in the order the shader expects.
                 # Consolidate three GPU readbacks into one staged copy + single map_sync
                 # to avoid two extra GPU round-trips per attention layer during model load.
-                import wgpu as _wgpu_lib
                 q_buf = self.weights[q_key]
                 k_buf = self.weights[k_key]
                 v_buf = self.weights[v_key]
@@ -652,7 +650,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     # GPU path: scales were uploaded individually (non-GPTQ/AWQ formats
                     # or checkpoints that don't match _scale_transforms keys). Read back
                     # via a single staged command encoder to avoid three separate stalls.
-                    import wgpu as _wgpu_lib
                     q_sb = self.weights[q_s]
                     k_sb = self.weights[k_s]
                     v_sb = self.weights[v_s]

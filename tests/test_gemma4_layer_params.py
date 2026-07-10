@@ -230,18 +230,7 @@ def test_build_layer_params_matches_vllm_reference(name):
     num_layers = cfg.num_hidden_layers
 
     expected = _vllm_reference_layer_params(cfg, num_layers)
-    actual = _build_layer_params_from_config(
-        model_config=cfg,
-        num_layers=num_layers,
-        num_q_heads=cfg.num_attention_heads,
-        intermediate_size=cfg.intermediate_size,
-        layer_types=cfg.layer_types,
-        default_hd=cfg.head_dim,
-        default_kv=cfg.num_key_value_heads,
-        global_hd=cfg.global_head_dim,
-        global_kv=cfg.num_global_key_value_heads,
-        k_eq_v=cfg.attention_k_eq_v,
-    )
+    actual = _build_layer_params_from_config(cfg, num_layers)
 
     assert len(actual) == num_layers
 

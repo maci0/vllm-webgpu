@@ -63,6 +63,20 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
+# Mapping from WebGPU buffer dtype strings to numpy scalar types.
+# Covers all five dtypes in active use by the weight loader and shaders:
+#   f32  -> np.float32
+#   f16  -> np.float16
+#   i32  -> np.int32   (GPTQ quantized weights)
+#   u8   -> np.uint8   (FP8 / NF4 / INT8 quantized weights)
+#   u32  -> np.uint32  (BF16 companion / packed formats)
+_WGPU_DTYPE_TO_NP: dict[str, type] = {
+    "f32": np.float32,
+    "f16": np.float16,
+    "i32": np.int32,
+    "u8":  np.uint8,
+    "u32": np.uint32,
+}
 
 
 def compute_yarn_freqs(
@@ -73,10 +87,9 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq from vLLM so the
-    blending logic stays in one place. Uses object.__new__ to bypass __init__
-    (which builds a large cos/sin cache) since only the inverse frequencies and
-    mscale are needed.
+    Calls the public helpers from vllm.model_executor.layers.rotary_embedding.common
+    directly, matching the blending logic in vLLM's YaRN implementation without
+    depending on a private method or bypassing __init__.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -93,9 +106,11 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    import torch
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_get_mscale,
+        yarn_find_correction_range,
+        yarn_linear_ramp_mask,
     )
 
     if rotary_dim is None:
@@ -108,6 +123,7 @@ def compute_yarn_freqs(
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
     attn_factor          = float(rope_scaling.get("attn_factor", 1.0))
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
+    truncate             = bool(rope_scaling.get("truncate", True))
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
@@ -115,19 +131,13 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
-    # object.__new__ skips __init__ to avoid the O(orig_ctx * factor) cos/sin
-    # cache allocation; only the attributes read by _compute_inv_freq are set.
-    inst = object.__new__(YaRNScalingRotaryEmbedding)
-    inst.base                    = rope_theta
-    inst.rotary_dim              = rotary_dim
-    inst.beta_fast               = beta_fast
-    inst.beta_slow               = beta_slow
-    inst.max_position_embeddings = orig_ctx
-    inst.truncate                = bool(rope_scaling.get("truncate", True))
-    inst.extrapolation_factor    = extrapolation_factor
-
-    inv_freq = inst._compute_inv_freq(factor)
-    return inv_freq.cpu().numpy().astype("float32"), mscale
+    pos_freqs       = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    inv_freq_interp = 1.0 / (factor * pos_freqs)
+    inv_freq_extrap = 1.0 / pos_freqs
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    mask        = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    inv_freq    = inv_freq_interp * (1 - mask) + inv_freq_extrap * mask
+    return inv_freq.numpy().astype("float32"), mscale
 
 
 
@@ -187,22 +197,11 @@ class BaseWebGPUModel(ABC):
     def _buf_np_dtype(self, buf) -> "type":
         """Return the numpy scalar type matching a WebGPUBuffer's dtype string.
 
-        Covers all five dtypes in active use by the weight loader and shaders:
-          f32  -> np.float32
-          f16  -> np.float16
-          i32  -> np.int32   (GPTQ quantized weights)
-          u8   -> np.uint8   (FP8 / NF4 / INT8 quantized weights)
-          u32  -> np.uint32  (BF16 companion / packed formats)
+        Covers all five dtypes in active use by the weight loader and shaders
+        (see module-level _WGPU_DTYPE_TO_NP for the full mapping).
         """
-        _MAP = {
-            "f32": np.float32,
-            "f16": np.float16,
-            "i32": np.int32,
-            "u8": np.uint8,
-            "u32": np.uint32,
-        }
         dtype = getattr(buf, "dtype", "f16")
-        return _MAP.get(dtype, np.float16)
+        return _WGPU_DTYPE_TO_NP.get(dtype, np.float16)
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):

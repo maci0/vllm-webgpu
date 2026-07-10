@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -67,11 +67,13 @@ try:
     from compressed_tensors import QuantizationConfig as _QuantizationConfig
     from compressed_tensors.quantization import QuantizationType as _QuantizationType
     from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
+    from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
 except ImportError:
     _ct_get_quant_cfg = None
     _QuantizationConfig = None
     _QuantizationType = None
     _QuantizationStrategy = None
+    _ct_find_index = None
 
 
 
@@ -139,11 +141,10 @@ def _apply_multimodal_remap(weights: dict) -> int:
 def detect_weight_format(path: str) -> str:
     p = Path(path)
     if p.is_dir():
-        try:
-            from compressed_tensors.utils.safetensors_load import find_safetensors_index_path
-            _index_found = find_safetensors_index_path(str(p)) is not None
-        except Exception:
-            _index_found = (p / _SAFE_WEIGHTS_INDEX_NAME).exists()
+        if _ct_find_index is not None:
+            _index_found = _ct_find_index(str(p)) is not None
+        else:
+            _index_found = (p / SAFE_WEIGHTS_INDEX_NAME).exists()
         if _index_found:
             # MLX vs standard sharded detection is deferred to the loader,
             # which already reads the index and can check for .biases keys.
@@ -182,12 +183,11 @@ def load_safetensors_weights_sharded(
     This avoids parsing the index twice (detect_weight_format returns 'safetensors_sharded'
     for both formats and lets this function distinguish them using the already-loaded index).
     """
-    try:
-        from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _find_index
-        _found = _find_index(model_dir)
-    except Exception:
+    if _ct_find_index is not None:
+        _found = _ct_find_index(model_dir)
+    else:
         _found = None
-    index_path = Path(_found) if _found else Path(model_dir) / _SAFE_WEIGHTS_INDEX_NAME
+    index_path = Path(_found) if _found else Path(model_dir) / SAFE_WEIGHTS_INDEX_NAME
     with open(index_path) as f:
         index = json.load(f)
     weight_map = index.get("weight_map", {})
@@ -1362,12 +1362,11 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     p = Path(model_dir)
 
     if weight_map is None:
-        try:
-            from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _find_index
-            _found = _find_index(str(p))
-        except Exception:
+        if _ct_find_index is not None:
+            _found = _ct_find_index(str(p))
+        else:
             _found = None
-        index_path = Path(_found) if _found else p / _SAFE_WEIGHTS_INDEX_NAME
+        index_path = Path(_found) if _found else p / SAFE_WEIGHTS_INDEX_NAME
         with open(index_path) as f:
             index = json.load(f)
         weight_map = index.get("weight_map", {})
