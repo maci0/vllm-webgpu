@@ -100,10 +100,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         )
         self._lin_conv_shape = _lin_conv_shape
         self._lin_ssm_shape = _lin_ssm_shape
-        # conv_dim derived from the shape gated_delta_net_state_shape already computed:
-        # shape is (state_len, conv_dim) or (conv_dim, state_len); conv_dim is the
-        # dimension that is not the conv kernel size (state_len = conv_kernel_size - 1).
-        self._lin_conv_dim: int = math.prod(self._lin_conv_shape) // (self._lin_conv_kernel - 1)
+        # conv_dim = K_heads * K_dim * 2 + V_heads * V_dim, matching vLLM's formula in
+        # mamba_utils.py (gated_delta_net_state_shape). The indirect derivation
+        # math.prod(shape) // (conv_kernel-1) breaks when num_spec > 0 because
+        # state_len becomes conv_kernel-1+num_spec, inflating the result.
+        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;

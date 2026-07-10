@@ -916,6 +916,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         vocab  = self.vocab_size
         _rms   = self._rms_consts
         bt_arr = self._bt_arr(attn_metadata)
+        # Serialize once: bt_arr does not change across token iterations.
+        # Calling tobytes() inside the loop would re-allocate the bytes object T times.
+        _bt_bytes = bt_arr.tobytes()
 
         for t in range(T):
             self._hstate = 0
@@ -929,7 +932,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32).tobytes())
             dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32).tobytes())
             dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
-            dev.queue.write_buffer(pre["bt"].buf,       0, bt_arr.tobytes())
+            dev.queue.write_buffer(pre["bt"].buf,       0, _bt_bytes)
 
             with self._batched_dispatch():
                 self._dispatch(

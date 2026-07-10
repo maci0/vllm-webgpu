@@ -406,10 +406,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "h0":       alloc(T * hidden),
             "h1":       alloc(T * hidden),
             "h2":       alloc(T * hidden),
-            # Single-token scratch for final norm + LM head
-            "last_tok":  alloc(hidden),   # raw last-token hidden state (from copy)
-            "last_norm": alloc(hidden),   # normed last-token hidden state
-            "logits":    alloc(vocab),
+            # Single-token scratch for final norm + LM head.
+            # Reuse the decode-path pre-allocated buffers: _pre["x"] and _pre["norm_out"]
+            # are both hidden*2 bytes and _pre["logits"] is vocab*2 bytes, matching exactly.
+            # These buffers are idle during batch prefill (the batch path does not call
+            # _prefill_sequential_fallback or _decode_setup), so there is no aliasing risk.
+            "last_tok":  self._pre["x"],
+            "last_norm": self._pre["norm_out"],
+            "logits":    self._pre["logits"],
         }
 
         slot_map_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)

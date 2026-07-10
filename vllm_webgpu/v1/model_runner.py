@@ -29,23 +29,6 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-def _sample_logits(logits_1d: "np.ndarray", sp) -> int:
-    """Sample one token from a 1-D float32 logit vector using SamplingParams.
-
-    When sp is None, fall back to argmax. Otherwise delegate to _sample_token,
-    which already checks temperature < 1e-5 and returns argmax for greedy;
-    the SamplingType.GREEDY branch here would be redundant.
-    """
-    if sp is None:
-        return int(np.argmax(logits_1d))
-    return _sample_token(
-        logits_1d,
-        temperature=sp.temperature,
-        top_p=sp.top_p,
-        top_k=sp.top_k,
-        seed=sp.seed,
-    )
-
 
 ARCH_MAP = {
     "LlamaForCausalLM": "llama",
@@ -380,6 +363,11 @@ class WebGPUModelRunner:
         # with the placeholder are never read because the scheduler guards
         # slice_request with num_logprobs is not None. Using a plain list
         # satisfies the list[int] | None contract of LogprobsTensors.tolists.
+        # NOTE: cu_list is equivalent to a cumulative sum of per-request token
+        # counts here because WebGPU generates exactly one token per step (T=1).
+        # With T=1, row-index-of-request-i equals sum(tokens for requests 0..i-1).
+        # Speculative decoding (T>1) would require a true cumulative sum over
+        # per-request token counts instead of the row counter below.
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = any(d is not None for d in logprobs_data)
@@ -435,7 +423,7 @@ class WebGPUModelRunner:
         """
         if num_logprobs is None:
             return None
-        if logits.shape[-1] == 1 and getattr(self.model, "logit_returns_token_id", False):
+        if logits.shape[-1] == 1 and self.model.logit_returns_token_id:
             full = self.model.logit_readback()
         elif logits.shape[-1] > 1:
             full = logits
@@ -497,7 +485,7 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            num_logprobs = sp.num_logprobs if sp is not None else None
+            num_logprobs = sp.logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -572,7 +560,11 @@ class WebGPUModelRunner:
             # Use the last position's logits for the first generated token.
             # Apply sampling when SamplingParams request non-greedy decoding.
             if last_logits.shape[-1] > 1:
-                first_decode_tok = _sample_logits(last_logits[-1], sp)
+                first_decode_tok = (
+                    int(np.argmax(last_logits[-1])) if sp is None
+                    else _sample_token(last_logits[-1], temperature=sp.temperature,
+                                       top_p=sp.top_p, top_k=sp.top_k, seed=sp.seed)
+                )
             else:
                 first_decode_tok = int(last_logits[0, 0])
 
@@ -706,7 +698,11 @@ class WebGPUModelRunner:
                 if logits.shape[-1] == 1:
                     stok = int(logits[0, 0])
                 else:
-                    stok = _sample_logits(logits[0], sp)
+                    stok = (
+                        int(np.argmax(logits[0])) if sp is None
+                        else _sample_token(logits[0], temperature=sp.temperature,
+                                           top_p=sp.top_p, top_k=sp.top_k, seed=sp.seed)
+                    )
 
                 # Compute logprobs if requested for this request.
                 lp_data = self._extract_logprob_data(logits, 0, stok, num_logprobs, rid)

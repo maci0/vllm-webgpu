@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -19,7 +19,7 @@ _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
-_SYM_ZEROS_INT32: np.int32 = np.array([0x88888888], dtype=np.uint32).view(np.int32)[0]
+_SYM_ZEROS_INT32: int = -2004318072  # 0x88888888 reinterpreted as signed int32 (all nibbles = 8)
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -60,16 +60,6 @@ try:
 except ImportError:
     _ct_get_quant_cfg = None
 
-
-def _collect_mx_bases(header: dict) -> list:
-    """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
-    return sorted(
-        k.removesuffix(".weight")
-        for k in header
-        if k.endswith(".weight")
-        and header[k].get("dtype") == "U8"
-        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
-    )
 
 
 def _load_quant_cfg(config_path: Path) -> dict:
@@ -1006,7 +996,13 @@ def load_safetensors_weights(
             # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
             # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
             # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-            mxfp4_bases = _collect_mx_bases(header)
+            mxfp4_bases = sorted(
+                k.removesuffix(".weight")
+                for k in header
+                if k.endswith(".weight")
+                and header[k].get("dtype") == "U8"
+                and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+            )
             mx4_set: set = set()
             for base in mxfp4_bases:
                 mx4_set.add(f"{base}.weight")
@@ -1040,7 +1036,13 @@ def load_safetensors_weights(
             # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
             # CPU dequant: avoids shader changes for per-block FP8.
             # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
-            mxfp8_bases = _collect_mx_bases(header)
+            mxfp8_bases = sorted(
+                k.removesuffix(".weight")
+                for k in header
+                if k.endswith(".weight")
+                and header[k].get("dtype") == "U8"
+                and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+            )
             mx8_set: set = set()
             for base in mxfp8_bases:
                 mx8_set.add(f"{base}.weight")

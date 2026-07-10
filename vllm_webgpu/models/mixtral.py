@@ -1,5 +1,5 @@
 from __future__ import annotations
-from logging import DEBUG
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -53,9 +53,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             self._wgpu_lib = _wgpu_lib
 
             dev = self.wgpu_device.wgpu_device
-
-            def mk(n: int) -> "WebGPUBuffer":
-                return WebGPUBuffer.empty(dev, max(n, 8))
 
             # Use the larger of intermediate_size and moe_intermediate_size so
             # subclasses that pass expert_inter > intermediate_size to _moe_ffn_layer
@@ -276,7 +273,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(DEBUG)
+        _debug_weights = logger.isEnabledFor(logging.DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(
