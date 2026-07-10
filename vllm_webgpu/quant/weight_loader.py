@@ -131,7 +131,6 @@ def _upload_tensor(
 try:
     from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
     from compressed_tensors import QuantizationConfig as _QuantizationConfig
-    from compressed_tensors import unpack_from_int32 as _unpack_int32
     from compressed_tensors.quantization import QuantizationType as _QuantizationType
     from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
     from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
@@ -139,11 +138,18 @@ try:
 except ImportError:
     _ct_get_quant_cfg = None
     _QuantizationConfig = None
-    _unpack_int32 = None
     _QuantizationType = None
     _QuantizationStrategy = None
     _ct_find_index = None
     _decompress_mx_scale = None
+
+try:
+    from compressed_tensors.compressors.pack_quantized.helpers import unpack_from_int32 as _unpack_int32
+except ImportError:
+    try:
+        from compressed_tensors.compressors.quantized_compressors.pack_quantized import unpack_from_int32 as _unpack_int32
+    except ImportError:
+        _unpack_int32 = None
 
 
 
