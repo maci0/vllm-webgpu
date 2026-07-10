@@ -551,6 +551,20 @@ class WebGPUModelRunner:
                 prefill_recurrent_states = self.model.save_recurrent_states()
 
             if last_logits is None:
+                # Mid-prefill chunk: model produced no output logits yet (e.g.
+                # chunked prefill where this is not the final chunk). Register
+                # partial state so the decode loop does not crash with a missing
+                # key if the scheduler promotes this request to cached_reqs
+                # before full prefill completes. The last input token is used as
+                # a sentinel; it will be overwritten when the final chunk runs.
+                self._req_state[rid] = {
+                    "pos": num_computed + T,
+                    "block_ids": blk_ids,
+                    "last_tok": int(chunk_toks[-1]) if len(chunk_toks) > 0 else 0,
+                    "num_logprobs": num_logprobs,
+                    "sampling_params": sp,
+                    "recurrent_states": prefill_recurrent_states,
+                }
                 continue
 
             # Use the last position's logits for the first generated token.
@@ -619,7 +633,13 @@ class WebGPUModelRunner:
             resumed_req_ids = cached.resumed_req_ids
 
             for i, rid in enumerate(cached.req_ids):
-                state = self._req_state.get(rid, {"pos": 0, "block_ids": [], "last_tok": 0})
+                state = self._req_state.get(rid)
+                if state is None:
+                    raise RuntimeError(
+                        f"cached req {rid} missing from _req_state; internal state is "
+                        "inconsistent (prefill may have returned None logits without "
+                        "registering state)"
+                    )
                 pos = state["pos"]
                 blk_ids = list(state.get("block_ids", []))
                 num_logprobs = state.get("num_logprobs")
