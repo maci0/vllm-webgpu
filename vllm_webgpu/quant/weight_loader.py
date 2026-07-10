@@ -810,11 +810,20 @@ def load_safetensors_weights(
                         # Fall back to CPU dequantization.
                         if fmt == "awq" and qz is not None:
                             w_f16 = _dequant_awq(qw, sc, qz)
+                        elif fmt == "awq":
+                            # qz is None but this is still an AWQ layout: qw is [K, N//8].
+                            # Synthesize all-8 qzeros (symmetric zero-point) and dequant via AWQ path.
+                            # Routing to _dequant_gptq here would misinterpret the layout as
+                            # [K//8, N] and produce a weight matrix with the wrong shape and values.
+                            K_, N8_ = qw.shape
+                            G_ = sc.shape[0]
+                            qz_awq = np.full((G_, N8_), _SYM_ZEROS_INT32, dtype=np.int32)
+                            w_f16 = _dequant_awq(qw, sc, qz_awq)
                         else:
                             if qz is None:
                                 if g_idx is not None:
                                     logger.warning(
-                                        "%s: desc_act GPTQ layer has no qzeros — assuming zero_point=8 "
+                                        "%s: desc_act GPTQ layer has no qzeros, assuming zero_point=8 "
                                         "(AutoGPTQ symmetric convention). If this checkpoint uses "
                                         "zero_point=0, every weight value will be wrong by 8 steps. "
                                         "Include qzeros in the checkpoint to fix this.", base)
