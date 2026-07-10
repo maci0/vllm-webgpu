@@ -92,9 +92,11 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    import torch
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
     )
 
     if rotary_dim is None:
@@ -115,18 +117,27 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
-    # Build a minimal stub instance to call _compute_inv_freq without triggering
-    # the full __init__ (which computes the expensive cos/sin position cache).
-    inst = object.__new__(YaRNScalingRotaryEmbedding)
-    inst.base                    = rope_theta
-    inst.rotary_dim              = rotary_dim
-    inst.max_position_embeddings = orig_ctx
-    inst.beta_fast               = beta_fast
-    inst.beta_slow               = beta_slow
-    inst.truncate                = truncate
-    inst.extrapolation_factor    = extrapolation_factor
+    pos_freqs = rope_theta ** (
+        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
+    )
+    inv_freq_extrapolation = 1.0 / pos_freqs
+    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
 
-    inv_freq = inst._compute_inv_freq(factor)
+    low, high = yarn_find_correction_range(
+        beta_fast,
+        beta_slow,
+        rotary_dim,
+        rope_theta,
+        orig_ctx,
+        truncate,
+    )
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
+    ) * extrapolation_factor
+    inv_freq = (
+        inv_freq_interpolation * (1 - inv_freq_mask)
+        + inv_freq_extrapolation * inv_freq_mask
+    )
     return inv_freq.numpy().astype("float32"), mscale
 
 
