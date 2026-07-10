@@ -375,22 +375,22 @@ class WebGPUModelRunner:
 
         # Build LogprobsLists for top-k sampled-token logprob entries.
         # Stack only non-None entries (one row per logprob-having request).
-        # cu maps req_index -> row in the stacked tensor for requests that have
-        # logprob data. tolists() requires a plain list, so we expand cu into
-        # a list of the same length as logprobs_data, using 0 as a placeholder
-        # for req-indices with no logprob rows (those positions are never read
-        # because the scheduler guards slice_request with num_logprobs is not None).
+        # cu_list[i] holds the row index in the stacked tensor for request i,
+        # or 0 as a placeholder when request i has no logprob data. Positions
+        # with the placeholder are never read because the scheduler guards
+        # slice_request with num_logprobs is not None. Using a plain list
+        # satisfies the list[int] | None contract of LogprobsTensors.tolists.
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
             max_k = max(d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None)
             pieces = []
-            cu: dict[int, int] = {}  # req_index -> row in stacked tensor
+            cu_list: list[int] = [0] * len(logprobs_data)
             row = 0
             for i, d in enumerate(logprobs_data):
                 if d is not None:
-                    cu[i] = row
+                    cu_list[i] = row
                     pad = max_k - d.logprob_token_ids.shape[1]
                     pieces.append(LogprobsTensors(
                         _fpad(d.logprob_token_ids, (0, pad), value=0),
@@ -403,7 +403,6 @@ class WebGPUModelRunner:
                 torch.cat([p.logprobs for p in pieces]),
                 torch.cat([p.selected_token_ranks for p in pieces]),
             )
-            cu_list = [cu.get(i, 0) for i in range(len(logprobs_data))]
             built_logprobs = stacked.tolists(cu_list)
 
         out = ModelRunnerOutput(
