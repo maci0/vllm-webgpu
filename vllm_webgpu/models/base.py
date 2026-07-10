@@ -87,8 +87,9 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Implements the blending arithmetic from vLLM's YaRN formulation using the
-    public helpers yarn_find_correction_range and yarn_linear_ramp_mask.
+    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via object.__new__
+    so formula changes in vLLM are picked up automatically without requiring
+    a manual update here.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -105,26 +106,10 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    import inspect
-    import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
     )
-
-    # Guard against silent breakage if vLLM renames or reorders parameters.
-    # yarn_find_correction_range is called positionally with 6 args, so any
-    # reordering would produce wrong frequencies with no TypeError. The other
-    # two helpers are called by keyword or have short stable signatures.
-    _expected = ["low_rot", "high_rot", "dim", "base", "max_position_embeddings", "truncate"]
-    _actual = list(inspect.signature(yarn_find_correction_range).parameters)
-    if _actual != _expected:
-        raise AssertionError(
-            f"yarn_find_correction_range signature changed in this vLLM build. "
-            f"Expected params {_expected}, got {_actual}. "
-            "Update compute_yarn_freqs in base.py to match the new API."
-        )
 
     if rotary_dim is None:
         rotary_dim = head_dim
@@ -138,29 +123,26 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    pos_freqs = rope_theta ** (
-        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
-    )
-    inv_freq_extrapolation = 1.0 / pos_freqs
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
+    # Delegate to vLLM's own implementation to avoid maintaining a manual copy.
+    # object.__new__ bypasses __init__ (which builds the cos/sin cache) so only
+    # the attributes required by _compute_inv_freq need to be set.
+    inst = object.__new__(YaRNScalingRotaryEmbedding)
+    inst.base                    = rope_theta
+    inst.rotary_dim              = rotary_dim
+    inst.beta_fast               = beta_fast
+    inst.beta_slow               = beta_slow
+    inst.max_position_embeddings = orig_ctx
+    inst.truncate                = truncate
+    inst.extrapolation_factor    = extrapolation_factor
 
-    low, high = yarn_find_correction_range(
-        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
-    )
-    inv_freq_mask = (
-        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
-    ) * extrapolation_factor
-    inv_freq = (
-        inv_freq_interpolation * (1 - inv_freq_mask)
-        + inv_freq_extrapolation * inv_freq_mask
-    )
+    inv_freq = inst._compute_inv_freq(factor)
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
         else float(attn_factor)
     )
-    return inv_freq.numpy(), mscale
+    return inv_freq.numpy().astype(np.float32), mscale
 
 
 
