@@ -349,6 +349,12 @@ def _make_convertor(hf_cfg):
 
     Single point of dispatch for MODEL_ARCH_CONFIG_CONVERTORS so callers avoid
     repeating the getattr/get/instantiate pattern.
+
+    This function is only reached from standalone scripts (run_inference.py,
+    profile_kernels.py) that lack a VllmConfig. In the vLLM engine path,
+    vllm_config.model_config already exposes get_total_num_kv_heads() and
+    get_head_size() directly, and allocate_kv_from_tensors is used instead of
+    allocate_kv_from_hf_config, so _make_convertor is never called there.
     """
     from vllm.transformers_utils.model_arch_config_convertor import (
         MODEL_ARCH_CONFIG_CONVERTORS,
