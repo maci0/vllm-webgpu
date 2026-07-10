@@ -151,6 +151,16 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # detects the actual format from the checkpoint weights.
         self._rms_consts["GEMMA_NORM"] = self._gemma_norm
 
+        # Seed _rope_base so _attn_block can read it before load_weights completes (e.g.
+        # unit tests that call _attn_block directly). _postprocess_weights overwrites this
+        # with the detected GEMMA_NORM value once the checkpoint is loaded.
+        self._rope_base = {
+            **self._rope_consts,
+            "GEMMA_NORM": self._gemma_norm,
+            "ROTARY_DIM": self._rotary_dim,
+            "INTERLEAVED": self._rope_interleaved,
+        }
+
         # Mixtral.__init__ reads num_local_experts (0 for Qwen35) and overwrites _is_moe.
         # Re-assert the correct values from Qwen35-specific config fields.
         self._num_experts = self._moe_num_experts
