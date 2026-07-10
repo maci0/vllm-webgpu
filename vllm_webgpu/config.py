@@ -51,7 +51,3 @@ class WebGPUConfig:
 @functools.cache
 def get_config() -> WebGPUConfig:
     return WebGPUConfig.from_env()
-
-
-def reset_config() -> None:
-    get_config.cache_clear()

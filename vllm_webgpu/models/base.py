@@ -84,7 +84,7 @@ def compute_yarn_freqs(
     # YaRNScalingRotaryEmbedding._compute_inv_freq (vLLM ≥0.8). Both this
     # function and the private method use the same three helpers below. If
     # vLLM changes the YaRN formula, update this function to match.
-    # Pinned against vLLM 0.8.x; review on every vLLM minor bump.
+    # Pinned against vLLM 0.24.x; review on every vLLM minor bump.
     import torch
     from vllm.model_executor.layers.rotary_embedding.common import (
         yarn_find_correction_range,

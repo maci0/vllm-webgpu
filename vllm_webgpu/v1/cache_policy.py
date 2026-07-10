@@ -169,8 +169,9 @@ def allocate_kv_from_tensors(
             # dimensions (e.g. MLA-style models where head_size != head_size_v)
             # get correctly sized buffers instead of an averaged size.
             dtype_bytes = get_dtype_size(spec.dtype)
-            k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * dtype_bytes
-            v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * dtype_bytes
+            storage_bs = getattr(spec, 'storage_block_size', spec.block_size)
+            k_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size * dtype_bytes
+            v_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size_v * dtype_bytes
             naive = tensor.size // 2
             if k_bytes != naive or v_bytes != naive:
                 logger.warning(
@@ -203,12 +204,11 @@ def allocate_kv_from_tensors(
             half = tensor.size // 2
             k_bytes = half
             v_bytes = half
-            if kv_cache_groups is not None:
-                logger.warning(
-                    "No spec found for layer %r; falling back to tensor.size // 2. "
-                    "May over-allocate for quantized KV cache with scale bytes.",
-                    first_name or "<unknown>",
-                )
+            logger.warning(
+                "No spec found for layer %r; falling back to tensor.size // 2. "
+                "May over-allocate for quantized KV cache with scale bytes.",
+                first_name or "<unknown>",
+            )
         else:
             half = tensor.size // 2
             k_bytes = half

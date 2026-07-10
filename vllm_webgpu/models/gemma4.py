@@ -410,10 +410,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            [x_buf, self.weights[self._norm_key()], norm_out],
                            _rms_base, (num_tokens, 1, 1))
 
-            _lm_key = self._lm_head_key()
-            lm_head_w = self.weights[_lm_key]
-            uq_lm = self._uq_for_key(_lm_key)
-            _lm_base = _lm_key.removesuffix('.weight')
+            _lm_key, lm_head_w, uq_lm, _lm_base = self._lm_head_parts()
             # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
@@ -441,6 +438,15 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self._last_vocab     = vocab
         tok = self._read_sample_tok()
         return np.array([[tok]], dtype=np.int32)
+
+    def _lm_head_parts(self) -> "tuple[str, object, int, str]":
+        """Return (key, weight_buf, uq, base_key) for the LM head.
+
+        Centralises the four-line setup repeated in forward(), _prefill_batch_forward(),
+        and _prefill_sequential_fallback() so callers avoid duplicating the pattern.
+        """
+        key = self._lm_head_key()
+        return key, self.weights[key], self._uq_for_key(key), key.removesuffix('.weight')
 
     def _mr4_quant_supported(self) -> bool:
         """Return True when every layer weight uses a quant format compatible with matmul_quant_mr4.
@@ -840,10 +846,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         # Extract last token, apply final norm, run LM head.
         # copy_buffer_to_buffer is a GPU-side operation (no CPU round-trip).
-        _lm_key = self._lm_head_key()
-        lm_head_w = self.weights[_lm_key]
-        uq_lm = self._uq_for_key(_lm_key)
-        _lm_base = _lm_key.removesuffix('.weight')
+        _lm_key, lm_head_w, uq_lm, _lm_base = self._lm_head_parts()
         with self._batched_dispatch():
             last_byte_offset = (T - 1) * hidden * 4   # f32: 4 bytes per element
             enc = self._active_encoder
@@ -942,10 +945,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     )
 
         # Final norm and LM head on the last token's hidden state.
-        _lm_key = self._lm_head_key()
-        lm_head_w = self.weights[_lm_key]
-        uq_lm = self._uq_for_key(_lm_key)
-        _lm_base = _lm_key.removesuffix('.weight')
+        _lm_key, lm_head_w, uq_lm, _lm_base = self._lm_head_parts()
         with self._batched_dispatch():
             self._dispatch(
                 "rms_norm_f32in",

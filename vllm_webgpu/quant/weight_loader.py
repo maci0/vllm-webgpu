@@ -480,7 +480,7 @@ def load_safetensors_weights(
         # order below, which may shadow the intended format for the other layers.
         # All currently supported checkpoints are single-format, so this is safe.
         has_qweight = has_wp = has_diffusion_nvfp4 = has_fp8_weight = has_mx_u8_pair = False
-        _bnb_quantized_stats = _bnb_nf4_key = _bnb_absmax = False
+        has_bnb_nf4 = False
         _ct_i32_key = False
         _ct_gptq_gpu = bool(ct_meta and ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu")
         for k in header:
@@ -506,16 +506,14 @@ def load_safetensors_weights(
                 base = k.removesuffix(".weight_packed")
                 if dtype == "I32" and _ct_gptq_gpu and base + ".weight_scale" in header:
                     _ct_i32_key = True
-            if k.endswith(".weight_quantized_stats"):
-                _bnb_quantized_stats = True
-            elif "quant_state.bitsandbytes__nf4" in k:
-                _bnb_nf4_key = True
+            # BnB NF4: companion keys {base}.weight_quantized_stats (older BnB),
+            # quant_state.bitsandbytes__nf4 key, or {base}.weight.absmax
+            # (newer bitsandbytes >= 0.41) alongside U8 weights.
+            if k.endswith(".weight_quantized_stats") or "quant_state.bitsandbytes__nf4" in k:
+                has_bnb_nf4 = True
             elif k.endswith(".weight.absmax"):
                 if header.get(k.removesuffix(".absmax"), {}).get("dtype") == "U8":
-                    _bnb_absmax = True
-        # BnB NF4: companion keys {base}.weight_quantized_stats (older BnB) or
-        # {base}.weight.absmax (newer bitsandbytes >= 0.41) alongside U8 weights.
-        has_bnb_nf4 = _bnb_quantized_stats or _bnb_nf4_key or _bnb_absmax
+                    has_bnb_nf4 = True
         # compressed-tensors pack-quantized INT4: .weight I32 + .weight_scale F16/BF16/F32
         # (e.g. google/gemma-4-12B-it-qat-w4a16-ct). The quantization_config in config.json
         # is read by detect_compressed_tensors_fmt() and stored in ct_meta; the weight tensors

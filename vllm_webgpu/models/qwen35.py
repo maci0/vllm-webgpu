@@ -99,6 +99,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         )
         self._lin_conv_shape = _lin_conv_shape
         self._lin_ssm_shape = _lin_ssm_shape
+        # Mirrors gated_delta_net_state_shape conv_dim; pinned against vLLM 0.24.0.
         self._lin_conv_dim: int = 2 * self._lin_k_heads * self._lin_k_dim + self._lin_v_heads * self._lin_v_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).

@@ -1,14 +1,14 @@
 import os
 import pytest
-from vllm_webgpu.config import WebGPUConfig, get_config, reset_config
+from vllm_webgpu.config import WebGPUConfig, get_config
 
 
 def setup_function():
-    reset_config()
+    get_config.cache_clear()
 
 
 def teardown_function():
-    reset_config()
+    get_config.cache_clear()
     for key in ["VLLM_WEBGPU_MEMORY_FRACTION", "VLLM_WEBGPU_POWER_PREFERENCE",
                 "VLLM_WEBGPU_QUANTIZATION"]:
         os.environ.pop(key, None)
@@ -22,7 +22,7 @@ def test_defaults():
 
 def test_memory_fraction_float(monkeypatch):
     monkeypatch.setenv("VLLM_WEBGPU_MEMORY_FRACTION", "0.8")
-    reset_config()
+    get_config.cache_clear()
     cfg = WebGPUConfig.from_env()
     assert cfg.memory_fraction == pytest.approx(0.8)
     assert not cfg.is_auto_memory
@@ -30,7 +30,7 @@ def test_memory_fraction_float(monkeypatch):
 
 def test_invalid_memory_fraction(monkeypatch):
     monkeypatch.setenv("VLLM_WEBGPU_MEMORY_FRACTION", "bad")
-    reset_config()
+    get_config.cache_clear()
     with pytest.raises(ValueError, match="VLLM_WEBGPU_MEMORY_FRACTION"):
         WebGPUConfig.from_env()
 
@@ -43,7 +43,7 @@ def test_get_config_singleton():
 
 def test_reset_config():
     a = get_config()
-    reset_config()
+    get_config.cache_clear()
     b = get_config()
     assert a is not b
 

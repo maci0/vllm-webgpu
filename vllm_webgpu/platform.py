@@ -21,8 +21,11 @@ logger = init_logger(__name__)
 def _get_wgpu_adapter():
     """Return the wgpu adapter, probing on each call.
 
-    Not cached intentionally: config.reset_config() can change power_preference
-    between calls (e.g. in tests), and re-probing is cheap on failure.
+    Not cached intentionally: get_config.cache_clear() can change
+    power_preference between calls (e.g. in tests), and re-probing is cheap
+    on failure. In production vLLM calls is_available() once and
+    get_device_name() once at startup, so the double-probe is a bounded cost
+    of two adapter requests total, not per-request.
     Returns None if wgpu is unavailable or the probe failed.
     """
     from vllm_webgpu.config import get_config
@@ -49,9 +52,10 @@ class WebGPUPlatform(_Platform):
 
     @classmethod
     def import_ir_kernels(cls) -> None:
-        # WebGPU has no IR kernel modules to register; override prevents the
-        # base-class default from importing vllm.kernels and loading
-        # CUDA/ROCm/XPU ops.
+        # vllm.kernels imports successfully on CPU/WebGPU but registers IR op
+        # backends for CUDA/ROCm/XPU that cannot execute here. Suppress the
+        # import to avoid dead registrations and any side effects in
+        # vllm.kernels.__init__.
         pass
 
     @classmethod

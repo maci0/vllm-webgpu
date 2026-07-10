@@ -454,7 +454,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # exceeds the ~4-8 s per-command-buffer limit. 4 layers at a time stays safe.
         _CHUNK = 4
         _hstate = 0
-        normed_x = b["normed"]
         x_res    = b["x"]
         _pfill_rope_base = self._rope_consts
         _freq_buf = self._rope_freq_buf
@@ -482,9 +481,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     uw_k = f"{p}.mlp.up_proj.weight"
                     dw_k = f"{p}.mlp.down_proj.weight"
 
-                    gemm_batch(normed_x, q_wk, b["q_buf"],    hidden, q_dim)
-                    gemm_batch(normed_x, k_wk, b["k_buf"],    hidden, kv_dim)
-                    gemm_batch(normed_x, v_wk, b["v_buf"],    hidden, kv_dim)
+                    gemm_batch(b["normed"], q_wk, b["q_buf"],    hidden, q_dim)
+                    gemm_batch(b["normed"], k_wk, b["k_buf"],    hidden, kv_dim)
+                    gemm_batch(b["normed"], v_wk, b["v_buf"],    hidden, kv_dim)
 
                     # ── Per-head RMSNorm + RoPE for all T tokens ──────────────────
                     for src, dst, n_h, wk in [
@@ -654,9 +653,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 rms_base, (1, 1, 1),
             )
             # LM head + optional argmax (mirrors _decode_teardown; sets _last_logit_buf/_last_vocab)
-            self._decode_teardown(pre["norm_out"], pre["logits"], vocab, self._greedy_decode)
+            greedy = self._greedy_decode
+            self._decode_teardown(pre["norm_out"], pre["logits"], vocab, greedy)
 
-        greedy = self._greedy_decode
         if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)

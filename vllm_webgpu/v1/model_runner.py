@@ -195,13 +195,12 @@ class WebGPUModelRunner:
         _layer_types = get_layer_types(None, mc)
 
         if not lp_list:
-            layer_types = _layer_types
-            if layer_types and len(layer_types) == mc.num_hidden_layers:
+            if _layer_types and len(_layer_types) == mc.num_hidden_layers:
                 default_hd = self.vllm_config.model_config.get_head_size()
                 default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
                 global_hd = getattr(mc, "global_head_dim", default_hd)
                 global_kv = getattr(mc, "num_global_key_value_heads", None) or default_kv
-                for i, lt in enumerate(layer_types):
+                for i, lt in enumerate(_layer_types):
                     if lt not in KV_ATTN_TYPES:
                         continue
                     if lt == "full_attention":
@@ -272,15 +271,16 @@ class WebGPUModelRunner:
           [block_id * bytes_per_block, (block_id + 1) * bytes_per_block).
         Placeholder buffers (16 bytes, used for non-attention layers) are skipped.
         """
-        if not block_ids or self.model is None or self._num_kv_blocks == 0:
+        if self.model is None or self._num_kv_blocks == 0:
             return
         queue = self.wgpu_device.wgpu_device.queue
+        _zeros_cache: dict[int, bytes] = {}
         for k_buf, v_buf in self.model.kv_pool:
             if k_buf.nbytes <= 16:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
                 continue
             bytes_per_block = k_buf.nbytes // self._num_kv_blocks
-            zeros = b"\x00" * bytes_per_block
+            zeros = _zeros_cache.setdefault(bytes_per_block, b"\x00" * bytes_per_block)
             for block_id in block_ids:
                 offset = block_id * bytes_per_block
                 queue.write_buffer(k_buf.buf, offset, zeros)
@@ -302,15 +302,14 @@ class WebGPUModelRunner:
     @staticmethod
     def _compute_request_logprobs(
         logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
-    ) -> "LogprobsTensors | None":
+    ) -> "LogprobsTensors":
         """Compute top-N logprobs from a 1-D float32 logits vector.
 
         Returns a LogprobsTensors of shape [1, min(num_logprobs, vocab_size)+1]
         for top-k requests (slot 0 is always the sampled token; slots 1..k are
         the top-k tokens by log probability, matching the layout expected by
         LogprobsLists). k is capped at vocab_size so the shape may be smaller
-        than num_logprobs+1 for small-vocabulary models. Returns None when
-        logprobs cannot be computed.
+        than num_logprobs+1 for small-vocabulary models.
         """
         k = min(num_logprobs, logits_1d.shape[0])
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))

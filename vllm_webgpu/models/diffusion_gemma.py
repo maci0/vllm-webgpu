@@ -40,12 +40,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # forward() returns full float32 logits [num_tokens, vocab], not a (1,1) token ID.
     logit_returns_token_id: bool = False
 
-    # V norm is applied unconditionally in _decoder_layer.
-    # _decoder_layer here does not consult _apply_v_norm — V norm is structural.
-    # Set True at the class level so the inherited state is explicit and correct
-    # even though _transformer_layer (which gates on it) is unreachable here.
-    _apply_v_norm: bool = True
-
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         # Set moe_intermediate_size before super().__init__ because Gemma4.__init__
@@ -56,6 +50,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                    getattr(model_config, "expert_intermediate_size",
                                                            model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
+        # V norm is applied unconditionally in _decoder_layer regardless of layer_types.
+        # Override the instance attribute set by Gemma4.__init__ (which gates on layer_types).
+        self._apply_v_norm = True
 
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
@@ -226,7 +223,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "multi-token canvas prefill including the full MoE FFN."
         )
 
-    def _prefill_sequential_fallback(self, input_ids, positions, attn_metadata):
+    def _prefill_sequential_fallback(self, input_ids, positions, attn_metadata, T: int = 0):
         """Not implemented for DiffusionGemma.
 
         The inherited Gemma4 implementation calls _transformer_layer(), which
