@@ -14,9 +14,11 @@ enable f16;
 //   K          — input hidden dim
 //   N          — intermediate/output dim (gate and up both have shape [N, K/2] u32)
 //   GELU       — 0: SiLU = x*σ(x) (Llama/Qwen), 1: tanh-GELU (Gemma) [legacy]
-//   ACTIVATION — 0: SiLU (default), 1: GELU (sigmoid approx), 2: ReLU² (Nemotron-3)
+//   ACTIVATION — 0: SiLU (default), 1: x*sigmoid(1.702*x) (SwigluOAI/GELU approx), 2: ReLU² (Nemotron-3)
 //                Takes precedence over GELU when non-zero.
-//   CLAMP_MAX  — 0: no clamp; >0: clamp gate activation to this value (swiglu_limit)
+//   CLAMP_MAX  — 0: no clamp; >0: clamp gate activation (upper bound only) to this value (swiglu_limit)
+//   CLAMP_MIN  — 0: no clamp; <0: clamp up projection symmetrically to [CLAMP_MIN, -CLAMP_MIN]
+//   UP_BIAS    — additive bias applied to up projection before gate*up multiply (SwigluOAI: 1.0)
 //
 // Bindings:
 //   0: x        [K] f16
@@ -27,8 +29,10 @@ enable f16;
 override K:          u32 = 2560u;
 override N:          u32 = 9728u;
 override GELU:       u32 = 0u;   // 0 = SiLU, 1 = tanh-GELU (Gemma) [legacy; use ACTIVATION]
-override CLAMP_MAX:  f32 = 0.0;  // 0 = no clamp; >0 = clamp gate activation to this value (swiglu_limit)
-override ACTIVATION: u32 = 0u;   // 0 = SiLU, 1 = GELU, 2 = ReLU² (squared ReLU)
+override CLAMP_MAX:  f32 = 0.0;  // 0 = no clamp; >0 = clamp gate activation (upper only) to this value
+override CLAMP_MIN:  f32 = 0.0;  // 0 = no clamp; <0 = clamp up projection symmetrically to [CLAMP_MIN, -CLAMP_MIN]
+override UP_BIAS:    f32 = 0.0;  // additive bias on up projection before multiply (SwigluOAI: 1.0)
+override ACTIVATION: u32 = 0u;   // 0 = SiLU, 1 = x*sigmoid(1.702*x) (SwigluOAI), 2 = ReLU²
 
 @group(0) @binding(0) var<storage, read>       x       : array<f16>;
 @group(0) @binding(1) var<storage, read>       gate_w  : array<u32>;
@@ -105,7 +109,8 @@ fn main(
 
     if (tid == 0u) {
         let g = sh_gate[0];
-        let u = sh_up[0];
+        var u = sh_up[0] + UP_BIAS;
+        if (CLAMP_MIN < 0.0) { u = clamp(u, CLAMP_MIN, -CLAMP_MIN); }
         ffn_act[row] = f16(clamp(activate(g) * u, -65504.0, 65504.0));
     }
 }

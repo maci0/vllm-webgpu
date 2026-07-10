@@ -35,7 +35,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._swiglu_limit: float = getattr(model_config, "swiglu_limit", 0.0)
         self._attn_bias: bool = bool(getattr(model_config, "attention_bias", False))
         self._layer_types: list[str] = getattr(model_config, "layer_types", None) or []
-        self._clamp_extra: dict = {"CLAMP_MAX": self._swiglu_limit} if self._swiglu_limit > 0 else {}
+        # SwigluOAI: x*sigmoid(1.702*x) with (up+1) bias; optional symmetric up clamp when swiglu_limit > 0
+        self._clamp_extra: dict = {"ACTIVATION": 1, "UP_BIAS": 1.0}
+        if self._swiglu_limit > 0:
+            self._clamp_extra["CLAMP_MAX"] = self._swiglu_limit
+            self._clamp_extra["CLAMP_MIN"] = -self._swiglu_limit
         self._moe_inter: int = (
             getattr(model_config, "moe_intermediate_size", None)
             or model_config.intermediate_size
