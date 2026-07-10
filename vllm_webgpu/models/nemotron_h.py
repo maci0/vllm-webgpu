@@ -428,7 +428,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # GPTQ weights are [N, K//8] (N-major after the load-time transpose),
             # so byte concat along the flat sequence is equivalent to axis=0
             # concat and is correct without any special handling.
-            _is_awq = self._uq_for_key(q_key) == 4  # awq_sym
+            _uq_q = self._uq_for_key(q_key)
+            _uq_k = self._uq_for_key(k_key)
+            _uq_v = self._uq_for_key(v_key)
+            if len({_uq_q, _uq_k, _uq_v}) != 1:
+                raise ValueError(
+                    f"{p}: q/k/v projections have mixed quantization formats "
+                    f"(q={_uq_q}, k={_uq_k}, v={_uq_v}). Cannot pack into a "
+                    f"single fused QKV buffer safely."
+                )
+            _is_awq = _uq_q == 4  # awq_sym
 
             if _is_awq:
                 # CPU-side axis=1 concat produces [K, N_total//8] so every row
