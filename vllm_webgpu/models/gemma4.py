@@ -153,6 +153,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 lp_entry.setdefault("intermediate_size", self.intermediate_size)
                 lp_entry.setdefault("is_kv_shared", False)
                 lp_entry.setdefault("kv_shared_target", -1)
+                lp_entry.setdefault("has_v_proj", True)
             self._lp: list[dict] = raw_lp
         elif layer_types and len(layer_types) == self.num_layers:
             # Build per-layer params from layer_types list (Gemma4 safetensors config).
