@@ -800,21 +800,25 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._dispatch("add_f32", [residual, combined_normed, out],
                                {"N": add_n},
                                _vec4_wg(add_n))
+                if abs(layer_scalar - 1.0) > 1e-6:
+                    self._dispatch("f32_scale_inplace", [out],
+                                   {"N": add_n, "SCALE": layer_scalar},
+                                   ((add_n + 255) // 256, 1, 1))
         else:
             # Apply post_feedforward_layernorm before residual add, matching vLLM's
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
-            pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
-            if pfn_w is not None:
-                self._dispatch("rms_norm", [hidden_states_1, pfn_w, sc["normed"]], _rms,
-                               (num_tokens, 1, 1))
-                hidden_states_1 = sc["normed"]
-            self._dispatch("add_f32", [residual, hidden_states_1, out],
-                           {"N": add_n}, _vec4_wg(add_n))
-
-        if abs(layer_scalar - 1.0) > 1e-6:
-            self._dispatch("f32_scale_inplace", [out],
-                           {"N": add_n, "SCALE": layer_scalar},
-                           ((add_n + 255) // 256, 1, 1))
+            with self._batched_dispatch(label=f"L{layer_idx:02d}T"):
+                pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
+                if pfn_w is not None:
+                    self._dispatch("rms_norm", [hidden_states_1, pfn_w, sc["normed"]], _rms,
+                                   (num_tokens, 1, 1))
+                    hidden_states_1 = sc["normed"]
+                self._dispatch("add_f32", [residual, hidden_states_1, out],
+                               {"N": add_n}, _vec4_wg(add_n))
+                if abs(layer_scalar - 1.0) > 1e-6:
+                    self._dispatch("f32_scale_inplace", [out],
+                                   {"N": add_n, "SCALE": layer_scalar},
+                                   ((add_n + 255) // 256, 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
         return out
