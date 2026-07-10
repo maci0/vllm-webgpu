@@ -217,11 +217,10 @@ def allocate_kv_from_tensors(
                 first_name or "<unknown>",
             )
         else:
-            half = tensor.size // 2
-            k_bytes = half
-            v_bytes = half
+            k_bytes = 16
+            v_bytes = 16
             logger.warning(
-                "Spec for layer %r (%s) has no real_page_size_bytes; falling back to tensor.size // 2.",
+                "Spec for layer %r (%s) is not an attention spec; using 16-byte placeholder.",
                 first_name or "<unknown>",
                 type(spec).__name__,
             )
