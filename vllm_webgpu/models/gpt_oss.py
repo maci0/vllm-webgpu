@@ -40,10 +40,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         if self._swiglu_limit > 0:
             self._clamp_extra["CLAMP_MAX"] = self._swiglu_limit
             self._clamp_extra["CLAMP_MIN"] = -self._swiglu_limit
-        self._moe_inter: int = (
-            getattr(model_config, "moe_intermediate_size", None)
-            or model_config.intermediate_size
-        )
+        _moe_inter_v = getattr(model_config, "moe_intermediate_size", None)
+        self._moe_inter: int = _moe_inter_v if _moe_inter_v is not None else model_config.intermediate_size
 
         # _prefill_batch_forward bypasses _attn_block entirely, so it cannot
         # apply attention biases or per-layer layer_types context overrides.
