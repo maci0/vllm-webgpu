@@ -201,11 +201,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # GDN linear-attention scratch buffers (sized from config, not hardcoded).
         self._sc.update({
             "qkv_conv":     mk(self._lin_conv_dim * 2),  # post-conv output
-            "a_buf":        mk(self._lin_k_heads * 2),   # in_proj_a output [K_HEADS f16]
+            "a_buf":        mk(self._lin_v_heads * 2),   # in_proj_a output [V_HEADS f16]
             "z_buf":        mk(self._lin_val_dim * 2),   # in_proj_z output
             "gdn_out":      mk(self._lin_val_dim * 2),   # GDN attn output
             "gated":        mk(self._lin_val_dim * 2),   # after norm+gate
-            "b_buf":        mk(self._lin_k_heads * 2),   # in_proj_b output [K_HEADS f16]
+            "b_buf":        mk(self._lin_v_heads * 2),   # in_proj_b output [V_HEADS f16]
         })
 
         if self._is_moe:
@@ -515,7 +515,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                            {"CONV_DIM": cd, "KERNEL": self._lin_conv_kernel, "WG_SIZE": 256},
                            ((cd + 255) // 256, 1, 1))
 
-            # 4. a projection: normed → [K_HEADS] (dt for decay)
+            # 4. a projection: normed → [V_HEADS] (dt for decay, one per V-head)
             _wk_a = f"{p}.in_proj_a.weight"
             _w_a, _bf16_a, _uq_a = self._resolve_gdn_weight(_wk_a)
             _qi_a = self._quant_extra(f"{p}.in_proj_a", _uq_a)
@@ -523,11 +523,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                            [normed_x, _w_a,
                             self._scales_buf(_wk_a, _uq_a, self._dummy_scales_buf),
                             sc["a_buf"]],
-                           {"K": hidden, "N": kh, "USE_QUANT": _uq_a, "USE_BF16": _bf16_a,
+                           {"K": hidden, "N": vh, "USE_QUANT": _uq_a, "USE_BF16": _bf16_a,
                             **_qi_a},
-                           _gemv_wg(kh))
+                           _gemv_wg(vh))
 
-            # 5a. b projection: normed → [K_HEADS] (outer-product gate)
+            # 5a. b projection: normed → [V_HEADS] (outer-product gate, one per V-head)
             _wk_b = f"{p}.in_proj_b.weight"
             _w_b, _bf16_b, _uq_b = self._resolve_gdn_weight(_wk_b)
             _qi_b = self._quant_extra(f"{p}.in_proj_b", _uq_b)
@@ -535,9 +535,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                            [normed_x, _w_b,
                             self._scales_buf(_wk_b, _uq_b, self._dummy_scales_buf),
                             sc["b_buf"]],
-                           {"K": hidden, "N": kh, "USE_QUANT": _uq_b, "USE_BF16": _bf16_b,
+                           {"K": hidden, "N": vh, "USE_QUANT": _uq_b, "USE_BF16": _bf16_b,
                             **_qi_b},
-                           _gemv_wg(kh))
+                           _gemv_wg(vh))
 
             # 5b. z gate projection: normed → [val_dim]
             _wk_z = f"{p}.in_proj_z.weight"
