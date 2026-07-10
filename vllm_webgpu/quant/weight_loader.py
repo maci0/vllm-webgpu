@@ -633,7 +633,7 @@ def load_safetensors_weights(
             matmul_quant_mr4 declare the scales binding as array<f32>.
             """
             nonlocal _pending_bytes
-            arr = np.ascontiguousarray(arr.astype(np_dtype))
+            arr = np.ascontiguousarray(arr, dtype=np_dtype)
             data = _pad4(arr.tobytes())
             buf = wgpu_device.create_buffer(size=len(data), usage=usage)
             wgpu_device.queue.write_buffer(buf, 0, data)
