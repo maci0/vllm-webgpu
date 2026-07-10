@@ -168,6 +168,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 "before using a checkpoint with use_bias=True."
             )
 
+        # mamba2_causal_conv.wgsl hard-codes SiLU as the conv activation.
+        # NemotronHConfig exposes mamba_hidden_act (default "silu"); if a
+        # checkpoint sets it to anything else the conv outputs will be silently
+        # wrong. Fail fast, consistent with the mlp_bias/use_bias guards above.
+        if getattr(model_config, "mamba_hidden_act", "silu") != "silu":
+            raise NotImplementedError(
+                "NemotronHWebGPUModel requires mamba_hidden_act=\"silu\". "
+                "mamba2_causal_conv.wgsl hard-codes SiLU as the conv "
+                "activation; other activations produce silently wrong outputs."
+            )
+
         # _layer_dispatch has no MoE branch. A checkpoint with 'E' entries in
         # hybrid_override_pattern would load all weights, fill GPU memory, then
         # raise an unguarded NotImplementedError on the first forward pass.

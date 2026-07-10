@@ -63,9 +63,10 @@ def make_tiny_nemotron_config():
     cfg.ssm_state_size          = 4
     cfg.conv_kernel             = 4
     # conv_dim = 32 + 2*2*4 = 48, in_proj_dim = 32 + 48 + 4 = 84
-    cfg.layers_block_type = ["mamba", "attention"]
-    cfg.mlp_bias          = False
-    cfg.use_bias          = False
+    cfg.layers_block_type  = ["mamba", "attention"]
+    cfg.mlp_bias           = False
+    cfg.use_bias           = False
+    cfg.mamba_hidden_act   = "silu"
     return cfg
 
 
