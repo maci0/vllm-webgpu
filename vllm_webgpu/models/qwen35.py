@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -97,9 +97,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        self._lin_conv_dim: int = (
-            self._lin_conv_shape[0] if is_conv_state_dim_first() else self._lin_conv_shape[1]
-        )
+        self._lin_conv_dim: int = math.prod(self._lin_conv_shape) // (self._lin_conv_kernel - 1)
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;

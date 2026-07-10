@@ -25,7 +25,7 @@ import torch
 # apply_top_k_top_p, random_sample` and call apply_top_k_top_p(logits_t, k_t,
 # p_t) — the dispatcher will handle allow_cpu_sync.
 from vllm.v1.sample.ops.topk_topp_sampler import (
-    apply_top_k_top_p,
+    apply_top_k_top_p,         # import-only: used solely for the co_filename assertion below
     apply_top_k_top_p_pytorch,
     random_sample,
 )

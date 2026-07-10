@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.transformers_utils.config import patch_legacy_rope_type
 from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vals_per_thread, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -152,9 +153,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         When rope_type == 'yarn', replaces the base-class dummy buffer with actual
         YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
         """
-        rope_scaling = getattr(self.model_config, "rope_scaling", None) or {}
-        rope_type = (rope_scaling.get("rope_type", "") or
-                     rope_scaling.get("type", ""))
+        rope_scaling = dict(getattr(self.model_config, "rope_scaling", None) or {})
+        patch_legacy_rope_type(rope_scaling)
+        rope_type = rope_scaling.get("rope_type", "")
 
         if rope_type != "yarn":
             if rope_type not in ("", "default", "linear"):
@@ -392,6 +393,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # All other quant types (AWQ, FP8, NF4, Q4_K, ...) fall through to _transformer_layer
         # which dispatches matmul_quant with the correct USE_QUANT per key.
         # _batch_matmul_supported is computed once in load_weights; no re-scan per call.
+        if self._batch_matmul_supported is None:
+            raise RuntimeError("load_weights() must be called before forward()")
         if not self._batch_matmul_supported:
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T,

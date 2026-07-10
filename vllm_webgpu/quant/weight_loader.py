@@ -21,8 +21,7 @@ _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
-import struct as _struct
-_SYM_ZEROS_INT32: int = _struct.unpack('<i', b'\x88\x88\x88\x88')[0]  # all nibbles = 8, bit pattern 0x88888888
+_SYM_ZEROS_INT32: int = int(np.frombuffer(b'\x88\x88\x88\x88', dtype=np.int32)[0])  # all nibbles = 8, bit pattern 0x88888888
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":

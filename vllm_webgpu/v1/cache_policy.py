@@ -120,23 +120,20 @@ def allocate_kv_from_tensors(
                 )
             # Non-FullAttentionSpec (e.g. SlidingWindowSpec): use spec-derived
             # page size, splitting correctly for potentially asymmetric head dims.
+            dtype_bytes = get_dtype_size(spec.dtype)
+            k_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size * dtype_bytes
             if isinstance(spec, SlidingWindowSpec) and spec.head_size != spec.head_size_v:
-                dtype_bytes = get_dtype_size(spec.dtype)
-                k_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size * dtype_bytes
                 v_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size_v * dtype_bytes
             else:
-                dtype_bytes = get_dtype_size(spec.dtype)
-                k_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size * dtype_bytes
                 v_bytes = k_bytes
                 naive = tensor.size // 2
-                half = k_bytes
-                if half != naive:
+                if k_bytes != naive:
                     logger.warning(
                         "KV tensor size contains non-data bytes (per-token-head scale "
                         "overhead): spec-derived per_buf=%d B, tensor.size//2=%d B "
                         "(layer %r). Using spec-derived value; scale bytes are not "
                         "accessible to WebGPU shaders.",
-                        half, naive, first_name,
+                        k_bytes, naive, first_name,
                     )
         elif spec is None:
             if first_name is None:

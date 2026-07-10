@@ -142,9 +142,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        # conv_dim is embedded in _mamba_conv_shape as the non-state-len dimension;
-        # dividing out (conv_kernel - 1) recovers it without restating the formula.
-        self.conv_dim: int = math.prod(self._mamba_conv_shape) // (self.conv_kernel - 1)
+        # conv_dim from MambaMixer2 L313: intermediate_size + 2 * n_groups * ssm_state_size
+        # (tp=1, extra_groups_for_head_shards returns 0). Using the direct formula avoids
+        # the mamba2_state_shape division, which would give wrong results if num_spec > 0.
+        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353

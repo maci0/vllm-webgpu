@@ -403,8 +403,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
         pre = self._pre
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
@@ -456,10 +456,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             self._dispatch_softcap_and_sample(vocab, logits_buf, pre.get("capped", self._dummy_scales_buf))
 
-        if self._greedy_decode:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return self._finish_forward(self._greedy_decode)
 
     def _lm_head_parts(self) -> "tuple[str, object, int, str]":
         """Return (key, weight_buf, uq, base_key) for the LM head.
@@ -585,8 +582,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             b["capped"] = alloc(vocab * 2)             # f16 softcapped logits (Gemma4)
         slot_map_buf = WebGPUBuffer.from_numpy(
             dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
-        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32))
-        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32))
+        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
+        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32, copy=False))
         bt_buf  = WebGPUBuffer.from_numpy(dev, self._bt_arr(attn_metadata))
 
         _rms = self._rms_consts
@@ -919,10 +916,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             self._dispatch_softcap_and_sample(vocab, b["logits"], b.get("capped", self._dummy_scales_buf))
 
-        if self._greedy_decode:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return self._finish_forward(self._greedy_decode)
 
     def _prefill_sequential_fallback(
         self,
@@ -959,8 +953,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             pos_t  = positions[t : t + 1]
             slot_t = np.array(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32)
 
-            dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32).tobytes())
-            dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32).tobytes())
+            dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32, copy=False).tobytes())
+            dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
             dev.queue.write_buffer(pre["bt"].buf,       0, _bt_bytes)
 
@@ -1001,10 +995,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             self._dispatch_softcap_and_sample(vocab, pre["logits"], pre.get("capped", self._dummy_scales_buf))
 
-        if self._greedy_decode:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return self._finish_forward(self._greedy_decode)
 
     def _transformer_layer(
         self,
