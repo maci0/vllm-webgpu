@@ -188,6 +188,10 @@ def allocate_kv_from_tensors(
                     k_bytes + v_bytes, tensor.size, first_name, k_bytes, v_bytes,
                 )
         elif isinstance(spec, AttentionSpec):
+            if spec.kv_quant_mode.is_nvfp4:
+                raise NotImplementedError(
+                    "NVFP4 KV cache is not supported by the WebGPU backend"
+                )
             # Non-FullAttentionSpec (e.g. SlidingWindowSpec): use spec-derived
             # page size, splitting correctly for potentially asymmetric head dims.
             naive = tensor.size // 2
