@@ -139,7 +139,7 @@ def allocate_kv_from_tensors(
                     )
         elif spec is None:
             if first_name is None:
-                # shared_by was empty; cannot identify layer — use 16-byte placeholder below.
+                # shared_by is empty; cannot identify layer index. Placeholder will be assigned in the fill loop below.
                 continue
             half = tensor.size // 2
             k_bytes = half
