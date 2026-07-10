@@ -162,8 +162,8 @@ def allocate_kv_from_tensors(
 def get_layer_types(model, hf_config) -> list | None:
     """Return the layer-type list for a model, using a canonical three-way fallback.
 
-    Priority: model._layer_types (set at load time) > hf_config.layer_types
-    (Gemma4 and similar) > hf_config.layers_block_type (NemotronH/Falcon).
+    Priority: model._layer_types (set at load time) > hf_config.layers_block_type
+    (NemotronH/Falcon) > hf_config.layer_types (Gemma4 and similar).
     Returns None when none of the three attributes is present.
 
     Uses explicit `is not None` guards (not `or`) so that an empty list, which

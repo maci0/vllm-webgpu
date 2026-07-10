@@ -50,11 +50,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                    getattr(model_config, "expert_intermediate_size",
                                                            model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-        # _apply_v_norm is set by Gemma4WebGPUModel.__init__ via super().__init__() and
-        # is gated on model_type == "gemma4". DiffusionGemma overrides _decoder_layer()
-        # and forward() entirely, applying v_norm unconditionally (lines 452-457) without
-        # consulting this flag. The flag is therefore a no-op for all DiffusionGemma paths.
-
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
@@ -844,10 +839,15 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
             with self._batched_dispatch(label=f"L{layer_idx:02d}T"):
                 post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
-                if post_ffw_w is not None:
-                    self._dispatch("rms_norm", [hidden_states_1, post_ffw_w, sc["normed"]], _rms,
-                                   (num_tokens, 1, 1))
-                    hidden_states_1 = sc["normed"]
+                if post_ffw_w is None:
+                    raise ValueError(
+                        f"Layer {layer_idx} missing post_feedforward_layernorm.weight "
+                        "— vLLM applies this norm unconditionally; a missing weight "
+                        "indicates a corrupt or incomplete checkpoint."
+                    )
+                self._dispatch("rms_norm", [hidden_states_1, post_ffw_w, sc["normed"]], _rms,
+                               (num_tokens, 1, 1))
+                hidden_states_1 = sc["normed"]
                 _add_and_scale(hidden_states_1)
 
         self._hstate = (self._hstate + 2) % 3

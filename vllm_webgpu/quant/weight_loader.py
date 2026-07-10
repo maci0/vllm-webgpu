@@ -135,6 +135,7 @@ try:
     from compressed_tensors.quantization import QuantizationType as _QuantizationType
     from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
     from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
+    from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
 except ImportError:
     _ct_get_quant_cfg = None
     _QuantizationConfig = None
@@ -142,6 +143,7 @@ except ImportError:
     _QuantizationType = None
     _QuantizationStrategy = None
     _ct_find_index = None
+    _decompress_mx_scale = None
 
 
 
@@ -1129,7 +1131,8 @@ def load_safetensors_weights(
                 try:
                     wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                    ws_f32 = np.ascontiguousarray(np.exp2(ws_u8.astype(np.float32) - 127.0))  # E8M0: 2^(u8-127)
+                    import torch as _torch
+                    ws_f32 = np.ascontiguousarray(_decompress_mx_scale(_torch.from_numpy(ws_u8)).to(_torch.float32).numpy())  # E8M0: 2^(u8-127)
                     N_, K2_ = wp.shape
                     K_ = K2_ * 2
                     _upload_u8(wp, f"{base}.weight", weights)

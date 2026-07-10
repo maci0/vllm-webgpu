@@ -12,11 +12,9 @@ _F16_FEATURE = "shader-f16"
 class WebGPUDevice:
     def __init__(
         self,
-        adapter,
         wgpu_device,
         supports_f16: bool,
     ) -> None:
-        self.adapter = adapter
         self.wgpu_device = wgpu_device
         self.supports_f16 = supports_f16
 
@@ -47,7 +45,7 @@ class WebGPUDevice:
             supports_f16,
         )
 
-        return cls(adapter=adapter, wgpu_device=device, supports_f16=supports_f16)
+        return cls(wgpu_device=device, supports_f16=supports_f16)
 
     @property
     def limits(self) -> dict:

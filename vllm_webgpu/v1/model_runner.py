@@ -127,6 +127,7 @@ class WebGPUModelRunner:
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
         num_blocks = kv_cache_config.num_blocks
         self._num_kv_blocks = num_blocks
+        self._kv_cache_spec_cache = None
 
         allocate_kv_from_tensors(
             self.wgpu_device.wgpu_device,
@@ -498,7 +499,7 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            num_logprobs = sp.num_logprobs if sp is not None else None
+            num_logprobs = sp.logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -801,16 +802,12 @@ class WebGPUModelRunner:
         )
 
     def sample_tokens(self, grammar_output: "GrammarOutput | None") -> Any:
-        # execute_model() returns non-None, so the vLLM engine never calls this
-        # for normal requests. It exists for the grammar path, which is unsupported.
-        if grammar_output is not None:
-            raise NotImplementedError(
-                "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
-                "is not supported on the WebGPU backend. The GPU argmax path discards "
-                "the full logit distribution required to apply grammar token masks. "
-                "Use unconstrained sampling or switch to a CPU/CUDA backend."
-            )
-        return EMPTY_MODEL_RUNNER_OUTPUT
+        raise NotImplementedError(
+            "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
+            "is not supported on the WebGPU backend. The GPU argmax path discards "
+            "the full logit distribution required to apply grammar token masks. "
+            "Use unconstrained sampling or switch to a CPU/CUDA backend."
+        )
 
     def get_supported_tasks(self) -> "tuple[SupportedTask, ...]":
         return ("generate",)

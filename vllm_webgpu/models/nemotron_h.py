@@ -144,6 +144,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._layer_types: list[str] = model_config.layers_block_type
         # Length invariant is enforced by NemotronHConfig.__init__ asserting
         # len(hybrid_override_pattern) == num_hidden_layers.
+        self._num_mamba_layers = self._layer_types.count("mamba")
+        self._num_attn_layers = self._layer_types.count("attention")
 
         # Register CPU-side A_log → -exp(A) transforms for all Mamba layers.
         # Applied during load_weights before GPU upload, eliminating a per-layer
@@ -242,28 +244,23 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
 
         # Build per-layer intermediate sizes in a single O(num_layers) pass.
-        # _mlp_count is a running counter of MLP layers seen so far; at the
-        # point of processing layer _li it equals
-        #   hybrid_override_pattern[: _li + 1].count("-") - 1
-        # which is the exact index expression used by the upstream vLLM
-        # NemotronHMLPDecoderLayer.__init__ (lines 280-292 of
-        # vllm/model_executor/models/nemotron_h.py, vLLM 0.24):
+        # At each MLP layer _li, the MLP index matches the vLLM canonical expression:
         #   mlp_index = hybrid_override_pattern[: layer_idx + 1].count("-") - 1
-        #   intermediate_size = config.intermediate_size[mlp_index]
+        # (NemotronHMLPDecoderLayer.__init__, vLLM 0.24, lines 280-292)
         # VERSION SYNC: verify on each vLLM version bump that this resolution
         # logic has not changed.
+        def _resolve(v, idx):
+            """Resolve a possibly-list intermediate_size to a scalar, matching vLLM."""
+            if isinstance(v, list):
+                return v[0] if len(v) == 1 else v[idx]
+            return v
+
         _layer_int_sizes: list[int] = []
-        _mlp_count = 0
-        self._num_mamba_layers = 0
-        self._num_attn_layers = 0
         for _li, _lt in enumerate(self._layer_types):
-            if _lt == "mamba":
-                self._num_mamba_layers += 1
-            elif _lt == "attention":
-                self._num_attn_layers += 1
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
+            _mlp_count = model_config.hybrid_override_pattern[:_li + 1].count("-") - 1
             if _get_layer_cfg is not None:
                 _lcfg = _get_layer_cfg(_li)
                 # Per-layer bias check for puzzle (heterogeneous) models.
@@ -296,20 +293,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                         f"checkpoint. Fix the per-layer config or remove the "
                         f"get_nemotron_h_config_for_layer override."
                     )
-                _isize = _lcfg.intermediate_size
-                if isinstance(_isize, list):
-                    _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_count]
+                _isize = _resolve(_lcfg.intermediate_size, _mlp_count)
                 _layer_int_sizes.append(_isize)
             else:
-                # MLP parameters (used in '-' layers).
-                # intermediate_size may be a list for heterogeneous (puzzle) configs.
-                _raw_int = model_config.intermediate_size
-                if isinstance(_raw_int, list):
-                    _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_count]
-                else:
-                    _fallback = _raw_int
-                _layer_int_sizes.append(_fallback)
-            _mlp_count += 1
+                _layer_int_sizes.append(_resolve(model_config.intermediate_size, _mlp_count))
         self._layer_int_size: list[int] = _layer_int_sizes
         # Cache the maximum intermediate size once so _init_scratch_buffers does
         # not re-derive it (and re-read model_config.intermediate_size) on every call.

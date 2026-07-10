@@ -1055,7 +1055,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 uq_v = self._uq_for_key(vw)
                 _use_fused_qkv = (uq_q == 0 and uq_k == 0 and uq_v == 0)
             else:
-                vw = None
                 _use_fused_qkv = False
 
             if _use_fused_qkv and not is_kv_shared:
@@ -1302,29 +1301,27 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # When post_ffw_w and next input_layernorm both exist (all non-last layers),
             # fuse into rms_norm_add_f32_rms_norm to keep the intermediate in registers.
             post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
+            if post_ffw_w is None:
+                raise ValueError(
+                    f"Layer {layer_idx} missing post_feedforward_layernorm.weight "
+                    "— vLLM applies this norm unconditionally; a missing weight "
+                    "indicates a corrupt or incomplete checkpoint."
+                )
             if layer_idx < self.num_layers - 1:
                 next_w = self.weights[f"{self._layer_key_prefix(layer_idx + 1)}.input_layernorm.weight"]
-                if post_ffw_w is not None:
-                    # Fused: rms_norm(ffn_out, post_ffw_w) + residual_add + rms_norm(residual, next_w)
-                    # SCALE=1.0 (default): layer_scalar applied separately below via f32_scale_inplace.
-                    # RMSNorm is scale-invariant so normed_out is correct even after scaling out.
-                    self._dispatch("rms_norm_add_f32_rms_norm",
-                                   [sc["ffn_out"], post_ffw_w,
-                                    residual, next_w,
-                                    out, sc["normed"]],
-                                   _rms_consts, (num_tokens, 1, 1))
-                else:
-                    self._dispatch("add_f32_rms_norm",
-                                   [residual, sc["ffn_out"], next_w, out, sc["normed"]],
-                                   _rms_consts, (num_tokens, 1, 1))
+                # Fused: rms_norm(ffn_out, post_ffw_w) + residual_add + rms_norm(residual, next_w)
+                # SCALE=1.0 (default): layer_scalar applied separately below via f32_scale_inplace.
+                # RMSNorm is scale-invariant so normed_out is correct even after scaling out.
+                self._dispatch("rms_norm_add_f32_rms_norm",
+                               [sc["ffn_out"], post_ffw_w,
+                                residual, next_w,
+                                out, sc["normed"]],
+                               _rms_consts, (num_tokens, 1, 1))
             else:
                 # Last layer: no next pre-norm, just update residual.
-                if post_ffw_w is not None:
-                    self._dispatch("rms_norm", [sc["ffn_out"], post_ffw_w, sc["o_proj_out"]],
-                                   _rms_consts, (num_tokens, 1, 1))
-                    ffn_delta = sc["o_proj_out"]
-                else:
-                    ffn_delta = sc["ffn_out"]
+                self._dispatch("rms_norm", [sc["ffn_out"], post_ffw_w, sc["o_proj_out"]],
+                               _rms_consts, (num_tokens, 1, 1))
+                ffn_delta = sc["o_proj_out"]
                 self._dispatch("add_f32", [residual, ffn_delta, out],
                                {"N": add_n}, _vec4_wg(add_n))
 

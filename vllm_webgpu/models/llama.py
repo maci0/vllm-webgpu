@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.transformers_utils.config import patch_legacy_rope_type
 from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vals_per_thread, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -150,10 +151,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         When rope_type == 'yarn', replaces the base-class dummy buffer with actual
         YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
         """
-        rope_scaling = dict(getattr(self.model_config, "rope_scaling", None) or {})
-        # Normalise legacy rope_scaling: "type" is the historical key, "rope_type" is canonical.
-        if "rope_type" not in rope_scaling and "type" in rope_scaling:
-            rope_scaling["rope_type"] = rope_scaling.pop("type")
+        rope_scaling = dict(
+            getattr(self.model_config, "rope_parameters", None)
+            or getattr(self.model_config, "rope_scaling", None)
+            or {}
+        )
+        patch_legacy_rope_type(rope_scaling)
         rope_type = rope_scaling.get("rope_type", "")
 
         if rope_type != "yarn":
@@ -166,7 +169,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return
 
         dev = self.wgpu_device.wgpu_device
-        rotary_dim = int(rope_scaling.get("rotary_dim", self.head_dim))
+        rotary_dim = int(
+            rope_scaling.get("rope_dim")
+            or rope_scaling.get("rotary_dim")
+            or int(self.head_dim * float(rope_scaling.get("partial_rotary_factor", 1.0)))
+        )
         freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling, rotary_dim)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale
