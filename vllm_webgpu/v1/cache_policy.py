@@ -10,6 +10,7 @@ from vllm.v1.kv_cache_interface import (AttentionSpec,
                                          FullAttentionSpec,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
+                                         SlidingWindowSpec,
                                          TQFullAttentionSpec)
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
@@ -108,6 +109,10 @@ def allocate_kv_from_tensors(
                 "SlidingWindowMLASpec stores a single MLA latent per position, so "
                 "real_page_size_bytes is the full per-position size, not a K+V pair. "
                 "Halving it would silently corrupt both cache buffers."
+            )
+        elif isinstance(spec, SlidingWindowSpec):
+            raise NotImplementedError(
+                f"SlidingWindowSpec KV cache is not supported by the WebGPU backend."
             )
         else:
             assert spec is not None, (
