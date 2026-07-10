@@ -682,6 +682,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             packed_w = dense_w[unique_eids]  # [num_unique, T]
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
+            dispatched_count = 0
             for expert_slot, eid in enumerate(unique_eids):
                 ep = f"{p}.experts.{eid}"
                 g_w = self.weights.get(f"{ep}.gate_proj.weight")
@@ -773,6 +774,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                         self._moe_per_expert_weight_buf],
                                        {"N": add_n, "K_IDX": expert_slot},
                                        ((add_n + 255) // 256, 1, 1))
+                dispatched_count += 1
+
+            if len(unique_eids) > 0 and dispatched_count != len(unique_eids):
+                missing = len(unique_eids) - dispatched_count
+                raise RuntimeError(
+                    f"L{layer_idx}: {missing} of {len(unique_eids)} selected experts "
+                    f"had missing weights; cannot proceed with zero MoE contribution"
+                )
 
             # Post-MoE norm + single residual add (vLLM Gemma4 pattern)
             with self._batched_dispatch(label=f"L{layer_idx:02d}P"):
