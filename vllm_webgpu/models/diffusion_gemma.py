@@ -225,6 +225,24 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "multi-token canvas prefill including the full MoE FFN."
         )
 
+    def _prefill_sequential_fallback(self, input_ids, positions, attn_metadata):
+        """Not implemented for DiffusionGemma.
+
+        The inherited Gemma4 implementation calls _transformer_layer(), which
+        reads self._sc['qkv_buf'] and self._sc['ffn_normed']. Both keys are
+        intentionally absent from DiffusionGemma._init_scratch_buffers() because
+        _transformer_layer() is never used by this model. Calling this method
+        would crash with KeyError. Raise here so any future caller gets a clear
+        error rather than an opaque crash.
+        """
+        raise NotImplementedError(
+            "DiffusionGemmaWebGPUModel does not support _prefill_sequential_fallback. "
+            "_transformer_layer() references self._sc['qkv_buf'] and "
+            "self._sc['ffn_normed'], which are not allocated by this model. "
+            "Use forward() directly; it handles both single-token decode and "
+            "multi-token canvas prefill."
+        )
+
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 
     def forward(self, input_ids, positions, attn_metadata) -> "np.ndarray":
