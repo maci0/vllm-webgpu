@@ -180,6 +180,21 @@ def _apply_multimodal_remap(weights: dict) -> int:
         elif k.startswith("language_model."):
             remapped[k.removeprefix("language_model.")] = v
     weights.update(remapped)
+
+    # Remap quant_meta keys with the same prefix rules so _uq_for_key
+    # resolves the correct fmt after weight-key remapping. Without this,
+    # AWQ layers (fmt='awq_sym') appear as GPTQ (fmt='') because the lookup
+    # key no longer matches the original prefixed base key stored at shard time.
+    qmeta = weights.get("__quant_meta__")
+    if qmeta:
+        remapped_meta = {}
+        for k, v in qmeta.items():
+            if k.startswith("model.language_model."):
+                remapped_meta["model." + k.removeprefix("model.language_model.")] = v
+            elif k.startswith("language_model."):
+                remapped_meta[k.removeprefix("language_model.")] = v
+        qmeta.update(remapped_meta)
+
     return len(remapped)
 
 
