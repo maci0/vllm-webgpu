@@ -215,7 +215,9 @@ def load_safetensors_weights_sharded(
         wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
         wgpu_device.queue.on_submitted_work_done_sync()
 
+        shard_qm = shard_weights.pop("__quant_meta__", {})
         weights.update(shard_weights)
+        weights.setdefault("__quant_meta__", {}).update(shard_qm)
 
     if is_multimodal:
         n_remapped = _apply_multimodal_remap(weights)
