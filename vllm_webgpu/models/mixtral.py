@@ -75,6 +75,10 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
             # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
             self._topk_w_staging = None
+            # Pre-allocated zero buffer for expert_out initialization. Avoids a
+            # fresh bytes() allocation per decode token (32 layers × 8 KB each on
+            # 8x7B). Reused across both zero-init sites in _moe_ffn_layer.
+            self._expert_out_zeros = bytearray(self.hidden_size * 2)
 
     def _alloc_moe_sc(
         self,
@@ -376,7 +380,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # Without a shared expert, zero-initialize the accumulation buffer so
         # the first expert's weighted output accumulates from zero.
         if shared_expert_prefix is None:
-            dev.queue.write_buffer(msc["expert_out"].buf, 0, bytes(hidden * 2))
+            dev.queue.write_buffer(msc["expert_out"].buf, 0, self._expert_out_zeros)
 
         # ── Phase B: expert dispatches (new encoder) ──────────────────────────
         # Subsequent _dispatch() calls (including the residual add in the calling
@@ -404,7 +408,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 )
             else:
                 # Shared expert weights not loaded; fall back to zero-init.
-                dev.queue.write_buffer(msc["expert_out"].buf, 0, bytes(hidden * 2))
+                dev.queue.write_buffer(msc["expert_out"].buf, 0, self._expert_out_zeros)
 
         for k_idx, exp_idx in enumerate(expert_indices):
             ep = f"{p}.experts.{exp_idx}"

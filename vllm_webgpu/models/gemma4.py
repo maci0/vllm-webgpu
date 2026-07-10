@@ -351,8 +351,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             p = self._layer_key_prefix(i)
             ls_buf = self.weights.get(f"{p}.layer_scalar")
             if ls_buf is not None:
-                np_dt = np.float32 if ls_buf.dtype == 'f32' else np.float16
-                self._layer_scales.append(float(ls_buf.to_numpy().view(np_dt)[0]))
+                self._layer_scales.append(float(ls_buf.to_numpy().view(self._buf_np_dtype(ls_buf))[0]))
             else:
                 self._layer_scales.append(1.0)
 

@@ -139,6 +139,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # self._init_rope_freq_buf().
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
+        # Zero-buffer cache for reset_recurrent_states. Reuses the same bytearray
+        # objects across resets to avoid allocating ~58 MB of Python heap per reset
+        # (27 GDN layers × 2 MB SSM + 49 KB conv each on Qwen3.5-9B).
+        # Matches the NemotronHWebGPUModel pattern.
+        self._zero_buf_cache: dict[int, bytearray] = {}
+
         # Seed _rms_consts with GEMMA_NORM so all add_rms_norm dispatches (including
         # GDN layers, which read _rms_consts directly) have the constant from the moment
         # the object is constructed. _postprocess_weights updates it after load_weights()
@@ -395,7 +401,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         for buf in self._ssm_gpu + self._conv_gpu:
             if buf is not None:
-                dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
+                zeros = self._zero_buf_cache.get(buf.nbytes)
+                if zeros is None:
+                    zeros = bytearray(buf.nbytes)
+                    self._zero_buf_cache[buf.nbytes] = zeros
+                dev.queue.write_buffer(buf.buf, 0, zeros)
 
     def save_recurrent_states(self) -> dict:
         """Snapshot all GDN conv/SSM state buffers to CPU in one GPU readback.

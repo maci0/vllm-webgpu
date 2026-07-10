@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
+# Stable HuggingFace single-file safetensors name. Using a literal avoids a
+# huggingface_hub import and immunity to vLLM's _mistral_patch_hf_hub_constants()
+# which mutates the module-level constant after import (a 'from X import Y' binding
+# would have already captured the pre-patch value anyway, so both are equivalent).
+_SAFE_WEIGHTS_NAME: str = "model.safetensors"
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -194,6 +198,17 @@ class BaseWebGPUModel(ABC):
         # Populated by subclasses (e.g. LlamaWebGPUModel tiles shared norm weights)
         # to avoid a GPU roundtrip (to_numpy → tile → re-upload) in _postprocess_weights.
         self._weight_transforms: dict = {}
+
+    def _buf_np_dtype(self, buf) -> "type":
+        """Return the numpy scalar type matching a WebGPUBuffer's dtype string.
+
+        Covers the two dtypes currently stored by the weight loader: 'f32'
+        (float32) and everything else (treated as float16). A single shared
+        helper avoids duplicating the same one-liner idiom across subclasses
+        and provides a single place to add coverage for future dtypes (e.g.
+        bfloat16).
+        """
+        return np.float32 if getattr(buf, "dtype", "f16") == "f32" else np.float16
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):

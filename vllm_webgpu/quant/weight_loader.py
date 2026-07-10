@@ -442,11 +442,11 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
 def _find_u8_u8_bases(header: dict) -> list[str]:
     """Return sorted base names where both .weight and .weight_scale have dtype U8."""
     return sorted(
-        k.removesuffix(".weight")
+        base
         for k in header
-        if k.endswith(".weight")
-        and header[k].get("dtype") == "U8"
-        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+        if k.endswith(".weight") and header[k].get("dtype") == "U8"
+        for base in (k.removesuffix(".weight"),)
+        if header.get(base + ".weight_scale", {}).get("dtype") == "U8"
     )
 
 
@@ -1090,19 +1090,14 @@ def load_safetensors_weights(
 
             for base in mxfp8_bases:
                 try:
+                    from vllm.model_executor.layers.quantization.utils.mxfp8_utils import dequant_mxfp8_to_bf16
                     w_t = sf.get_tensor(f"{base}.weight")
-                    w_f32 = w_t.view(torch.float8_e4m3fn).to(torch.float32).numpy()
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                    N_, K_ = w_f32.shape
-                    block_scale = np.exp2(ws_u8.astype(np.float32) - 127.0)  # E8M0: 2^(u8-127)
+                    N_, K_ = w_t.shape
                     n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
-                    block_size = K_ // n_blocks if n_blocks > 0 else K_
-                    # Expand block scales to (N, K) for element-wise multiply.
-                    # Ensure block_scale is 2D before repeat; ws_u8 may be 1D or scalar.
-                    block_scale_exp = np.repeat(block_scale.reshape(N_, -1), block_size, axis=1)
-                    # Scale, clip, cast to F16
+                    w_bf16 = dequant_mxfp8_to_bf16(w_t.view(torch.float8_e4m3fn), torch.from_numpy(ws_u8))
                     w_f16 = np.ascontiguousarray(
-                        np.clip(w_f32 * block_scale_exp, -_F16_MAX, _F16_MAX).astype(np.float16))
+                        np.clip(w_bf16.float().numpy(), -_F16_MAX, _F16_MAX).astype(np.float16))
                     _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
                     logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
                 except Exception as exc:

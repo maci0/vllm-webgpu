@@ -233,7 +233,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     total: int = get_cpu_memory()
 
     base = total - model_mem - OVERHEAD_BYTES
-    fraction = 1.0 if config.is_auto_memory else config.memory_fraction
+    fraction = config.memory_fraction or 1.0
     available = max(int(base * fraction), 0)
     logger.info(
         "WebGPU memory: total=%dMiB model=%dMiB available=%dMiB",

@@ -204,8 +204,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 p = self._layer_key_prefix(i)
                 pes_w = self.weights.get(f"{p}.router.per_expert_scale")
                 if pes_w is not None:
-                    np_dt = np.float32 if pes_w.dtype == 'f32' else np.float16
-                    self._pes_cache[i] = pes_w.to_numpy().view(np_dt).astype(np.float32)
+                    self._pes_cache[i] = pes_w.to_numpy().view(self._buf_np_dtype(pes_w)).astype(np.float32)
 
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 
@@ -391,6 +390,16 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # fused_per_head_norm_rope (GEMMA_NORM=1). When the fallback plain rope
             # path runs (q_norm/k_norm weights absent), magnitudes are uncontrolled
             # and the standard 1/sqrt(head_dim) scale applies.
+            # Q-norm present but K-norm absent on a non-KV-shared layer is an
+            # invariant violation: DiffusionGemma always loads both norms together.
+            # Neither 1/sqrt(head_dim) nor 1.0 is clearly correct in this state,
+            # so surface it immediately rather than silently producing wrong output.
+            if _q_nw is not None and not is_kv_shared and _k_nw is None:
+                raise RuntimeError(
+                    f"Layer {layer_idx}: Q-norm weight present but K-norm absent "
+                    f"on a non-KV-shared layer. DiffusionGemma requires both norms "
+                    f"to be loaded together. Check the checkpoint."
+                )
             attn_scale = 1.0 if (_q_nw is not None and (is_kv_shared or _k_nw is not None)) else (1.0 / head_dim ** 0.5)
             if _q_nw is not None:
                 # Binding 4 (inv_freq_buf): always provided.

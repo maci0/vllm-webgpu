@@ -82,6 +82,8 @@ def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache:
 
 
 class WebGPUModelRunner:
+    _kv_cache_spec_cache: "dict | None" = None  # populated by first get_kv_cache_spec call
+
     def __init__(self, vllm_config: Any, wgpu_device: "WebGPUDevice") -> None:
         self.vllm_config = vllm_config
         self.wgpu_device = wgpu_device
@@ -92,6 +94,7 @@ class WebGPUModelRunner:
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
         self._zeros_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc across scheduling steps
         self._block_size: int = vllm_config.cache_config.block_size
+        self._kv_cache_spec_cache = None  # per-instance; shadows class default
 
     def load_model(self) -> None:
         mc = self.vllm_config.model_config
@@ -151,6 +154,8 @@ class WebGPUModelRunner:
         return lp if lp is not None else getattr(mc, "_layer_attention_params", None)
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
+        if isinstance(self._kv_cache_spec_cache, dict):
+            return self._kv_cache_spec_cache
         mc = self.vllm_config.model_config.hf_config
         num_hidden_layers = self.vllm_config.model_config.get_total_num_hidden_layers()
         block_size = self._block_size
@@ -196,6 +201,7 @@ class WebGPUModelRunner:
                         spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(global_kv, global_hd)
                     else:
                         spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
+                self._kv_cache_spec_cache = spec
                 return spec
 
         if lp_list and len(lp_list) == num_hidden_layers:
@@ -220,6 +226,7 @@ class WebGPUModelRunner:
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     num_kv_heads, head_size)
+        self._kv_cache_spec_cache = spec
         return spec
 
     def get_cache_block_size_bytes(self) -> int:
@@ -360,7 +367,10 @@ class WebGPUModelRunner:
         # never exposed to callers because the scheduler guards slice_request on
         # num_logprobs.
         built_logprobs = None
-        merged_prompt_logprobs = prompt_logprobs_dict or {}
+        # None is the default when callers omit the argument; treat it as empty.
+        # Use explicit None check rather than `or {}` so that a caller that
+        # deliberately passes an empty dict doesn't get silently replaced.
+        merged_prompt_logprobs = prompt_logprobs_dict if prompt_logprobs_dict is not None else {}
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
             _widths = {d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None}

@@ -91,6 +91,8 @@ class WebGPUWorker(WorkerBase):
 
     def initialize_from_config(self, kv_cache_config: "KVCacheConfig") -> None:
         self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
+        from vllm.distributed.kv_transfer.kv_transfer_state import ensure_kv_transfer_initialized
+        ensure_kv_transfer_initialized(self.vllm_config, kv_cache_config)
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def compile_or_warm_up_model(self) -> CompilationTimes:
@@ -111,7 +113,7 @@ class WebGPUWorker(WorkerBase):
     ) -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         return self.model_runner.sample_tokens(grammar_output)
 
-    def get_model(self) -> Any:
+    def get_model(self) -> "torch.nn.Module":
         raise NotImplementedError(
             "WebGPU models are not nn.Module instances; apply_model and model "
             "inspection are not supported. Access the model via "

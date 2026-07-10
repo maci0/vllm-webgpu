@@ -631,6 +631,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     q_sb = self.weights[q_s]
                     k_sb = self.weights[k_s]
                     v_sb = self.weights[v_s]
+                    # Scale buffers are always uploaded as f32 by the weight loader.
+                    # Assert before frombuffer to surface format mismatches immediately
+                    # rather than silently producing wrong scale values.
+                    for _sb_name, _sb in ((q_s, q_sb), (k_s, k_sb), (v_s, v_sb)):
+                        if _sb.dtype != "f32":
+                            raise ValueError(
+                                f"Expected f32 scales for fused QKV, got {_sb.dtype!r} "
+                                f"for {_sb_name!r}. Update the frombuffer dtype below."
+                            )
                     _q_snb, _k_snb, _v_snb = q_sb.nbytes, k_sb.nbytes, v_sb.nbytes
                     _staging_s = dev.create_buffer(
                         size=_q_snb + _k_snb + _v_snb,

@@ -40,8 +40,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         if self._swiglu_limit > 0:
             self._clamp_extra["CLAMP_MAX"] = self._swiglu_limit
             self._clamp_extra["CLAMP_MIN"] = -self._swiglu_limit
-        _moe_inter_raw = getattr(model_config, "moe_intermediate_size", None)
-        self._moe_inter: int = _moe_inter_raw if _moe_inter_raw is not None else model_config.intermediate_size
 
         # _prefill_batch_forward bypasses _attn_block entirely, so it cannot
         # apply attention biases or per-layer layer_types context overrides.
@@ -51,6 +49,13 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # CTX_LEN to flash_attn_decode and wraps to max-u32 on the GPU side.
         self._force_sequential_prefill: bool = bool(self._attn_bias or self._layer_types)
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
+
+        # _moe_inter does not need to precede super().__init__() because no code
+        # invoked during that call (including _init_scratch_buffers) references it.
+        # Moving it here consolidates config reads and lets us use self.intermediate_size
+        # (set by the parent) as the natural fallback instead of reaching back to model_config.
+        _moe_inter_raw = getattr(model_config, "moe_intermediate_size", None)
+        self._moe_inter: int = _moe_inter_raw if _moe_inter_raw is not None else self.intermediate_size
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
