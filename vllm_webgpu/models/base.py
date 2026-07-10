@@ -105,7 +105,7 @@ def compute_yarn_freqs(
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     inv_freq_interp = 1.0 / (factor * pos_freqs)
     inv_freq_extrap = 1.0 / pos_freqs
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx)
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
     inv_freq_mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
     inv_freq = inv_freq_interp * (1 - inv_freq_mask) + inv_freq_extrap * inv_freq_mask
     return inv_freq.numpy(), mscale
