@@ -6,10 +6,9 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
-from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
+from vllm.v1.kv_cache_interface import (FullAttentionSpec,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
-                                         SlidingWindowSpec,
                                          TQFullAttentionSpec)
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
@@ -109,28 +108,6 @@ def allocate_kv_from_tensors(
                 "real_page_size_bytes is the full per-position size, not a K+V pair. "
                 "Halving it would silently corrupt both cache buffers."
             )
-        elif isinstance(spec, AttentionSpec):
-            if spec.kv_quant_mode.is_nvfp4:
-                raise NotImplementedError(
-                    "NVFP4 KV cache is not supported by the WebGPU backend"
-                )
-            # Non-FullAttentionSpec (e.g. SlidingWindowSpec): use spec-derived
-            # page size, splitting correctly for potentially asymmetric head dims.
-            dtype_bytes = get_dtype_size(spec.dtype)
-            k_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size * dtype_bytes
-            if isinstance(spec, SlidingWindowSpec) and spec.head_size != spec.head_size_v:
-                v_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size_v * dtype_bytes
-            else:
-                v_bytes = k_bytes
-                naive = tensor.size // 2
-                if k_bytes != naive:
-                    logger.warning(
-                        "KV tensor size contains non-data bytes (per-token-head scale "
-                        "overhead): spec-derived per_buf=%d B, tensor.size//2=%d B "
-                        "(layer %r). Using spec-derived value; scale bytes are not "
-                        "accessible to WebGPU shaders.",
-                        k_bytes, naive, first_name,
-                    )
         elif spec is None:
             if first_name is None:
                 # shared_by is empty; cannot identify layer index. Placeholder will be assigned in the fill loop below.
