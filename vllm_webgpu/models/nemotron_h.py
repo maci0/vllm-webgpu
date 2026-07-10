@@ -106,7 +106,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # Verify conv_dim against the authoritative mamba2_state_shape at tp=1.
         # math.prod(conv_state_shape) == (conv_kernel - 1) * conv_dim for num_spec=0.
-        _conv_state_shape, _ = MambaStateShapeCalculator.mamba2_state_shape(
+        # Both shapes are stored on self so _init_mamba_states can reuse them
+        # without a second call to mamba2_state_shape.
+        self._mamba_conv_shape, self._mamba_ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
             tp_world_size=1,
             intermediate_size=self.mamba_int,
             n_groups=self.n_groups,
@@ -115,9 +117,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        assert math.prod(_conv_state_shape) == (self.conv_kernel - 1) * self.conv_dim, (
+        assert math.prod(self._mamba_conv_shape) == (self.conv_kernel - 1) * self.conv_dim, (
             f"conv_dim formula drift: expected {(self.conv_kernel - 1) * self.conv_dim}, "
-            f"got {math.prod(_conv_state_shape)} from MambaStateShapeCalculator. "
+            f"got {math.prod(self._mamba_conv_shape)} from MambaStateShapeCalculator. "
             "Update self.conv_dim to match MambaMixer2."
         )
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
@@ -166,6 +168,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 "The WebGPU _mamba_layer path omits in_proj.bias and "
                 "out_proj.bias additions. Implement bias-add dispatches "
                 "before using a checkpoint with use_bias=True."
+            )
+
+        # relu_sq.wgsl hard-codes relu^2 for MLP layers.
+        # NemotronHConfig exposes mlp_hidden_act (defaults to "relu2"). Fail fast
+        # if a checkpoint uses a different activation to prevent silently wrong outputs.
+        _mlp_act = getattr(model_config, "mlp_hidden_act", "relu2")
+        if _mlp_act not in ("relu2", "squared_relu"):
+            raise NotImplementedError(
+                f"NemotronHWebGPUModel requires mlp_hidden_act=relu2; "
+                f"relu_sq.wgsl hard-codes relu^2, got {_mlp_act!r}."
             )
 
         # mamba2_causal_conv.wgsl hard-codes SiLU as the conv activation.
@@ -327,15 +339,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         dev = self.wgpu_device.wgpu_device
 
-        conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
-            tp_world_size=1,
-            intermediate_size=self.mamba_int,
-            n_groups=self.n_groups,
-            num_heads=self.mamba_num_heads,
-            head_dim=self.mamba_head_dim,
-            state_size=self.ssm_state_size,
-            conv_kernel=self.conv_kernel,
-        )
+        conv_shape = self._mamba_conv_shape
+        ssm_shape  = self._mamba_ssm_shape
         # WebGPU WGSL shaders operate at fixed precision: f16 for the conv
         # state and f32 for the SSM state. These sizes are not configurable
         # via mamba_cache_dtype on the WebGPU path; the shaders are compiled
@@ -353,9 +358,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Zero all Mamba conv and SSM states. Call before each new request."""
         dev = self.wgpu_device.wgpu_device
         for buf in self._conv_states.values():
-            dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
+            dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
         for buf in self._ssm_states.values():
-            dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
+            dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
 
     def save_recurrent_states(self) -> dict:
         """Snapshot all Mamba conv/SSM state buffers to CPU in one GPU readback.

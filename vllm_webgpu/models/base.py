@@ -81,9 +81,8 @@ def compute_yarn_freqs(
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range, yarn_get_mscale, yarn_linear_ramp_mask,
     )
 
     if rotary_dim is None:
@@ -104,19 +103,26 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
-    # Delegate the frequency blend to vLLM's own _compute_inv_freq so we don't
-    # maintain a local copy of that arithmetic. We bypass __init__ with __new__
-    # to avoid building the (potentially large) cos/sin positional cache —
-    # _compute_inv_freq only reads the plain attributes set below.
-    _yarn = YaRNScalingRotaryEmbedding.__new__(YaRNScalingRotaryEmbedding)
-    _yarn.base = rope_theta
-    _yarn.rotary_dim = rotary_dim
-    _yarn.max_position_embeddings = orig_ctx
-    _yarn.extrapolation_factor = extrapolation_factor
-    _yarn.beta_fast = beta_fast
-    _yarn.beta_slow = beta_slow
-    _yarn.truncate = truncate
-    inv_freq = _yarn._compute_inv_freq(factor)
+    # Compute the blended inv_freq using the same arithmetic as
+    # YaRNScalingRotaryEmbedding._compute_inv_freq, inlined here to avoid
+    # calling a private vLLM method (which would break on any internal refactor).
+    # The public helpers yarn_find_correction_range and yarn_linear_ramp_mask
+    # are imported from vllm.model_executor.layers.rotary_embedding.common above.
+    pos_freqs = torch.tensor(rope_theta, dtype=torch.float) ** (
+        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
+    )
+    inv_freq_extrapolation = 1.0 / pos_freqs
+    inv_freq_interpolation  = 1.0 / (factor * pos_freqs)
+    low, high = yarn_find_correction_range(
+        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate,
+    )
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
+    ) * extrapolation_factor
+    inv_freq = (
+        inv_freq_interpolation * (1 - inv_freq_mask)
+        + inv_freq_extrapolation * inv_freq_mask
+    )
     return inv_freq.numpy(), mscale
 
 

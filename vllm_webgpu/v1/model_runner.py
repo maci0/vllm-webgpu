@@ -227,8 +227,8 @@ class WebGPUModelRunner:
         # (e.g. Gemma4 models with mixed local/global attention dimensions).
         lp_list = self._get_lp_list()
         if lp_list:
-            head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
-            num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)
+            head_dim = max((lp["head_dim"] for lp in lp_list if lp["num_kv_heads"] > 0), default=head_dim)
+            num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list if lp["num_kv_heads"] > 0), default=num_kv_heads)
         return 2 * block_size * num_kv_heads * head_dim * get_dtype_size(torch.float16)
 
     def warm_up(self) -> None:

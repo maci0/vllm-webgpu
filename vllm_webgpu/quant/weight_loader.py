@@ -1312,11 +1312,16 @@ def _dequant_mlx_int4(
 
 
 def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = None,
-                     weight_transforms: "dict | None" = None) -> dict:
+                     weight_transforms: "dict | None" = None,
+                     group_size: int = 64) -> dict:
     """Load MLX affine int4 safetensors weights, dequantize to f16, upload to GPU.
 
     weight_map: when supplied by the caller (e.g. load_safetensors_weights_sharded
     which has already parsed the index), the index file is not re-read from disk.
+
+    group_size: quantization group size. Callers that already know this value can
+    pass it directly to skip the config.json re-read (use 0 as a sentinel to force
+    reading from disk even when a default would otherwise be used).
     """
     import torch as _torch
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -1329,9 +1334,10 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
             index = json.load(f)
         weight_map = index.get("weight_map", {})
 
-    with open(p / "config.json") as f:
-        _raw_cfg = json.load(f)
-    group_size = int(_raw_cfg.get("quantization", {}).get("group_size", 64) or 64)
+    if group_size == 0:
+        with open(p / "config.json") as f:
+            _raw_cfg = json.load(f)
+        group_size = int(_raw_cfg.get("quantization", {}).get("group_size", 64) or 64)
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
     key_to_shard: dict[str, str] = {k: str(p / v) for k, v in weight_map.items()}

@@ -67,6 +67,7 @@ def make_tiny_nemotron_config():
     cfg.mlp_bias           = False
     cfg.use_bias           = False
     cfg.mamba_hidden_act   = "silu"
+    cfg.mlp_hidden_act     = "relu2"
     return cfg
 
 

@@ -390,7 +390,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             w3_key = f"{ep}.{up_key}.weight"
             w2_key = f"{ep}.{down_key}.weight"
 
-            if any(self.weights.get(k) is None for k in (w1_key, w3_key, w2_key)):
+            if any(k not in self.weights for k in (w1_key, w3_key, w2_key)):
                 logger.debug("L%02d expert %d weights not loaded, skipping",
                              layer_idx, exp_idx)
                 continue

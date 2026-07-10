@@ -10,6 +10,7 @@ from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import AttentionSpec, FullAttentionSpec
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
+_MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
 
 if TYPE_CHECKING:
     from vllm_webgpu.v1.worker import WebGPUWorker
@@ -62,8 +63,8 @@ def _allocate_kv_pool_hybrid(
             v_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
             kv_layer_count += 1
         else:
-            k_buf = WebGPUBuffer.empty(dev, 16)
-            v_buf = WebGPUBuffer.empty(dev, 16)
+            k_buf = WebGPUBuffer.empty(dev, _MIN_WEBGPU_BUFFER_BYTES)
+            v_buf = WebGPUBuffer.empty(dev, _MIN_WEBGPU_BUFFER_BYTES)
         model.kv_pool.append((k_buf, v_buf))
 
     if layer_types is None:
@@ -101,10 +102,10 @@ def _allocate_kv_pool_per_layer(
         if lp["num_kv_heads"] == 0:
             # Non-attention layer (num_kv_heads == 0). A zero-byte buffer
             # violates the WebGPU spec (size must be > 0), so use the same
-            # 16-byte placeholder that _allocate_kv_pool_hybrid uses.
+            # placeholder that _allocate_kv_pool_hybrid uses.
             model.kv_pool.append((
-                WebGPUBuffer.empty(dev, 16),
-                WebGPUBuffer.empty(dev, 16),
+                WebGPUBuffer.empty(dev, _MIN_WEBGPU_BUFFER_BYTES),
+                WebGPUBuffer.empty(dev, _MIN_WEBGPU_BUFFER_BYTES),
             ))
             continue
         if lp["head_dim"] == 0:
@@ -222,12 +223,13 @@ def allocate_kv_from_tensors(
                 first_name,
             )
         else:
-            k_bytes = 16
-            v_bytes = 16
+            k_bytes = _MIN_WEBGPU_BUFFER_BYTES
+            v_bytes = _MIN_WEBGPU_BUFFER_BYTES
             logger.warning(
-                "Spec for layer %r (%s) is not an attention spec; using 16-byte placeholder.",
+                "Spec for layer %r (%s) is not an attention spec; using %d-byte placeholder.",
                 first_name or "<unknown>",
                 type(spec).__name__,
+                _MIN_WEBGPU_BUFFER_BYTES,
             )
         if first_name is not None:
             try:
@@ -248,8 +250,8 @@ def allocate_kv_from_tensors(
             total_bytes += k_bytes + v_bytes
         else:
             model.kv_pool.append((
-                WebGPUBuffer.empty(wgpu_device, 16),
-                WebGPUBuffer.empty(wgpu_device, 16),
+                WebGPUBuffer.empty(wgpu_device, _MIN_WEBGPU_BUFFER_BYTES),
+                WebGPUBuffer.empty(wgpu_device, _MIN_WEBGPU_BUFFER_BYTES),
             ))
 
     logger.info(

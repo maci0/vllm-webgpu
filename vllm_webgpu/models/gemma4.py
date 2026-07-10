@@ -270,7 +270,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         T = self._scratch_token_count()
         H = self.hidden_size
-        I = self._scratch_inter_size()
+        I = self._max_inter
 
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, n)
@@ -1091,8 +1091,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         _v_src = sc["k_buf"]  # global attention: V = K
                     _k_src = sc["k_buf"]
                     _v_src_offset = 0
-                else:
-                    pass  # KV-shared path: _k_src/_v_src are not used
                 _q_src = sc["q_buf"]
 
             # Per-head RMSNorm + RoPE for Q and K.

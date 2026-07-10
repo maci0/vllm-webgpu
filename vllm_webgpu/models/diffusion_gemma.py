@@ -50,9 +50,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                    getattr(model_config, "expert_intermediate_size",
                                                            model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-        # V norm is applied unconditionally in _decoder_layer regardless of layer_types.
-        # Override the instance attribute set by Gemma4.__init__ (which gates on layer_types).
-        self._apply_v_norm = True
 
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
@@ -124,7 +121,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         dev = self.wgpu_device.wgpu_device
         T = self._scratch_token_count()
         H = self.hidden_size
-        I = self._scratch_inter_size()
+        I = self._max_inter
         NQ = self.num_q_heads
         V = self.vocab_size
 

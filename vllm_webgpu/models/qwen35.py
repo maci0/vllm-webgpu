@@ -391,7 +391,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         for buf in self._ssm_gpu + self._conv_gpu:
             if buf is not None:
-                dev.queue.write_buffer(buf.buf, 0, bytearray(buf.nbytes))
+                dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
 
     def save_recurrent_states(self) -> dict:
         """Snapshot all GDN conv/SSM state buffers to CPU in one GPU readback.
@@ -688,6 +688,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         bt_arr = self._bt_arr(attn_metadata)
         bt_buf = WebGPUBuffer.from_numpy(dev, bt_arr)
 
+        slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
         tok_ids_bufs: list = []
         tok_pos_bufs: list = []
         tok_slot_bufs: list = []
@@ -697,7 +698,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             tok_pos_bufs.append(WebGPUBuffer.from_numpy(
                 dev, positions[tc:tc+1].astype(np.uint32, copy=False)))
             tok_slot_bufs.append(WebGPUBuffer.from_numpy(
-                dev, np.array([attn_metadata.slot_mapping[tc]], dtype=np.uint32)))
+                dev, slot_arr[tc:tc+1]))
 
         greedy = self._greedy_decode
 
