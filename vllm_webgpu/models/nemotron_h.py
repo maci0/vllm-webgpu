@@ -224,12 +224,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
 
         # Build per-layer intermediate sizes in a single O(num_layers) pass.
-        # _mlp_count is a running counter that replaces the O(layer_idx) slice
-        # _layer_types[:_li+1].count("mlp") that was used here previously.
-        # VERSION SYNC: this logic mirrors NemotronHMLPDecoderLayer.__init__
-        # lines 280-298 of vllm/model_executor/models/nemotron_h.py. Verify on
-        # each vLLM version bump that the intermediate_size resolution logic has
-        # not changed.
+        # _mlp_count is a running counter of MLP layers seen so far; at the
+        # point of processing layer _li it equals
+        #   hybrid_override_pattern[: _li + 1].count("-") - 1
+        # which is the exact index expression used by the upstream vLLM
+        # NemotronHMLPDecoderLayer.__init__ (lines 280-292 of
+        # vllm/model_executor/models/nemotron_h.py, vLLM 0.24):
+        #   mlp_index = hybrid_override_pattern[: layer_idx + 1].count("-") - 1
+        #   intermediate_size = config.intermediate_size[mlp_index]
+        # VERSION SYNC: verify on each vLLM version bump that this resolution
+        # logic has not changed.
         _layer_int_sizes: list[int] = []
         _mlp_count = 0
         for _li, _lt in enumerate(self._layer_types):
@@ -256,7 +260,23 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                         f"Implement bias-add dispatches before using a puzzle "
                         f"checkpoint with per-layer mlp_bias=True."
                     )
-                _isize = getattr(_lcfg, 'intermediate_size', _fallback)
+                # Do not silently fall back to the global intermediate_size
+                # when a per-layer config exists but omits the attribute.
+                # vLLM accesses config.intermediate_size directly (AttributeError
+                # if absent); matching that behavior avoids wrong output for
+                # puzzle checkpoints whose per-layer config should have the field
+                # but does not due to a misconfigured checkpoint.
+                if not hasattr(_lcfg, 'intermediate_size'):
+                    raise AttributeError(
+                        f"Per-layer config for layer {_li} returned by "
+                        f"get_nemotron_h_config_for_layer() has no "
+                        f"'intermediate_size' attribute. vLLM would raise "
+                        f"AttributeError here; silently substituting the global "
+                        f"value would produce wrong results for this puzzle "
+                        f"checkpoint. Fix the per-layer config or remove the "
+                        f"get_nemotron_h_config_for_layer override."
+                    )
+                _isize = _lcfg.intermediate_size
                 if isinstance(_isize, list):
                     _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_count]
                 _layer_int_sizes.append(_isize)
