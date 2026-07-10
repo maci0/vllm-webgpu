@@ -6,7 +6,8 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
-from vllm.v1.kv_cache_interface import (FullAttentionSpec,
+from vllm.v1.kv_cache_interface import (AttentionSpec,
+                                         FullAttentionSpec,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
                                          TQFullAttentionSpec)
@@ -108,26 +109,14 @@ def allocate_kv_from_tensors(
                 "real_page_size_bytes is the full per-position size, not a K+V pair. "
                 "Halving it would silently corrupt both cache buffers."
             )
-        elif spec is None:
-            if first_name is None:
-                # shared_by is empty; cannot identify layer index. Placeholder will be assigned in the fill loop below.
-                continue
-            half = tensor.size // 2
-            k_bytes = half
-            v_bytes = half
-            logger.warning(
-                "No spec found for layer %r; falling back to tensor.size // 2. "
-                "May over-allocate for quantized KV cache with scale bytes.",
-                first_name,
-            )
         else:
-            k_bytes = MIN_WEBGPU_BUFFER_BYTES
-            v_bytes = MIN_WEBGPU_BUFFER_BYTES
-            logger.warning(
-                "Spec for layer %r (%s) is not an attention spec; using %d-byte placeholder.",
-                first_name or "<unknown>",
-                type(spec).__name__,
-                MIN_WEBGPU_BUFFER_BYTES,
+            assert spec is not None, (
+                f"No spec in layer_spec_map for {first_name!r}; "
+                "vLLM planner contract violated (shared_by name missing from kv_cache_groups)"
+            )
+            assert isinstance(spec, AttentionSpec), (
+                f"Unexpected spec type {type(spec).__name__} for {first_name!r}; "
+                "only AttentionSpec subclasses are expected in layer_spec_map"
             )
         if first_name is not None:
             try:
