@@ -1,5 +1,7 @@
 from __future__ import annotations
+import functools
 import math
+import operator
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -179,11 +181,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._scale_acc: dict = {}    # {layer_idx: {'q': arr, 'k': arr, 'v': arr}}
         self._scale_transforms: dict = {}  # HF scale key -> (arr) -> None
 
-        def _make_scale_store(acc: dict, proj: str):
-            def _store(arr: "np.ndarray") -> None:
-                acc[proj] = arr
-            return _store
-
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "attention":
                 _acc: dict = {}
@@ -191,7 +188,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _hf_p = f"backbone.layers.{_i}.mixer"
                 for _proj in ("q", "k", "v"):
                     self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
-                        _make_scale_store(_acc, _proj)
+                        functools.partial(operator.setitem, _acc, _proj)
                     )
 
         # The WebGPU MLP path does not implement bias addition. All known
@@ -898,13 +895,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Decode path (T=1): zero-alloc hot path via pre-allocated buffers.
         dev = self.wgpu_device.wgpu_device
         hidden = self.hidden_size
-        ctx_len = self._compute_ctx_len(attn_metadata, positions)
+        ctx_len = self._compute_ctx_len(attn_metadata)
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
-            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes(),
+            np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes(),
         )
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
@@ -1273,7 +1270,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 pre["ids"].buf, 0, input_ids[t:t+1].astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(
                 pre["slot_map"].buf, 0,
-                np.array(attn_metadata.slot_mapping[t:t+1], dtype=np.uint32).tobytes())
+                np.asarray(attn_metadata.slot_mapping[t:t+1], dtype=np.uint32).tobytes())
 
             with self._batched_dispatch():
                 self._dispatch(

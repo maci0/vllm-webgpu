@@ -224,13 +224,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         self._check_single_sequence(attn_metadata)
 
-        ctx_len = self._compute_ctx_len(attn_metadata, positions)
+        ctx_len = self._compute_ctx_len(attn_metadata)
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds 65535")
 
         pre = self._pre
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32).tobytes())
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
             np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())

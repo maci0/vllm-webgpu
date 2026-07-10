@@ -8,6 +8,11 @@ from huggingface_hub.constants import SAFETENSORS_INDEX_FILE
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
+# parse_safetensors_file_metadata is sourced from vllm.transformers_utils.utils and
+# returns {key: {"dtype": str, "shape": list, "data_offsets": [start, end]}}. If vLLM
+# renames or moves this function, or changes its return shape, the header comprehension
+# in _load_safetensors_shard will silently skip all tensors. Verify on each vLLM
+# version bump that the function still exists at this path and returns the expected structure.
 from vllm.transformers_utils.utils import parse_safetensors_file_metadata
 
 # AWQ nibble unpack table. AWQ packs channels with interleaved order [0,4,1,5,2,6,3,7],
@@ -21,7 +26,7 @@ _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
-_SYM_ZEROS_INT32: int = int(np.frombuffer(b'\x88\x88\x88\x88', dtype=np.int32)[0])  # all nibbles = 8, bit pattern 0x88888888
+_SYM_ZEROS_INT32: int = -2004318072  # 0x88888888 as int32: all eight nibbles = 8, the AutoGPTQ symmetric zero-point sentinel
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -242,11 +247,11 @@ def load_safetensors_weights_sharded(
     # in one loop avoids three separate O(n) walks over a potentially large map.
     has_biases = is_gemma_mm = is_qwen35_mm = False
     for k in weight_map:
-        has_biases   |= k.endswith(".biases")
+        if k.endswith(".biases"):
+            has_biases = True
+            break
         is_gemma_mm  |= k.startswith("language_model.")
         is_qwen35_mm |= k.startswith("model.language_model.")
-        if has_biases:
-            break
 
     if has_biases:
         if f32_keys:

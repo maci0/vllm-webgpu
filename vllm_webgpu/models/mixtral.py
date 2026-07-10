@@ -73,6 +73,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 size=_staging_sz,
                 usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
             # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
+            # debug-only path, None on production log levels.
             self._topk_w_staging = None
             # Pre-allocated zero buffer for expert_out initialization. Avoids a
             # fresh bytes() allocation per decode token (32 layers × 8 KB each on

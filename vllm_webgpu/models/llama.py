@@ -112,7 +112,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
-        max_bt_blocks = max(4096, math.ceil(max_ctx / self.block_size))
+        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      mk(T * 4),              # [1] uint32 token id
             "pos":      mk(T * 4),              # [1] uint32 position
@@ -211,7 +211,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes(),
             bt_arr.tobytes(),
         )
-        ctx_len = self._compute_ctx_len(attn_metadata, positions)
+        ctx_len = self._compute_ctx_len(attn_metadata)
         return (
             pre["ids"], pre["pos"], pre["slot_map"], pre["bt"],
             pre["x"], pre["norm_out"], pre["logits"], ctx_len,
@@ -758,6 +758,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             sc["qkv_buf"]],
                            {"K": hidden, "Q_DIM": q_dim, "KV_DIM": kv_dim},
                            (q_dim + 2 * kv_dim, 1, 1))
+            _q_src = sc["qkv_buf"]
+            _k_src = sc["qkv_buf"]
             _v_src = sc["qkv_buf"]
             _v_offset = q_dim + kv_dim  # f16 elements before V section
         else:
@@ -784,9 +786,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             "INPUT_OFFSET_K": q_dim},
                            (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
         else:
-            if _use_fused_qkv:
-                _q_src = sc["qkv_buf"]
-                _k_src = sc["qkv_buf"]
             for src, dst, n_heads, norm_w, in_off in [
                 (_q_src, sc["q_rope"], self.num_q_heads,  q_norm_w, 0),
                 (_k_src, sc["k_rope"], self.num_kv_heads, k_norm_w, q_dim if _use_fused_qkv else 0),

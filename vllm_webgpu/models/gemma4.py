@@ -399,7 +399,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         if num_tokens > 1:
             return self._prefill_batch_forward(input_ids, positions, attn_metadata, num_tokens)
 
-        ctx_len = self._compute_ctx_len(attn_metadata, positions)
+        ctx_len = self._compute_ctx_len(attn_metadata)
 
         # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
         pre = self._pre

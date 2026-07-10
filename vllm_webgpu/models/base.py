@@ -320,7 +320,7 @@ class BaseWebGPUModel(ABC):
                 "block tables; call forward() once per decode request"
             )
 
-    def _compute_ctx_len(self, attn_metadata: object, positions: "np.ndarray") -> int:
+    def _compute_ctx_len(self, attn_metadata: object) -> int:
         """Derive the decode context length from attn_metadata."""
         return int(attn_metadata.max_decode_seq_len)
 
