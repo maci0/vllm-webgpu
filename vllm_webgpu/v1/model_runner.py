@@ -682,17 +682,37 @@ class WebGPUModelRunner:
                 # request beyond the first in a multi-sequence decode batch.
                 if hasattr(self.model, "restore_recurrent_states"):
                     saved_recurrent = state.get("recurrent_states")
-                    # If this request was preempted and pos was rolled back below
-                    # the saved position, the KV cache is fresh (starting at 0)
-                    # but saved_recurrent reflects a later position. Restoring
-                    # that state would make SSM and attention inconsistent, so
-                    # reset instead to match the fresh KV cache.
                     rolled_back = rid in resumed_req_ids and pos < state.get("pos", 0)
                     if not rolled_back and saved_recurrent is not None:
                         self.model.restore_recurrent_states(saved_recurrent)
                     elif hasattr(self.model, "reset_recurrent_states"):
-                        # No snapshot yet, or pos was rolled back: start fresh.
+                        # Reset Mamba conv/SSM states to zero before decoding.
                         self.model.reset_recurrent_states()
+                        if rolled_back and pos > 0:
+                            # KNOWN WRONG-OUTPUT CONDITION: the request was preempted
+                            # and resumed at position pos > 0 (prefix caching preserved
+                            # pos tokens in the KV cache for attention layers). The SSM
+                            # state has been reset to zero, but the attention KV cache
+                            # already reflects pos tokens of history. All subsequent
+                            # Mamba layer outputs are wrong: they decode from state=0
+                            # while the residual stream is at sequence position pos.
+                            #
+                            # Correct fix: replay input tokens 0..pos-1 one at a time
+                            # through the Mamba layers (without writing to the KV cache,
+                            # which is already populated) to reconstruct the SSM state
+                            # before the first decode step. This requires the full token
+                            # sequence for positions 0..pos-1 to be stored in _req_state,
+                            # which is not currently tracked. Until that is implemented,
+                            # outputs for this request after resumption are silently
+                            # corrupted for every token decoded past the rollback point.
+                            logger.warning(
+                                "req %s: preempted and resumed at pos=%d with prefix-cached "
+                                "KV (attention sees %d tokens of history). Mamba SSM state "
+                                "was reset to zero and cannot be reconstructed without the "
+                                "full token history (not stored). All Mamba layer outputs "
+                                "for this request are wrong until a new prefill runs.",
+                                rid, pos, pos,
+                            )
 
                 logits = self.model.forward(
                     np.array([tok], dtype=np.uint32),
