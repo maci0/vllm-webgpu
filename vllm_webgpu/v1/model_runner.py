@@ -7,7 +7,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
@@ -223,16 +222,8 @@ class WebGPUModelRunner:
         return spec
 
     def get_cache_block_size_bytes(self) -> int:
-        block_size = self._block_size
-        head_dim = self.vllm_config.model_config.get_head_size()
-        num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
-        # Use the maximum per-layer values when heterogeneous layer params are available
-        # (e.g. Gemma4 models with mixed local/global attention dimensions).
-        lp_list = self._get_lp_list()
-        if lp_list:
-            head_dim = max((lp["head_dim"] for lp in lp_list if lp["num_kv_heads"] > 0), default=head_dim)
-            num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list if lp["num_kv_heads"] > 0), default=num_kv_heads)
-        return 2 * block_size * num_kv_heads * head_dim * get_dtype_size(_KV_DTYPE)
+        specs = self.get_kv_cache_spec()
+        return max((s.page_size_bytes for s in specs.values()), default=0)
 
     def warm_up(self) -> None:
         if self.model is not None:
