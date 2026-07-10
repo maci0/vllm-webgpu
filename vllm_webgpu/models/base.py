@@ -89,9 +89,18 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via object.__new__
-    so formula changes in vLLM are picked up automatically without requiring
-    a manual update here.
+    inv_freq is computed by calling YaRNScalingRotaryEmbedding._compute_inv_freq
+    directly (via object.__new__ to skip __init__). This means changes to that
+    method in vLLM are picked up automatically for the frequency computation.
+
+    mscale is computed locally using yarn_get_mscale. If vLLM changes how mscale
+    is derived inside YaRNScalingRotaryEmbedding, this local formula will NOT
+    pick up the change automatically and must be audited on each vLLM bump.
+
+    Also note: the object.__new__ trick populates only the attributes listed
+    below before calling _compute_inv_freq. If vLLM adds a new required
+    attribute to that method, the call will raise AttributeError at runtime
+    rather than at import time. Audit when bumping vLLM.
 
     Args:
         head_dim:    Full attention head dimension.
