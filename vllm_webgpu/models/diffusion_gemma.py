@@ -100,10 +100,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Pre-allocated dense routing weight matrix: [num_experts, max_canvas_len] f32.
             # Reused across all _decoder_layer calls; only active token columns are zeroed.
             self._dense_w = np.zeros((self.num_experts, max_canvas_len), dtype=np.float32)
-            # Tiny f16 dummy for the NO_SCALE=1 router_norm_f32in path: binding 1
-            # is declared but never read when NO_SCALE=1; pass this instead of an
-            # unrelated weight buffer to make the intent clear.
-            self._router_dummy_buf = _WB.empty(_dev, 8)  # 4 x f16
+            # f16 zero buffer for the NO_SCALE=1 router_norm_f32in path: binding 1
+            # is bound but the result is discarded by select when NO_SCALE=1.
+            # Sized to hidden_size elements so the binding covers the full scale
+            # array the shader declares, avoiding reliance on OOB robustness.
+            self._router_dummy_buf = _WB.empty(_dev, self.hidden_size * 2)  # hidden_size x f16
 
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
