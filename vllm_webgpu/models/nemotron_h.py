@@ -692,7 +692,18 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 if inproj_key in self.weights:
                     # AWQ stores in_proj.weight as [K, N//8]; all other formats
                     # (F16, GPTQ, FP8, INT8, NF4, NVFP4) store shape[0] == N.
-                    if self._uq_for_key(inproj_key) == 4:  # AWQ: shape[0]=K, not N
+                    if self._uq_for_key(inproj_key) == 4:  # AWQ: shape[0]=K, shape[1]=N//8
+                        actual = self.weights[inproj_key].shape[1] * 8
+                        if actual != self.in_proj_dim:
+                            raise ValueError(
+                                f"{inproj_key} AWQ shape[1]*8={actual} does not "
+                                f"match computed in_proj_dim={self.in_proj_dim} "
+                                f"(mamba_int={self.mamba_int} + "
+                                f"conv_dim={self.conv_dim} + "
+                                f"mamba_num_heads={self.mamba_num_heads}). "
+                                f"Recheck MambaMixer2Tp output_sizes in "
+                                f"mamba_mixer2.py L328-355 against this vLLM version."
+                            )
                         _checked_inproj = True
                     else:
                         actual_inproj_dim = self.weights[inproj_key].shape[0]
