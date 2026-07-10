@@ -353,26 +353,27 @@ class WebGPUModelRunner:
         # with the placeholder are never read because the scheduler guards
         # slice_request with num_logprobs is not None. Using a plain list
         # satisfies the list[int] | None contract of LogprobsTensors.tolists.
-        # NOTE: cu_list is equivalent to a cumulative sum of per-request token
-        # counts here because WebGPU generates exactly one token per step (T=1).
-        # With T=1, row-index-of-request-i equals sum(tokens for requests 0..i-1).
-        # Speculative decoding (T>1) would require a true cumulative sum over
-        # per-request token counts instead of the row counter below.
+        # NOTE: row_index_map is a sparse row-index table, not a cumulative sum.
+        # row_index_map[i] is the row in the stacked tensor that belongs to
+        # request i (only set for requests that have logprobs). Requests without
+        # logprobs get an out-of-bounds sentinel (_oob = len(pieces)) so that
+        # any accidental access into stacked fails loudly rather than silently
+        # returning the last row's data.
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
             max_k = max(d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None)
             pieces = []
-            # -1 is a sentinel for requests without logprobs; overwritten below.
-            # After building pieces, sentinels are replaced with len(pieces) so
+            # -1 is a placeholder for requests without logprobs; overwritten below.
+            # After building pieces, placeholders are replaced with len(pieces) so
             # any accidental access to stacked (valid indices 0..row-1) fails
             # loudly rather than silently returning the last row's data.
-            cu_list: list[int] = [-1] * len(logprobs_data)
+            row_index_map: list[int] = [-1] * len(logprobs_data)
             row = 0
             for i, d in enumerate(logprobs_data):
                 if d is not None:
-                    cu_list[i] = row
+                    row_index_map[i] = row
                     pad = max_k - d.logprob_token_ids.shape[1]
                     pieces.append(LogprobsTensors(
                         F.pad(d.logprob_token_ids, (0, pad), value=0),
@@ -380,14 +381,17 @@ class WebGPUModelRunner:
                         d.selected_token_ranks,
                     ))
                     row += 1
-            _oob = len(pieces)  # out-of-range sentinel replaces -1 for non-logprob entries
-            cu_list = [_oob if v < 0 else v for v in cu_list]
+            _oob = len(pieces)  # out-of-range sentinel replaces placeholders for non-logprob entries
+            row_index_map = [_oob if v < 0 else v for v in row_index_map]
+            assert _oob == len(pieces) and all(
+                v == _oob or 0 <= v < _oob for v in row_index_map
+            ), f"row_index_map invariant violated: _oob={_oob}, map={row_index_map}"
             stacked = LogprobsTensors(
                 torch.cat([p.logprob_token_ids for p in pieces]),
                 torch.cat([p.logprobs for p in pieces]),
                 torch.cat([p.selected_token_ranks for p in pieces]),
             )
-            built_logprobs = stacked.tolists(cu_list)
+            built_logprobs = stacked.tolists(row_index_map)
 
         out = ModelRunnerOutput(
             req_ids=req_ids,
