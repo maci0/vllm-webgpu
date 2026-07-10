@@ -43,8 +43,10 @@ def _build_layer_params_from_config(
 
     (3) head_dim / num_kv_heads / has_v_proj per attention type:
         vLLM vllm/model_executor/models/gemma4.py lines 561-577
-        full_attention uses global_head_dim + num_global_key_value_heads;
-        sliding_attention uses default head_dim + num_key_value_heads.
+        full_attention uses global_head_dim + num_global_key_value_heads when
+        k_eq_v=True (laptop variant), or global_head_dim + num_key_value_heads
+        when k_eq_v=False (standard variant); sliding_attention uses default
+        head_dim + num_key_value_heads.
     """
     # (1) vLLM gemma4.py L463/601
     first_kv_shared = num_layers - getattr(model_config, "num_kv_shared_layers", 0)

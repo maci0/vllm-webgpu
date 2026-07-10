@@ -94,13 +94,7 @@ class WebGPUModelRunner:
         self._zeros_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc across scheduling steps
         self._block_size: int = vllm_config.cache_config.block_size
 
-    def load_model(self, *, load_dummy_weights: bool = False) -> None:
-        if load_dummy_weights:
-            import logging
-            logging.getLogger(__name__).warning(
-                "load_dummy_weights=True passed to WebGPUModelRunner, "
-                "which has no dummy-weight path; loading real weights."
-            )
+    def load_model(self) -> None:
         mc = self.vllm_config.model_config
         arch = (mc.architectures or ["LlamaForCausalLM"])[0]
         hf_config = mc.hf_config

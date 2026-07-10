@@ -389,7 +389,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             sgw_k = f"{sp}.{gate_key}.weight"
             suw_k = f"{sp}.{up_key}.weight"
             sdw_k = f"{sp}.{down_key}.weight"
-            if not any(k not in self.weights for k in (sgw_k, suw_k, sdw_k)):
+            if all(k in self.weights for k in (sgw_k, suw_k, sdw_k)):
                 self._dispatch_expert_gate_up(dev, normed_x, sgw_k, suw_k, _sinter, extra_gate_consts)
                 uq_sd = self._uq_for_key(sdw_k)
                 qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)

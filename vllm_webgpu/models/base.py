@@ -190,12 +190,12 @@ class BaseWebGPUModel(ABC):
         """Return the VALS_PER_THREAD constant for rms_norm shaders.
 
         Each workgroup covers 256 threads. When hidden_size fits within
-        256*16 elements, each thread handles ceil(hidden/256) values (capped
-        at 16). Larger hidden sizes require a different shader path (0 signals
+        256*16 elements, each thread handles ceil(hidden/256) values.
+        Larger hidden sizes require a different shader path (0 signals
         the caller to fall back).
         """
         if hidden_size <= 256 * 16:
-            return min((hidden_size + 255) // 256, 16)
+            return (hidden_size + 255) // 256
         return 0
 
     @contextmanager

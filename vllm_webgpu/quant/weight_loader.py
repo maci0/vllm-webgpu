@@ -265,7 +265,7 @@ def _qzeros_symmetric(qzeros: np.ndarray) -> bool:
     (zero_point=0) or any per-group asymmetric zeros cannot use the GPU
     shader path and must fall back to CPU dequantization.
     """
-    return bool(np.all(qzeros.view(np.int32) == _SYM_ZEROS_INT32))
+    return bool(np.all(qzeros == _SYM_ZEROS_INT32))
 
 
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:

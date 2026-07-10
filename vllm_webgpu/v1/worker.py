@@ -111,12 +111,6 @@ class WebGPUWorker(WorkerBase):
             "use model_runner.model directly."
         )
 
-    def apply_model(self, fn: Any) -> Any:
-        raise NotImplementedError(
-            "apply_model() requires nn.Module but WebGPU models are not "
-            "nn.Module instances; use get_model() directly."
-        )
-
     def update_max_model_len(self, max_model_len: int) -> None:
         self.model_config.max_model_len = max_model_len
         logger.debug("Updated max_model_len to %d", max_model_len)

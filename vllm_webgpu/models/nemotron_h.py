@@ -134,8 +134,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        # conv_dim derived from the authoritative shape: math.prod(conv_shape) == (conv_kernel-1) * conv_dim
-        self.conv_dim: int = math.prod(self._mamba_conv_shape) // (self.conv_kernel - 1)
+        # conv_dim: intermediate_size + 2 * n_groups * ssm_state_size (mamba_mixer2.py L313, tp=1)
+        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353

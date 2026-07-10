@@ -38,7 +38,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     try:
         input_ids_list = tok.apply_chat_template(
             messages, add_generation_prompt=True, tokenize=True)
-    except Exception:
+    except Exception as _e:
+        print(f"  Warning: apply_chat_template failed ({_e}), falling back to tok.encode")
         input_ids_list = tok.encode(prompt)
     eos_id = tok.eos_token_id
     print(f"Input tokens: {len(input_ids_list)}")
