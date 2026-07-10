@@ -199,7 +199,7 @@ class WebGPUModelRunner:
 
         if lp_list and len(lp_list) == mc.num_hidden_layers:
             for i, lp in enumerate(lp_list):
-                if _layer_types and _layer_types[i] not in KV_ATTN_TYPES:
+                if _layer_types and len(_layer_types) == mc.num_hidden_layers and _layer_types[i] not in KV_ATTN_TYPES:
                     continue
                 if lp["num_kv_heads"] == 0:
                     # Non-attention layer: skip regardless of _layer_types to
