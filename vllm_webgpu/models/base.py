@@ -104,6 +104,11 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
+    # Frequency blend — mirrors YaRNScalingRotaryEmbedding._compute_inv_freq
+    # in vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py L49-73
+    # pinned to vLLM 0.24.0 (commit_id=None).
+    # If vLLM is upgraded, re-check that file for algorithm changes before
+    # accepting the version bump; any divergence here is a silent correctness bug.
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     inv_freq_extrapolation = 1.0 / pos_freqs
     inv_freq_interpolation = 1.0 / (factor * pos_freqs)
