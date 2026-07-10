@@ -101,11 +101,6 @@ except (ImportError, OSError):
 # the _is_awq == 4 check is the sole gate selecting AWQ-specific unpacking.
 
 
-def _neg_exp_transform(arr: np.ndarray) -> np.ndarray:
-    """Negate the exponential of arr — applied to A_log weights before GPU upload."""
-    return -np.exp(arr)
-
-
 class NemotronHWebGPUModel(BaseWebGPUModel):
     """
     Nemotron-H hybrid Mamba-2 SSM / Attention model (WebGPU decode backend).
@@ -198,7 +193,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # require. The transform uses the HF checkpoint key name (backbone. prefix).
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "mamba":
-                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _neg_exp_transform
+                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = lambda arr: -np.exp(arr)
 
         # The WebGPU MLP path does not implement bias addition. All known
         # NemotronH checkpoints ship with mlp_bias=False (the default), so

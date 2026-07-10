@@ -428,6 +428,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Q: norm+RoPE unconditionally (KV-shared layers still project and use Q).
             # K: norm+RoPE only for non-shared layers; shared layers read K from cache directly.
             _q_nw = self.weights.get(f"{p}.self_attn.q_norm.weight")
+            _k_nw = self.weights.get(f"{p}.self_attn.k_norm.weight") if not is_kv_shared else None
+            # SCALE=1.0 is correct only when Q/K have been magnitude-normalized by
+            # fused_per_head_norm_rope (GEMMA_NORM=1). When the fallback plain rope
+            # path runs (q_norm/k_norm weights absent), magnitudes are uncontrolled
+            # and the standard 1/sqrt(head_dim) scale applies.
+            attn_scale = 1.0 if (_q_nw is not None and (is_kv_shared or _k_nw is not None)) else (1.0 / head_dim ** 0.5)
             if _q_nw is not None:
                 # Binding 4 (inv_freq_buf): always provided.
                 self._dispatch("fused_per_head_norm_rope",
@@ -442,7 +448,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                {**self._rope_plain_consts[layer_idx], "HEAD_DIM": head_dim, "NUM_HEADS": self.num_q_heads},
                                (num_tokens, self.num_q_heads, 1))
             if not is_kv_shared:
-                _k_nw = self.weights.get(f"{p}.self_attn.k_norm.weight")
                 if _k_nw is not None:
                     # Binding 4 (inv_freq_buf): always provided.
                     self._dispatch("fused_per_head_norm_rope",
@@ -488,14 +493,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # For num_tokens == 1 the loop runs once with offset 0, matching the old dispatch.
             for _t in range(num_tokens):
                 _t_q_off = _t * q_dim
-                # SCALE=1.0: Q/K RMSNorm (fused_per_head_norm_rope with GEMMA_NORM=1)
-                # implicitly controls magnitudes, so no 1/sqrt(HEAD_DIM) factor is needed.
                 self._dispatch("attn_score",
                                [sc["q_rope"], k_cache, bt_buf, sc["scores_buf"]],
                                {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
                                 "MAX_SEQ_LEN": ctx_len, "Q_TOKEN_OFFSET": _t_q_off,
-                                "SCALE": 1.0},
+                                "SCALE": attn_scale},
                                (self.num_q_heads, ctx_len, 1))
                 self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
                                {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))
@@ -712,8 +715,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # expert IDs per token; distinct t values make cross-token duplicates impossible),
             # so buffered fancy-index assignment is equivalent to np.add.at and faster.
             dense_w = np.zeros((self.num_experts, num_tokens), dtype=np.float32)
-            t_idx   = np.repeat(np.arange(num_tokens), self.top_k_experts)  # [T*K]
-            dense_w[top_k_idx.ravel(), t_idx] += rw_vals.ravel()
+            dense_w[top_k_idx, np.arange(num_tokens)[:, None]] = rw_vals
             unique_eids = np.unique(top_k_idx).tolist()
 
             # GPU: run selected expert FFNs

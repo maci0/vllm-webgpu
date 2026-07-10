@@ -157,7 +157,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                      rope_scaling.get("type", ""))
 
         if rope_type != "yarn":
-            if rope_type and rope_type not in ("", "default", "linear"):
+            if rope_type not in ("", "default", "linear"):
                 logger.warning(
                     "rope_type=%r not implemented; using standard RoPE "
                     "(long-context accuracy reduced beyond 8192 tokens)",
@@ -385,7 +385,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         GEMM ops use matmul_quant_mr4 (T rows at once).
         Attention is a fused T-token causal dispatch via flash_attn_prefill; no per-token looping occurs.
         Last-token prediction extracted via GPU copy_buffer_to_buffer.
-        Returns shape (1, 1) int32 (GPU argmax of last-token logits).
+        Returns: (1, 1) int32 (GPU argmax token id) when greedy, or (1, vocab) float32 logits when greedy is False.
         """
         # APC prefix-cache hit: the first token's absolute position is > 0, meaning
         # num_computed cached K/V blocks already exist in the KV cache. The batch

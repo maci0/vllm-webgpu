@@ -8,7 +8,8 @@ from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
                                          MLAAttentionSpec,
-                                         SlidingWindowMLASpec)
+                                         SlidingWindowMLASpec,
+                                         TQFullAttentionSpec)
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
 _MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
@@ -80,6 +81,13 @@ def allocate_kv_from_tensors(
                 "MLAAttentionSpec uses a compressed latent layout that differs from the standard "
                 "per-head K/V formula and cannot be sized with storage_block_size * head_size * dtype_bytes."
             )
+        elif spec is not None and isinstance(spec, TQFullAttentionSpec):
+            raise NotImplementedError(
+                f"TQFullAttentionSpec KV cache is not supported by the WebGPU backend. "
+                "TQFullAttentionSpec overrides real_page_size_bytes with a tq_slot_size-based formula "
+                "that differs from the standard block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes. "
+                "Allocating with head_size/head_size_v would produce wrong buffer sizes."
+            )
         elif spec is not None and isinstance(spec, FullAttentionSpec):
             if spec.kv_quant_mode.is_nvfp4:
                 raise NotImplementedError(
@@ -94,14 +102,7 @@ def allocate_kv_from_tensors(
             storage_bs = spec.storage_block_size
             k_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size * dtype_bytes
             v_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size_v * dtype_bytes
-            if k_bytes + v_bytes != spec.real_page_size_bytes * num_blocks:
-                logger.warning(
-                    "Spec-derived K (%d B) + V (%d B) does not match real_page_size_bytes*num_blocks (%d B) "
-                    "for layer %r; head_size=%d differs from head_size_v=%d "
-                    "-- allocating buffers independently.",
-                    k_bytes, v_bytes, spec.real_page_size_bytes * num_blocks, first_name,
-                    spec.head_size, spec.head_size_v,
-                )
+            assert k_bytes + v_bytes == spec.real_page_size_bytes * num_blocks
         elif isinstance(spec, SlidingWindowMLASpec):
             raise NotImplementedError(
                 f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "

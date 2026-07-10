@@ -179,7 +179,7 @@ class WebGPUModelRunner:
         # excluded — emitting a FullAttentionSpec for them over-reports KV memory.
         # NemotronH attention layers live under .mixer, not .self_attn.
         _archs = getattr(mc, "architectures", None) or []
-        _attn_suffix = ".mixer" if "NemotronHForCausalLM" in _archs else ".self_attn"
+        _attn_suffix = ".mixer" if ARCH_MAP.get((_archs or [""])[0]) == "nemotron_h" else ".self_attn"
         _layer_types = get_layer_types(None, self.vllm_config.model_config.hf_text_config)
 
         if not lp_list:
@@ -223,7 +223,7 @@ class WebGPUModelRunner:
 
     def get_cache_block_size_bytes(self) -> int:
         specs = self.get_kv_cache_spec()
-        return sum((s.page_size_bytes for s in specs.values()), 0)
+        return sum(s.page_size_bytes for s in specs.values())
 
     def warm_up(self) -> None:
         if self.model is not None:

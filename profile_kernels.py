@@ -45,8 +45,6 @@ def main() -> None:
 
     from vllm_webgpu.v1.model_runner import _build_model
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
-    from vllm_webgpu.scripts.kv_utils import get_kv_dims_from_hf_config
-    from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, get_layer_types
     import vllm_webgpu.envs as _envs
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
     model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
