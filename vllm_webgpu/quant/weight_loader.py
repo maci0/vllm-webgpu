@@ -281,12 +281,8 @@ def load_safetensors_weights_sharded(
             skip_prefixes=skip_prefixes, quant_cfg=quant_cfg,
             scale_transforms=scale_transforms)
 
-        # Commit all pending write_buffer operations by submitting a dummy command encoder.
-        # queue.write_buffer() is only committed before the NEXT queue.submit(), not by
-        # on_submitted_work_done_sync() alone. Without this, 24GB of accumulated writes
-        # may be committed simultaneously at the first real submit, causing Metal to
-        # silently drop some writes (embedding buffer shows zeros after readback).
-        _flush_pending(wgpu_device)
+        # load_safetensors_weights guarantees a flush (submit + on_submitted_work_done_sync)
+        # before it returns, so no extra flush is needed here.
 
         shard_qm = shard_weights.pop("__quant_meta__", {})
         weights.update(shard_weights)
