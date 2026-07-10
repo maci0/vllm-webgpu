@@ -15,7 +15,7 @@ from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_tensors
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_tensors, get_layer_types
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
@@ -190,7 +190,7 @@ class WebGPUModelRunner:
         # NemotronH attention layers live under .mixer, not .self_attn.
         _archs = getattr(mc, "architectures", None) or []
         _attn_suffix = ".mixer" if "NemotronHForCausalLM" in _archs else ".self_attn"
-        _layer_types = getattr(mc, "layer_types", None) or getattr(mc, "layers_block_type", None)
+        _layer_types = get_layer_types(None, mc)
 
         if not lp_list:
             layer_types = _layer_types
