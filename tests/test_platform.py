@@ -49,7 +49,8 @@ def test_check_and_update_config_sets_worker():
     WebGPUPlatform.check_and_update_config(vllm_config)
     assert vllm_config.parallel_config.worker_cls == "vllm_webgpu.v1.worker.WebGPUWorker"
     assert vllm_config.parallel_config.distributed_executor_backend == "uni"
-    assert vllm_config.parallel_config.disable_custom_all_reduce is True
+    # disable_custom_all_reduce is set by ParallelConfig.__post_init__ via
+    # use_custom_allreduce() returning False, not by check_and_update_config.
     assert vllm_config.scheduler_config.enable_chunked_prefill is False
 
 

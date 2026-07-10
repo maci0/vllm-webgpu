@@ -120,10 +120,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # _is_moe is set from config here and may be overridden in load_weights
         # once we can verify against actual weight keys.
         self._is_moe: bool = self._moe_num_experts > 0 and self._moe_k > 0
-        # GEMMA_NORM=1 for safetensors (weights are deviations from 1, mean≈0.2).
-        # GEMMA_NORM=0 for MLX format (weights are absolute, mean≈1.0 — +1 already baked in).
+        # GEMMA_NORM=1 for Gemma safetensors (weights are deviations from 1, mean≈0.2).
+        # GEMMA_NORM=0 for standard RMSNorm (weights absolute, mean≈1.0 — Qwen3.5 default).
         # Detected after load_weights() by checking the first layernorm weight mean.
-        self._gemma_norm: int = 1  # default; set by _gemma_norm_detect transform during load_weights()
+        # If the detection sentinel key is absent from a checkpoint, GEMMA_NORM=0 is used,
+        # which is correct for any non-Gemma model.
+        self._gemma_norm: int = 0  # default; corrected to 1 by _gemma_norm_detect if needed
 
         # GDN_BF16: when set, GDN projection matmuls use bf16-preserved weight buffers
         # (key + "__bf16") instead of the default f16 version. Falls back silently if
@@ -239,6 +241,13 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         for correctly split fp16 weights.
         """
         self._rms_consts["GEMMA_NORM"] = self._gemma_norm
+        # Cache once so _attn_block does not rebuild this dict every token.
+        self._rope_base = {
+            **self._rope_consts,
+            "GEMMA_NORM": self._gemma_norm,
+            "ROTARY_DIM": self._rotary_dim,
+            "INTERLEAVED": self._rope_interleaved,
+        }
 
         if self._attn_output_gate:
             q_dim = self.num_q_heads * self.head_dim
@@ -817,10 +826,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         _q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
         _k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
         _freq_buf = self._rope_freq_buf
-        _rope_base = {**self._rope_consts,
-                      "GEMMA_NORM": self._gemma_norm,
-                      "ROTARY_DIM": self._rotary_dim,
-                      "INTERLEAVED": self._rope_interleaved}
+        _rope_base = self._rope_base
         if _q_norm_w is not None and _k_norm_w is not None:
             # fused_qk_norm_rope with K_SEPARATE=1: Q in _q_src, K in _k_src (separate buffers).
             self._dispatch("fused_qk_norm_rope",

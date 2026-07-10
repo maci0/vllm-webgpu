@@ -123,7 +123,6 @@ class WebGPUPlatform(_Platform):
                 existing_backend,
             )
         parallel_config.distributed_executor_backend = "uni"
-        parallel_config.disable_custom_all_reduce = True
         vllm_config.scheduler_config.enable_chunked_prefill = False
 
     @classmethod

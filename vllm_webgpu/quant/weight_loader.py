@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
+from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -17,9 +17,9 @@ _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=np.int
 # GPTQ nibble unpack: each int32 holds 8 nibbles at bit offsets [0, 4, 8, ..., 28].
 _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
-# Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint).
-# Stored as int32 bit pattern 0x88888888 = -0x77777778 in two's complement.
-_SYM_ZEROS_INT32: np.int32 = np.int32(-0x77777778)
+# Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
+# bit pattern 0x88888888.
+_SYM_ZEROS_INT32: np.int32 = np.frombuffer(b'\x88\x88\x88\x88', dtype=np.int32)[0]
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -51,14 +51,15 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
-    return sorted(
-        base
-        for k in header
-        if k.endswith(".weight")
-        and (base := k.removesuffix(".weight"))
-        and header[k].get("dtype") == "U8"
-        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
-    )
+    result = []
+    for k in header:
+        if not k.endswith(".weight"):
+            continue
+        base = k.removesuffix(".weight")
+        if (header[k].get("dtype") == "U8"
+                and header.get(base + ".weight_scale", {}).get("dtype") == "U8"):
+            result.append(base)
+    return sorted(result)
 
 
 def _load_quant_cfg(config_path: Path) -> dict:
@@ -75,7 +76,7 @@ def _load_quant_cfg(config_path: Path) -> dict:
         return {}
 
 
-def _check_unsupported_quant(model_dir: Path) -> None:
+def _check_unsupported_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> None:
     """Raise ValueError if config.json names an unsupported quantization scheme.
 
     Detects AQLM, HQQ, and QuIP# by reading quant_type/quant_method from
@@ -84,12 +85,15 @@ def _check_unsupported_quant(model_dir: Path) -> None:
     models like Gemma3/Qwen3.5-MM) and compression_config are both covered.
     These formats cannot be loaded as safetensors by this plugin; raise early
     with a clear message rather than silently loading wrong data.
+
+    Pass quant_cfg to skip the config.json read when the caller already has it.
     """
-    config_json = model_dir / "config.json"
-    if not config_json.exists():
-        return
-    qcfg = _load_quant_cfg(config_json)
-    qt = (qcfg.get("quant_type") or qcfg.get("quant_method") or "").lower().strip()
+    if quant_cfg is None:
+        config_json = model_dir / "config.json"
+        if not config_json.exists():
+            return
+        quant_cfg = _load_quant_cfg(config_json)
+    qt = (quant_cfg.get("quant_type") or quant_cfg.get("quant_method") or "").lower().strip()
     if qt in _UNSUPPORTED_QUANT_TYPES:
         raise ValueError(
             f"Quantization format {qt!r} is not supported by vllm-webgpu. "
@@ -121,7 +125,6 @@ def _apply_multimodal_remap(weights: dict) -> int:
 def detect_weight_format(path: str) -> str:
     p = Path(path)
     if p.is_dir():
-        _check_unsupported_quant(p)
         if (p / _SAFE_WEIGHTS_INDEX_NAME).exists():
             # MLX vs standard sharded detection is deferred to the loader,
             # which already reads the index and can check for .biases keys.
@@ -427,6 +430,7 @@ def load_safetensors_weights(
     skip_remap: bool = False,
     weight_transforms: "dict | None" = None,
     skip_prefixes: "frozenset[str] | None" = None,
+    quant_cfg: "dict | None" = None,
 ) -> dict:
     """Load safetensors weights and upload to GPU as F16.
 
@@ -469,11 +473,13 @@ def load_safetensors_weights(
 
         # Detect compressed-tensors config from the model directory (needed for
         # pack-quantized INT4 format where weight dtype alone is insufficient).
-        # Use the caller-supplied ct_meta when available to avoid re-parsing per shard.
-        # Load config.json once here so that detect_compressed_tensors_fmt and
-        # _detect_mx_quant (for MXFP4/MXFP8) share the same parsed dict.
+        # Use the caller-supplied ct_meta / quant_cfg when available to avoid
+        # re-reading config.json (the single-file caller reads it once in load_weights
+        # and passes it here; the sharded caller passes ct_meta per shard).
         _config_json = Path(path).parent / "config.json"
-        _raw_quant_cfg = _load_quant_cfg(_config_json) if _config_json.exists() else {}
+        _raw_quant_cfg = quant_cfg if quant_cfg is not None else (
+            _load_quant_cfg(_config_json) if _config_json.exists() else {}
+        )
         if ct_meta is None:
             ct_meta = detect_compressed_tensors_fmt(_config_json, quant_cfg=_raw_quant_cfg)
 
@@ -786,7 +792,7 @@ def load_safetensors_weights(
                     if fmt == "gptq" and g_idx is None and (qz is None or _qzeros_symmetric(qz)):
                         # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
                         K8, N_ = qw.shape
-                        group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else 128
+                        group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else (K8 * 8)
                         qw_t = np.ascontiguousarray(qw.T)  # [N, K//8]
                         sc_gn = sc.astype(np.float32)      # [G, N] f32
                         _upload(qw_t, np.int32, 'i32', f"{base}.weight", weights)
@@ -801,8 +807,8 @@ def load_safetensors_weights(
                         # Models with zero_point=0 (all-zero qzeros) fall through to the CPU dequant branch.
                         K_, N8_ = qw.shape  # qw is [K, N//8]
                         N_ = N8_ * 8
-                        G_ = sc.shape[0] if sc.ndim == 2 else K_ // 128
-                        group_size = K_ // G_ if G_ > 0 else 128
+                        G_ = sc.shape[0] if sc.ndim == 2 else 1
+                        group_size = K_ // G_ if G_ > 0 else K_
                         # GPU AWQ: store [K, N//8] INT32 directly (no transpose needed
                         # since AWQ access pattern is already per-k, per-output-group)
                         sc_gn = sc.astype(np.float32)  # [G, N] f32

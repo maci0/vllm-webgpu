@@ -82,10 +82,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         for _i in range(self.num_layers):
             _p = f"model.layers.{_i}"
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = (
-                lambda a, n=num_q: np.tile(a, n) if a.shape == (head_dim,) else a
+                lambda a: np.tile(a, num_q) if a.shape == (head_dim,) else a
             )
             self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
-                lambda a, n=num_kv: np.tile(a, n) if a.shape == (head_dim,) else a
+                lambda a: np.tile(a, num_kv) if a.shape == (head_dim,) else a
             )
 
     def _init_scratch_buffers(self, max_ctx: int, qkv_size: "int | None" = None) -> None:

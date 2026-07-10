@@ -743,7 +743,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         add_n = num_tokens * self.hidden_size
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
-            assert self._active_encoder is not None, "_layer_dispatch must be called inside _batched_dispatch"
+            # _active_encoder is guaranteed non-None by the outer _batched_dispatch() context.
             if lt == "mamba":
                 self._mamba_layer(layer_idx, normed_x)
             elif lt == "attention":

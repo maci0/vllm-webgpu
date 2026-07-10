@@ -179,13 +179,13 @@ def allocate_kv_from_tensors(
             k_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size * dtype_bytes
             v_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size_v * dtype_bytes
             naive = tensor.size // 2
-            if k_bytes != naive or v_bytes != naive:
+            if k_bytes + v_bytes != tensor.size:
                 logger.warning(
-                    "KV buffer sizes differ from tensor.size//2=%d B "
-                    "(layer %r): k_bytes=%d B, v_bytes=%d B. "
-                    "Using spec-derived values; scale bytes are not "
+                    "Spec-derived total (%d B) does not match tensor.size (%d B) "
+                    "(layer %r); allocating separate K (%d B) and V (%d B) buffers "
+                    "— overhead bytes (per-token-head scales, padding) are not "
                     "accessible to WebGPU shaders.",
-                    naive, first_name, k_bytes, v_bytes,
+                    k_bytes + v_bytes, tensor.size, first_name, k_bytes, v_bytes,
                 )
         elif isinstance(spec, AttentionSpec):
             # Non-FullAttentionSpec (e.g. SlidingWindowSpec): use spec-derived
@@ -356,10 +356,19 @@ def _make_convertor(hf_cfg):
 
 
 
-def get_kv_dims_from_config(hf_cfg) -> tuple[int, int]:
-    """Return (num_kv_heads, head_size) from an hf_config in a single convertor pass."""
+def _get_kv_dims_from_hf_config(hf_cfg) -> tuple[int, int]:
+    """Return (num_kv_heads, head_size) from a raw HuggingFace config object.
+
+    Intended for standalone scripts (e.g. profile_kernels.py) that do not have a
+    VllmConfig available. In contexts where a VllmConfig is present, prefer
+    model_config.get_total_num_kv_heads() / model_config.get_head_size() directly.
+    """
     conv = _make_convertor(hf_cfg)
     return conv.get_total_num_kv_heads(), conv.get_head_size()
+
+
+# Backward-compatible alias; use _get_kv_dims_from_hf_config for new callers.
+get_kv_dims_from_config = _get_kv_dims_from_hf_config
 
 
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:

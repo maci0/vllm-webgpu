@@ -311,6 +311,7 @@ class BaseWebGPUModel(ABC):
                            allocation, keeping them out of VRAM for the lifetime of the load.
         """
         from vllm_webgpu.quant.weight_loader import (
+            _check_unsupported_quant, _load_quant_cfg,
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded,
         )
@@ -320,13 +321,21 @@ class BaseWebGPUModel(ABC):
             # If path is a directory, the actual file is model.safetensors inside it.
             p = Path(path)
             actual = str(p / _SAFE_WEIGHTS_NAME) if p.is_dir() else path
+            # Read config.json once and share between the unsupported-quant check and
+            # the loader, eliminating the redundant second parse in load_safetensors_weights.
+            _cfg_json = (p if p.is_dir() else p.parent) / "config.json"
+            _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
+            if p.is_dir():
+                _check_unsupported_quant(p, quant_cfg=_quant_cfg)
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
-                weight_transforms=transforms, skip_prefixes=skip_prefixes)
+                weight_transforms=transforms, skip_prefixes=skip_prefixes,
+                quant_cfg=_quant_cfg)
         elif fmt == "safetensors_sharded":
             # MLX affine int4 directories also return "safetensors_sharded" from
             # detect_weight_format; load_safetensors_weights_sharded detects the
             # .biases keys in the already-loaded index and dispatches accordingly.
+            _check_unsupported_quant(Path(path))
             self.weights = load_safetensors_weights_sharded(
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes)
