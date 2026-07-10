@@ -355,7 +355,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         sc = self._sc
         lp = self._lp[layer_idx]
         hidden = self.hidden_size
-        inter_shared = self.intermediate_size      # shared expert intermediate size
+        inter_shared = lp["intermediate_size"]       # shared expert intermediate size (may be doubled for kv-shared layers with use_double_wide_mlp)
         inter_moe = self.moe_intermediate_size     # MoE expert intermediate size
         head_dim = lp["head_dim"]
         q_dim = lp["q_dim"]
