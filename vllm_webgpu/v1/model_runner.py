@@ -90,7 +90,7 @@ class WebGPUModelRunner:
         self._last_model_output: Any = EMPTY_MODEL_RUNNER_OUTPUT  # cached for sample_tokens()
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
-        self._zeros_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc across scheduling steps
+        self._zeros_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc across scheduling steps; see also NemotronHWebGPUModel._zero_buf_cache for the analogous Mamba-state cache
         self._block_size: int = vllm_config.cache_config.block_size
         self._kv_cache_spec_cache = None
 
@@ -183,7 +183,7 @@ class WebGPUModelRunner:
         # excluded — emitting a FullAttentionSpec for them over-reports KV memory.
         # NemotronH attention layers live under .mixer, not .self_attn.
         _archs = getattr(mc, "architectures", None) or []
-        _attn_suffix = ".mixer" if ARCH_MAP.get((_archs or [""])[0]) == "nemotron_h" else ".self_attn"
+        _attn_suffix = ".mixer" if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" else ".self_attn"
         _layer_types = get_layer_types(None, self.vllm_config.model_config.hf_text_config)
 
         if not lp_list:

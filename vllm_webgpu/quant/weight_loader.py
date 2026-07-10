@@ -21,7 +21,7 @@ _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
-_SYM_ZEROS_INT32: int = -2004318072  # 0x88888888 reinterpreted as signed int32 (all nibbles = 8)
+_SYM_ZEROS_INT32: int = int(np.array(0x88888888, dtype=np.uint32).view(np.int32))  # all nibbles = 8
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -719,6 +719,7 @@ def load_safetensors_weights(
                         break
 
         # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
+        _gdn_bf16 = _webgpu_envs.GDN_BF16  # read once; constant during weight loading
         def _upload_plain(name: str, weights: dict) -> bool:  # noqa: E501
             meta = header.get(name)
             if meta is None:
@@ -793,7 +794,7 @@ def load_safetensors_weights(
             # Do not register value-changing (non-shape) transforms for GDN weight
             # keys: this block mirrors the shape but not value changes from f16 back
             # to bf16.
-            if dtype_str == "BF16" and _webgpu_envs.GDN_BF16 and _is_gdn_weight_key(name):
+            if dtype_str == "BF16" and _gdn_bf16 and _is_gdn_weight_key(name):
                 # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
                 # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
                 # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
@@ -1092,9 +1093,12 @@ def load_safetensors_weights(
                     if dt not in ("U8", "I32", "F32"):
                         logger.warning("Skipping %s (dtype=%s)", name, dt)
 
+            try:
+                from vllm.model_executor.layers.quantization.utils.mxfp8_utils import dequant_mxfp8_to_bf16
+            except ImportError as exc:
+                raise ImportError(f"MXFP8 dequant requires vLLM CUDA extensions: {exc}") from exc
             for base in mxfp8_bases:
                 try:
-                    from vllm.model_executor.layers.quantization.utils.mxfp8_utils import dequant_mxfp8_to_bf16
                     w_t = sf.get_tensor(f"{base}.weight")
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                     N_, K_ = w_t.shape

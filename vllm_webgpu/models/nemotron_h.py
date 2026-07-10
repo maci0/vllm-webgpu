@@ -161,11 +161,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        self.conv_dim: int = (
-            self._mamba_conv_shape[0]  # DS: (conv_dim, state_len)
-            if is_conv_state_dim_first()
-            else self._mamba_conv_shape[1]  # SD: (state_len, conv_dim)
-        )
+        # conv_dim = intermediate_size + 2 * n_groups * ssm_state_size
+        # (MambaMixer2 L313; see module-level comment at L64-68 for derivation)
+        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
@@ -218,7 +216,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # NemotronH checkpoints ship with mlp_bias=False (the default), so
         # this is latent. Fail fast rather than silently produce wrong outputs
         # if a checkpoint with mlp_bias=True is ever loaded.
-        if getattr(model_config, "mlp_bias", False):
+        if model_config.mlp_bias:
             raise NotImplementedError(
                 "NemotronHWebGPUModel does not support mlp_bias=True. "
                 "The WebGPU _mlp_layer path omits the up_proj and down_proj "
@@ -231,7 +229,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # use_bias=False, so this is latent. Fail fast rather than silently
         # produce wrong Mamba outputs if a checkpoint with use_bias=True is
         # ever loaded.
-        if getattr(model_config, "use_bias", False):
+        if model_config.use_bias:
             raise NotImplementedError(
                 "NemotronHWebGPUModel does not support use_bias=True. "
                 "The WebGPU _mamba_layer path omits in_proj.bias and "
@@ -242,18 +240,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # relu_sq.wgsl hard-codes relu^2 for MLP layers.
         # NemotronHConfig exposes mlp_hidden_act (defaults to "relu2"). Fail fast
         # if a checkpoint uses a different activation to prevent silently wrong outputs.
-        _mlp_act = getattr(model_config, "mlp_hidden_act", "relu2")
-        if _mlp_act not in ("relu2", "squared_relu"):
+        if model_config.mlp_hidden_act not in ("relu2", "squared_relu"):
             raise NotImplementedError(
                 f"NemotronHWebGPUModel requires mlp_hidden_act=relu2; "
-                f"relu_sq.wgsl hard-codes relu^2, got {_mlp_act!r}."
+                f"relu_sq.wgsl hard-codes relu^2, got {model_config.mlp_hidden_act!r}."
             )
 
         # mamba2_causal_conv.wgsl hard-codes SiLU as the conv activation.
         # NemotronHConfig exposes mamba_hidden_act (default "silu"); if a
         # checkpoint sets it to anything else the conv outputs will be silently
         # wrong. Fail fast, consistent with the mlp_bias/use_bias guards above.
-        if getattr(model_config, "mamba_hidden_act", "silu") != "silu":
+        if model_config.mamba_hidden_act != "silu":
             raise NotImplementedError(
                 "NemotronHWebGPUModel requires mamba_hidden_act=\"silu\". "
                 "mamba2_causal_conv.wgsl hard-codes SiLU as the conv "
@@ -352,7 +349,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._ssm_states: dict[int, "WebGPUBuffer"] = {}
         # Reusable zero-byte buffers for reset_recurrent_states, keyed by size.
         # Avoids repeated allocation of the same zero buffer on every decode step.
-        self._zero_buf_cache: dict[int, bytearray] = {}
+        self._zero_buf_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc for Mamba state zeroing; see also WebGPUModelRunner._zeros_cache for the analogous KV-block cache
 
         self._rms_base: dict = {
             "HIDDEN_DIM": self.hidden_size,

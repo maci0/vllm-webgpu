@@ -162,7 +162,7 @@ def allocate_kv_from_tensors(
             try:
                 idx = extract_layer_index(first_name)
                 layer_kv_bytes[idx] = (k_bytes, v_bytes)
-            except (AssertionError, IndexError):
+            except AssertionError:
                 logger.warning("Cannot parse layer index from KVCacheTensor.shared_by entry %r", first_name)
 
     model.kv_pool.clear()

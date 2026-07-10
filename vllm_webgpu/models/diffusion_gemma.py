@@ -198,10 +198,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         )
 
     def _lm_head_key(self) -> str:
-        return self._first_weight_key(
-            "lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight",
-            self._embed_key(),  # tied weights fallback
-        )
+        for k in ("lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight"):
+            if k in self.weights:
+                return k
+        return self._embed_key()  # tied weights fallback
 
     # ── Weight loading ───────────────────────────────────────────────────────
 

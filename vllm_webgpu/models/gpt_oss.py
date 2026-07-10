@@ -54,8 +54,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # invoked during that call (including _init_scratch_buffers) references it.
         # Moving it here consolidates config reads and lets us use self.intermediate_size
         # (set by the parent) as the natural fallback instead of reaching back to model_config.
-        _moe_inter_raw = getattr(model_config, "moe_intermediate_size", None)
-        self._moe_inter: int = _moe_inter_raw if _moe_inter_raw is not None else self.intermediate_size
+        self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or self.intermediate_size
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
