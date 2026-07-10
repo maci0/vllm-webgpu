@@ -409,13 +409,13 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
         num_bits=4,
         shape=_torch.Size([K, N]),
         packed_dim=0,
-    ).numpy().astype(np.uint8)
+    ).numpy().astype(np.int8)
     z_int4 = _unpack_int32(
         _torch.from_numpy(qzeros.astype(np.int32)),
         num_bits=4,
         shape=_torch.Size([G, N]),
         packed_dim=1,
-    ).numpy().astype(np.uint8)
+    ).numpy().astype(np.int8)
 
     # Group index: which group each input dim belongs to.
     # For the uniform-groups path, np.repeat avoids the intermediate index array
