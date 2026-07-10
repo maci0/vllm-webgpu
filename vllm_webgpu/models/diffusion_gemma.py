@@ -86,7 +86,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
             self._topk_idx_buf     = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
             self._topk_weight_buf  = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] f32
-            self._router_logit_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2)    # [T, E] f16
+            self._router_logit_buf     = _WB.empty(_dev, max_canvas_len * self.num_experts * 4)  # [T, E] f32
+            self._router_logit_f16_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2)  # [T, E] f16 matmul scratch
             self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2)    # [T, H] f16
             # Packed routing weights: [num_unique_experts, T] f32, pre-filled before the
             # expert loop so a single write_buffer covers all experts. Sized for worst
@@ -641,10 +642,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = self._uq_for_key(rw_)
                 _rw_sc = self._scales_buf(rw_, uq_rw, self._dummy_scales_buf)
+                # Router matmul writes f16 into the scratch buffer; we upcast to f32
+                # before top-K so that logits differing by less than one f16 ULP are
+                # not collapsed to the same value (matches vLLM's GateLinear f32 path).
+                rlogit_f16 = self._router_logit_f16_buf
                 if num_tokens > 1 and uq_rw in (0, 3):
                     # Batched router projection: [T, hidden] x [num_experts, hidden]^T -> [T, E]
                     self._dispatch("matmul_quant_mr4",
-                                   [router_in, self.weights[rw_], _rw_sc, router_logits_buf],
+                                   [router_in, self.weights[rw_], _rw_sc, rlogit_f16],
                                    {"K": hidden, "N": self.num_experts, "M": num_tokens,
                                     "USE_QUANT": uq_rw,
                                     **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},
@@ -655,11 +660,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                             "L%d: router uq=%d not supported for batched routing; "
                             "token-0 routing applied to all tokens", layer_idx, uq_rw)
                     self._dispatch("matmul_quant",
-                                   [router_in, self.weights[rw_], _rw_sc, router_logits_buf],
+                                   [router_in, self.weights[rw_], _rw_sc, rlogit_f16],
                                    {"K": hidden, "N": self.num_experts,
                                     "USE_QUANT": uq_rw, "SPLIT_K": 0,
                                     **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},
                                    _rows_wg(self.num_experts))
+                # Upcast f16 logits to f32 before top-K selection.
+                n_logits = num_tokens * self.num_experts
+                self._dispatch("f16_to_f32",
+                               [rlogit_f16, router_logits_buf],
+                               {"N_ELEMS": n_logits},
+                               ((n_logits + 255) // 256, 1, 1))
                 # GPU top-K: per-token top-K selection from [T, N_EXPERTS] logits.
                 # Dispatch (num_tokens, 1, 1): each workgroup handles one token's logits.
                 self._dispatch("topk_sort",

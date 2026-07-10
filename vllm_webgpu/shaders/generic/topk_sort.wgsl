@@ -1,8 +1,6 @@
-enable f16;
-
 // topk_sort.wgsl — GPU top-K selection for MoE router (multi-token).
 //
-// Input:  logits [T, N_EXPERTS] f16  — router logits for T tokens
+// Input:  logits [T, N_EXPERTS] f32  — router logits for T tokens (f32 for stable ranking)
 // Output: topk_idx     [T, K] u32   — top-K expert indices per token
 //         topk_weights [T, K] f32   — softmax-normalized expert weights per token
 //
@@ -15,7 +13,7 @@ enable f16;
 override N_EXPERTS: u32 = 128u;
 override K: u32         = 8u;    // top-K experts to select
 
-@group(0) @binding(0) var<storage, read>       logits      : array<f16>;  // [T * N_EXPERTS]
+@group(0) @binding(0) var<storage, read>       logits      : array<f32>;  // [T * N_EXPERTS]
 @group(0) @binding(1) var<storage, read_write> topk_idx    : array<u32>;  // [T * K] output indices
 @group(0) @binding(2) var<storage, read_write> topk_weights: array<f32>;  // [T * K] softmax weights
 
@@ -34,7 +32,7 @@ fn main(
     // Load this token's logits into shared memory
     let logit_base = token_idx * N_EXPERTS;
     if (tid < N_EXPERTS) {
-        sh_logits[tid] = f32(logits[logit_base + tid]);
+        sh_logits[tid] = logits[logit_base + tid];
     } else {
         sh_logits[tid] = -1e30f;  // sentinel for unused slots
     }
