@@ -257,7 +257,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
-            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
+            np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 

@@ -110,12 +110,14 @@ def _upload_tensor(
 try:
     from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
     from compressed_tensors import QuantizationConfig as _QuantizationConfig
+    from compressed_tensors import unpack_from_int32 as _unpack_int32
     from compressed_tensors.quantization import QuantizationType as _QuantizationType
     from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
     from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
 except ImportError:
     _ct_get_quant_cfg = None
     _QuantizationConfig = None
+    _unpack_int32 = None
     _QuantizationType = None
     _QuantizationStrategy = None
     _ct_find_index = None
@@ -399,8 +401,9 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     # Unpack 8 nibbles per int32 using compressed_tensors.unpack_from_int32.
     # qweight is packed along K (packed_dim=0): (K//8, N) → (K, N).
     # qzeros are packed along N (packed_dim=1): (G, N//8) → (G, N).
+    if _unpack_int32 is None:
+        raise ImportError("compressed_tensors is required for GPTQ int4 dequantization")
     import torch as _torch
-    from compressed_tensors import unpack_from_int32 as _unpack_int32
     w_int4 = _unpack_int32(
         _torch.from_numpy(qweight.astype(np.int32)),
         num_bits=4,
@@ -441,14 +444,14 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     hf_quant = model_dir / "hf_quant_config.json"
     if hf_quant.exists():
         try:
-            from vllm.model_executor.layers.quantization.modelopt import ModelOptQuantConfigBase
             with open(hf_quant) as f:
                 cfg = json.load(f)
-            algo = ModelOptQuantConfigBase._extract_modelopt_quant_algo(cfg) or ""
-            if "MXFP4" in algo:
-                return "mxfp4"
-            if "MXFP8" in algo:
-                return "mxfp8"
+            if cfg.get("quant_method", "").lower().startswith("modelopt"):
+                algo = cfg.get("quantization", {}).get("quant_algo", "") or cfg.get("quant_algo", "")
+                if "MXFP4" in algo:
+                    return "mxfp4"
+                if "MXFP8" in algo:
+                    return "mxfp8"
         except Exception:
             pass
     if quant_cfg is None:
@@ -1481,25 +1484,24 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
         shard_to_quant_bases[key_to_shard[base + ".weight"]].append(base)
 
     # Pre-load scale and bias tensors grouped by shard, opening each shard at most once.
-    # Without this grouping, a shard that holds scales for O(n) layers would be opened
-    # O(n) times (once per base in the inner loop). This mirrors the shard_to_quant_bases
-    # pattern already used for weight shards.
-    shard_to_scale_bases: dict[str, list[str]] = defaultdict(list)
-    shard_to_bias_bases: dict[str, list[str]] = defaultdict(list)
+    # A single shard_to_sb dict maps each shard path to a list of (base, suffix) pairs
+    # for both .scales and .biases, so each shard file is opened exactly once regardless
+    # of whether it contains scales, biases, or both.
+    shard_to_sb: dict[str, list[tuple[str, str]]] = defaultdict(list)
     for base in quant_bases:
-        shard_to_scale_bases[key_to_shard[base + ".scales"]].append(base)
-        shard_to_bias_bases[key_to_shard[base + ".biases"]].append(base)
+        shard_to_sb[key_to_shard[base + ".scales"]].append((base, ".scales"))
+        shard_to_sb[key_to_shard[base + ".biases"]].append((base, ".biases"))
 
     preloaded_scales: dict[str, object] = {}
     preloaded_biases: dict[str, object] = {}
-    for scale_shard, s_bases in shard_to_scale_bases.items():
-        with _sft.safe_open(scale_shard, framework="pt") as sf_s:
-            for base in s_bases:
-                preloaded_scales[base] = sf_s.get_tensor(base + ".scales")
-    for bias_shard, b_bases in shard_to_bias_bases.items():
-        with _sft.safe_open(bias_shard, framework="pt") as sf_b:
-            for base in b_bases:
-                preloaded_biases[base] = sf_b.get_tensor(base + ".biases")
+    for sb_shard, sb_entries in shard_to_sb.items():
+        with _sft.safe_open(sb_shard, framework="pt") as sf_sb:
+            for base, suffix in sb_entries:
+                tensor = sf_sb.get_tensor(base + suffix)
+                if suffix == ".scales":
+                    preloaded_scales[base] = tensor
+                else:
+                    preloaded_biases[base] = tensor
 
     for shard_path, bases in shard_to_quant_bases.items():
         with _sft.safe_open(shard_path, framework="pt") as sf_w:

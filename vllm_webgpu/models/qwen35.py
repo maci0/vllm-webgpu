@@ -54,7 +54,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # resolves to Qwen35's override. That override uses these values, so they
         # must exist before the super() call returns.
 
-        self._layer_types: list | None = getattr(model_config, "layer_types", None)
+        self._layer_types: list = getattr(model_config, "layer_types", None)
+        assert self._layer_types is not None, (
+            "Qwen3_5TextConfig.layer_types is None; expected it to be populated "
+            "from full_attention_interval at config init time."
+        )
         # Partial RoPE: some models only rotate a fraction of head dimensions.
         # partial_rotary_factor=0.25 → rotary_dim = head_dim * 0.25.
         _prf = getattr(model_config, "partial_rotary_factor", None) or 1.0
@@ -172,7 +176,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # _batched_dispatch encoder management). Set profiling=False before forward().
 
     def _is_full_attn(self, i: int) -> bool:
-        if self._layer_types is not None and i < len(self._layer_types):
+        if i < len(self._layer_types):
             return self._layer_types[i] == "full_attention"
         raise ValueError(
             f"Layer {i} has no layer_types entry; Qwen3_5Config should always "
@@ -185,26 +189,22 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # directly, avoiding an allocate-then-discard cycle on every instantiation.
         super()._init_scratch_buffers(max_ctx, qkv_size=self._lin_conv_dim * 2)
 
-        dev = self.wgpu_device.wgpu_device
         Q = self.num_q_heads * self.head_dim
-
-        def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, max(n, 8))
 
         # Attention output gate: silu(gate)*attn_out before o_proj.
         # Only allocated for models with attn_output_gate=True; no shader dispatch
         # unconditionally binds this slot, so the allocation must be conditional.
         if self._attn_output_gate:
-            self._sc["q_gate_buf"] = mk(Q * 2)
+            self._sc["q_gate_buf"] = self._make_buf(Q * 2)
 
         # GDN linear-attention scratch buffers (sized from config, not hardcoded).
         self._sc.update({
-            "qkv_conv":     mk(self._lin_conv_dim * 2),  # post-conv output
-            "a_buf":        mk(self._lin_v_heads * 2),   # in_proj_a output [V_HEADS f16]
-            "z_buf":        mk(self._lin_val_dim * 2),   # in_proj_z output
-            "gdn_out":      mk(self._lin_val_dim * 2),   # GDN attn output
-            "gated":        mk(self._lin_val_dim * 2),   # after norm+gate
-            "b_buf":        mk(self._lin_v_heads * 2),   # in_proj_b output [V_HEADS f16]
+            "qkv_conv":     self._make_buf(self._lin_conv_dim * 2),  # post-conv output
+            "a_buf":        self._make_buf(self._lin_v_heads * 2),   # in_proj_a output [V_HEADS f16]
+            "z_buf":        self._make_buf(self._lin_val_dim * 2),   # in_proj_z output
+            "gdn_out":      self._make_buf(self._lin_val_dim * 2),   # GDN attn output
+            "gated":        self._make_buf(self._lin_val_dim * 2),   # after norm+gate
+            "b_buf":        self._make_buf(self._lin_v_heads * 2),   # in_proj_b output [V_HEADS f16]
         })
 
         if self._is_moe:
@@ -238,24 +238,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 gate_key = f"{prefix}.q_gate_proj.weight"
                 if gate_key not in self.weights and q_key in self.weights:
                     buf = self.weights[q_key]
-                    hidden = self.hidden_size
-                    # For fp16/INT8/FP8: shape is (2*q_dim, hidden), total = 2*q_dim*hidden.
-                    # For AWQ:           shape is (hidden, 2*q_dim//8), total = 2*q_dim*hidden//8.
-                    # For GPTQ:          shape is (2*q_dim, hidden//8), total = 2*q_dim*hidden//8.
-                    # shape[0] == 2*q_dim only catches fp16/INT8/FP8 and GPTQ (not AWQ) on
-                    # larger variants where hidden != 2*q_dim. Use total element count instead.
+                    # Detect unsplit q+gate tensors by shape rather than total element count.
+                    # fp16/INT8/FP8: (2*q_dim, hidden) → shape[0] == 2*q_dim
+                    # GPTQ:          (2*q_dim, hidden//8) → shape[0] == 2*q_dim
+                    # NF4/NVFP4:     (2*q_dim, hidden//2) → shape[0] == 2*q_dim
+                    # AWQ:           (hidden, 2*q_dim//8) → shape[1] * 8 == 2*q_dim
                     uq = self._uq_for_key(q_key)
-                    total_elems = math.prod(buf.shape)
-                    unpack_shape_unsplit = total_elems == 2 * q_dim * hidden
-                    quant_unsplit        = total_elems == 2 * q_dim * (hidden // 8)
-                    # NF4 (uq=8) and NVFP4 (uq=6) pack 2 values per byte; the
-                    # loader reshapes to [2*q_dim, hidden//2] before upload, so
-                    # total_elems == q_dim * hidden (not 2*q_dim*hidden).
-                    # INT8 (uq=7) and FP8 (uq=5) are 1-byte-per-element, so a
-                    # correctly pre-split tensor at (q_dim, hidden) also hits
-                    # this count; guard on uq to avoid a false-positive error.
-                    quant_unsplit_half   = uq in (6, 8) and total_elems == q_dim * hidden
-                    if unpack_shape_unsplit or quant_unsplit or quant_unsplit_half:
+                    shape0_unsplit = len(buf.shape) >= 1 and buf.shape[0] == 2 * q_dim
+                    awq_unsplit    = uq == 4 and len(buf.shape) >= 2 and buf.shape[1] * 8 == 2 * q_dim
+                    if shape0_unsplit or awq_unsplit:
                         # uq 5/6/7/8: weight is already quantized (fp8_gpu,
                         # nvfp4, int8_gpu, nf4), so advising "load fp16" is wrong.
                         if uq != 0:

@@ -94,17 +94,19 @@ def main() -> None:
     pos = len(tok_ids)
     print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")
 
+    def _run_decode_step(tok, p, profiling=False):
+        """Run one decode step; returns (next_tok, elapsed_ms)."""
+        _dm = SimpleNamespace(slot_mapping=[p], block_tables=[bt], max_decode_seq_len=p + 1)
+        t_start = time.perf_counter()
+        lg = model.forward(np.array([tok], dtype=np.uint32), np.array([p], dtype=np.uint32), _dm)
+        elapsed = (time.perf_counter() - t_start) * 1000
+        return _next_tok(lg), elapsed
+
     # ── Decode warmup + production timing ─────────────────────────────────────────
     print(f"Warming up ({args.warmup_steps} steps)...")
     prod_times = []
     for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra for production timing
-        slot = pos
-
-        _dm = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=pos + 1)
-        t0 = time.perf_counter()
-        logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _dm)
-        elapsed_ms = (time.perf_counter() - t0) * 1000
-        decode_tok = _next_tok(logits)
+        decode_tok, elapsed_ms = _run_decode_step(decode_tok, pos)
         pos += 1
         if step >= args.warmup_steps:
             prod_times.append(elapsed_ms)
@@ -122,13 +124,8 @@ def main() -> None:
 
     decode_times = []
     for step in range(args.decode_steps):
-        slot = pos
-
-        _dm2 = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=pos + 1)
-        t0 = time.perf_counter()
-        logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _dm2)
-        decode_tok = _next_tok(logits)
-        decode_times.append((time.perf_counter() - t0) * 1000.0)
+        decode_tok, step_ms = _run_decode_step(decode_tok, pos)
+        decode_times.append(step_ms)
         pos += 1
 
     model.profiling = False

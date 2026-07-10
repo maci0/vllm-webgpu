@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME, CONFIG_NAME
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -214,6 +214,14 @@ class BaseWebGPUModel(ABC):
         # to avoid a GPU roundtrip (to_numpy → tile → re-upload) in _postprocess_weights.
         self._weight_transforms: dict = {}
 
+    def _make_buf(self, n: int) -> "WebGPUBuffer":
+        """Allocate an empty WebGPU buffer of at least 8 bytes.
+
+        The 8-byte floor keeps all buffers above WebGPU's minimum-size requirement
+        (0-byte buffers are forbidden by the spec) when n is very small.
+        """
+        return WebGPUBuffer.empty(self.wgpu_device.wgpu_device, max(n, 8))
+
     @staticmethod
     def _buf_np_dtype(buf) -> "type":
         """Return the numpy scalar type matching a WebGPUBuffer's dtype string.
@@ -365,7 +373,7 @@ class BaseWebGPUModel(ABC):
         # the duplication that previously existed in each branch.
         _path = Path(path)
         model_dir = _path if _path.is_dir() else _path.parent
-        _cfg_json = model_dir / "config.json"
+        _cfg_json = model_dir / CONFIG_NAME
         _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
         _check_unsupported_quant(model_dir, quant_cfg=_quant_cfg)
         if fmt == "safetensors":

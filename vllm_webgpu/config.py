@@ -39,7 +39,7 @@ class WebGPUConfig:
                 memory_fraction = float(raw)
             except ValueError as e:
                 raise ValueError(
-                    f"VLLM_WEBGPU_MEMORY_FRACTION={raw!r} must be 'auto' or float in (0,1]."
+                    f"VLLM_WEBGPU_MEMORY_FRACTION={raw!r} must be 'auto' or a float."
                 ) from e
         return cls(
             memory_fraction=memory_fraction,

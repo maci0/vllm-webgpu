@@ -80,8 +80,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         num_q = self.num_q_heads
         num_kv = self.num_kv_heads
 
-        _q_xform = lambda a: np.tile(a, num_q) if a.shape == (head_dim,) else a
-        _k_xform = lambda a: np.tile(a, num_kv) if a.shape == (head_dim,) else a
+        def _tile_xform(n):
+            return lambda a: np.tile(a, n) if a.shape == (head_dim,) else a
+        _q_xform = _tile_xform(num_q)
+        _k_xform = _tile_xform(num_kv)
         for _i in range(self.num_layers):
             _p = f"model.layers.{_i}"
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = _q_xform
@@ -107,42 +109,39 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Q = self.num_q_heads * self.head_dim
         KV = self.num_kv_heads * self.head_dim
 
-        def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, n)
-
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
         max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
         self._pre: dict[str, "WebGPUBuffer"] = {
-            "ids":      mk(T * 4),              # [1] uint32 token id
-            "pos":      mk(T * 4),              # [1] uint32 position
-            "slot_map": mk(T * 4),              # [1] uint32 physical slot
-            "bt":       mk(max_bt_blocks * 4),  # [max_blocks] uint32 block table
-            "x":        mk(T * H * 2),          # [1, H] f16 residual / embedding
-            "norm_out": mk(T * H * 2),          # [1, H] f16 final norm output
-            "logits":   mk(T * self.vocab_size * 2),  # [1, vocab] f16 logits
+            "ids":      self._make_buf(T * 4),              # [1] uint32 token id
+            "pos":      self._make_buf(T * 4),              # [1] uint32 position
+            "slot_map": self._make_buf(T * 4),              # [1] uint32 physical slot
+            "bt":       self._make_buf(max_bt_blocks * 4),  # [max_blocks] uint32 block table
+            "x":        self._make_buf(T * H * 2),          # [1, H] f16 residual / embedding
+            "norm_out": self._make_buf(T * H * 2),          # [1, H] f16 final norm output
+            "logits":   self._make_buf(T * self.vocab_size * 2),  # [1, vocab] f16 logits
         }
 
         self._sc: dict[str, "WebGPUBuffer"] = {
-            "normed":  mk(T * H * 2),
-            "qkv_buf": mk(qkv_size if qkv_size is not None else T * (Q + 2 * KV) * 2),  # [Q|K|V] f16
-            "q_buf":       mk(T * Q * 2),
-            "k_buf":       mk(T * KV * 2),
-            "v_buf":       mk(T * KV * 2),
-            "q_rope":      mk(T * Q * 2),
-            "k_rope":      mk(T * KV * 2),
-            "attn_out":   mk(T * Q * 2),
-            "o_proj_out": mk(T * H * 2),
-            "ffn_normed": mk(T * H * 2),
-            "gate_buf":   mk(T * I * 2),
-            "up_buf":     mk(T * I * 2),
-            "ffn_act":    mk(T * I * 2),
-            "ffn_out":    mk(T * H * 2),
+            "normed":  self._make_buf(T * H * 2),
+            "qkv_buf": self._make_buf(qkv_size if qkv_size is not None else T * (Q + 2 * KV) * 2),  # [Q|K|V] f16
+            "q_buf":       self._make_buf(T * Q * 2),
+            "k_buf":       self._make_buf(T * KV * 2),
+            "v_buf":       self._make_buf(T * KV * 2),
+            "q_rope":      self._make_buf(T * Q * 2),
+            "k_rope":      self._make_buf(T * KV * 2),
+            "attn_out":   self._make_buf(T * Q * 2),
+            "o_proj_out": self._make_buf(T * H * 2),
+            "ffn_normed": self._make_buf(T * H * 2),
+            "gate_buf":   self._make_buf(T * I * 2),
+            "up_buf":     self._make_buf(T * I * 2),
+            "ffn_act":    self._make_buf(T * I * 2),
+            "ffn_out":    self._make_buf(T * H * 2),
             # Three hidden-state buffers: ping-pong between h0/h1/h2 so that
             # x_buf, residual, and out are always distinct within a single layer.
-            "h0":         mk(T * H * 2),
-            "h1":         mk(T * H * 2),
-            "h2":         mk(T * H * 2),
+            "h0":         self._make_buf(T * H * 2),
+            "h1":         self._make_buf(T * H * 2),
+            "h2":         self._make_buf(T * H * 2),
         }
         # Index into hidden-state rotation: the layer output cycles h0 -> h1 -> h2 -> h0 ...
         self._hstate: int = 0

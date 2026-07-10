@@ -125,7 +125,7 @@ def test_qwen35_layer_type_detection(wgpu_device):
 
 
 def test_qwen35_layer_type_fallback(wgpu_device):
-    """When layer_types is absent, _is_full_attn raises ValueError (misconfigured checkpoint)."""
+    """When layer_types is absent, model init raises AssertionError (misconfigured checkpoint)."""
     import pytest
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
@@ -134,12 +134,11 @@ def test_qwen35_layer_type_fallback(wgpu_device):
     cfg = make_qwen35_config(num_layers=8)
     cfg.layer_types = None  # simulate misconfigured checkpoint
     cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
-    model = Qwen35WebGPUModel(cfg, wgpu_device, cache)
 
-    # HF always populates layer_types; if it is missing the model raises rather
-    # than silently applying an architecture-specific hardcoded interval.
-    with pytest.raises(ValueError, match="layer_types"):
-        model._is_full_attn(0)
+    # HF always populates layer_types; if it is missing the model raises at init
+    # rather than silently falling through to a wrong per-call ValueError.
+    with pytest.raises(AssertionError, match="layer_types"):
+        Qwen35WebGPUModel(cfg, wgpu_device, cache)
 
 
 def _setup_gdn_model(wgpu_device):

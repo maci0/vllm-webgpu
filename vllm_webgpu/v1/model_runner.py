@@ -544,7 +544,7 @@ class WebGPUModelRunner:
                     f"block table too short for req {rid}: token {bad} needs block "
                     f"{bad // block_size} but only {len(blk_ids)} blocks allocated"
                 )
-            slots = (np.array(blk_ids, dtype=np.int64)[blk_idx] * block_size + abs_idx % block_size).tolist()
+            slots = (bt.astype(np.int64)[blk_idx] * block_size + abs_idx % block_size).tolist()
 
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
@@ -767,9 +767,6 @@ class WebGPUModelRunner:
                 decode_recurrent_states = None
                 if hasattr(self.model, "save_recurrent_states"):
                     decode_recurrent_states = self.model.save_recurrent_states()
-
-                if logits is None:
-                    continue
 
                 # Greedy path: model returns (1, 1) int32 with the argmax index.
                 # Non-greedy path: model returns (1, vocab) float32; sample here.

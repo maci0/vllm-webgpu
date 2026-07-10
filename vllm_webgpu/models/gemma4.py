@@ -40,6 +40,11 @@ try:
         "Gemma4DecoderLayer no longer references 'num_global_key_value_heads'. "
         "Review _build_layer_params_from_config formula (3) before removing this assertion."
     )
+    # Formula (3b): k_eq_v branch controls whether V=K (laptop variant).
+    assert "attention_k_eq_v" in _g4_decoder_src, (
+        "Gemma4DecoderLayer no longer references 'attention_k_eq_v'. "
+        "Review _build_layer_params_from_config formula (3) k_eq_v branch before removing this assertion."
+    )
     del inspect, _Gemma4Attention, _Gemma4DecoderLayer, _g4_decoder_src, _g4_attn_src
 except (ImportError, OSError):
     pass  # vLLM not importable in this environment; skip assertion
@@ -408,7 +413,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
-            np.array(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
+            np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
         bt_arr = self._bt_arr(attn_metadata)
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
@@ -582,7 +587,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         if self.softcap is not None and self.softcap > 0:
             b["capped"] = alloc(vocab * 2)             # f16 softcapped logits (Gemma4)
         slot_map_buf = WebGPUBuffer.from_numpy(
-            dev, np.array(attn_metadata.slot_mapping, dtype=np.uint32))
+            dev, np.asarray(attn_metadata.slot_mapping, dtype=np.uint32))
         pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
         ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32, copy=False))
         bt_buf  = WebGPUBuffer.from_numpy(dev, self._bt_arr(attn_metadata))
@@ -952,7 +957,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             ids_t  = input_ids[t : t + 1]
             pos_t  = positions[t : t + 1]
-            slot_t = np.array(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32)
+            slot_t = np.asarray(attn_metadata.slot_mapping[t : t + 1], dtype=np.uint32)
 
             dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32, copy=False).tobytes())

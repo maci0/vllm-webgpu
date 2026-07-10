@@ -131,17 +131,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.n_groups: int = model_config.n_groups
         self.ssm_state_size: int = model_config.ssm_state_size
         self.conv_kernel: int = model_config.conv_kernel
-        # Both shapes are stored on self so _init_mamba_states can reuse them
-        # without a second call to mamba2_state_shape.
-        self._mamba_conv_shape, self._mamba_ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
-            tp_world_size=1,
-            intermediate_size=self.mamba_int,
-            n_groups=self.n_groups,
-            num_heads=self.mamba_num_heads,
-            head_dim=self.mamba_head_dim,
-            state_size=self.ssm_state_size,
-            conv_kernel=self.conv_kernel,
-        )
         # conv_dim from MambaMixer2 L313: intermediate_size + 2 * n_groups * ssm_state_size
         # (tp=1, extra_groups_for_head_shards returns 0). Using the direct formula avoids
         # the mamba2_state_shape division, which would give wrong results if num_spec > 0.
@@ -339,9 +328,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     # ── Scratch buffer allocation ─────────────────────────────────────────────
 
     def _init_scratch_buffers(self) -> None:
-        dev = self.wgpu_device.wgpu_device
-
-
         H   = self.hidden_size
         MI  = self.mamba_int
         CD  = self.conv_dim
@@ -352,52 +338,49 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         qd  = self.num_q_heads * self.head_dim
         kd  = self.num_kv_heads * self.head_dim
 
-        def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, max(n, 8))
-
         max_ctx = self.model_config.max_position_embeddings
         max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
 
         # Fixed pre-allocated decode buffers (zero-alloc hot path for T=1).
         self._pre: dict[str, "WebGPUBuffer"] = {
-            "ids":      mk(4),                # [1] u32
-            "slot_map": mk(4),                # [1] u32
-            "bt":       mk(max_bt_blocks * 4),  # block table
-            "x":        mk(H * 2),       # [H] f16 embedding output
-            "norm_out": mk(H * 2),       # [H] f16 final norm output
-            "logits":   mk(V * 2),       # [V] f16 LM head output
+            "ids":      self._make_buf(4),                # [1] u32
+            "slot_map": self._make_buf(4),                # [1] u32
+            "bt":       self._make_buf(max_bt_blocks * 4),  # block table
+            "x":        self._make_buf(H * 2),       # [H] f16 embedding output
+            "norm_out": self._make_buf(H * 2),       # [H] f16 final norm output
+            "logits":   self._make_buf(V * 2),       # [V] f16 LM head output
         }
 
         # Scratch buffers shared across layers.
         self._sc: dict[str, "WebGPUBuffer"] = {
             # 3-buffer residual rotation to prevent aliasing between layers.
-            "h0": mk(H * 2),
-            "h1": mk(H * 2),
-            "h2": mk(H * 2),
+            "h0": self._make_buf(H * 2),
+            "h1": self._make_buf(H * 2),
+            "h2": self._make_buf(H * 2),
             # Pre-normed input for current layer's mixer.
-            "normed": mk(H * 2),
+            "normed": self._make_buf(H * 2),
             # Mixer output (all layer types write here before residual add).
-            "mixer_out": mk(H * 2),
+            "mixer_out": self._make_buf(H * 2),
 
             # Mamba-2 intermediates
-            "mamba_inproj":  mk(IPD * 2),  # [in_proj_dim] f16
-            "mamba_conv_in": mk(CD * 2),   # [conv_dim] f16 — x_B_C extracted
-            "mamba_conv_out": mk(CD * 2),  # [conv_dim] f16 — after conv+SiLU
-            "mamba_dt":      mk(MNH * 2),  # [mamba_num_heads] f16 — dt
-            "mamba_gate":    mk(MI * 2),   # [mamba_int] f16 — gate portion
-            "mamba_ssm_y":   mk(MI * 2),   # [mamba_int] f16 — SSM step output
-            "mamba_norm_out": mk(MI * 2),  # [mamba_int] f16 — after gated norm
+            "mamba_inproj":  self._make_buf(IPD * 2),  # [in_proj_dim] f16
+            "mamba_conv_in": self._make_buf(CD * 2),   # [conv_dim] f16 — x_B_C extracted
+            "mamba_conv_out": self._make_buf(CD * 2),  # [conv_dim] f16 — after conv+SiLU
+            "mamba_dt":      self._make_buf(MNH * 2),  # [mamba_num_heads] f16 — dt
+            "mamba_gate":    self._make_buf(MI * 2),   # [mamba_int] f16 — gate portion
+            "mamba_ssm_y":   self._make_buf(MI * 2),   # [mamba_int] f16 — SSM step output
+            "mamba_norm_out": self._make_buf(MI * 2),  # [mamba_int] f16 — after gated norm
 
             # Attention intermediates
-            "qkv_buf":     mk((qd + 2 * kd) * 2),
-            "q_buf":       mk(qd * 2),
-            "k_buf":       mk(kd * 2),
-            "v_buf":       mk(kd * 2),
-            "attn_out":    mk(qd * 2),
+            "qkv_buf":     self._make_buf((qd + 2 * kd) * 2),
+            "q_buf":       self._make_buf(qd * 2),
+            "k_buf":       self._make_buf(kd * 2),
+            "v_buf":       self._make_buf(kd * 2),
+            "attn_out":    self._make_buf(qd * 2),
 
             # MLP intermediates
-            "up_buf":  mk(I * 2),
-            "ffn_act": mk(I * 2),
+            "up_buf":  self._make_buf(I * 2),
+            "ffn_act": self._make_buf(I * 2),
         }
 
     # ── Mamba state management ────────────────────────────────────────────────
@@ -406,8 +389,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Allocate zero-initialized GPU buffers for each Mamba layer's state."""
         dev = self.wgpu_device.wgpu_device
 
-        conv_shape = self._mamba_conv_shape
-        ssm_shape  = self._mamba_ssm_shape
+        conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
+            tp_world_size=1,
+            intermediate_size=self.mamba_int,
+            n_groups=self.n_groups,
+            num_heads=self.mamba_num_heads,
+            head_dim=self.mamba_head_dim,
+            state_size=self.ssm_state_size,
+            conv_kernel=self.conv_kernel,
+        )
         # WebGPU WGSL shaders operate at fixed precision: f16 for the conv
         # state and f32 for the SSM state. These sizes are not configurable
         # via mamba_cache_dtype on the WebGPU path; the shaders are compiled
@@ -549,8 +539,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # Scales may either be in the CPU accumulator (GPTQ/AWQ: suppressed
             # individual GPU uploads) or uploaded as individual GPU buffers.
             _sc_acc = self._scale_acc.get(i, {})
+            _have_cpu_scales = all(proj in _sc_acc for proj in ("q", "k", "v"))
             has_scales = (
-                all(proj in _sc_acc for proj in ("q", "k", "v"))
+                _have_cpu_scales
                 or (q_s in self.weights and k_s in self.weights and v_s in self.weights)
             )
 
@@ -615,7 +606,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # scales[grp * N_total + row], which requires row-interleaved [G, N_total].
                 # For G > 1 (e.g. K=4096, group_size=128 -> G=32) every grp > 0 lookup
                 # would land in the wrong projection's data. Stack on axis=1 on the CPU.
-                if all(proj in _sc_acc for proj in ("q", "k", "v")):
+                if _have_cpu_scales:
                     # CPU path: scales were accumulated by _scale_transforms before GPU
                     # upload. Stack directly without any GPU round-trip.
                     q_sc = _sc_acc["q"]

@@ -49,7 +49,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         self._is_moe: bool = self._num_experts > 0 and self._top_k > 0
 
         if self._is_moe:
-            import wgpu as _wgpu_lib
+            import wgpu
 
             dev = self.wgpu_device.wgpu_device
 
@@ -71,7 +71,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             _staging_sz = max(self._top_k * 4, 8)
             self._topk_idx_staging = dev.create_buffer(
                 size=_staging_sz,
-                usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+                usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ)
             # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
             # debug-only path, None on production log levels.
             self._topk_w_staging = None
@@ -91,16 +91,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         Called from __init__ (Mixtral) and _init_scratch_buffers (Qwen35) to
         avoid duplicating the same dict literal in both subclasses.
         """
-        dev = self.wgpu_device.wgpu_device
-
-        def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, max(n, 8))
         return {
-            "router_out":   mk(num_experts * 2),       # [N_E] f16 router logits
-            "topk_idx":     mk(top_k * 4),             # [K] u32 expert indices
-            "topk_w":       mk(top_k * 4),             # [K] f32 softmax weights
-            "expert_act":   mk(act_sz * 2),            # [max_inter] f16 activated
-            "expert_out":   mk(self.hidden_size * 2),  # [hidden] f16 accumulated
+            "router_out":   self._make_buf(num_experts * 2),       # [N_E] f16 router logits
+            "topk_idx":     self._make_buf(top_k * 4),             # [K] u32 expert indices
+            "topk_w":       self._make_buf(top_k * 4),             # [K] f32 softmax weights
+            "expert_act":   self._make_buf(act_sz * 2),            # [max_inter] f16 activated
+            "expert_out":   self._make_buf(self.hidden_size * 2),  # [hidden] f16 accumulated
         }
 
     def _effective_ctx_len(self, ctx_len: int) -> int:

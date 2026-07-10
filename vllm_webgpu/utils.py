@@ -1,6 +1,5 @@
 """Utility helpers for vllm-webgpu."""
 from __future__ import annotations
-import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,7 +32,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
 # Guard against vLLM removing the allow_cpu_sync parameter from
 # apply_top_k_top_p_pytorch. If this assertion fires, the partial-topk
 # optimisation path is broken and the workaround must be re-evaluated.
-assert "allow_cpu_sync" in inspect.signature(apply_top_k_top_p_pytorch).parameters, (
+assert "allow_cpu_sync" in apply_top_k_top_p_pytorch.__code__.co_varnames, (
     "apply_top_k_top_p_pytorch lost allow_cpu_sync param, re-evaluate workaround"
 )
 
