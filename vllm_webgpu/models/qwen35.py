@@ -265,12 +265,17 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     # shape[0] == 2*q_dim only catches fp16/INT8/FP8 and GPTQ (not AWQ) on
                     # larger variants where hidden != 2*q_dim. Use total element count instead.
                     uq = self._uq_for_key(q_key)
-                    unpack_shape_unsplit = math.prod(buf.shape) == 2 * q_dim * hidden
-                    quant_unsplit        = math.prod(buf.shape) == 2 * q_dim * (hidden // 8)
-                    if unpack_shape_unsplit or quant_unsplit:
-                        # uq==5 fp8_gpu, uq==7 int8_gpu: weight is already quantized,
-                        # so advising "load fp16" would be wrong.
-                        if uq in (5, 7):
+                    total_elems = math.prod(buf.shape)
+                    unpack_shape_unsplit = total_elems == 2 * q_dim * hidden
+                    quant_unsplit        = total_elems == 2 * q_dim * (hidden // 8)
+                    # NF4 (uq=8) and NVFP4 (uq=6) pack 2 values per byte; the
+                    # loader reshapes to [2*q_dim, hidden//2] before upload, so
+                    # total_elems == q_dim * hidden (not 2*q_dim*hidden).
+                    quant_unsplit_half   = total_elems == q_dim * (hidden // 2)
+                    if unpack_shape_unsplit or quant_unsplit or quant_unsplit_half:
+                        # uq 5/6/7/8: weight is already quantized (fp8_gpu,
+                        # nvfp4, int8_gpu, nf4), so advising "load fp16" is wrong.
+                        if uq in (5, 6, 7, 8):
                             hint = "Pre-split the q_proj tensor before quantizing."
                         else:
                             hint = ("Load an fp16 checkpoint, or pre-split the "
