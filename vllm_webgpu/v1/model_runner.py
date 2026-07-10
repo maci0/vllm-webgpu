@@ -385,7 +385,7 @@ class WebGPUModelRunner:
                         ))
                     else:
                         pieces.append(LogprobsTensors(
-                            torch.zeros(1, max_k, dtype=torch.int64),
+                            torch.zeros(1, max_k, dtype=torch.int32),
                             torch.full((1, max_k), -float("inf")),
                             torch.zeros(1, dtype=torch.int64),
                         ))
