@@ -416,6 +416,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "logits":    self._pre["logits"],
         }
 
+        # APC prefix-cache hit: the first token's absolute position is > 0, meaning
+        # num_computed cached K/V blocks already exist in the KV cache. The batch
+        # prefill shader has no KV-cache binding and applies a batch-local causal
+        # mask starting at index 0, so it cannot attend to the prefix. Fall back to
+        # the sequential path, which drives flash_attn_decode with the full block
+        # table and ctx_len = tok_pos + 1.
+        if int(positions[0]) > 0:
+            return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
+
         slot_map_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
         slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr)
         pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
