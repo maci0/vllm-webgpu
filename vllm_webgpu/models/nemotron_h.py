@@ -4,7 +4,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
+from vllm.model_executor.layers.mamba.mamba_utils import (
+    MambaStateShapeCalculator,
+    is_conv_state_dim_first,
+)
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
@@ -59,10 +62,11 @@ except (ImportError, OSError):
     # _validate_mamba_weights checks the actual weight shape at load time.
     pass
 
-# conv_dim is now derived from MambaStateShapeCalculator.mamba2_state_shape output
-# (see NemotronHWebGPUModel.__init__) rather than computed by a separate formula.
-# No import-time sentinel is needed: if MambaStateShapeCalculator changes its
-# conv_dim definition, the derived value automatically tracks it.
+# conv_dim is computed here from config params using the same formula as MambaMixer2
+# (mamba_mixer2.py L313: conv_dim = intermediate_size + 2 * groups_ssm_state_size).
+# For tp=1, extra_groups_for_head_shards returns 0, so this exactly matches
+# mamba2_state_shape. _validate_mamba_weights provides the authoritative runtime
+# guard by checking the actual in_proj.weight shape.
 
 # Import-time sentinel: confirm NemotronHMLPDecoderLayer still uses .count() to
 # compute mlp_index, which is the method NemotronHWebGPUModel.__init__ reimplements
@@ -159,6 +163,19 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             conv_kernel=self.conv_kernel,
         )
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
+        # Verify conv_dim matches mamba2_state_shape (tp=1, so no TP sharding).
+        # DS layout: _mamba_conv_shape = (conv_dim, state_len); SD: (state_len, conv_dim).
+        _conv_dim_from_shape = (
+            self._mamba_conv_shape[0]  # DS: (conv_dim, state_len)
+            if is_conv_state_dim_first()
+            else self._mamba_conv_shape[1]  # SD: (state_len, conv_dim)
+        )
+        assert self.conv_dim == _conv_dim_from_shape, (
+            f"conv_dim mismatch: formula gives {self.conv_dim}, "
+            f"mamba2_state_shape gives {_conv_dim_from_shape}. "
+            "mamba2_state_shape or the conv_dim formula may have changed upstream."
+        )
+        del _conv_dim_from_shape
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
