@@ -41,7 +41,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     except Exception as _e:
         print(f"  Warning: apply_chat_template failed ({_e}), falling back to tok.encode")
         input_ids_list = tok.encode(prompt)
-    eos_id = tok.eos_token_id
+    _eos_raw = getattr(cfg, 'eos_token_id', None) or tok.eos_token_id
+    eos_ids = set(_eos_raw if isinstance(_eos_raw, list) else [_eos_raw]) - {None}
     print(f"Input tokens: {len(input_ids_list)}")
     print(f"Prompt (after template): {repr(tok.decode(input_ids_list)[:120])}")
 
@@ -125,7 +126,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     t_start = time.perf_counter()
 
     for step in range(max_tokens):
-        if eos_id is not None and last_token == eos_id:
+        if eos_ids and last_token in eos_ids:
             print(f"  [EOS at step {step}]")
             break
         generated.append(last_token)
