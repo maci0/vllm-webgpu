@@ -47,7 +47,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # invoked during that call (including _init_scratch_buffers) references it.
         # Moving it here consolidates config reads and lets us use self.intermediate_size
         # (set by the parent) as the natural fallback instead of reaching back to model_config.
-        self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or self.intermediate_size
+        self._moe_inter: int = v if (v := getattr(model_config, "moe_intermediate_size", None)) is not None else self.intermediate_size
         # Batch prefill bypasses _attn_block and cannot honour per-layer context
         # overrides or inject attention biases. Force sequential prefill whenever
         # either condition is present. The dangerous case for layer_types is
