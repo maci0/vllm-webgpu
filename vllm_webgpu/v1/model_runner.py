@@ -258,10 +258,15 @@ class WebGPUModelRunner:
             if bytes_per_block not in _zeros_cache:
                 _zeros_cache[bytes_per_block] = bytearray(bytes_per_block)
             zeros = _zeros_cache[bytes_per_block]
+            bytes_per_block_v = v_buf.nbytes // self._num_kv_blocks
+            if bytes_per_block_v not in _zeros_cache:
+                _zeros_cache[bytes_per_block_v] = bytearray(bytes_per_block_v)
+            zeros_v = _zeros_cache[bytes_per_block_v]
             for block_id in block_ids:
                 offset = block_id * bytes_per_block
                 queue.write_buffer(k_buf.buf, offset, zeros)
-                queue.write_buffer(v_buf.buf, offset, zeros)
+                offset_v = block_id * bytes_per_block_v
+                queue.write_buffer(v_buf.buf, offset_v, zeros_v)
 
     def execute_model(self, scheduler_output: "SchedulerOutput") -> None:
         if scheduler_output.has_structured_output_requests:
