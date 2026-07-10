@@ -574,6 +574,15 @@ class WebGPUModelRunner:
                 # key if the scheduler promotes this request to cached_reqs
                 # before full prefill completes. The last input token is used as
                 # a sentinel; it will be overwritten when the final chunk runs.
+                # Seed the generator here so it carries over to the final chunk.
+                prev_state = self._req_state.get(rid)
+                if prev_state is not None and prev_state.get("rng") is not None:
+                    chunk_rng = prev_state["rng"]
+                elif sp is not None and sp.seed is not None:
+                    chunk_rng = torch.Generator()
+                    chunk_rng.manual_seed(sp.seed)
+                else:
+                    chunk_rng = None
                 self._req_state[rid] = {
                     "pos": num_computed + T,
                     "block_ids": blk_ids,
@@ -581,16 +590,30 @@ class WebGPUModelRunner:
                     "num_logprobs": num_logprobs,
                     "sampling_params": sp,
                     "recurrent_states": prefill_recurrent_states,
+                    "rng": chunk_rng,
                 }
                 continue
 
             # Use the last position's logits for the first generated token.
             # Apply sampling when SamplingParams request non-greedy decoding.
+            # Seed a per-request generator once at prefill; the same object is
+            # passed to every subsequent decode step so the RNG state advances
+            # between steps rather than restarting from the same seed each time.
+            # Reuse a generator that was created during an earlier chunk of this
+            # same request (chunked prefill) so seeding happens only once total.
+            prev_state = self._req_state.get(rid)
+            if prev_state is not None and prev_state.get("rng") is not None:
+                rng = prev_state["rng"]
+            elif sp is not None and sp.seed is not None:
+                rng = torch.Generator()
+                rng.manual_seed(sp.seed)
+            else:
+                rng = None
             if last_logits.shape[-1] > 1:
                 first_decode_tok = (
                     int(np.argmax(last_logits[-1])) if sp is None
                     else _sample_token(last_logits[-1], temperature=sp.temperature,
-                                       top_p=sp.top_p, top_k=sp.top_k, seed=sp.seed)
+                                       top_p=sp.top_p, top_k=sp.top_k, generator=rng)
                 )
             else:
                 first_decode_tok = int(last_logits[0, 0])
@@ -628,6 +651,7 @@ class WebGPUModelRunner:
                 "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
+                "rng": rng,
             }
 
         # ── Decode: cached requests ────────────────────────────────────────────
@@ -748,24 +772,29 @@ class WebGPUModelRunner:
 
                 # Greedy path: model returns (1, 1) int32 with the argmax index.
                 # Non-greedy path: model returns (1, vocab) float32; sample here.
+                # Use the persisted per-request generator so the RNG state
+                # advances between steps (not reset to the same seed each step).
+                rng = state.get("rng")
                 if logits.shape[-1] == 1:
                     stok = int(logits[0, 0])
                 else:
                     stok = (
                         int(np.argmax(logits[0])) if sp is None
                         else _sample_token(logits[0], temperature=sp.temperature,
-                                           top_p=sp.top_p, top_k=sp.top_k, seed=sp.seed)
+                                           top_p=sp.top_p, top_k=sp.top_k, generator=rng)
                     )
 
                 # Compute logprobs if requested for this request.
                 lp_data = self._extract_logprob_data(logits, 0, stok, num_logprobs, rid)
 
                 # Commit state after a successful forward — don't mutate on failure.
+                # rng is a stateful object; storing the same reference is sufficient.
                 self._req_state[rid] = {
                     "pos": pos + 1, "block_ids": blk_ids,
                     "last_tok": stok, "num_logprobs": num_logprobs,
                     "sampling_params": sp,
                     "recurrent_states": decode_recurrent_states,
+                    "rng": rng,
                 }
                 all_req_ids.append(rid)
                 all_sampled.append(stok)

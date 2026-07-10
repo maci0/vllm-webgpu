@@ -34,7 +34,7 @@ def sample_token(
     temperature: float,
     top_p: float = 1.0,
     top_k: int = 0,
-    seed: int | None = None,
+    generator: torch.Generator | None = None,
 ) -> int:
     """Sample one token from a 1-D float32 logit vector.
 
@@ -47,9 +47,10 @@ def sample_token(
         temperature: Softmax temperature. Values < 1e-5 produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
         top_k: Keep at most top_k tokens. 0 disables.
-        seed: Optional per-request RNG seed from SamplingParams. When set,
-            a seeded torch.Generator is passed to random_sample so that
-            the draw is deterministic and reproducible across runs.
+        generator: Optional per-request torch.Generator. The caller is
+            responsible for seeding it once and passing the same object on
+            every decode step so the RNG state advances correctly between
+            steps. When None, sampling is non-deterministic.
     """
     if temperature < 1e-5:
         return int(logits_1d.argmax())
@@ -63,6 +64,6 @@ def sample_token(
     # apply_top_k_top_p_pytorch returns logits unchanged when both k and p are None.
     filtered = apply_top_k_top_p_pytorch(logits_t, k_t, p_t, allow_cpu_sync=True)
 
-    generators = {0: torch.Generator().manual_seed(seed)} if seed is not None else {}
+    generators = {0: generator} if generator is not None else {}
 
     return random_sample(filtered.softmax(dim=-1), generators).item()
