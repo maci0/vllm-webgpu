@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
+from torch.nn.functional import pad as _pad_tensor
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
@@ -82,8 +82,6 @@ def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache:
 
 
 class WebGPUModelRunner:
-    _kv_cache_spec_cache: "dict | None" = None  # populated by first get_kv_cache_spec call
-
     def __init__(self, vllm_config: Any, wgpu_device: "WebGPUDevice") -> None:
         self.vllm_config = vllm_config
         self.wgpu_device = wgpu_device
@@ -387,10 +385,10 @@ class WebGPUModelRunner:
                 pieces = []
                 for d in logprobs_data:
                     if d is not None:
-                        pad = max_k - d.logprob_token_ids.shape[1]
+                        n_pad = max_k - d.logprob_token_ids.shape[1]
                         pieces.append(LogprobsTensors(
-                            F.pad(d.logprob_token_ids, (0, pad), value=0),
-                            F.pad(d.logprobs, (0, pad), value=-float("inf")),
+                            _pad_tensor(d.logprob_token_ids, (0, n_pad), value=0),
+                            _pad_tensor(d.logprobs, (0, n_pad), value=-float("inf")),
                             d.selected_token_ranks,
                         ))
                     else:

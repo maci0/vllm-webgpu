@@ -16,7 +16,7 @@ def teardown_function():
 
 def test_defaults():
     cfg = WebGPUConfig.from_env()
-    assert cfg.is_auto_memory
+    assert cfg.memory_fraction is None
     assert cfg.power_preference == "high-performance"
 
 
@@ -25,7 +25,7 @@ def test_memory_fraction_float(monkeypatch):
     get_config.cache_clear()
     cfg = WebGPUConfig.from_env()
     assert cfg.memory_fraction == pytest.approx(0.8)
-    assert not cfg.is_auto_memory
+    assert cfg.memory_fraction is not None
 
 
 def test_invalid_memory_fraction(monkeypatch):

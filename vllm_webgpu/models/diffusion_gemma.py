@@ -94,6 +94,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # case: all num_experts active across max_canvas_len tokens.
             self._moe_per_expert_weight_buf = _WB.empty(
                 _dev, self.num_experts * max_canvas_len * 4)
+            # Pre-allocated dense routing weight matrix: [num_experts, max_canvas_len] f32.
+            # Reused across all _decoder_layer calls; only active token columns are zeroed.
+            self._dense_w = np.zeros((self.num_experts, max_canvas_len), dtype=np.float32)
             # Tiny f16 dummy for the NO_SCALE=1 router_norm_f32in path: binding 1
             # is declared but never read when NO_SCALE=1; pass this instead of an
             # unrelated weight buffer to make the intent clear.
@@ -680,8 +683,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # All (expert, token) index pairs are unique (top-K guarantees distinct
             # expert IDs per token; distinct t values make cross-token duplicates impossible),
             # so buffered fancy-index assignment is equivalent to np.add.at and faster.
-            dense_w = np.zeros((self.num_experts, num_tokens), dtype=np.float32)
-            dense_w[top_k_idx, np.arange(num_tokens)[:, None]] = rw_vals
+            self._dense_w[:, :num_tokens] = 0.0
+            self._dense_w[top_k_idx, np.arange(num_tokens)[:, None]] = rw_vals
             unique_eids = np.unique(top_k_idx).tolist()
 
             # GPU: run selected expert FFNs
@@ -698,7 +701,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # would leave only the last expert's weights visible to every dispatch. The
             # expert_slot index passed as an override constant lets each shader read its
             # own row without a re-entrant write.
-            packed_w = dense_w[unique_eids]  # [num_unique, T]
+            packed_w = self._dense_w[unique_eids, :num_tokens]  # [num_unique, T]
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
             dispatched_count = 0

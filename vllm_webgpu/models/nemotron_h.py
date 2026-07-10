@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
@@ -158,7 +158,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        self.conv_dim: int = self._mamba_conv_shape[0] if is_conv_state_dim_first() else self._mamba_conv_shape[1]
+        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
@@ -595,9 +595,27 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _is_awq:
                 # CPU-side axis=1 concat produces [K, N_total//8] so every row
                 # interleaves q, k, v output groups in the order the shader expects.
-                q_buf = self.weights[q_key]; q_w = q_buf.to_numpy().view(np.int32).reshape(q_buf.shape)
-                k_buf = self.weights[k_key]; k_w = k_buf.to_numpy().view(np.int32).reshape(k_buf.shape)
-                v_buf = self.weights[v_key]; v_w = v_buf.to_numpy().view(np.int32).reshape(v_buf.shape)
+                # Consolidate three GPU readbacks into one staged copy + single map_sync
+                # to avoid two extra GPU round-trips per attention layer during model load.
+                import wgpu as _wgpu_lib
+                q_buf = self.weights[q_key]
+                k_buf = self.weights[k_key]
+                v_buf = self.weights[v_key]
+                q_nb, k_nb, v_nb = q_buf.nbytes, k_buf.nbytes, v_buf.nbytes
+                _staging_w = dev.create_buffer(
+                    size=q_nb + k_nb + v_nb,
+                    usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+                _enc_w = dev.create_command_encoder()
+                _enc_w.copy_buffer_to_buffer(q_buf.buf, 0, _staging_w, 0, q_nb)
+                _enc_w.copy_buffer_to_buffer(k_buf.buf, 0, _staging_w, q_nb, k_nb)
+                _enc_w.copy_buffer_to_buffer(v_buf.buf, 0, _staging_w, q_nb + k_nb, v_nb)
+                dev.queue.submit([_enc_w.finish()])
+                _staging_w.map_sync(mode=_wgpu_lib.MapMode.READ)
+                _raw_w = bytes(_staging_w.read_mapped())
+                _staging_w.unmap()
+                q_w = np.frombuffer(_raw_w[:q_nb], dtype=np.int32).reshape(q_buf.shape)
+                k_w = np.frombuffer(_raw_w[q_nb:q_nb + k_nb], dtype=np.int32).reshape(k_buf.shape)
+                v_w = np.frombuffer(_raw_w[q_nb + k_nb:], dtype=np.int32).reshape(v_buf.shape)
                 packed_w = np.concatenate([q_w, k_w, v_w], axis=1)
                 qkv_raw_buf = WebGPUBuffer.from_numpy(dev, packed_w)
             else:

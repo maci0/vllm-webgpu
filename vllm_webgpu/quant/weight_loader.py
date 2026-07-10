@@ -715,7 +715,6 @@ def load_safetensors_weights(
 
         # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
         def _upload_plain(name: str, weights: dict) -> bool:  # noqa: E501
-            nonlocal _pending_bytes
             meta = header.get(name)
             if meta is None:
                 return False
@@ -1096,8 +1095,7 @@ def load_safetensors_weights(
                     N_, K_ = w_t.shape
                     n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
                     w_bf16 = dequant_mxfp8_to_bf16(w_t.view(torch.float8_e4m3fn), torch.from_numpy(ws_u8))
-                    w_f16 = np.ascontiguousarray(
-                        np.clip(w_bf16.float().numpy(), -_F16_MAX, _F16_MAX).astype(np.float16))
+                    w_f16 = np.ascontiguousarray(_torch_to_f16_numpy(w_bf16))
                     _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
                     logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
                 except Exception as exc:

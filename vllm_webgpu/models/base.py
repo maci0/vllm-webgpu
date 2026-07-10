@@ -10,11 +10,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-# Stable HuggingFace single-file safetensors name. Using a literal avoids a
-# huggingface_hub import and immunity to vLLM's _mistral_patch_hf_hub_constants()
-# which mutates the module-level constant after import (a 'from X import Y' binding
-# would have already captured the pre-patch value anyway, so both are equivalent).
-_SAFE_WEIGHTS_NAME: str = "model.safetensors"
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -399,7 +395,7 @@ class BaseWebGPUModel(ABC):
         Subclasses build the `bufs` list from their own buffer collections
         (dict.items() for NemotronH, enumerate() with None-guard for Qwen35).
         """
-        import wgpu
+        import wgpu as wgpu_lib
         dev = self.wgpu_device.wgpu_device
 
         if not bufs:
@@ -413,14 +409,14 @@ class BaseWebGPUModel(ABC):
 
         staging = dev.create_buffer(
             size=total,
-            usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ,
+            usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ,
         )
         enc = dev.create_command_encoder()
         for (_, _, buf), off in zip(bufs, offsets):
             enc.copy_buffer_to_buffer(buf.buf, 0, staging, off, buf.nbytes)
         dev.queue.submit([enc.finish()])
 
-        staging.map_sync(mode=wgpu.MapMode.READ)
+        staging.map_sync(mode=wgpu_lib.MapMode.READ)
         raw = bytes(staging.read_mapped())
         staging.unmap()
 

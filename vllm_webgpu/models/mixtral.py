@@ -50,7 +50,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         if self._is_moe:
             import wgpu as _wgpu_lib
-            self._wgpu_lib = _wgpu_lib
 
             dev = self.wgpu_device.wgpu_device
 
@@ -101,7 +100,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             "topk_w":       mk(top_k * 4),             # [K] f32 softmax weights
             "expert_act":   mk(act_sz * 2),            # [max_inter] f16 activated
             "expert_out":   mk(self.hidden_size * 2),  # [hidden] f16 accumulated
-            "expert_tmp":   mk(self.hidden_size * 2),  # [hidden] f16 per-expert
         }
 
     def _effective_ctx_len(self, ctx_len: int) -> int:
@@ -238,13 +236,14 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             )
 
     def _ensure_moe_expert_bufs(self) -> None:
-        """Lazily allocate expert_gate and expert_up scratch buffers on first quantized call."""
+        """Lazily allocate expert_gate, expert_up, and expert_tmp scratch buffers on first quantized call."""
         msc = self._moe_sc
         if "expert_gate" not in msc:
             dev = self.wgpu_device.wgpu_device
             _act_sz = self._moe_act_sz
             msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
             msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
+            msc["expert_tmp"]  = WebGPUBuffer.empty(dev, max(self.hidden_size * 2, 8))
 
     def _moe_ffn_layer(
         self,
@@ -296,6 +295,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """
         if extra_gate_consts is None:
             extra_gate_consts = {}
+        import wgpu
         dev = self.wgpu_device.wgpu_device
         msc = self._moe_sc
         hidden = self.hidden_size
@@ -339,7 +339,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(
                     size=max(self._top_k * 4, 8),
-                    usage=self._wgpu_lib.BufferUsage.COPY_DST | self._wgpu_lib.BufferUsage.MAP_READ)
+                    usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ)
             self._active_encoder.copy_buffer_to_buffer(
                 msc["topk_w"].buf, 0, self._topk_w_staging, 0, K * 4)
 
@@ -348,12 +348,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         dev.queue.on_submitted_work_done_sync()
 
         # Map the pre-allocated staging buffers — no extra GPU submit needed.
-        self._topk_idx_staging.map_sync(mode=self._wgpu_lib.MapMode.READ)
+        self._topk_idx_staging.map_sync(mode=wgpu.MapMode.READ)
         raw_idx = np.frombuffer(self._topk_idx_staging.read_mapped(), dtype=np.uint32).copy()
         self._topk_idx_staging.unmap()
         expert_indices = raw_idx[:K].tolist()
         if _debug_weights:
-            self._topk_w_staging.map_sync(mode=self._wgpu_lib.MapMode.READ)
+            self._topk_w_staging.map_sync(mode=wgpu.MapMode.READ)
             raw_w = np.frombuffer(self._topk_w_staging.read_mapped(), dtype=np.float32).copy()
             self._topk_w_staging.unmap()
             logger.debug(

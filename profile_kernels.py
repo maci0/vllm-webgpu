@@ -7,7 +7,7 @@ Usage:
 """
 import argparse
 import math
-import os
+from pathlib import Path
 import time
 from types import SimpleNamespace
 import numpy as np
@@ -34,7 +34,7 @@ def main() -> None:
     pipeline_cache = PipelineCache(wgpu_dev.wgpu_device, SHADERS_DIR)
 
     # ── Load model ────────────────────────────────────────────────────────────────
-    model_path = args.model if os.path.isdir(args.model) else snapshot_download(args.model)
+    model_path = args.model if Path(args.model).is_dir() else snapshot_download(args.model)
     print(f"Model: {model_path}")
 
     from transformers import AutoConfig, AutoTokenizer

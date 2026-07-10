@@ -29,10 +29,6 @@ class WebGPUConfig:
                 f"Valid: {sorted(VALID_POWER_PREFERENCES)}"
             )
 
-    @property
-    def is_auto_memory(self) -> bool:
-        return self.memory_fraction is None
-
     @classmethod
     def from_env(cls) -> "WebGPUConfig":
         raw = envs.VLLM_WEBGPU_MEMORY_FRACTION

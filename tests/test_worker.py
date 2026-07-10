@@ -230,6 +230,7 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
     runner.vllm_config = vllm_config
     runner.webgpu_config = WebGPUConfig.from_env()
     runner._block_size = 16
+    runner._kv_cache_spec_cache = None  # simulate __init__
     # _get_lp_list() is called inside get_kv_cache_spec; return None to trigger
     # the layer_types fallback path (model not yet loaded, no _layer_attention_params).
     runner._get_lp_list.return_value = None
@@ -302,6 +303,7 @@ def test_get_kv_cache_spec_pre_load_gemma4_uniform_fallback():
     runner.vllm_config = vllm_config
     runner.webgpu_config = WebGPUConfig.from_env()
     runner._block_size = 16
+    runner._kv_cache_spec_cache = None  # simulate __init__
 
     spec = WebGPUModelRunner.get_kv_cache_spec(runner)
 
