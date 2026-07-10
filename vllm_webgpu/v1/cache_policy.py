@@ -179,13 +179,13 @@ def allocate_kv_from_tensors(
             storage_bs = spec.storage_block_size
             k_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size * dtype_bytes
             v_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size_v * dtype_bytes
-            if k_bytes + v_bytes != tensor.size:
+            if k_bytes + v_bytes != spec.real_page_size_bytes * num_blocks:
                 logger.warning(
-                    "Spec-derived total (%d B) does not match tensor.size (%d B) "
+                    "Spec-derived K+V (%d B) does not match spec.real_page_size_bytes*num_blocks (%d B) "
                     "(layer %r); allocating separate K (%d B) and V (%d B) buffers "
-                    "— overhead bytes (per-token-head scales, padding) are not "
+                    "-- overhead bytes (per-token-head scales) are not "
                     "accessible to WebGPU shaders.",
-                    k_bytes + v_bytes, tensor.size, first_name, k_bytes, v_bytes,
+                    k_bytes + v_bytes, spec.real_page_size_bytes * num_blocks, first_name, k_bytes, v_bytes,
                 )
         elif isinstance(spec, AttentionSpec):
             if spec.kv_quant_mode.is_nvfp4:
