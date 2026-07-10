@@ -980,6 +980,11 @@ def load_safetensors_weights(
                             w_f16 = _dequant_awq(qw, sc, qz)
                         elif fmt == "awq":
                             # qz is None but this is still an AWQ layout: qw is [K, N//8].
+                            if g_idx is not None:
+                                raise ValueError(
+                                    f"{base}: desc_act AWQ (g_idx present) with no qzeros is not "
+                                    "supported; cannot dequantize without zero-points."
+                                )
                             # Synthesize all-8 qzeros (symmetric zero-point) and dequant via AWQ path.
                             # Routing to _dequant_gptq here would misinterpret the layout as
                             # [K//8, N] and produce a weight matrix with the wrong shape and values.
