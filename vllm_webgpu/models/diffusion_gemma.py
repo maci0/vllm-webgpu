@@ -228,6 +228,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         ctx_len = int(attn_metadata.max_decode_seq_len)
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds 65535")
+        scores_capacity = self._sc["scores_buf"].nbytes // (self.num_q_heads * 2)
+        if ctx_len > scores_capacity:
+            raise RuntimeError(
+                f"ctx_len={ctx_len} exceeds scores_buf capacity={scores_capacity}; "
+                f"max_position_embeddings in the model config is too small for this sequence"
+            )
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
