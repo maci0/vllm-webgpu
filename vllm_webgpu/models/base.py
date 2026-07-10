@@ -308,6 +308,7 @@ class BaseWebGPUModel(ABC):
     def load_weights(
         self, path: str, f32_keys: "frozenset[str] | None" = None,
         skip_prefixes: "frozenset[str] | None" = None,
+        scale_transforms: "dict | None" = None,
     ) -> None:
         """Load model weights from a HuggingFace safetensors directory.
 
@@ -321,6 +322,11 @@ class BaseWebGPUModel(ABC):
             skip_prefixes: Optional set of key prefixes to skip entirely. Keys whose names
                            start with any of these prefixes are excluded before any GPU buffer
                            allocation, keeping them out of VRAM for the lifetime of the load.
+            scale_transforms: Optional dict mapping HF scale key names to side-effect callables
+                              ``(np.ndarray) -> None``. When a key matches, the callable is
+                              invoked with the scale array and the GPU upload is suppressed.
+                              Used by NemotronH to accumulate q/k/v scales on CPU before
+                              stacking, avoiding per-layer GPU map_sync stalls.
         """
         from vllm_webgpu.quant.weight_loader import (
             _check_unsupported_quant, _load_quant_cfg,
@@ -344,7 +350,7 @@ class BaseWebGPUModel(ABC):
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,
-                quant_cfg=_quant_cfg)
+                quant_cfg=_quant_cfg, scale_transforms=scale_transforms)
         elif fmt == "safetensors_sharded":
             # MLX affine int4 directories also return "safetensors_sharded" from
             # detect_weight_format; load_safetensors_weights_sharded detects the
@@ -352,7 +358,7 @@ class BaseWebGPUModel(ABC):
             self.weights = load_safetensors_weights_sharded(
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,
-                quant_cfg=_quant_cfg)
+                quant_cfg=_quant_cfg, scale_transforms=scale_transforms)
         elif fmt == "gguf":
             raise ValueError(
                 f"GGUF format not supported by this plugin — use the vllm-gguf plugin: {path}"

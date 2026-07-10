@@ -168,6 +168,7 @@ def load_safetensors_weights_sharded(
     weight_transforms: "dict | None" = None,
     skip_prefixes: "frozenset[str] | None" = None,
     quant_cfg: "dict | None" = None,
+    scale_transforms: "dict | None" = None,
 ) -> dict:
     """Load multi-shard safetensors from a directory with model.safetensors.index.json.
 
@@ -228,7 +229,8 @@ def load_safetensors_weights_sharded(
         shard_weights = load_safetensors_weights(
             shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys,
             skip_remap=True, weight_transforms=weight_transforms,
-            skip_prefixes=skip_prefixes, quant_cfg=quant_cfg)
+            skip_prefixes=skip_prefixes, quant_cfg=quant_cfg,
+            scale_transforms=scale_transforms)
 
         # Commit all pending write_buffer operations by submitting a dummy command encoder.
         # queue.write_buffer() is only committed before the NEXT queue.submit(), not by
@@ -457,6 +459,7 @@ def load_safetensors_weights(
     weight_transforms: "dict | None" = None,
     skip_prefixes: "frozenset[str] | None" = None,
     quant_cfg: "dict | None" = None,
+    scale_transforms: "dict | None" = None,
 ) -> dict:
     """Load safetensors weights and upload to GPU as F16.
 
@@ -843,7 +846,12 @@ def load_safetensors_weights(
                         qw_t = np.ascontiguousarray(qw.T)  # [N, K//8]
                         sc_gn = sc.astype(np.float32)      # [G, N] f32
                         _upload(qw_t, np.int32, 'i32', f"{base}.weight", weights)
-                        _upload(sc_gn, np.float32, 'f32', f"{base}.weight.scales", weights)
+                        sc_key = f"{base}.weight.scales"
+                        if scale_transforms and sc_key in scale_transforms:
+                            # Accumulate on CPU; _pack_attn_weights stacks and uploads once.
+                            scale_transforms[sc_key](sc_gn)
+                        else:
+                            _upload(sc_gn, np.float32, 'f32', sc_key, weights)
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
                     elif (fmt == "awq" and g_idx is None
@@ -860,7 +868,12 @@ def load_safetensors_weights(
                         # since AWQ access pattern is already per-k, per-output-group)
                         sc_gn = sc.astype(np.float32)  # [G, N] f32
                         _upload(qw, np.int32, 'i32', f"{base}.weight", weights)    # [K, N//8]
-                        _upload(sc_gn, np.float32, 'f32', f"{base}.weight.scales", weights)  # [G, N]
+                        sc_key = f"{base}.weight.scales"
+                        if scale_transforms and sc_key in scale_transforms:
+                            # Accumulate on CPU; _pack_attn_weights stacks and uploads once.
+                            scale_transforms[sc_key](sc_gn)
+                        else:
+                            _upload(sc_gn, np.float32, 'f32', sc_key, weights)  # [G, N]
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "awq_sym", "group_size": group_size}
                         logger.debug("GPU AWQ: %s (K=%d, N=%d, G=%d)", base, K_, N_, G_)
                     else:

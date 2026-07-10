@@ -182,6 +182,31 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _lt == "mamba":
                 self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _a_log_transform
 
+        # Per-layer CPU-side scale accumulator for attention layers.
+        # For GPTQ (and AWQ) checkpoints the weight loader fires these callbacks
+        # with each projection's scale array instead of uploading it to GPU.
+        # _pack_attn_weights then stacks q/k/v on CPU in one shot and uploads the
+        # packed [G, N_total] array once, eliminating the create_buffer /
+        # submit / map_sync / unmap cycle that re-read each layer's scales from GPU.
+        # Keys are HF-format scale key names (backbone. prefix, before mapper).
+        self._scale_acc: dict = {}    # {layer_idx: {'q': arr, 'k': arr, 'v': arr}}
+        self._scale_transforms: dict = {}  # HF scale key -> (arr) -> None
+
+        def _make_scale_store(acc: dict, proj: str):
+            def _store(arr: "np.ndarray") -> None:
+                acc[proj] = arr
+            return _store
+
+        for _i, _lt in enumerate(self._layer_types):
+            if _lt == "attention":
+                _acc: dict = {}
+                self._scale_acc[_i] = _acc
+                _hf_p = f"backbone.layers.{_i}.mixer"
+                for _proj in ("q", "k", "v"):
+                    self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
+                        _make_scale_store(_acc, _proj)
+                    )
+
         # The WebGPU MLP path does not implement bias addition. All known
         # NemotronH checkpoints ship with mlp_bias=False (the default), so
         # this is latent. Fail fast rather than silently produce wrong outputs
@@ -476,7 +501,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Skip mtp.* keys before any GPU buffer allocation. The raw HF keys use
         # the "mtp." prefix; none are accessed during inference.
         # vLLM's own NemotronHForCausalLM skips these the same way.
-        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=frozenset(["mtp."]))
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=frozenset(["mtp."]),
+                             scale_transforms=self._scale_transforms)
         _missing_transforms = [k for k in self._weight_transforms if k not in self.weights]
         assert not _missing_transforms, (
             f"Registered weight transforms not consumed (key not in checkpoint): "
@@ -538,7 +564,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             q_s = f"{q_key}.scales"
             k_s = f"{k_key}.scales"
             v_s = f"{v_key}.scales"
-            has_scales = q_s in self.weights and k_s in self.weights and v_s in self.weights
+            # Scales may either be in the CPU accumulator (GPTQ/AWQ: suppressed
+            # individual GPU uploads) or uploaded as individual GPU buffers.
+            _sc_acc = self._scale_acc.get(i, {})
+            has_scales = (
+                all(p in _sc_acc for p in ("q", "k", "v"))
+                or (q_s in self.weights and k_s in self.weights and v_s in self.weights)
+            )
 
             # AWQ weights are stored K-major as [K, N//8]. GPU-side byte
             # concatenation of three such buffers produces column-block layout
@@ -585,27 +617,35 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # scales[grp * N_total + row], which requires row-interleaved [G, N_total].
                 # For G > 1 (e.g. K=4096, group_size=128 -> G=32) every grp > 0 lookup
                 # would land in the wrong projection's data. Stack on axis=1 on the CPU.
-                # All three scales are read in a single staged command encoder to avoid
-                # three separate GPU-CPU round-trips.
-                import wgpu as _wgpu_lib
-                q_sb = self.weights[q_s]
-                k_sb = self.weights[k_s]
-                v_sb = self.weights[v_s]
-                _q_snb, _k_snb, _v_snb = q_sb.nbytes, k_sb.nbytes, v_sb.nbytes
-                _staging_s = dev.create_buffer(
-                    size=_q_snb + _k_snb + _v_snb,
-                    usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
-                _enc_s = dev.create_command_encoder()
-                _enc_s.copy_buffer_to_buffer(q_sb.buf, 0, _staging_s, 0, _q_snb)
-                _enc_s.copy_buffer_to_buffer(k_sb.buf, 0, _staging_s, _q_snb, _k_snb)
-                _enc_s.copy_buffer_to_buffer(v_sb.buf, 0, _staging_s, _q_snb + _k_snb, _v_snb)
-                dev.queue.submit([_enc_s.finish()])
-                _staging_s.map_sync(mode=_wgpu_lib.MapMode.READ)
-                _raw_s = bytes(_staging_s.read_mapped())
-                _staging_s.unmap()
-                q_sc = np.frombuffer(_raw_s[:_q_snb], dtype=np.float32).reshape(q_sb.shape)
-                k_sc = np.frombuffer(_raw_s[_q_snb:_q_snb + _k_snb], dtype=np.float32).reshape(k_sb.shape)
-                v_sc = np.frombuffer(_raw_s[_q_snb + _k_snb:], dtype=np.float32).reshape(v_sb.shape)
+                if all(p in _sc_acc for p in ("q", "k", "v")):
+                    # CPU path: scales were accumulated by _scale_transforms before GPU
+                    # upload. Stack directly without any GPU round-trip.
+                    q_sc = _sc_acc["q"]
+                    k_sc = _sc_acc["k"]
+                    v_sc = _sc_acc["v"]
+                else:
+                    # GPU path: scales were uploaded individually (non-GPTQ/AWQ formats
+                    # or checkpoints that don't match _scale_transforms keys). Read back
+                    # via a single staged command encoder to avoid three separate stalls.
+                    import wgpu as _wgpu_lib
+                    q_sb = self.weights[q_s]
+                    k_sb = self.weights[k_s]
+                    v_sb = self.weights[v_s]
+                    _q_snb, _k_snb, _v_snb = q_sb.nbytes, k_sb.nbytes, v_sb.nbytes
+                    _staging_s = dev.create_buffer(
+                        size=_q_snb + _k_snb + _v_snb,
+                        usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+                    _enc_s = dev.create_command_encoder()
+                    _enc_s.copy_buffer_to_buffer(q_sb.buf, 0, _staging_s, 0, _q_snb)
+                    _enc_s.copy_buffer_to_buffer(k_sb.buf, 0, _staging_s, _q_snb, _k_snb)
+                    _enc_s.copy_buffer_to_buffer(v_sb.buf, 0, _staging_s, _q_snb + _k_snb, _v_snb)
+                    dev.queue.submit([_enc_s.finish()])
+                    _staging_s.map_sync(mode=_wgpu_lib.MapMode.READ)
+                    _raw_s = bytes(_staging_s.read_mapped())
+                    _staging_s.unmap()
+                    q_sc = np.frombuffer(_raw_s[:_q_snb], dtype=np.float32).reshape(q_sb.shape)
+                    k_sc = np.frombuffer(_raw_s[_q_snb:_q_snb + _k_snb], dtype=np.float32).reshape(k_sb.shape)
+                    v_sc = np.frombuffer(_raw_s[_q_snb + _k_snb:], dtype=np.float32).reshape(v_sb.shape)
                 if q_sc.ndim == 2:
                     # [G, N] layout: concatenate along N axis to get [G, N_total].
                     packed_sc = np.concatenate([q_sc, k_sc, v_sc], axis=1)
