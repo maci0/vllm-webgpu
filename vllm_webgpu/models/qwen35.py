@@ -286,8 +286,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Reuse shapes cached in __init__ to avoid a redundant call to
         # gated_delta_net_state_shape (the parameters haven't changed).
         conv_shape, ssm_shape = self._lin_conv_shape, self._lin_ssm_shape
-        # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, K_DIM, V_DIM] f32
-        # (inner two dims transposed vs. vLLM's shape) — byte count is the same.
+        # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, V_DIM, K_DIM] f32,
+        # matching vLLM's gated_delta_net_state_shape convention.
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 
@@ -396,14 +396,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
 
-        IMPORTANT: SSM state bytes are stored in the shader's [V_HEADS, K_DIM, V_DIM]
-        layout (f32), NOT in the vLLM convention returned by gated_delta_net_state_shape,
-        which is (V_HEADS, V_DIM, K_DIM). The byte counts are identical, so the
-        difference is invisible when K_DIM == V_DIM (e.g. Qwen3-235B both dims = 128).
-        Any caller that re-shapes or interprets these bytes as a tensor must use the
-        shader layout [V_HEADS, K_DIM, V_DIM]. Interoperating with vLLM's own state
-        tensors (which use the vLLM convention) requires a transpose of the inner two
-        dims for models where K_DIM != V_DIM.
+        SSM state bytes use the vLLM convention: [V_HEADS, V_DIM, K_DIM] f32,
+        matching gated_delta_net_state_shape. The shader stores state in the same
+        layout, so no transposition is needed on readback.
         """
         bufs: list[tuple[str, int, object]] = []
         for i, buf in enumerate(self._conv_gpu):
@@ -420,10 +415,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         queue.write_buffer enqueues writes without blocking, so all layers
         are uploaded before the next GPU dispatch without an explicit submit.
 
-        The SSM bytes in `states["ssm"]` must use the shader's [V_HEADS, K_DIM, V_DIM]
-        layout (see save_recurrent_states). Bytes sourced from vLLM state tensors, which
-        use (V_HEADS, V_DIM, K_DIM), need the inner two dims transposed before upload
-        for models where K_DIM != V_DIM.
+        SSM bytes in `states["ssm"]` must use the vLLM convention
+        [V_HEADS, V_DIM, K_DIM] f32, which is also the shader's native layout.
+        Bytes from save_recurrent_states or from vLLM state tensors can be
+        uploaded directly without any transposition.
         """
         dev = self.wgpu_device.wgpu_device
         for i, data in states.get("conv", {}).items():

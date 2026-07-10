@@ -36,7 +36,7 @@ override V_BASE: u32  = 4096u;
 @group(0) @binding(2) var<storage, read>       b_in     : array<f16>; // [NUM_V_HEADS] — outer-product gate per V-head
 @group(0) @binding(3) var<storage, read>       A_log    : array<f32>; // [NUM_V_HEADS] — log eigenvalue per V-head
 @group(0) @binding(4) var<storage, read>       dt_bias  : array<f32>; // [NUM_V_HEADS] — dt bias per V-head
-@group(0) @binding(5) var<storage, read_write> state    : array<f32>; // [NUM_V_HEADS, K_DIM, V_DIM]
+@group(0) @binding(5) var<storage, read_write> state    : array<f32>; // [NUM_V_HEADS, V_DIM, K_DIM]
 @group(0) @binding(6) var<storage, read_write> output   : array<f16>; // [NUM_V_HEADS, V_DIM]
 
 var<workgroup> sh_q:     array<f32, K_DIM>;
@@ -107,22 +107,26 @@ fn main(
     sh_delta[tid] = beta * sh_k[tid];
     workgroupBarrier();
 
-    // ── Phase 4: old_out[tid] = state[h][*][tid] @ q ─────────────────────────
+    // ── Phase 4: old_out[tid] = state[h][tid][*] @ q ─────────────────────────
+    // State layout: [NUM_V_HEADS, V_DIM, K_DIM] matching vLLM's convention.
+    // tid is the V-dimension index; inner loop over K to compute dot with q.
     var col_sum: f32 = 0.0;
     for (var k = 0u; k < K_DIM; k++) {
-        col_sum += state[vh_state + k * V_DIM + tid] * sh_q[k];
+        col_sum += state[vh_state + tid * K_DIM + k] * sh_q[k];
     }
     sh_old[tid] = col_sum;
     workgroupBarrier();
 
-    // ── Phase 5: state update for row k=tid ──────────────────────────────────
-    // state[tid][v] = decay * state[tid][v]
+    // ── Phase 5: state update for K-column k=tid ─────────────────────────────
+    // Layout [V_DIM, K_DIM]: element (v, k) is at offset v*K_DIM + k.
+    // tid is the K index; loop over V to update each (v, tid) entry.
+    // state[v][tid] = decay * state[v][tid]
     //               - delta_k[tid] * old_out[v]
     //               + b_gate * k_norm[tid] * v[v]
     let dk = sh_delta[tid];
     let kn = sh_k[tid];
     for (var v = 0u; v < V_DIM; v++) {
-        let idx = vh_state + tid * V_DIM + v;
+        let idx = vh_state + v * K_DIM + tid;
         state[idx] = decay * state[idx]
             - dk * sh_old[v]
             + b_gate * kn * f32(qkv_buf[vh_v_base + v]);
@@ -130,10 +134,11 @@ fn main(
     workgroupBarrier();
 
     // ── Phase 6: output[tid] = (1/sqrt(K_DIM)) * state_new @ q ──────────────
+    // tid is the V-dimension index; same indexing as Phase 4.
     let inv_sqrt_k = inverseSqrt(f32(K_DIM));
     var out_v: f32 = 0.0;
     for (var k = 0u; k < K_DIM; k++) {
-        out_v += state[vh_state + k * V_DIM + tid] * sh_q[k];
+        out_v += state[vh_state + tid * K_DIM + k] * sh_q[k];
     }
     output[vh * V_DIM + tid] = f16(inv_sqrt_k * out_v);
 }
