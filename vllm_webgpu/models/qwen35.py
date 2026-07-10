@@ -251,7 +251,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     # NF4 (uq=8) and NVFP4 (uq=6) pack 2 values per byte; the
                     # loader reshapes to [2*q_dim, hidden//2] before upload, so
                     # total_elems == q_dim * hidden (not 2*q_dim*hidden).
-                    quant_unsplit_half   = total_elems == q_dim * hidden
+                    # INT8 (uq=7) and FP8 (uq=5) are 1-byte-per-element, so a
+                    # correctly pre-split tensor at (q_dim, hidden) also hits
+                    # this count; guard on uq to avoid a false-positive error.
+                    quant_unsplit_half   = uq in (6, 8) and total_elems == q_dim * hidden
                     if unpack_shape_unsplit or quant_unsplit or quant_unsplit_half:
                         # uq 5/6/7/8: weight is already quantized (fp8_gpu,
                         # nvfp4, int8_gpu, nf4), so advising "load fp16" is wrong.
