@@ -577,7 +577,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                             "Q_BASE": 0, "K_BASE": k_base, "V_BASE": v_base},
                            _gemv_wg(vh))
 
-            # 7. Per-head RMSNorm + sigmoid gate → gated
+            # 7. Per-head RMSNorm + SiLU gate (z * sigmoid(z)) → gated
             self._dispatch("linear_attn_norm_gate",
                            [sc["gdn_out"], self.weights[f"{p}.norm.weight"],
                             sc["z_buf"], sc["gated"]],
