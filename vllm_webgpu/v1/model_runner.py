@@ -134,7 +134,7 @@ class WebGPUModelRunner:
             self.model,
             kv_cache_config.kv_cache_tensors,
             num_blocks=num_blocks,
-            num_total_layers=mc.hf_config.num_hidden_layers,
+            num_total_layers=self.vllm_config.model_config.get_total_num_hidden_layers(),
             kv_cache_groups=kv_cache_config.kv_cache_groups,
         )
 
