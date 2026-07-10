@@ -243,6 +243,54 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
             msc["expert_tmp"]  = WebGPUBuffer.empty(dev, max(self.hidden_size * 2, 8))
 
+    def _dispatch_expert_down(
+        self,
+        ep: str,
+        down_key_name: str,
+        w2_key: str,
+        k_idx: int,
+        inter: int,
+    ) -> None:
+        """Dispatch per-expert down projection with weighted accumulate into expert_out.
+
+        Subclasses may override to inject per-expert down bias before the
+        weighted accumulate.
+
+        Args:
+            ep:            Full expert prefix (e.g. 'model.layers.0.mlp.experts.3').
+            down_key_name: Weight sub-key name (e.g. 'w2').
+            w2_key:        Full weight key (e.g. '{ep}.w2.weight').
+            k_idx:         Which top-k slot this expert occupies (used for K_IDX override).
+            inter:         Expert intermediate size (= K dimension of the down matmul).
+        """
+        msc = self._moe_sc
+        hidden = self.hidden_size
+        uq_d = self._uq_for_key(w2_key)
+        if uq_d == 0:
+            self._dispatch(
+                "moe_expert_down_accum",
+                [msc["expert_act"], self.weights[w2_key],
+                 msc["expert_out"], msc["topk_w"]],
+                {"K": inter, "N": hidden, "K_IDX": k_idx},
+                (hidden, 1, 1),
+            )
+        else:
+            qi_d = self._quant_extra(f"{ep}.{down_key_name}", uq_d)
+            self._dispatch(
+                "matmul_quant",
+                [msc["expert_act"], self.weights[w2_key],
+                 self._scales_buf(w2_key, uq_d, self._dummy_scales_buf),
+                 msc["expert_tmp"]],
+                {"K": inter, "N": hidden, "USE_QUANT": uq_d, **qi_d},
+                _gemv_wg(hidden),
+            )
+            self._dispatch(
+                "moe_accumulate",
+                [msc["expert_out"], msc["expert_tmp"], msc["topk_w"]],
+                {"N": hidden, "K_IDX": k_idx},
+                _rows_wg(hidden),
+            )
+
     def _moe_ffn_layer(
         self,
         normed_x: "WebGPUBuffer",
@@ -420,32 +468,4 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 continue
 
             self._dispatch_expert_gate_up(normed_x, w1_key, w3_key, inter, extra_gate_consts)
-
-            # Down projection + weighted accumulate.
-            uq_d = self._uq_for_key(w2_key)
-            if uq_d == 0:
-                # f16: fuse GEMV and accumulate into a single dispatch.
-                self._dispatch(
-                    "moe_expert_down_accum",
-                    [msc["expert_act"], self.weights[w2_key],
-                     msc["expert_out"], msc["topk_w"]],
-                    {"K": inter, "N": hidden, "K_IDX": k_idx},
-                    (hidden, 1, 1),
-                )
-            else:
-                # Quantized path: keep separate dispatches.
-                qi_d = self._quant_extra(f"{ep}.{down_key}", uq_d)
-                self._dispatch(
-                    "matmul_quant",
-                    [msc["expert_act"], self.weights[w2_key],
-                     self._scales_buf(w2_key, uq_d, self._dummy_scales_buf),
-                     msc["expert_tmp"]],
-                    {"K": inter, "N": hidden, "USE_QUANT": uq_d, **qi_d},
-                    _gemv_wg(hidden),
-                )
-                self._dispatch(
-                    "moe_accumulate",
-                    [msc["expert_out"], msc["expert_tmp"], msc["topk_w"]],
-                    {"N": hidden, "K_IDX": k_idx},
-                    _rows_wg(hidden),
-                )
+            self._dispatch_expert_down(ep, down_key, w2_key, k_idx, inter)

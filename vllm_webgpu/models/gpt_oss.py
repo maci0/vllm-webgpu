@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from vllm_webgpu.models.base import _gemv_wg, _vec4_wg
+from vllm_webgpu.models.base import _gemv_wg, _rows_wg, _vec4_wg
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -230,6 +230,160 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 "model config (num_local_experts, num_experts_per_tok)."
             )
         return super()._ffn_dispatch(normed_x, layer_idx, num_tokens)
+
+    def _ensure_moe_expert_bufs(self) -> None:
+        """Extend parent with two extra scratch buffers for per-expert bias injection.
+
+        expert_gate_biased: intermediate-sized staging buffer used to hold the
+          bias-injected gate projection before gelu_mul. Sized at moe_act_sz
+          (same as expert_gate/expert_up) so it is large enough for any expert
+          intermediate dimension.
+        expert_down_tmp: hidden-sized staging buffer used to hold the
+          bias-injected down projection before the weighted accumulate. Sized at
+          hidden_size, matching the down projection output dimension.
+        """
+        super()._ensure_moe_expert_bufs()
+        msc = self._moe_sc
+        if "expert_gate_biased" not in msc:
+            dev = self.wgpu_device.wgpu_device
+            msc["expert_gate_biased"] = WebGPUBuffer.empty(dev, max(self._moe_act_sz * 2, 8))
+            msc["expert_down_tmp"]    = WebGPUBuffer.empty(dev, max(self.hidden_size * 2, 8))
+
+    def _dispatch_expert_gate_up(
+        self,
+        normed_x: "WebGPUBuffer",
+        gw_key: str,
+        uw_key: str,
+        inter: int,
+        extra_gate_consts: dict,
+    ) -> None:
+        """Extend parent with per-expert gate/up bias injection.
+
+        Derives bias keys from weight keys by replacing the '.weight' suffix with
+        '.bias'. If neither key is present in self.weights, delegates directly to
+        the parent (fused f16 or quantized path). When at least one bias is found,
+        falls back to separate gate/up matmul dispatches (even for f16 weights) so
+        the bias vectors can be injected between the matmuls and the activation.
+
+        Buffer routing to avoid intra-dispatch read/write aliasing (WebGPU forbids
+        a buffer at two bindings with conflicting access modes in one dispatch):
+          expert_gate       <- raw gate GEMV output
+          expert_up         <- raw up GEMV output
+          expert_gate_biased <- bias-injected gate (or bias-injected up when only
+                               u_bias is present and g_bias is absent)
+          expert_gate        <- bias-injected up when both biases are present
+                               (expert_gate is safe to overwrite after expert_gate_biased
+                                has been written as the gate destination)
+        The final gelu_mul always writes to msc["expert_act"] so callers are
+        unaffected.
+        """
+        gb_key = gw_key.removesuffix(".weight") + ".bias"
+        ub_key = uw_key.removesuffix(".weight") + ".bias"
+        g_bias = self.weights.get(gb_key)
+        u_bias = self.weights.get(ub_key)
+
+        if g_bias is None and u_bias is None:
+            super()._dispatch_expert_gate_up(normed_x, gw_key, uw_key, inter, extra_gate_consts)
+            return
+
+        # Separate gate and up dispatches (needed to inject bias between matmul and activation).
+        self._ensure_moe_expert_bufs()
+        msc = self._moe_sc
+        hidden = self.hidden_size
+        uq_g = self._uq_for_key(gw_key)
+        uq_u = self._uq_for_key(uw_key)
+        qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
+        qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
+
+        self._dispatch(
+            "matmul_quant",
+            [normed_x, self.weights[gw_key],
+             self._scales_buf(gw_key, uq_g, self._dummy_scales_buf), msc["expert_gate"]],
+            {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
+            _gemv_wg(inter),
+        )
+        self._dispatch(
+            "matmul_quant",
+            [normed_x, self.weights[uw_key],
+             self._scales_buf(uw_key, uq_u, self._dummy_scales_buf), msc["expert_up"]],
+            {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
+            _gemv_wg(inter),
+        )
+
+        # Inject gate bias: expert_gate → expert_gate_biased (different src/dst: no alias).
+        # When g_bias is absent use expert_gate directly as the gate source for gelu_mul.
+        if g_bias is not None:
+            self._dispatch("add", [msc["expert_gate"], g_bias, msc["expert_gate_biased"]],
+                           {"N": inter}, _vec4_wg(inter))
+            gate_src = msc["expert_gate_biased"]
+        else:
+            gate_src = msc["expert_gate"]
+
+        # Inject up bias.
+        # When both biases are present: write biased up to expert_gate (now free because
+        #   raw gate was already consumed into expert_gate_biased above).
+        # When only up bias is present: write to expert_gate_biased (gate is read from
+        #   expert_gate, which must not be overwritten before gelu_mul).
+        if u_bias is not None:
+            up_dst = msc["expert_gate"] if g_bias is not None else msc["expert_gate_biased"]
+            self._dispatch("add", [msc["expert_up"], u_bias, up_dst],
+                           {"N": inter}, _vec4_wg(inter))
+            up_src = up_dst
+        else:
+            up_src = msc["expert_up"]
+
+        self._dispatch(
+            "gelu_mul",
+            [gate_src, up_src, msc["expert_act"]],
+            {**extra_gate_consts, "N": inter},
+            _vec4_wg(inter),
+        )
+
+    def _dispatch_expert_down(
+        self,
+        ep: str,
+        down_key_name: str,
+        w2_key: str,
+        k_idx: int,
+        inter: int,
+    ) -> None:
+        """Extend parent with per-expert down bias injection.
+
+        Derives the bias key as '{ep}.{down_key_name}.bias'. If absent, delegates
+        to the parent. When present, switches to the separate matmul + add + accumulate
+        sequence (bypassing the fused moe_expert_down_accum shader which has no bias
+        binding) and uses expert_down_tmp as the staging buffer for the biased output.
+        """
+        w2_bias = self.weights.get(f"{ep}.{down_key_name}.bias")
+        if w2_bias is None:
+            super()._dispatch_expert_down(ep, down_key_name, w2_key, k_idx, inter)
+            return
+
+        self._ensure_moe_expert_bufs()
+        msc = self._moe_sc
+        hidden = self.hidden_size
+        uq_d = self._uq_for_key(w2_key)
+        qi_d = self._quant_extra(f"{ep}.{down_key_name}", uq_d)
+
+        # Down GEMV → expert_tmp (sized at hidden_size).
+        self._dispatch(
+            "matmul_quant",
+            [msc["expert_act"], self.weights[w2_key],
+             self._scales_buf(w2_key, uq_d, self._dummy_scales_buf),
+             msc["expert_tmp"]],
+            {"K": inter, "N": hidden, "USE_QUANT": uq_d, **qi_d},
+            _gemv_wg(hidden),
+        )
+        # Add down bias: expert_tmp → expert_down_tmp (aliasing-safe: different src/dst).
+        self._dispatch("add", [msc["expert_tmp"], w2_bias, msc["expert_down_tmp"]],
+                       {"N": hidden}, _vec4_wg(hidden))
+        # Weighted accumulate into expert_out using the biased down output.
+        self._dispatch(
+            "moe_accumulate",
+            [msc["expert_out"], msc["expert_down_tmp"], msc["topk_w"]],
+            {"N": hidden, "K_IDX": k_idx},
+            _rows_wg(hidden),
+        )
 
     def _moe_ffn_layer(
         self,

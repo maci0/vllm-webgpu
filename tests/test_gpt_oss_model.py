@@ -213,3 +213,100 @@ def test_swiglu_limit(wgpu_device):
     assert float(result_clamped[0]) < float(result_free[0]), (
         f"Clamped ({result_clamped[0]}) should be < unclamped ({result_free[0]})"
     )
+
+
+# ── Test 3: per-expert bias injection (w1/w3/w2 biases) ─────────────────────
+
+@pytest.mark.integration
+def test_gpt_oss_expert_bias(wgpu_device):
+    """Forward pass with non-zero expert gate, up, and down biases.
+
+    Verifies that the bias-injection path in _dispatch_expert_gate_up and
+    _dispatch_expert_down runs without error and produces a valid token id.
+    Also checks that the biased result differs from the no-bias result when
+    biases are non-zero (non-trivial sanity check).
+    """
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.models.gpt_oss import GptOssWebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR as _SD
+
+    hidden      = 64
+    layers      = 1
+    q_heads     = 4
+    kv_heads    = 2
+    head_dim    = 16
+    inter       = 128
+    vocab       = 32
+    num_experts = 4
+    top_k       = 2
+    num_blocks  = 8
+    block_size  = 16
+
+    class _Cfg:
+        num_hidden_layers       = layers
+        num_attention_heads     = q_heads
+        num_key_value_heads     = kv_heads
+        hidden_size             = hidden
+        intermediate_size       = inter
+        vocab_size              = vocab
+        head_dim                = hidden // q_heads
+        max_position_embeddings = 128
+        rope_theta              = 10000.0
+        sliding_window          = 128
+        num_local_experts       = num_experts
+        num_experts_per_tok     = top_k
+        swiglu_limit            = 0.0
+        attention_bias          = False
+        layer_types             = []
+
+    dev = wgpu_device.wgpu_device
+    cache = PipelineCache(dev, _SD)
+    rng = np.random.default_rng(42)
+
+    def _make_model(with_expert_bias: bool) -> GptOssWebGPUModel:
+        model = GptOssWebGPUModel(_Cfg(), wgpu_device, cache)
+        model.weights["model.embed_tokens.weight"] = _f16(dev, rng, (vocab, hidden))
+        model.weights["model.norm.weight"]          = _f16(dev, rng, (hidden,))
+        q_dim  = q_heads * head_dim
+        kv_dim = kv_heads * head_dim
+        for i in range(layers):
+            p = f"model.layers.{i}"
+            model.weights[f"{p}.input_layernorm.weight"]          = _f16(dev, rng, (hidden,))
+            model.weights[f"{p}.post_attention_layernorm.weight"] = _f16(dev, rng, (hidden,))
+            model.weights[f"{p}.self_attn.q_proj.weight"] = _f16(dev, rng, (q_dim,  hidden))
+            model.weights[f"{p}.self_attn.k_proj.weight"] = _f16(dev, rng, (kv_dim, hidden))
+            model.weights[f"{p}.self_attn.v_proj.weight"] = _f16(dev, rng, (kv_dim, hidden))
+            model.weights[f"{p}.self_attn.o_proj.weight"] = _f16(dev, rng, (hidden, q_dim))
+            model.weights[f"{p}.mlp.router.weight"] = _f16(dev, rng, (num_experts, hidden))
+            for j in range(num_experts):
+                ep = f"{p}.mlp.experts.{j}"
+                model.weights[f"{ep}.w1.weight"] = _f16(dev, rng, (inter,  hidden))
+                model.weights[f"{ep}.w3.weight"] = _f16(dev, rng, (inter,  hidden))
+                model.weights[f"{ep}.w2.weight"] = _f16(dev, rng, (hidden, inter))
+                if with_expert_bias:
+                    model.weights[f"{ep}.w1.bias"] = _f16(dev, rng, (inter,))
+                    model.weights[f"{ep}.w3.bias"] = _f16(dev, rng, (inter,))
+                    model.weights[f"{ep}.w2.bias"] = _f16(dev, rng, (hidden,))
+        _kv_pool(model, dev, layers, num_blocks, block_size, kv_heads, head_dim)
+        return model
+
+    input_ids = np.array([1], dtype=np.uint32)
+    positions  = np.array([0], dtype=np.uint32)
+
+    model_no_bias   = _make_model(with_expert_bias=False)
+    model_with_bias = _make_model(with_expert_bias=True)
+
+    result_no_bias   = model_no_bias.forward(input_ids, positions, _FakeMeta())
+    result_with_bias = model_with_bias.forward(input_ids, positions, _FakeMeta())
+
+    token_no_bias   = int(result_no_bias[0, 0])
+    token_with_bias = int(result_with_bias[0, 0])
+
+    assert 0 <= token_no_bias   < vocab, f"no-bias token {token_no_bias} out of range"
+    assert 0 <= token_with_bias < vocab, f"biased token {token_with_bias} out of range"
+    # Non-zero expert biases change the output (not guaranteed for every seed, but
+    # extremely unlikely to produce identical logits for random weights and biases).
+    assert token_no_bias != token_with_bias, (
+        "Expected biased and no-bias outputs to differ; got identical token ids. "
+        "Bias injection may be a no-op."
+    )
