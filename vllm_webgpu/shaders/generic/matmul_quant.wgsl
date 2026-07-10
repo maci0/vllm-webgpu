@@ -448,6 +448,51 @@ fn main(
             }
             acc += block_acc * scale;
         }
+    } else if (USE_QUANT == 3u) {
+        // GPTQ INT4, row-per-thread.
+        // Weight layout: [N, K//8] INT32 (transposed at load time from [K//8, N]).
+        // scales: [G, N] F32 where G = K // GROUP_K, zero_point = 8.
+        let K8 = K / 8u;
+        for (var q_step = 0u; q_step < K8; q_step++) {
+            let k_base = q_step * 8u;
+            let q   = weights[row * K8 + q_step];
+            let grp = q_step / (GROUP_K / 8u);
+            let sc  = scales[grp * N + row];
+            acc += (f32(i32( q        & 0xFu) - 8) * sc) * f32(x[k_base]);
+            acc += (f32(i32((q >>  4u)& 0xFu) - 8) * sc) * f32(x[k_base + 1u]);
+            acc += (f32(i32((q >>  8u)& 0xFu) - 8) * sc) * f32(x[k_base + 2u]);
+            acc += (f32(i32((q >> 12u)& 0xFu) - 8) * sc) * f32(x[k_base + 3u]);
+            acc += (f32(i32((q >> 16u)& 0xFu) - 8) * sc) * f32(x[k_base + 4u]);
+            acc += (f32(i32((q >> 20u)& 0xFu) - 8) * sc) * f32(x[k_base + 5u]);
+            acc += (f32(i32((q >> 24u)& 0xFu) - 8) * sc) * f32(x[k_base + 6u]);
+            acc += (f32(i32((q >> 28u)& 0xFu) - 8) * sc) * f32(x[k_base + 7u]);
+        }
+    } else if (USE_QUANT == 4u) {
+        // AWQ INT4, row-per-thread.
+        // Weight layout: [K, N//8] INT32.
+        // AWQ nibble order within each INT32: positions [0,4,1,5,2,6,3,7]
+        // → bit shifts [0, 16, 4, 20, 8, 24, 12, 28].
+        // scales: [G, N] F32, zero_point = 8.
+        let N8 = N / 8u;
+        let awq_pos = row % 8u;
+        var awq_shift: u32;
+        switch awq_pos {
+            case 0u: { awq_shift = 0u; }
+            case 1u: { awq_shift = 16u; }
+            case 2u: { awq_shift = 4u; }
+            case 3u: { awq_shift = 20u; }
+            case 4u: { awq_shift = 8u; }
+            case 5u: { awq_shift = 24u; }
+            case 6u: { awq_shift = 12u; }
+            default: { awq_shift = 28u; }  // case 7u
+        }
+        for (var k = 0u; k < K; k++) {
+            let grp = k / GROUP_K;
+            let sc  = scales[grp * N + row];
+            let q   = weights[k * N8 + row / 8u];
+            let n   = f32(i32((q >> awq_shift) & 0xFu) - 8);
+            acc += n * sc * f32(x[k]);
+        }
     } else {
         // f16/bf16 path: 8-element unroll, 4 consecutive u32 loads per iteration.
         // K must be divisible by 8 (all practical models satisfy this).
