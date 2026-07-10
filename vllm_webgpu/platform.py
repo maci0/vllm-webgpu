@@ -134,9 +134,14 @@ class WebGPUPlatform(_Platform):
         num_heads: int | None = None,
     ) -> str:
         if attn_selector_config.use_mla:
-            raise NotImplementedError("MLA is not supported on WebGPU.")
-        if attn_selector_config.use_sparse:
-            raise NotImplementedError("Sparse attention is not supported on WebGPU.")
+            logger.warning(
+                "WebGPU platform does not support MLA; falling back to CPU_ATTN."
+            )
+        elif attn_selector_config.use_sparse:
+            logger.warning(
+                "WebGPU platform does not support sparse attention; "
+                "falling back to CPU_ATTN."
+            )
         if selected_backend is not None and selected_backend != _ABE.CPU_ATTN:
             logger.warning(
                 "WebGPU platform only supports CPU_ATTN backend, "
