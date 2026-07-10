@@ -269,6 +269,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             _lm_key, lm_head_w, uq_lm, _lm_base = self._lm_head_parts()
             sc_lm = self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf)
             if num_tokens > 1:
+                if uq_lm not in (0, 3):
+                    raise RuntimeError(
+                        f"batched LM head requires f16 (uq=0) or GPTQ int4 (uq=3); got uq={uq_lm}"
+                    )
                 # Batched LM head: vocab_size (256128) exceeds the WebGPU 65535
                 # per-dimension dispatch limit, so (vocab, num_tokens, 1) is
                 # illegal.  matmul_quant_mr4_tiled dispatches
