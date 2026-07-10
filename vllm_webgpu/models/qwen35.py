@@ -134,9 +134,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Conv state: [CONV_KERNEL-1, CONV_DIM] f16 = 49KB per linear-attn layer
         self._ssm_gpu: list = []   # one WebGPUBuffer per layer (or None for full-attn)
         self._conv_gpu: list = []  # one WebGPUBuffer per layer
-        # Reusable zero-byte buffers for reset_recurrent_states, keyed by size.
-        # Avoids repeated allocation of the same zero buffer on every sequence reset.
-        self._zero_buf_cache: dict[int, bytearray] = {}
 
         # LlamaWebGPUModel.__init__() sets: num_layers, num_q_heads, num_kv_heads,
         # hidden_size, intermediate_size, vocab_size, head_dim, rope_theta, block_size,
@@ -401,8 +398,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         for buf in self._ssm_gpu + self._conv_gpu:
             if buf is not None:
-                zeros = self._zero_buf_cache.setdefault(buf.nbytes, bytearray(buf.nbytes))
-                dev.queue.write_buffer(buf.buf, 0, zeros)
+                dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
 
     def save_recurrent_states(self) -> dict:
         """Snapshot all GDN conv/SSM state buffers to CPU in one GPU readback.
