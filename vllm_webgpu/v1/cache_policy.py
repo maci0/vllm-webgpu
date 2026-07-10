@@ -165,6 +165,13 @@ def allocate_kv_from_tensors(
         first_name = tensor.shared_by[0] if tensor.shared_by else None
         spec = layer_spec_map.get(first_name) if first_name is not None else None
         if spec is not None and isinstance(spec, FullAttentionSpec):
+            kv_quant_mode = getattr(spec, 'kv_quant_mode', None)
+            if kv_quant_mode is not None and getattr(kv_quant_mode, 'is_nvfp4', False):
+                raise NotImplementedError(
+                    "NVFP4 KV cache quantization is not supported by the WebGPU backend. "
+                    "The packed NVFP4 layout (64 fp4 data + 8 fp8 scale per head position) "
+                    "cannot be expressed using the head_size * dtype_bytes formula."
+                )
             # Compute K and V sizes independently so that asymmetric head
             # dimensions (e.g. MLA-style models where head_size != head_size_v)
             # get correctly sized buffers instead of an averaged size.
