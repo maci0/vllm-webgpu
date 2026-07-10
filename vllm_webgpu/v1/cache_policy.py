@@ -9,6 +9,7 @@ from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
+                                         SlidingWindowSpec,
                                          TQFullAttentionSpec)
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
@@ -119,7 +120,7 @@ def allocate_kv_from_tensors(
                 )
             # Non-FullAttentionSpec (e.g. SlidingWindowSpec): use spec-derived
             # page size, splitting correctly for potentially asymmetric head dims.
-            if hasattr(spec, "head_size_v") and spec.head_size_v is not None and spec.head_size != spec.head_size_v:
+            if isinstance(spec, SlidingWindowSpec) and spec.head_size != spec.head_size_v:
                 k_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
                 v_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size_v * get_dtype_size(spec.dtype)
             else:

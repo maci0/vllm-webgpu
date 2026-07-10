@@ -4,8 +4,9 @@ import os
 import sys
 from typing import TYPE_CHECKING
 
+import psutil
+
 from vllm.logger import init_logger
-from vllm.utils.mem_utils import get_cpu_memory
 
 from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
 
@@ -96,7 +97,7 @@ class WebGPUPlatform(_Platform):
         # get_cpu_memory() directly; this value only affects vLLM scheduling
         # heuristics. max_buffer_size (the per-buffer driver limit, often ≤4 GB)
         # is not VRAM and must not be used here.
-        return get_cpu_memory()
+        return psutil.virtual_memory().total
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:

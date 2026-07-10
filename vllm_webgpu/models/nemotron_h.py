@@ -263,10 +263,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            if isinstance(_raw_int, list):
-                _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_count]
-            else:
-                _fallback = _raw_int
             if _get_layer_cfg is not None:
                 _lcfg = _get_layer_cfg(_li)
                 # Per-layer bias check for puzzle (heterogeneous) models.
@@ -304,6 +300,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_count]
                 _layer_int_sizes.append(_isize)
             else:
+                if isinstance(_raw_int, list):
+                    _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_count]
+                else:
+                    _fallback = _raw_int
                 _layer_int_sizes.append(_fallback)
             _mlp_count += 1
         self._layer_int_size: list[int] = _layer_int_sizes

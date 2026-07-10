@@ -354,8 +354,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         out      = sc[_H_NAMES[(self._hstate + 2) % 3]]
         add_n    = num_tokens * hidden
         _rms = self._rms_consts
-        is_kv_shared    = lp.get("is_kv_shared", False)
-        kv_shared_target = lp.get("kv_shared_target", -1)
+        is_kv_shared    = lp["is_kv_shared"]
+        kv_shared_target = lp["kv_shared_target"]
         _kv_layer = kv_shared_target if (is_kv_shared and kv_shared_target >= 0) else layer_idx
 
         k_cache, v_cache = self.kv_pool[_kv_layer]

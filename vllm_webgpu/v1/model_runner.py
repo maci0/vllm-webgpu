@@ -754,7 +754,7 @@ class WebGPUModelRunner:
                 self._req_state[rid] = {
                     "pos": pos + 1, "block_ids": blk_ids,
                     "last_tok": stok, "num_logprobs": num_logprobs,
-                    "sampling_params": state.get("sampling_params"),
+                    "sampling_params": sp,
                     "recurrent_states": decode_recurrent_states,
                 }
                 all_req_ids.append(rid)

@@ -184,5 +184,5 @@ if __name__ == "__main__":
         os.environ["GDN_BF16"] = "1"
 
     from huggingface_hub import snapshot_download
-    model_path = args.model if os.path.isdir(args.model) else snapshot_download(args.model)
+    model_path = args.model if Path(args.model).is_dir() else snapshot_download(args.model)
     run(model_path, args.prompt, args.max_tokens, args.temperature, args.top_p)

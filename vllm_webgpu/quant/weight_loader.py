@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -483,11 +483,11 @@ def load_safetensors_weights(
     import wgpu as wgpu_lib
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
+    # Read the safetensors header before opening the file a second time.
+    # parse_safetensors_file_metadata does a single binary read of the header
+    # (one syscall) rather than O(n) per-tensor slice calls.
+    _raw_hdr = parse_safetensors_file_metadata(path)
     with sft.safe_open(path, framework="pt") as sf:
-        # Read the safetensors header in a single binary read (one syscall) rather
-        # than making O(n) get_slice() calls — each slice call opens, seeks, and
-        # reads header metadata individually for every tensor key.
-        _raw_hdr = parse_safetensors_file_metadata(path)
         header = {
             k: v for k, v in _raw_hdr.items()
             if k != "__metadata__"
@@ -629,9 +629,9 @@ def load_safetensors_weights(
             if dtype_str == "F8_E4M3":
                 if as_float:
                     return t.to(torch.float32).numpy()
-                # Only OCP float8_e4m3fn is handled by _fp8_e4m3_to_f32.
-                # Other FP8 variants (E5M2, FNUZ) have different bit layouts and
-                # must not be passed through this path.
+                # The GPU shader decodes OCP float8_e4m3fn bit layout only.
+                # E5M2 and FNUZ variants have different exponent/mantissa layouts
+                # and must not be routed through this path.
                 return t.view(torch.uint8).numpy()
             return t.numpy()
 

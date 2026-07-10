@@ -59,12 +59,13 @@ def _build_layer_params_from_config(
         # (2) vLLM gemma4.py L467-474: find last non-shared layer of the same type.
         if is_kv_shared:
             _prev = layer_types[:first_kv_shared]
-            if lt not in _prev:
+            try:
+                kv_shared_target = len(_prev) - 1 - _prev[::-1].index(lt)
+            except ValueError:
                 raise ValueError(
                     f"Layer {i} (type={lt!r}) is KV-shared but type {lt!r} was not "
                     f"found in the non-shared prefix {_prev}. Check layer_types config."
                 )
-            kv_shared_target = len(_prev) - 1 - _prev[::-1].index(lt)
         else:
             kv_shared_target = -1
 
@@ -489,7 +490,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         for i in range(self.num_layers):
             p  = self._layer_key_prefix(i)
             lp = self._lp[i]
-            is_kv_shared = lp.get("is_kv_shared", False)
+            is_kv_shared = lp["is_kv_shared"]
             keys = [
                 f"{p}.self_attn.q_proj.weight",
                 f"{p}.self_attn.o_proj.weight",
@@ -623,8 +624,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     num_kv_heads    = lp["num_kv_heads"]
                     has_v           = lp["has_v_proj"]
                     inter           = lp["intermediate_size"]
-                    is_kv_shared    = lp.get("is_kv_shared", False)
-                    kv_shared_target = lp.get("kv_shared_target", -1)
+                    is_kv_shared    = lp["is_kv_shared"]
+                    kv_shared_target = lp["kv_shared_target"]
                     add_n           = T * hidden
                     gelu_n          = T * inter
                     _ls             = self._layer_scales[i]
@@ -1016,8 +1017,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Cached at load_weights() — no GPU-to-CPU readback per token.
         _ls = self._layer_scales[layer_idx]
         # KV-shared layers reuse the target layer's KV cache (mirrors vLLM is_kv_shared_layer).
-        is_kv_shared    = lp.get("is_kv_shared", False)
-        kv_shared_target = lp.get("kv_shared_target", -1)
+        is_kv_shared    = lp["is_kv_shared"]
+        kv_shared_target = lp["kv_shared_target"]
 
         residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
         out = sc[_H_NAMES[(self._hstate + 2) % 3]]
