@@ -631,9 +631,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     self._dispatch("matmul_quant",
                                    [router_proj_in, self.weights[rw_], _rw_sc, rlogit_f16],
                                    {"K": hidden, "N": self.num_experts,
-                                    "USE_QUANT": uq_rw, "SPLIT_K": 0,
+                                    "USE_QUANT": uq_rw,
                                     **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},
-                                   _rows_wg(self.num_experts))
+                                   _gemv_wg(self.num_experts))
                 # Upcast f16 logits to f32 before top-K selection.
                 n_logits = num_tokens * self.num_experts
                 self._dispatch("f16_to_f32",
