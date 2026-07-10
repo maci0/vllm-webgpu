@@ -131,6 +131,12 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
+    # The five lines below mirror the blending arithmetic in
+    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
+    # YaRNScalingRotaryEmbedding.__init__ (lines 49-73 of that file).
+    # No public API exposes just the inverse frequencies, so the three-line
+    # formula is reproduced here rather than constructing the full nn.Module.
+    # If vLLM updates the YaRN formula, this block must be kept in sync.
     pos_freqs       = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     inv_freq_interp = 1.0 / (factor * pos_freqs)
     inv_freq_extrap = 1.0 / pos_freqs
@@ -165,14 +171,14 @@ class BaseWebGPUModel(ABC):
         self._last_logit_buf: "WebGPUBuffer | None" = None
         self._last_vocab: int = 0
         self._prof_stats: dict[str, list[float]] = defaultdict(list)  # shader -> [ms, ...]
-        # Dummy bias buffer for matmul_quant binding 4.
-        # The shader always declares binding 4; callers that don't use HAS_BIAS
-        # must still provide a buffer so the bind group layout matches.
-        self._dummy_bias_buf: "WebGPUBuffer" = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
-        # Dummy scales buffer for the scales slot on USE_QUANT=0 dispatches.
-        # Subclasses that do not override this must still bind something at the
-        # scales slot so the bind group layout matches.
-        self._dummy_scales_buf: "WebGPUBuffer" = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
+        # Shared 4-byte placeholder buffer for inactive shader bindings.
+        # Used for the matmul_quant bias slot (HAS_BIAS=0) and the scales slot
+        # (USE_QUANT=0). WebGPU permits the same buffer at multiple read-only
+        # STORAGE slots in one bind group, so a single allocation suffices.
+        self._dummy_buf: "WebGPUBuffer" = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
+        # Aliases kept for subclasses that reference these names directly.
+        self._dummy_bias_buf   = self._dummy_buf
+        self._dummy_scales_buf = self._dummy_buf
         # Precomputed RoPE inverse frequencies for USE_FREQ_BUF=1 (YaRN and similar).
         # All rope/fused-rope shaders declare an inv_freq_buf binding unconditionally
         # (wgpu-native does not eliminate dead bindings even at USE_FREQ_BUF=0), so

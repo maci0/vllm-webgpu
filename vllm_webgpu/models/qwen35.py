@@ -81,7 +81,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_v_heads: int = getattr(model_config, "linear_num_value_heads", _LIN_V_HEADS)
         self._lin_v_dim: int   = getattr(model_config, "linear_value_head_dim", _LIN_V_DIM)
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
-        # Total QKV packed dimension: K + K + V heads (Q_heads = K_heads for GDN)
+        # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
         _lin_key_dim: int       = self._lin_k_heads * self._lin_k_dim   # total key dim (= Q dim)
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
@@ -112,11 +112,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # once we can verify against actual weight keys.
         self._is_moe: bool = self._moe_num_experts > 0 and self._moe_k > 0
         # GEMMA_NORM=1 for Gemma safetensors (weights are deviations from 1, mean≈0.2).
-        # GEMMA_NORM=0 for standard RMSNorm (weights absolute, mean≈1.0 — Qwen3.5 default).
-        # Detected after load_weights() by checking the first layernorm weight mean.
-        # If the detection sentinel key is absent from a checkpoint, GEMMA_NORM=0 is used,
-        # which is correct for any non-Gemma model.
-        self._gemma_norm: int = 0  # default; corrected to 1 by _gemma_norm_detect if needed
+        # GEMMA_NORM=0 for standard RMSNorm (weights absolute, mean≈1.0 — MLX format).
+        # Determined from the model config: standard HuggingFace Qwen3.5 checkpoints
+        # set rms_norm_type="gemma" to indicate the deviation format; MLX checkpoints
+        # do not set this field and store absolute weights instead.
+        _rms_norm_type = getattr(model_config, "rms_norm_type", None)
+        self._gemma_norm: int = 1 if _rms_norm_type else 0
 
         # GDN_BF16: when set, GDN projection matmuls use bf16-preserved weight buffers
         # (key + "__bf16") instead of the default f16 version. Falls back silently if
@@ -327,21 +328,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             if not self._is_full_attn(i)
             for wk in ("A_log", "dt_bias")
         )
-
-        # Detect GEMMA_NORM format CPU-side before GPU upload, avoiding a round-trip
-        # in _postprocess_weights. The sentinel fires for the first layers that exist
-        # in the checkpoint and sets self._gemma_norm from the CPU float16 array:
-        #   0 = MLX absolute format (mean≈1.0, +1 already baked in)
-        #   1 = safetensors deviation format (mean≈0.2)
-        # The detection result is static per checkpoint; every layer gives the same
-        # answer, so firing for multiple layers is harmless.
-        def _gemma_norm_detect(arr):
-            mean_abs = float(np.abs(arr).mean())
-            self._gemma_norm = 0 if mean_abs > 0.7 else 1
-            return arr
-
-        _key = "model.layers.0.input_layernorm.weight"
-        self._weight_transforms[_key] = _gemma_norm_detect
 
         # Register CPU-side split transforms for q_proj.weight when attn_output_gate
         # is enabled.  The loader calls weight_transforms[name](arr) with the fp16

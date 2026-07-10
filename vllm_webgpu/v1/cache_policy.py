@@ -13,7 +13,7 @@ from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
                                          TQFullAttentionSpec)
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
-_MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
+MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
 
 if TYPE_CHECKING:
     from vllm_webgpu.v1.worker import WebGPUWorker
@@ -150,13 +150,13 @@ def allocate_kv_from_tensors(
                 first_name,
             )
         else:
-            k_bytes = _MIN_WEBGPU_BUFFER_BYTES
-            v_bytes = _MIN_WEBGPU_BUFFER_BYTES
+            k_bytes = MIN_WEBGPU_BUFFER_BYTES
+            v_bytes = MIN_WEBGPU_BUFFER_BYTES
             logger.warning(
                 "Spec for layer %r (%s) is not an attention spec; using %d-byte placeholder.",
                 first_name or "<unknown>",
                 type(spec).__name__,
-                _MIN_WEBGPU_BUFFER_BYTES,
+                MIN_WEBGPU_BUFFER_BYTES,
             )
         if first_name is not None:
             try:
@@ -177,8 +177,8 @@ def allocate_kv_from_tensors(
             total_bytes += k_bytes + v_bytes
         else:
             model.kv_pool.append((
-                WebGPUBuffer.empty(wgpu_device, _MIN_WEBGPU_BUFFER_BYTES),
-                WebGPUBuffer.empty(wgpu_device, _MIN_WEBGPU_BUFFER_BYTES),
+                WebGPUBuffer.empty(wgpu_device, MIN_WEBGPU_BUFFER_BYTES),
+                WebGPUBuffer.empty(wgpu_device, MIN_WEBGPU_BUFFER_BYTES),
             ))
 
     logger.info(

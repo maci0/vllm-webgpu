@@ -180,10 +180,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # layer_types of length num_hidden_layers even when absent from the JSON, so the old
         # len(layer_types)==num_layers check incorrectly matched Gemma3 configs too.
         self._apply_v_norm = (getattr(model_config, "model_type", "") == "gemma4")
-        global_hd   = getattr(model_config, "global_head_dim", default_hd)
-        global_kv   = getattr(model_config, "num_global_key_value_heads", default_kv)
-        _k_eq_v     = getattr(model_config, "attention_k_eq_v", False)
-
         if raw_lp and len(raw_lp) == self.num_layers:
             for lp_entry in raw_lp:
                 lp_entry.setdefault("intermediate_size", self.intermediate_size)
@@ -479,12 +475,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         vocab: int,
         logits_buf: "WebGPUBuffer",
         capped_buf: "WebGPUBuffer",
-    ) -> "WebGPUBuffer":
+    ) -> None:
         """Dispatch optional logit softcap, greedy argmax, and staging copy.
 
         Must be called from within an active _batched_dispatch() context.
-        Sets _last_logit_buf and _last_vocab, then returns the result buffer
-        (capped_buf if softcap is active, otherwise logits_buf).
+        Sets _last_logit_buf and _last_vocab as side effects; return value
+        is unused by all call sites.
         """
         if self.softcap is not None and self.softcap > 0:
             self._dispatch(
@@ -501,7 +497,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._copy_sample_to_staging()
         self._last_logit_buf = result_buf
         self._last_vocab     = vocab
-        return result_buf
 
     def _mr4_quant_supported(self) -> bool:
         """Return True when every layer weight uses a quant format compatible with matmul_quant_mr4.

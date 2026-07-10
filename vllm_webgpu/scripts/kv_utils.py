@@ -16,7 +16,7 @@ from vllm.utils.torch_utils import get_dtype_size
 
 from vllm_webgpu.v1.cache_policy import (
     KV_ATTN_TYPES,
-    _MIN_WEBGPU_BUFFER_BYTES,
+    MIN_WEBGPU_BUFFER_BYTES,
     get_layer_types,
 )
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -88,8 +88,8 @@ def _allocate_kv_pool_hybrid(
             v_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
             kv_layer_count += 1
         else:
-            k_buf = WebGPUBuffer.empty(dev, _MIN_WEBGPU_BUFFER_BYTES)
-            v_buf = WebGPUBuffer.empty(dev, _MIN_WEBGPU_BUFFER_BYTES)
+            k_buf = WebGPUBuffer.empty(dev, MIN_WEBGPU_BUFFER_BYTES)
+            v_buf = WebGPUBuffer.empty(dev, MIN_WEBGPU_BUFFER_BYTES)
         model.kv_pool.append((k_buf, v_buf))
 
     if layer_types is None:
@@ -129,8 +129,8 @@ def _allocate_kv_pool_per_layer(
             # violates the WebGPU spec (size must be > 0), so use the same
             # placeholder that _allocate_kv_pool_hybrid uses.
             model.kv_pool.append((
-                WebGPUBuffer.empty(dev, _MIN_WEBGPU_BUFFER_BYTES),
-                WebGPUBuffer.empty(dev, _MIN_WEBGPU_BUFFER_BYTES),
+                WebGPUBuffer.empty(dev, MIN_WEBGPU_BUFFER_BYTES),
+                WebGPUBuffer.empty(dev, MIN_WEBGPU_BUFFER_BYTES),
             ))
             continue
         if lp["head_dim"] == 0:

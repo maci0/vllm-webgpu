@@ -62,6 +62,46 @@ def _pad4(data: bytes) -> bytes:
     """Pad to 4-byte boundary — WebGPU write_buffer requires 4-byte-aligned size."""
     return data + b"\x00" * (-len(data) % 4)
 
+
+def _flush_pending(wgpu_device) -> None:
+    """Submit all pending GPU write_buffer operations and block until complete.
+
+    Callers must reset their _pending_bytes counter to 0 after this call.
+    Metal silently drops write_buffer operations when the GPU staging buffer
+    queue exceeds ~1-2 GB; periodic flushing prevents that for large models.
+    """
+    wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+    wgpu_device.queue.on_submitted_work_done_sync()
+
+
+def _upload_tensor(
+    arr: "np.ndarray",
+    np_dtype,
+    wgpu_dtype: str,
+    name: str,
+    weights: dict,
+    wgpu_device,
+    usage,
+    logical_shape: "tuple | None" = None,
+) -> int:
+    """Cast arr to np_dtype, upload to a new GPU buffer, and record in weights.
+
+    Returns the number of bytes written so the caller can track pending bytes
+    and decide when to call _flush_pending.
+    """
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    arr = np.ascontiguousarray(arr, dtype=np_dtype)
+    data = _pad4(arr.tobytes())
+    buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+    wgpu_device.queue.write_buffer(buf, 0, data)
+    weights[name] = WebGPUBuffer(
+        buf=buf,
+        device=wgpu_device,
+        shape=tuple(logical_shape if logical_shape is not None else arr.shape),
+        dtype=wgpu_dtype,
+    )
+    return len(data)
+
 try:
     from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
     from compressed_tensors import QuantizationConfig as _QuantizationConfig
@@ -656,8 +696,7 @@ def load_safetensors_weights(
         def _maybe_flush() -> None:
             nonlocal _pending_bytes
             if _pending_bytes >= _FLUSH_THRESHOLD:
-                wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
-                wgpu_device.queue.on_submitted_work_done_sync()
+                _flush_pending(wgpu_device)
                 _pending_bytes = 0
 
         def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
@@ -690,15 +729,8 @@ def load_safetensors_weights(
             stored as u32) but the shader expects the original element shape.
             """
             nonlocal _pending_bytes
-            arr = np.ascontiguousarray(arr, dtype=np_dtype)
-            data = _pad4(arr.tobytes())
-            buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-            wgpu_device.queue.write_buffer(buf, 0, data)
-            _pending_bytes += len(data)
+            _pending_bytes += _upload_tensor(arr, np_dtype, wgpu_dtype, name, weights, wgpu_device, usage, logical_shape)
             _maybe_flush()
-            weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                         shape=tuple(logical_shape if logical_shape is not None else arr.shape),
-                                         dtype=wgpu_dtype)
 
         weights: dict = {}
 
@@ -1096,7 +1128,10 @@ def load_safetensors_weights(
             try:
                 from vllm.model_executor.layers.quantization.utils.mxfp8_utils import dequant_mxfp8_to_bf16
             except ImportError as exc:
-                raise ImportError(f"MXFP8 dequant requires vLLM CUDA extensions: {exc}") from exc
+                raise ImportError(
+                    f"MXFP8 dequant requires vllm.model_executor.layers.quantization.utils.mxfp8_utils "
+                    f"(failed to import: {exc})"
+                ) from exc
             for base in mxfp8_bases:
                 try:
                     w_t = sf.get_tensor(f"{base}.weight")
@@ -1396,20 +1431,14 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     def _maybe_flush() -> None:
         nonlocal _pending_bytes
         if _pending_bytes >= _FLUSH_THRESHOLD:
-            wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
-            wgpu_device.queue.on_submitted_work_done_sync()
+            _flush_pending(wgpu_device)
             _pending_bytes = 0
 
     def _upload_f16(arr: np.ndarray, name: str) -> None:
         """Upload a float16 array to GPU via write_buffer with periodic flushing."""
         nonlocal _pending_bytes
-        data = _pad4(np.ascontiguousarray(arr, dtype=np.float16).tobytes())
-        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
-        wgpu_device.queue.write_buffer(buf, 0, data)
-        _pending_bytes += len(data)
+        _pending_bytes += _upload_tensor(arr, np.float16, 'f16', name, weights, wgpu_device, usage)
         _maybe_flush()
-        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
-                                     shape=tuple(arr.shape), dtype="f16")
 
     # Pass 2: process tensors shard-by-shard, opening each shard at most once per group.
     # Quantized triplets (weight + scales + biases) are loaded together from their

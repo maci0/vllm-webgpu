@@ -47,7 +47,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # Use a dedicated flag rather than mutating _sw: setting _sw = -1 poisons
         # _effective_ctx_len (min(ctx_len, -1) == -1), which then passes -1 as
         # CTX_LEN to flash_attn_decode and wraps to max-u32 on the GPU side.
-        self._force_sequential_prefill: bool = bool(self._attn_bias or self._layer_types)
+        self._force_sequential_prefill: bool = bool(self._attn_bias or ('full_attention' in (self._layer_types or [])))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
         # _moe_inter does not need to precede super().__init__() because no code
@@ -59,11 +59,9 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
 
-        The parent class reuses gate_buf/up_buf/ffn_act (each sized intermediate_size)
-        as bias-addition destinations for Q, K, and V projections. For architectures
-        where num_q_heads * head_dim > intermediate_size or
-        num_kv_heads * head_dim > intermediate_size, those writes overflow.
-        Dedicated buffers sized at the correct Q and KV dimensions avoid the overflow.
+        Allocates dedicated Q/K/V/O bias temporaries sized at q_dim and kv_dim.
+        Using the parent FFN scratch buffers (gate_buf/up_buf, sized at
+        intermediate_size) would overflow when q_dim or kv_dim > intermediate_size.
         """
         super()._init_scratch_buffers(max_ctx)
         if self._attn_bias:

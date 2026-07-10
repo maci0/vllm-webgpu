@@ -125,7 +125,6 @@ class WebGPUModelRunner:
         logger.info("Model loaded: arch=%s", arch)
 
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
-        mc = self.vllm_config.model_config
         num_blocks = kv_cache_config.num_blocks
         self._num_kv_blocks = num_blocks
 
@@ -520,16 +519,15 @@ class WebGPUModelRunner:
             num_sched = scheduler_output.num_scheduled_tokens[rid]
             T = min(num_sched, len(tok_ids) - num_computed)
             chunk_toks = tok_ids[num_computed:num_computed + T]
-            slots = []
-            for idx in range(T):
-                abs_idx = num_computed + idx  # absolute token position
-                blk_idx = abs_idx // block_size
-                if blk_idx >= len(blk_ids):
-                    raise RuntimeError(
-                        f"block table too short for req {rid}: token {abs_idx} needs block "
-                        f"{blk_idx} but only {len(blk_ids)} blocks allocated"
-                    )
-                slots.append(int(blk_ids[blk_idx]) * block_size + abs_idx % block_size)
+            abs_idx = np.arange(num_computed, num_computed + T)
+            blk_idx = abs_idx // block_size
+            if np.any(blk_idx >= len(blk_ids)):
+                bad = int(abs_idx[blk_idx >= len(blk_ids)][0])
+                raise RuntimeError(
+                    f"block table too short for req {rid}: token {bad} needs block "
+                    f"{bad // block_size} but only {len(blk_ids)} blocks allocated"
+                )
+            slots = (np.array(blk_ids, dtype=np.int64)[blk_idx] * block_size + abs_idx % block_size).tolist()
 
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
