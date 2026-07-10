@@ -197,8 +197,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         super().load_weights(path, f32_keys=f32_keys)
         # Cache per_expert_scale for each MoE layer. Each to_numpy() is a blocking
         # GPU-CPU sync (~100 µs); caching once at load time avoids N syncs per step.
-        self._pes_cache = [None] * self.num_layers
         if self.is_moe:
+            self._pes_cache = [None] * self.num_layers
             for i in range(self.num_layers):
                 p = self._layer_key_prefix(i)
                 pes_w = self.weights.get(f"{p}.router.per_expert_scale")
@@ -230,7 +230,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         """Not implemented for DiffusionGemma.
 
         The inherited Gemma4 implementation calls _transformer_layer(), which
-        reads self._sc['qkv_buf'] and self._sc['ffn_normed']. Both keys are
+        reads self._sc['qkv_buf'] and self._sc['normed']. Both keys are
         intentionally absent from DiffusionGemma._init_scratch_buffers() because
         _transformer_layer() is never used by this model. Calling this method
         would crash with KeyError. Raise here so any future caller gets a clear
@@ -239,7 +239,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         raise NotImplementedError(
             "DiffusionGemmaWebGPUModel does not support _prefill_sequential_fallback. "
             "_transformer_layer() references self._sc['qkv_buf'] and "
-            "self._sc['ffn_normed'], which are not allocated by this model. "
+            "self._sc['normed'], which are not allocated by this model. "
             "Use forward() directly; it handles both single-token decode and "
             "multi-token canvas prefill."
         )

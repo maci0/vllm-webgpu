@@ -167,9 +167,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = _mlp_count
             if isinstance(_raw_int, list):
-                _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
+                _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_count]
             else:
                 _fallback = _raw_int
             if _get_layer_cfg is not None:
@@ -190,7 +189,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     )
                 _isize = getattr(_lcfg, 'intermediate_size', _fallback)
                 if isinstance(_isize, list):
-                    _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_idx]
+                    _isize = _isize[0] if len(_isize) == 1 else _isize[_mlp_count]
                 _layer_int_sizes.append(_isize)
             else:
                 _layer_int_sizes.append(_fallback)

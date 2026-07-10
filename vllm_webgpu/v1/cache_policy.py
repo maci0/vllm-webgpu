@@ -210,13 +210,16 @@ def allocate_kv_from_tensors(
                         half, naive, first_name,
                     )
         elif spec is None:
+            if first_name is None:
+                # shared_by was empty; cannot identify layer — use 16-byte placeholder below.
+                continue
             half = tensor.size // 2
             k_bytes = half
             v_bytes = half
             logger.warning(
                 "No spec found for layer %r; falling back to tensor.size // 2. "
                 "May over-allocate for quantized KV cache with scale bytes.",
-                first_name or "<unknown>",
+                first_name,
             )
         else:
             k_bytes = 16
@@ -359,7 +362,7 @@ def _make_convertor(hf_cfg):
 
 
 
-def _get_kv_dims_from_hf_config(hf_cfg) -> tuple[int, int]:
+def get_kv_dims_from_hf_config(hf_cfg) -> tuple[int, int]:
     """Return (num_kv_heads, head_size) from a raw HuggingFace config object.
 
     Intended for standalone scripts (e.g. profile_kernels.py) that do not have a
@@ -370,8 +373,9 @@ def _get_kv_dims_from_hf_config(hf_cfg) -> tuple[int, int]:
     return conv.get_total_num_kv_heads(), conv.get_head_size()
 
 
-# Backward-compatible alias; use _get_kv_dims_from_hf_config for new callers.
-get_kv_dims_from_config = _get_kv_dims_from_hf_config
+# Backward-compatible alias; get_kv_dims_from_hf_config is the canonical name.
+# get_kv_dims_from_config is deprecated.
+get_kv_dims_from_config = get_kv_dims_from_hf_config
 
 
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:

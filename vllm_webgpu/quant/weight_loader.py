@@ -43,10 +43,17 @@ logger = init_logger(__name__)
 # write_buffer operations when the GPU staging buffer queue is saturated
 # (~1-2 GB). Periodic flushes prevent this for large single-file models.
 _FLUSH_THRESHOLD = 512 * 1024 * 1024
+# BitsAndBytes NF4 quantization block size (fixed by the BnB format spec).
+_BNB_GROUP_K = 64
 
 
 
 _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
+
+try:
+    from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
+except ImportError:
+    _ct_get_quant_cfg = None
 
 
 def _collect_mx_bases(header: dict) -> list:
@@ -69,9 +76,10 @@ def _load_quant_cfg(config_path: Path) -> dict:
     locations (text_config, compression_config) and multimodal variants.
     Returns {} on any failure.
     """
+    if _ct_get_quant_cfg is None:
+        return {}
     try:
-        from compressed_tensors import get_quantization_config as _get_ct_config
-        return _get_ct_config(str(config_path)) or {}
+        return _ct_get_quant_cfg(str(config_path)) or {}
     except Exception:
         return {}
 
@@ -1108,8 +1116,6 @@ def load_safetensors_weights(
                     dt = header[name].get("dtype", "?")
                     if dt not in ("U8", "I32", "F32"):
                         logger.warning("Skipping %s (dtype=%s)", name, dt)
-
-            _BNB_GROUP_K = 64
 
             for base in sorted(bnb_bases):
                 try:

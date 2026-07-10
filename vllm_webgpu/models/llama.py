@@ -85,6 +85,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             _p = f"model.layers.{_i}"
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = _q_xform
             self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = _k_xform
+        # Cached after load_weights: True iff all *_proj weights are USE_QUANT=0 or 3.
+        # None means not yet computed (weights not yet loaded).
+        self._batch_matmul_supported: bool | None = None
 
     def _init_scratch_buffers(self, max_ctx: int, qkv_size: "int | None" = None) -> None:
         """Pre-allocate all intermediate scratch buffers used in _transformer_layer.
@@ -168,6 +171,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             rope_scaling.get("beta_fast", 32.0),
             rope_scaling.get("beta_slow", 1.0),
             rope_scaling.get("original_max_position_embeddings", 4096),
+        )
+
+    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
+                     skip_prefixes: "frozenset[str] | None" = None) -> None:
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
+        self._batch_matmul_supported = not any(
+            self._uq_for_key(k) not in (0, 3)
+            for k in self.weights
+            if k.endswith(".weight") and "model.layers." in k and "_proj" in k
         )
 
     def _decode_setup(
@@ -422,11 +434,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4) are both supported in the batch path.
         # All other quant types (AWQ, FP8, NF4, Q4_K, ...) fall through to _transformer_layer
         # which dispatches matmul_quant with the correct USE_QUANT per key.
-        # Test every loaded weight key so mixed-quant models (e.g. f16 attn + INT8 FFN) and
-        # intermediate layers that were not in the old representative sample are all covered.
-        if any(self._uq_for_key(k) not in (0, 3)
-               for k in self.weights
-               if k.endswith(".weight") and "model.layers." in k and "_proj" in k):
+        # _batch_matmul_supported is computed once in load_weights; no re-scan per call.
+        if not self._batch_matmul_supported:
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T,
             )
@@ -591,9 +600,16 @@ class LlamaWebGPUModel(BaseWebGPUModel):
     ) -> "np.ndarray":
         """Process T prefill tokens one at a time through the decode-path infrastructure.
 
-        Used when projection weights are quantized: matmul_quant_mr4 only supports
-        USE_QUANT=0 and would silently reinterpret packed quantized bytes as f16.
-        _transformer_layer dispatches matmul_quant with the correct USE_QUANT per key.
+        Used in three cases:
+        1. Unsupported quant type for matmul_quant_mr4: USE_QUANT=0 (f16) and USE_QUANT=3
+           (GPTQ INT4) are supported in the batch path; all other types (AWQ, FP8, NF4,
+           Q4_K, ...) fall through here so _transformer_layer can dispatch the correct
+           USE_QUANT per key.
+        2. Sliding-window attention (_sw is not None): flash_attn_prefill uses standard
+           causal masking with no WINDOW_SIZE support, so batch prefill would attend across
+           the full context past the window boundary.
+        3. Forced sequential mode (_force_sequential_prefill=True): set by GptOssWebGPUModel
+           to request the sequential path without altering _effective_ctx_len semantics.
 
         KV entries are stored token-by-token so causal attention is satisfied at each step.
         Only the last token's logits are returned (prefill next-token prediction).

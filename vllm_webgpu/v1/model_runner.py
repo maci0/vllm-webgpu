@@ -103,7 +103,7 @@ class WebGPUModelRunner:
         self._last_model_output: Any = EMPTY_MODEL_RUNNER_OUTPUT  # cached for sample_tokens()
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
-        self._zeros_cache: dict[int, bytes] = {}  # amortizes zero-byte alloc across scheduling steps
+        self._zeros_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc across scheduling steps
         self._block_size: int = vllm_config.cache_config.block_size
 
     def load_model(self) -> None:
@@ -283,7 +283,7 @@ class WebGPUModelRunner:
                 continue
             bytes_per_block = k_buf.nbytes // self._num_kv_blocks
             if bytes_per_block not in _zeros_cache:
-                _zeros_cache[bytes_per_block] = b"\x00" * bytes_per_block
+                _zeros_cache[bytes_per_block] = bytearray(bytes_per_block)
             zeros = _zeros_cache[bytes_per_block]
             for block_id in block_ids:
                 offset = block_id * bytes_per_block
@@ -360,7 +360,7 @@ class WebGPUModelRunner:
         k = min(num_prompt_logprobs, full_logits.shape[-1])
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
-        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor(tok_ids[1:num_positions + 1], dtype=torch.int64))
+        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor(tok_ids[1:], dtype=torch.int64))
         return lp
 
     def _make_model_output(

@@ -1224,7 +1224,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 ffn_normed = sc["normed"]
             else:
                 if post_attn_norm_w is not None:
-                    attn_delta = sc["o_proj_out"]
+                    self._dispatch("rms_norm",
+                                   [sc["o_proj_out"], post_attn_norm_w, sc["normed"]],
+                                   _rms_consts, (num_tokens, 1, 1))
+                    attn_delta = sc["normed"]
                 else:
                     attn_delta = sc["o_proj_out"]
 
