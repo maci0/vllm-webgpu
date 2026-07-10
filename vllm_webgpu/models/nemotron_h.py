@@ -583,10 +583,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # a missing key or f16 upload would produce silent garbage.
             for wk in ("A", "D", "dt_bias"):
                 key = f"{p}.{wk}"
-                assert key in self.weights, f"{key} missing from loaded weights"
-                assert self.weights[key].dtype == "f32", (
-                    f"{key} must be f32 (shader reads array<f32>), got {self.weights[key].dtype}"
-                )
+                if key not in self.weights:
+                    raise ValueError(f"{key} missing from loaded weights")
+                if self.weights[key].dtype != "f32":
+                    raise ValueError(
+                        f"{key} must be f32 (shader reads array<f32>), got {self.weights[key].dtype}"
+                    )
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 
