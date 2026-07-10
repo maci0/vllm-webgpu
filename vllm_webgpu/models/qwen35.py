@@ -172,7 +172,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             # _is_moe as True. For Qwen35, Mixtral sees num_local_experts=0 (uses a
             # different config key), so it skips the allocation. Allocate them now.
             import wgpu as _wgpu_lib
-            self._wgpu_lib = _wgpu_lib
             dev = self.wgpu_device.wgpu_device
             _staging_sz = max(self._top_k * 4, 8)
             self._topk_idx_staging = dev.create_buffer(

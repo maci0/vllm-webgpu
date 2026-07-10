@@ -92,7 +92,7 @@ class WebGPUModelRunner:
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
         self._zeros_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc across scheduling steps
         self._block_size: int = vllm_config.cache_config.block_size
-        self._kv_cache_spec_cache = None  # per-instance; shadows class default
+        self._kv_cache_spec_cache = None
 
     def load_model(self) -> None:
         mc = self.vllm_config.model_config
@@ -293,15 +293,14 @@ class WebGPUModelRunner:
     ) -> "LogprobsTensors":
         """Compute top-N logprobs from a 1-D float32 logits vector.
 
-        Returns a LogprobsTensors of shape [1, min(num_logprobs, vocab_size)+1]
-        for top-k requests (slot 0 is always the sampled token; slots 1..k are
-        the top-k tokens by log probability, matching the layout expected by
-        LogprobsLists). k is capped at vocab_size so the shape may be smaller
-        than num_logprobs+1 for small-vocabulary models.
+        Returns a LogprobsTensors of shape [1, num_logprobs+1] for top-k
+        requests (slot 0 is always the sampled token; slots 1..k are the
+        top-k tokens by log probability, matching the layout expected by
+        LogprobsLists). num_logprobs must not exceed vocab_size; SamplingParams
+        validation enforces this via max_logprobs.
         """
-        k = min(num_logprobs, logits_1d.shape[0])
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
-        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
+        lp = Sampler.gather_logprobs(lp_t, num_logprobs, torch.tensor([sampled_tok], dtype=torch.int64))
         return lp
 
     @staticmethod
@@ -365,10 +364,7 @@ class WebGPUModelRunner:
         # never exposed to callers because the scheduler guards slice_request on
         # num_logprobs.
         built_logprobs = None
-        # None is the default when callers omit the argument; treat it as empty.
-        # Use explicit None check rather than `or {}` so that a caller that
-        # deliberately passes an empty dict doesn't get silently replaced.
-        merged_prompt_logprobs = prompt_logprobs_dict if prompt_logprobs_dict is not None else {}
+        merged_prompt_logprobs = prompt_logprobs_dict
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
             _widths = {d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None}
@@ -387,8 +383,8 @@ class WebGPUModelRunner:
                     if d is not None:
                         n_pad = max_k - d.logprob_token_ids.shape[1]
                         pieces.append(LogprobsTensors(
-                            _pad_tensor(d.logprob_token_ids, (0, n_pad), value=0),
-                            _pad_tensor(d.logprobs, (0, n_pad), value=-float("inf")),
+                            _pad_tensor(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
+                            _pad_tensor(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
                             d.selected_token_ranks,
                         ))
                     else:
@@ -409,7 +405,7 @@ class WebGPUModelRunner:
             req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
             sampled_token_ids=[[t] for t in sampled],
             logprobs=built_logprobs,
-            prompt_logprobs_dict=merged_prompt_logprobs,
+            prompt_logprobs_dict=prompt_logprobs_dict,
         )
         return out
 
@@ -434,14 +430,9 @@ class WebGPUModelRunner:
         """
         if num_logprobs is None:
             return None
-        if logits.shape[-1] == 1 and self.model.logit_returns_token_id:
-            full = self.model.logit_readback()
-        elif logits.shape[-1] > 1:
-            full = logits
-        else:
-            full = None
-            logger.warning("req %s: logprobs requested but model does not support logit readback", rid)
+        full = logits if logits.shape[-1] > 1 else None
         if full is None:
+            logger.warning("req %s: logprobs requested but model returned argmax-only output", rid)
             return None
         return self._compute_request_logprobs(full[row_idx], tok, num_logprobs)
 

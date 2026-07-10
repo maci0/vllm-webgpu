@@ -85,7 +85,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         top_k: int,
         act_sz: int,
     ) -> "dict[str, WebGPUBuffer]":
-        """Allocate the six shared MoE scratch buffers.
+        """Allocate the five always-present MoE scratch buffers.
 
         Called from __init__ (Mixtral) and _init_scratch_buffers (Qwen35) to
         avoid duplicating the same dict literal in both subclasses.

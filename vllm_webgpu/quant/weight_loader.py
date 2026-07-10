@@ -30,8 +30,8 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     if t.dtype == _torch.float16:
         return t.numpy()
     if t.dtype == _torch.float32:
-        # Skip the torch roundtrip: numpy clip+cast is equivalent and avoids
-        # the to(float32) -> clamp -> to(float16) -> numpy chain.
+        # t.numpy() is a zero-copy view (shared memory). clip+cast runs in numpy,
+        # which avoids the torch clamp -> to(float16) -> numpy chain.
         return t.numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
     # BF16: numpy has no bf16 dtype, so the torch roundtrip is unavoidable.
     return t.to(_torch.float32).clamp(-_F16_MAX, _F16_MAX).to(_torch.float16).numpy()
@@ -56,6 +56,11 @@ _BNB_GROUP_K = 64
 
 
 _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
+
+
+def _pad4(data: bytes) -> bytes:
+    """Pad to 4-byte boundary — WebGPU write_buffer requires 4-byte-aligned size."""
+    return data + b"\x00" * (-len(data) % 4)
 
 try:
     from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
@@ -637,10 +642,6 @@ def load_safetensors_weights(
                 # and must not be routed through this path.
                 return t.view(torch.uint8).numpy()
             return t.numpy()
-
-        def _pad4(data: bytes) -> bytes:
-            """Pad to 4-byte boundary — WebGPU write_buffer requires 4-byte-aligned size."""
-            return data + b"\x00" * (-len(data) % 4)
 
         # Track pending write_buffer bytes to flush periodically.
         # Metal silently drops write_buffer operations when the pending write queue
@@ -1390,10 +1391,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     def _upload_f16(arr: np.ndarray, name: str) -> None:
         """Upload a float16 array to GPU via write_buffer with periodic flushing."""
         nonlocal _pending_bytes
-        data = np.ascontiguousarray(arr, dtype=np.float16).tobytes()
-        # write_buffer requires 4-byte-aligned size.
-        if len(data) % 4:
-            data = data + b"\x00" * (4 - len(data) % 4)
+        data = _pad4(np.ascontiguousarray(arr, dtype=np.float16).tobytes())
         buf = wgpu_device.create_buffer(size=len(data), usage=usage)
         wgpu_device.queue.write_buffer(buf, 0, data)
         _pending_bytes += len(data)
@@ -1421,6 +1419,27 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     for base in quant_bases:
         shard_to_quant_bases[key_to_shard[base + ".weight"]].append(base)
 
+    # Pre-load scale and bias tensors grouped by shard, opening each shard at most once.
+    # Without this grouping, a shard that holds scales for O(n) layers would be opened
+    # O(n) times (once per base in the inner loop). This mirrors the shard_to_quant_bases
+    # pattern already used for weight shards.
+    shard_to_scale_bases: dict[str, list[str]] = defaultdict(list)
+    shard_to_bias_bases: dict[str, list[str]] = defaultdict(list)
+    for base in quant_bases:
+        shard_to_scale_bases[key_to_shard[base + ".scales"]].append(base)
+        shard_to_bias_bases[key_to_shard[base + ".biases"]].append(base)
+
+    preloaded_scales: dict[str, object] = {}
+    preloaded_biases: dict[str, object] = {}
+    for scale_shard, s_bases in shard_to_scale_bases.items():
+        with _sft.safe_open(scale_shard, framework="pt") as sf_s:
+            for base in s_bases:
+                preloaded_scales[base] = sf_s.get_tensor(base + ".scales")
+    for bias_shard, b_bases in shard_to_bias_bases.items():
+        with _sft.safe_open(bias_shard, framework="pt") as sf_b:
+            for base in b_bases:
+                preloaded_biases[base] = sf_b.get_tensor(base + ".biases")
+
     for shard_path, bases in shard_to_quant_bases.items():
         with _sft.safe_open(shard_path, framework="pt") as sf_w:
             for base in bases:
@@ -1441,17 +1460,8 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                     _upload_f16(arr, local_key)
                     continue
 
-                # Load scales and biases. Reuse sf_w when they live in the same shard.
-                if key_to_shard[sk] == shard_path:
-                    s_t = sf_w.get_tensor(sk)
-                else:
-                    with _sft.safe_open(key_to_shard[sk], framework="pt") as sf_s:
-                        s_t = sf_s.get_tensor(sk)
-                if key_to_shard[bk] == shard_path:
-                    b_t = sf_w.get_tensor(bk)
-                else:
-                    with _sft.safe_open(key_to_shard[bk], framework="pt") as sf_b:
-                        b_t = sf_b.get_tensor(bk)
+                s_t = preloaded_scales[base]
+                b_t = preloaded_biases[base]
                 w_u32 = t.numpy()
                 scales_f32 = s_t.to(_torch.float32).numpy()
                 biases_f32 = b_t.to(_torch.float32).numpy()

@@ -82,14 +82,14 @@ def allocate_kv_from_tensors(
                 "MLAAttentionSpec uses a compressed latent layout that differs from the standard "
                 "per-head K/V formula and cannot be sized with storage_block_size * head_size * dtype_bytes."
             )
-        elif spec is not None and isinstance(spec, TQFullAttentionSpec):
+        elif isinstance(spec, TQFullAttentionSpec):
             raise NotImplementedError(
                 f"TQFullAttentionSpec KV cache is not supported by the WebGPU backend. "
                 "TQFullAttentionSpec overrides real_page_size_bytes with a tq_slot_size-based formula "
                 "that differs from the standard block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes. "
                 "Allocating with head_size/head_size_v would produce wrong buffer sizes."
             )
-        elif spec is not None and isinstance(spec, FullAttentionSpec):
+        elif isinstance(spec, FullAttentionSpec):
             if spec.kv_quant_mode.is_nvfp4:
                 raise NotImplementedError(
                     "NVFP4 KV cache quantization is not supported by the WebGPU backend. "
@@ -106,14 +106,14 @@ def allocate_kv_from_tensors(
             # k_bytes + v_bytes == real_page_size_bytes * num_blocks by construction:
             # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes,
             # and storage_bs == block_size for FullAttentionSpec (storage_block_size returns self.block_size).
-        elif spec is not None and isinstance(spec, SlidingWindowMLASpec):
+        elif isinstance(spec, SlidingWindowMLASpec):
             raise NotImplementedError(
                 f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
                 "SlidingWindowMLASpec stores a single MLA latent per position, so "
                 "real_page_size_bytes is the full per-position size, not a K+V pair. "
                 "Halving it would silently corrupt both cache buffers."
             )
-        elif spec is not None and isinstance(spec, AttentionSpec):
+        elif isinstance(spec, AttentionSpec):
             if spec.kv_quant_mode.is_nvfp4:
                 raise NotImplementedError(
                     "NVFP4 KV cache is not supported by the WebGPU backend"
@@ -162,7 +162,7 @@ def allocate_kv_from_tensors(
             try:
                 idx = extract_layer_index(first_name)
                 layer_kv_bytes[idx] = (k_bytes, v_bytes)
-            except Exception:
+            except (AssertionError, IndexError):
                 logger.warning("Cannot parse layer index from KVCacheTensor.shared_by entry %r", first_name)
 
     model.kv_pool.clear()
@@ -234,7 +234,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     total: int = get_cpu_memory()
 
     base = total - model_mem - OVERHEAD_BYTES
-    fraction = config.memory_fraction or 1.0
+    fraction = config.memory_fraction if config.memory_fraction is not None else 1.0
     available = max(int(base * fraction), 0)
     logger.info(
         "WebGPU memory: total=%dMiB model=%dMiB available=%dMiB",

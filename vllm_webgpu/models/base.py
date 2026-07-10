@@ -73,6 +73,11 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
+    Intentionally mirrors the blending logic in YaRNScalingRotaryEmbedding._compute_inv_freq
+    (vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py:49-73) and the mscale
+    calculation from its __init__ (lines 40-44). If vLLM changes the orchestration in
+    _compute_inv_freq (not just the helper functions), this function must be updated to match.
+
     Computes the YaRN blended inverse-frequency directly using the public helpers
     yarn_find_correction_range, yarn_linear_ramp_mask, and yarn_get_mscale from
     vllm.model_executor.layers.rotary_embedding.common.

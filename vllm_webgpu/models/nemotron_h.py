@@ -585,7 +585,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # individual GPU uploads) or uploaded as individual GPU buffers.
             _sc_acc = self._scale_acc.get(i, {})
             has_scales = (
-                all(p in _sc_acc for p in ("q", "k", "v"))
+                all(proj in _sc_acc for proj in ("q", "k", "v"))
                 or (q_s in self.weights and k_s in self.weights and v_s in self.weights)
             )
 
@@ -618,7 +618,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 q_buf = self.weights[q_key]
                 k_buf = self.weights[k_key]
                 v_buf = self.weights[v_key]
-                q_nb, k_nb, v_nb = q_buf.nbytes, k_buf.nbytes, v_buf.nbytes
                 _staging_w = dev.create_buffer(
                     size=q_nb + k_nb + v_nb,
                     usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
@@ -652,7 +651,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # scales[grp * N_total + row], which requires row-interleaved [G, N_total].
                 # For G > 1 (e.g. K=4096, group_size=128 -> G=32) every grp > 0 lookup
                 # would land in the wrong projection's data. Stack on axis=1 on the CPU.
-                if all(p in _sc_acc for p in ("q", "k", "v")):
+                if all(proj in _sc_acc for proj in ("q", "k", "v")):
                     # CPU path: scales were accumulated by _scale_transforms before GPU
                     # upload. Stack directly without any GPU round-trip.
                     q_sc = _sc_acc["q"]

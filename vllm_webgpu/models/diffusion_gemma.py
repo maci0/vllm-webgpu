@@ -51,6 +51,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                            model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
+        # DiffusionGemma applies V-norm unconditionally in _decoder_layer.
+        # The parent sets _apply_v_norm=False for this subclass (model_type != 'gemma4'),
+        # but that is wrong: override here so _apply_v_norm correctly reflects behaviour
+        # if a future refactor ever routes through the parent _transformer_layer.
+        self._apply_v_norm = True
+
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
@@ -82,6 +88,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
             max_canvas_len = self._scratch_token_count()
+            # Pre-allocated row-index array for vectorized MoE scatter; avoids
+            # allocating a new array on every _decoder_layer call.
+            self._token_arange = np.arange(max_canvas_len, dtype=np.intp)
             self._shared_res_buf = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2)  # F16
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
             self._topk_idx_buf     = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
@@ -684,7 +693,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # expert IDs per token; distinct t values make cross-token duplicates impossible),
             # so buffered fancy-index assignment is equivalent to np.add.at and faster.
             self._dense_w[:, :num_tokens] = 0.0
-            self._dense_w[top_k_idx, np.arange(num_tokens)[:, None]] = rw_vals
+            self._dense_w[top_k_idx, self._token_arange[:num_tokens, None]] = rw_vals
             unique_eids = np.unique(top_k_idx).tolist()
 
             # GPU: run selected expert FFNs
@@ -704,15 +713,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             packed_w = self._dense_w[unique_eids, :num_tokens]  # [num_unique, T]
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
-            dispatched_count = 0
             for expert_slot, eid in enumerate(unique_eids):
                 ep = f"{p}.experts.{eid}"
                 g_w = self.weights.get(f"{ep}.gate_proj.weight")
                 u_w = self.weights.get(f"{ep}.up_proj.weight")
                 d_w = self.weights.get(f"{ep}.down_proj.weight")
                 if g_w is None or u_w is None or d_w is None:
-                    logger.warning("Missing expert %d for L%d", eid, layer_idx)
-                    continue
+                    raise RuntimeError(f"L{layer_idx}: expert {eid} missing gate/up/down weights")
 
                 uq_g  = self._uq_for_key(f"{ep}.gate_proj.weight")
                 uq_u  = self._uq_for_key(f"{ep}.up_proj.weight")
@@ -794,15 +801,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                         self._moe_per_expert_weight_buf],
                                        {"N": add_n, "K_IDX": expert_slot},
                                        ((add_n + 255) // 256, 1, 1))
-                dispatched_count += 1
-
-            if len(unique_eids) > 0 and dispatched_count != len(unique_eids):
-                missing = len(unique_eids) - dispatched_count
-                raise RuntimeError(
-                    f"L{layer_idx}: {missing} of {len(unique_eids)} selected experts "
-                    f"had missing weights; cannot proceed with zero MoE contribution"
-                )
-
             # Post-MoE norm + single residual add (vLLM Gemma4 pattern)
             with self._batched_dispatch(label=f"L{layer_idx:02d}P"):
                 pfn2_out_w = self.weights.get(f"{p}.post_feedforward_layernorm_2.weight")
