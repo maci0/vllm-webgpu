@@ -548,7 +548,7 @@ class WebGPUModelRunner:
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
             if hasattr(self.model, "_greedy_decode"):
-                self.model._greedy_decode = sp is None or sp.sampling_type == SamplingType.GREEDY
+                self.model._greedy_decode = (sp is None or sp.sampling_type == SamplingType.GREEDY) and num_logprobs is None
 
             # Each prefill request starts from zero recurrent state. Reset here
             # (inside the loop) so that multiple new requests in the same step
@@ -669,7 +669,7 @@ class WebGPUModelRunner:
 
                 sp = state.get("sampling_params")
                 if hasattr(self.model, "_greedy_decode"):
-                    self.model._greedy_decode = sp is None or sp.sampling_type == SamplingType.GREEDY
+                    self.model._greedy_decode = (sp is None or sp.sampling_type == SamplingType.GREEDY) and num_logprobs is None
 
                 # Restore this request's recurrent (Mamba/SSM) state before the
                 # forward pass. Without this, each request in the batch reads the
