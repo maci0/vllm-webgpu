@@ -87,7 +87,9 @@ def main() -> None:
     logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
     _has_gpu_argmax = model.logit_returns_token_id
-    _next_tok = (lambda lg: int(lg[0, 0])) if _has_gpu_argmax else (lambda lg: int(np.argmax(lg[-1])))
+
+    def _next_tok(lg):
+        return int(lg[0, 0]) if _has_gpu_argmax else int(np.argmax(lg[-1]))
 
     decode_tok = _next_tok(logits)
     pos = len(tok_ids)

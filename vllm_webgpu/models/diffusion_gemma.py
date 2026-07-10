@@ -225,7 +225,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "multi-token canvas prefill including the full MoE FFN."
         )
 
-    def _prefill_sequential_fallback(self, input_ids, positions, attn_metadata, T: int = 0):
+    def _prefill_sequential_fallback(self, input_ids, positions, attn_metadata, T: int) -> np.ndarray:
         """Not implemented for DiffusionGemma.
 
         The inherited Gemma4 implementation calls _transformer_layer(), which
@@ -548,10 +548,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             # MoE layers use post_feedforward_layernorm_1 for the shared MLP stream;
             # non-MoE layers only have the no-suffix key.
-            _pfn1_key_1 = f"{p}.post_feedforward_layernorm_1.weight"
             if self.is_moe:
-                if _pfn1_key_1 in self.weights:
-                    pfn1_w = self.weights[_pfn1_key_1]
+                pfn1_w = self.weights.get(f"{p}.post_feedforward_layernorm_1.weight")
+                if pfn1_w is not None:
                     self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
                                    (num_tokens, 1, 1))
                     hidden_states_1 = self._shared_res_buf
@@ -818,9 +817,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                {"N": add_n}, _vec4_wg(add_n))
 
                 # Combined post-FFN norm before residual add
-                pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
-                if pfn_w is not None:
-                    self._dispatch("rms_norm", [sc["normed"], pfn_w, sc["ffn_out"]], _rms,
+                post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
+                if post_ffw_w is not None:
+                    self._dispatch("rms_norm", [sc["normed"], post_ffw_w, sc["ffn_out"]], _rms,
                                    (num_tokens, 1, 1))
                     combined_normed = sc["ffn_out"]
                 else:
@@ -831,9 +830,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Apply post_feedforward_layernorm before residual add, matching vLLM's
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
             with self._batched_dispatch(label=f"L{layer_idx:02d}T"):
-                pfn_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
-                if pfn_w is not None:
-                    self._dispatch("rms_norm", [hidden_states_1, pfn_w, sc["normed"]], _rms,
+                post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
+                if post_ffw_w is not None:
+                    self._dispatch("rms_norm", [hidden_states_1, post_ffw_w, sc["normed"]], _rms,
                                    (num_tokens, 1, 1))
                     hidden_states_1 = sc["normed"]
                 _add_and_scale(hidden_states_1)

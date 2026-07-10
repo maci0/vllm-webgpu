@@ -104,6 +104,22 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # conv_dim = intermediate_size + 2 * n_groups * state_size).
         # Pinned against vLLM 0.24.0; verify this formula on every vLLM minor bump.
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
+        # Verify conv_dim against the authoritative mamba2_state_shape at tp=1.
+        # math.prod(conv_state_shape) == (conv_kernel - 1) * conv_dim for num_spec=0.
+        _conv_state_shape, _ = MambaStateShapeCalculator.mamba2_state_shape(
+            tp_world_size=1,
+            intermediate_size=self.mamba_int,
+            n_groups=self.n_groups,
+            num_heads=self.mamba_num_heads,
+            head_dim=self.mamba_head_dim,
+            state_size=self.ssm_state_size,
+            conv_kernel=self.conv_kernel,
+        )
+        assert math.prod(_conv_state_shape) == (self.conv_kernel - 1) * self.conv_dim, (
+            f"conv_dim formula drift: expected {(self.conv_kernel - 1) * self.conv_dim}, "
+            f"got {math.prod(_conv_state_shape)} from MambaStateShapeCalculator. "
+            "Update self.conv_dim to match MambaMixer2."
+        )
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353

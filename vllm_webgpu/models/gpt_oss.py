@@ -62,13 +62,15 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         super()._init_scratch_buffers(max_ctx)
         if self._attn_bias:
             dev = self.wgpu_device.wgpu_device
-            Q  = self.num_q_heads  * self.head_dim
-            KV = self.num_kv_heads * self.head_dim
+            Q      = self.num_q_heads  * self.head_dim
+            KV     = self.num_kv_heads * self.head_dim
+            hidden = self.hidden_size
             def mk(n: int) -> "WebGPUBuffer":
                 return WebGPUBuffer.empty(dev, max(n, 8))
-            self._sc["q_bias_tmp"] = mk(Q  * 2)   # [Q]  f16
-            self._sc["k_bias_tmp"] = mk(KV * 2)   # [KV] f16
-            self._sc["v_bias_tmp"] = mk(KV * 2)   # [KV] f16
+            self._sc["q_bias_tmp"]  = mk(Q      * 2)   # [Q]      f16
+            self._sc["k_bias_tmp"]  = mk(KV     * 2)   # [KV]     f16
+            self._sc["v_bias_tmp"]  = mk(KV     * 2)   # [KV]     f16
+            self._sc["o_bias_tmp"]  = mk(hidden * 2)   # [hidden] f16
 
     def _attn_block(
         self,
@@ -185,23 +187,22 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             _gemv_wg(hidden),
         )
 
-        # O-projection bias: write to sc['ffn_out'], which is free at this point.
-        # _attn_block runs before _ffn_dispatch writes ffn_out and before
-        # add_rms_norm writes ffn_normed, so there is no aliasing conflict.
-        # The add reads sc['o_proj_out'] (binding 0) and writes sc['ffn_out']
-        # (binding 2); the next add_rms_norm reads ffn_out (binding 1) and
-        # writes ffn_normed (binding 4).
+        # O-projection bias: write to sc['o_bias_tmp'], a dedicated buffer sized
+        # at hidden that does not alias sc['ffn_out']. Using sc['ffn_out'] as the
+        # destination created an implicit ordering contract: _ffn_dispatch must not
+        # write ffn_out before add_rms_norm consumes the O-bias result. The dedicated
+        # buffer makes both uses independent and safe to reorder.
         _o_proj_src = sc["o_proj_out"]
         if self._attn_bias:
             o_bias = self.weights.get(f"{p}.self_attn.o_proj.bias")
             if o_bias is not None:
                 self._dispatch(
                     "add",
-                    [sc["o_proj_out"], o_bias, sc["ffn_out"]],
+                    [sc["o_proj_out"], o_bias, sc["o_bias_tmp"]],
                     {"N": hidden},
                     _vec4_wg(hidden),
                 )
-                _o_proj_src = sc["ffn_out"]
+                _o_proj_src = sc["o_bias_tmp"]
 
         return _o_proj_src
 

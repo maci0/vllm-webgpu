@@ -69,13 +69,13 @@ def _allocate_kv_pool_hybrid(
     if layer_types is None:
         total_mb = (bytes_per_layer * num_layers * 2) // MiB_bytes
         logger.info(
-            "KV cache: %d blocks × %d tokens/block × %d layers × %d KV heads × %d head_dim (%s, K+V) = %dMB",
+            "KV cache: %d blocks × %d tokens/block × %d layers × %d KV heads × %d head_dim (%s, K+V) = %dMiB",
             num_blocks, block_size, num_layers, num_kv_heads, head_dim, dtype, total_mb,
         )
     else:
         total_mb = (bytes_per_layer * kv_layer_count * 2) // MiB_bytes
         logger.info(
-            "KV cache (hybrid): %d kv-attn × %d blocks × %d tokens/block × %d KV heads × %d head_dim (%s, K+V) = %dMB",
+            "KV cache (hybrid): %d kv-attn × %d blocks × %d tokens/block × %d KV heads × %d head_dim (%s, K+V) = %dMiB",
             kv_layer_count, num_blocks, block_size, num_kv_heads, head_dim, dtype, total_mb,
         )
 
@@ -163,7 +163,7 @@ def allocate_kv_from_tensors(
         # the K or V data actually occupies, and also averages head_size and
         # head_size_v instead of allocating each buffer at its correct size.
         first_name = tensor.shared_by[0] if tensor.shared_by else None
-        spec = layer_spec_map.get(first_name) if first_name is not None else None
+        spec = layer_spec_map.get(first_name)
         if spec is not None and isinstance(spec, FullAttentionSpec):
             if spec.kv_quant_mode.is_nvfp4:
                 raise NotImplementedError(
@@ -253,7 +253,7 @@ def allocate_kv_from_tensors(
             ))
 
     logger.info(
-        "KV cache: %d blocks, %d kv-attn layers, total=%dMB",
+        "KV cache: %d blocks, %d kv-attn layers, total=%dMiB",
         num_blocks, len(layer_kv_bytes), total_bytes // MiB_bytes,
     )
 
@@ -407,7 +407,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     fraction = 1.0 if config.is_auto_memory else config.memory_fraction
     available = max(int(base * fraction), 0)
     logger.info(
-        "WebGPU memory: total=%dMB model=%dMB available=%dMB",
+        "WebGPU memory: total=%dMiB model=%dMiB available=%dMiB",
         total // MiB_bytes, model_mem // MiB_bytes, available // MiB_bytes,
     )
     return available

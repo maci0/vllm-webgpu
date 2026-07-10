@@ -37,7 +37,7 @@ def _vec4_wg(N: int) -> tuple:
     Each thread handles 4 elements packed as vec4<f16>. The formula rounds the
     thread count up to fill complete workgroups of 256.
     """
-    return (((N + 3) // 4 + 255) // 256, 1, 1)
+    return ((N + 1023) // 1024, 1, 1)
 
 
 def _rows_wg(N: int) -> tuple:

@@ -8,6 +8,7 @@ from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_IN
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
+from vllm.transformers_utils.utils import parse_safetensors_file_metadata
 
 # AWQ nibble reorder table (Lin et al., AWQ: Activation-aware Weight Quantization,
 # https://arxiv.org/abs/2306.00978, Appendix). Each int32 stores 8 nibbles; the
@@ -423,6 +424,17 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
     return {}
 
 
+def _find_u8_u8_bases(header: dict) -> list[str]:
+    """Return sorted base names where both .weight and .weight_scale have dtype U8."""
+    return sorted(
+        k.removesuffix(".weight")
+        for k in header
+        if k.endswith(".weight")
+        and header[k].get("dtype") == "U8"
+        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+    )
+
+
 def load_safetensors_weights(
     path: str,
     wgpu_device,
@@ -459,16 +471,15 @@ def load_safetensors_weights(
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
     with sft.safe_open(path, framework="pt") as sf:
-        # Build header from the already-open safe_open handle instead of opening
-        # the file again via parse_safetensors_file_metadata.
-        # Keys matching any skip_prefixes entry are excluded before any buffer
-        # allocation so they never touch GPU memory.
-        header = {}
-        for k in sf.keys():
-            if skip_prefixes and any(k.startswith(pfx) for pfx in skip_prefixes):
-                continue
-            slc = sf.get_slice(k)
-            header[k] = {"dtype": slc.get_dtype(), "shape": list(slc.get_shape())}
+        # Read the safetensors header in a single binary read (one syscall) rather
+        # than making O(n) get_slice() calls — each slice call opens, seeks, and
+        # reads header metadata individually for every tensor key.
+        _raw_hdr = parse_safetensors_file_metadata(path)
+        header = {
+            k: v for k, v in _raw_hdr.items()
+            if k != "__metadata__"
+            and not (skip_prefixes and any(k.startswith(pfx) for pfx in skip_prefixes))
+        }
 
         usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
@@ -996,17 +1007,8 @@ def load_safetensors_weights(
             # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
             # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
             # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-            mxfp4_bases = sorted(
-                k.removesuffix(".weight")
-                for k in header
-                if k.endswith(".weight")
-                and header[k].get("dtype") == "U8"
-                and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
-            )
-            mx4_set: set = set()
-            for base in mxfp4_bases:
-                mx4_set.add(f"{base}.weight")
-                mx4_set.add(f"{base}.weight_scale")
+            mxfp4_bases = _find_u8_u8_bases(header)
+            mx4_set: set = {f"{b}.weight" for b in mxfp4_bases} | {f"{b}.weight_scale" for b in mxfp4_bases}
 
             for name in header:
                 if name in mx4_set or name in _i8_companion_skip:
@@ -1036,17 +1038,8 @@ def load_safetensors_weights(
             # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
             # CPU dequant: avoids shader changes for per-block FP8.
             # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
-            mxfp8_bases = sorted(
-                k.removesuffix(".weight")
-                for k in header
-                if k.endswith(".weight")
-                and header[k].get("dtype") == "U8"
-                and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
-            )
-            mx8_set: set = set()
-            for base in mxfp8_bases:
-                mx8_set.add(f"{base}.weight")
-                mx8_set.add(f"{base}.weight_scale")
+            mxfp8_bases = _find_u8_u8_bases(header)
+            mx8_set: set = {f"{b}.weight" for b in mxfp8_bases} | {f"{b}.weight_scale" for b in mxfp8_bases}
 
             for name in header:
                 if name in mx8_set or name in _i8_companion_skip:

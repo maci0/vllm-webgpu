@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
@@ -228,12 +229,7 @@ class WebGPUModelRunner:
         if lp_list:
             head_dim = max((lp["head_dim"] for lp in lp_list), default=head_dim)
             num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list), default=num_kv_heads)
-        return FullAttentionSpec(
-            block_size=block_size,
-            num_kv_heads=num_kv_heads,
-            head_size=head_dim,
-            dtype=torch.float16,
-        ).real_page_size_bytes
+        return 2 * block_size * num_kv_heads * head_dim * get_dtype_size(torch.float16)
 
     def warm_up(self) -> None:
         if self.model is not None:
