@@ -21,6 +21,7 @@ def make_diffusion_gemma_config():
     cfg.ple_layer_indices = []
     cfg.max_position_embeddings = 128
     cfg.rope_theta = 10000.0
+    cfg.hidden_size_per_layer_input = 0
     # MoE — num_experts > 0 triggers MoE scratch buffer pre-allocation in __init__
     cfg.num_experts = 8
     cfg.top_k_experts = 2

@@ -17,6 +17,7 @@ def make_tiny_gemma4_config():
     cfg.architectures = ["Gemma3ForCausalLM"]
     cfg.ple_layer_indices = []
     cfg.max_position_embeddings = 128
+    cfg.hidden_size_per_layer_input = 0
     return cfg
 
 

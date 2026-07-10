@@ -109,6 +109,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     logit_returns_token_id: bool = True
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
+        if getattr(model_config, 'hidden_size_per_layer_input', 0) > 0:
+            raise ValueError(
+                'PLE (hidden_size_per_layer_input > 0) is not supported by the WebGPU plugin'
+            )
         super().__init__(model_config, wgpu_device, pipeline_cache)
         self.num_layers: int = model_config.num_hidden_layers
         self.num_q_heads: int = model_config.num_attention_heads
