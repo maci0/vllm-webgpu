@@ -10,11 +10,12 @@ import vllm_webgpu.envs as _webgpu_envs
 from vllm.logger import init_logger
 from vllm.transformers_utils.utils import parse_safetensors_file_metadata
 
-# AWQ nibble reorder table (Lin et al., AWQ: Activation-aware Weight Quantization,
-# https://arxiv.org/abs/2306.00978, Appendix). Each int32 stores 8 nibbles; the
-# pack order interleaves even/odd positions: [0,4,1,5,2,6,3,7]. Multiply by 4 to
-# convert nibble indices to bit offsets within the 32-bit word.
-_AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=np.int32) * 4
+# AWQ nibble unpack table. AWQ packs channels with interleaved order [0,4,1,5,2,6,3,7],
+# so to extract channel c from a packed int32 the bit offset is inverse_pack[c]*4 where
+# inverse_pack = [0,2,4,6,1,3,5,7]. Using the pack order directly extracts in permuted
+# order [0,2,4,6,1,3,5,7] instead of natural order [0,1,2,3,4,5,6,7], which misaligns
+# (w-z) against the scales tensor.
+_AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 2, 4, 6, 1, 3, 5, 7], dtype=np.int32) * 4
 # GPTQ nibble unpack: each int32 holds 8 nibbles at bit offsets [0, 4, 8, ..., 28].
 _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
