@@ -198,7 +198,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         # Cache per_expert_scale for each MoE layer. Each to_numpy() is a blocking
         # GPU-CPU sync (~100 µs); caching once at load time avoids N syncs per step.
         if self.is_moe:
-            self._pes_cache = [None] * self.num_layers
             for i in range(self.num_layers):
                 p = self._layer_key_prefix(i)
                 pes_w = self.weights.get(f"{p}.router.per_expert_scale")

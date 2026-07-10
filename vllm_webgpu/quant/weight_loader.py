@@ -27,6 +27,11 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     import torch as _torch
     if t.dtype == _torch.float16:
         return t.numpy()
+    if t.dtype == _torch.float32:
+        # Skip the torch roundtrip: numpy clip+cast is equivalent and avoids
+        # the to(float32) -> clamp -> to(float16) -> numpy chain.
+        return t.numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
+    # BF16: numpy has no bf16 dtype, so the torch roundtrip is unavoidable.
     return t.to(_torch.float32).clamp(-_F16_MAX, _F16_MAX).to(_torch.float16).numpy()
 
 
@@ -58,15 +63,13 @@ except ImportError:
 
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
-    result = []
-    for k in header:
-        if not k.endswith(".weight"):
-            continue
-        base = k.removesuffix(".weight")
-        if (header[k].get("dtype") == "U8"
-                and header.get(base + ".weight_scale", {}).get("dtype") == "U8"):
-            result.append(base)
-    return sorted(result)
+    return sorted(
+        k.removesuffix(".weight")
+        for k in header
+        if k.endswith(".weight")
+        and header[k].get("dtype") == "U8"
+        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+    )
 
 
 def _load_quant_cfg(config_path: Path) -> dict:
@@ -326,9 +329,8 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     sc = scales.astype(np.float32)  # (G, N)
 
     # Unpack 8 nibbles per int32 along K → (K, N) and zeros (G, N//8) → (G, N)
-    shifts = _GPTQ_NIBBLE_SHIFTS
-    w_int4 = ((qw[:, np.newaxis, :] >> shifts[:, np.newaxis]) & 0xF).reshape(K, N).astype(np.uint8)
-    z_int4 = ((qz[:, :, np.newaxis] >> shifts) & 0xF).reshape(G, N).astype(np.uint8)
+    w_int4 = ((qw[:, np.newaxis, :] >> _GPTQ_NIBBLE_SHIFTS[:, np.newaxis]) & 0xF).reshape(K, N).astype(np.uint8)
+    z_int4 = ((qz[:, :, np.newaxis] >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(G, N).astype(np.uint8)
 
     # Group index: which group each input dim belongs to.
     # For the uniform-groups path, np.repeat avoids the intermediate index array
@@ -500,7 +502,7 @@ def load_safetensors_weights(
         # All currently supported checkpoints are single-format, so this is safe.
         has_qweight = has_wp = has_diffusion_nvfp4 = has_fp8_weight = has_mx_u8_pair = False
         has_bnb_nf4 = False
-        _ct_i32_key = False
+        _ct_has_i32_weight = False
         _ct_gptq_gpu = bool(ct_meta and ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu")
         for k in header:
             dtype = header[k].get("dtype")
@@ -519,12 +521,12 @@ def load_safetensors_weights(
                 elif dtype == "F8_E4M3":
                     has_fp8_weight = True
                 elif dtype == "I32" and _ct_gptq_gpu and base + ".weight_scale" in header:
-                    _ct_i32_key = True
+                    _ct_has_i32_weight = True
             elif k.endswith(".weight_packed"):
                 # compressed-tensors packed INT4 variant
                 base = k.removesuffix(".weight_packed")
                 if dtype == "I32" and _ct_gptq_gpu and base + ".weight_scale" in header:
-                    _ct_i32_key = True
+                    _ct_has_i32_weight = True
             # BnB NF4: companion keys {base}.weight_quantized_stats (older BnB),
             # quant_state.bitsandbytes__nf4 key, or {base}.weight.absmax
             # (newer bitsandbytes >= 0.41) alongside U8 weights.
@@ -538,7 +540,7 @@ def load_safetensors_weights(
         # is read by detect_compressed_tensors_fmt() and stored in ct_meta; the weight tensors
         # themselves use different key names than standard GPTQ (.weight not .qweight, and
         # .weight_scale not .scales), so they need a dedicated loading path.
-        has_ct_pack_int4 = _ct_gptq_gpu and _ct_i32_key
+        has_ct_pack_int4 = _ct_gptq_gpu and _ct_has_i32_weight
 
         if has_qweight:
             # Distinguish AWQ from GPTQ by qweight shape, not qzeros presence.
@@ -698,7 +700,7 @@ def load_safetensors_weights(
                 return True
 
             if dtype_str == "F16":
-                arr = _torch_to_f16_numpy(sf.get_tensor(name))
+                arr = sf.get_tensor(name).numpy()
             elif dtype_str == "BF16":
                 t_bf16 = sf.get_tensor(name)
                 arr = _torch_to_f16_numpy(t_bf16)
@@ -1307,8 +1309,7 @@ def _dequant_mlx_int4(
         out_rows, packed_cols = weight_u32.shape
         in_cols = packed_cols * 8
         w = weight_u32.astype(np.uint32)
-        shifts = _GPTQ_NIBBLE_SHIFTS
-        nibbles = ((w[:, :, np.newaxis] >> shifts) & 0xF).reshape(out_rows, in_cols).astype(np.float32)
+        nibbles = ((w[:, :, np.newaxis] >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, in_cols).astype(np.float32)
         n_groups = in_cols // group_size
         scales_bc = np.repeat(scales_f32.reshape(out_rows, n_groups), group_size, axis=1)
         biases_bc = np.repeat(biases_f32.reshape(out_rows, n_groups), group_size, axis=1)

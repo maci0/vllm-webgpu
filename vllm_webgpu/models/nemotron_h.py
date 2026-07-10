@@ -100,6 +100,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # conv_dim: size of the vector passed through the causal conv
         # = x (mamba_int) + B (n_groups*state_size) + C (n_groups*state_size)
         # Mirrors MambaMixer2.conv_dim, vllm/model_executor/layers/mamba/mamba_mixer2.py L313.
+        # Also appears in mamba_utils.py:177 (mamba2_state_shape uses this as
+        # conv_dim = intermediate_size + 2 * n_groups * state_size).
         # Pinned against vLLM 0.24.0; verify this formula on every vLLM minor bump.
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
@@ -631,6 +633,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 
+    def _finalize_output(self, vocab: int) -> np.ndarray:
+        """Record logit buffer and return sampled token or full logits."""
+        pre = self._pre
+        self._last_logit_buf = pre["logits"]
+        self._last_vocab = vocab
+        if self._greedy_decode:
+            tok = self._read_sample_tok()
+            return np.array([[tok]], dtype=np.int32)
+        return self.logit_readback()
+
     def _run_final_norm_and_lm_head(
         self, x_buf: "WebGPUBuffer", vocab: int, num_tokens: int
     ) -> None:
@@ -745,13 +757,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # Final norm, LM head, and optional argmax.
             self._run_final_norm_and_lm_head(x_buf, vocab, num_tokens)
 
-        self._last_logit_buf = pre["logits"]
-        self._last_vocab = vocab
-        greedy = self._greedy_decode
-        if greedy:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return self._finalize_output(vocab)
 
     def _layer_dispatch(
         self,
@@ -1070,8 +1076,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         pre = self._pre
         sc  = self._sc
         bt_arr = self._bt_arr(attn_metadata)
-        bt_bytes = bt_arr.tobytes()
-        dev.queue.write_buffer(pre["bt"].buf, 0, bt_bytes)
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         for t in range(T):
             self._hstate = 0
@@ -1114,11 +1119,5 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 if t == T - 1:
                     self._run_final_norm_and_lm_head(x_buf, vocab, 1)
 
-        self._last_logit_buf = pre["logits"]
-        self._last_vocab     = vocab
-        greedy = self._greedy_decode
-        if greedy:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return self._finalize_output(vocab)
 

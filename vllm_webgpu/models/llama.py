@@ -755,7 +755,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _freq_buf = self._rope_freq_buf
         _rope_consts = self._rope_consts
 
-        if _use_fused_qkv and k_norm_w is not None:
+        if _use_fused_qkv and q_norm_w is not None and k_norm_w is not None:
             # fused_qk_norm_rope: Q+K norm+rope in one dispatch.
             # Binding 6 (k_input): unused here (K_SEPARATE=0), bind qkv_buf as dummy.
             # Binding 7 (inv_freq_buf): always provided (wgpu requires all declared bindings).

@@ -129,10 +129,10 @@ for step in range(args.decode_steps):
     pos += 1
 
 model.profiling = False
+avg_step_ms = np.mean(decode_times) if decode_times else 0.0
 if not decode_times:
     print("\nNo profiled decode steps measured")
 else:
-    avg_step_ms = np.mean(decode_times)
     print(f"\nAverage decode step: {avg_step_ms:.1f} ms  ({1000/avg_step_ms:.1f} tok/s)")
 print()
 print(model.profile_report())

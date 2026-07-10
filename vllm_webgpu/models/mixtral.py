@@ -298,11 +298,10 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             self._topk_w_staging.map_sync(mode=self._wgpu_lib.MapMode.READ)
             raw_w = np.frombuffer(self._topk_w_staging.read_mapped(), dtype=np.float32).copy()
             self._topk_w_staging.unmap()
-            expert_weights = raw_w[:K].tolist()
             logger.debug(
                 "L%02d MoE experts: %s  weights: %s",
                 layer_idx, expert_indices,
-                [f"{w:.3f}" for w in expert_weights],
+                [f"{w:.3f}" for w in raw_w[:K]],
             )
 
         # Guard: verify scratch buffers are large enough for both inter sizes.
