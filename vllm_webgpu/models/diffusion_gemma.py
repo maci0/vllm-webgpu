@@ -369,19 +369,18 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             for out_buf, proj, dim in _qk_list:
                 _gemm_adaptive(sc["normed"], f"{p}.self_attn.{proj}.weight", out_buf, hidden, dim)
             if not is_kv_shared:
-                # v_proj: global attention layers (no separate V; V=K) have no v_proj weight
-                vw_key = f"{p}.self_attn.v_proj.weight"
-                has_v_proj = vw_key in self.weights
+                # v_proj: global attention layers (no separate V; V=K) have no v_proj weight.
+                # Use the precomputed flag from _build_layer_params_from_config as source of truth.
+                has_v_proj = lp.get("has_v_proj", True)
                 if has_v_proj:
-                    _gemm_adaptive(sc["normed"], vw_key, sc["v_buf"], hidden, kv_dim)
+                    _gemm_adaptive(sc["normed"], f"{p}.self_attn.v_proj.weight", sc["v_buf"], hidden, kv_dim)
                     v_src = sc["v_buf"]
                 else:
                     v_src = sc["k_buf"]  # global attention: V = K
 
             _freq_buf = self._rope_freq_buf
-            _dg_rc       = self._rope_consts[layer_idx]
-            _dg_fused    = _dg_rc
-            _dg_plain    = {k: _dg_rc[k] for k in ("ROPE_BASE", "LN_ROPE_BASE", "USE_FREQ_BUF")}
+            _dg_rc    = self._rope_consts[layer_idx]
+            _dg_plain = {k: _dg_rc[k] for k in ("ROPE_BASE", "LN_ROPE_BASE", "USE_FREQ_BUF")}
             # Q: norm+RoPE unconditionally (KV-shared layers still project and use Q).
             # K: norm+RoPE only for non-shared layers; shared layers read K from cache directly.
             _heads_specs = [(sc["q_buf"], sc["q_rope"], self.num_q_heads, f"{p}.self_attn.q_norm.weight")]
@@ -393,7 +392,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     # Binding 4 (inv_freq_buf): always provided.
                     self._dispatch("fused_per_head_norm_rope",
                                    [src, nw, pos_buf, dst, _freq_buf],
-                                   {**_dg_fused, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
+                                   {**_dg_rc, "HEAD_DIM": head_dim, "NUM_HEADS": n_heads,
                                     "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
                                     "INPUT_OFFSET": 0},
                                    (n_heads, num_tokens, 1))

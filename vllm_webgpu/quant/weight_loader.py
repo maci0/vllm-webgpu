@@ -52,11 +52,12 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 def _collect_mx_bases(header: dict) -> list:
     """Return sorted base names for MX-format weight pairs (*.weight + *.weight_scale, both U8)."""
     return sorted(
-        k.removesuffix(".weight")
+        base
         for k in header
         if k.endswith(".weight")
+        and (base := k.removesuffix(".weight"))
         and header[k].get("dtype") == "U8"
-        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
     )
 
 
@@ -472,60 +473,55 @@ def load_safetensors_weights(
         if ct_meta is None:
             ct_meta = detect_compressed_tensors_fmt(_config_json, quant_cfg=_raw_quant_cfg)
 
-        # Detect quantization format from header.
+        # Detect quantization format from header in a single O(n) pass.
         # NOTE: detection is file-level, not per-layer. A checkpoint that mixes
         # two formats (e.g. diffusion_nvfp4 layers alongside plain fp8 layers)
         # will be classified by whichever format is checked first in the priority
         # order below, which may shadow the intended format for the other layers.
         # All currently supported checkpoints are single-format, so this is safe.
-        has_qweight   = any(k.endswith(".qweight")      for k in header)
-        has_wp        = any(k.endswith(".weight_packed") and header[k].get("dtype") == "U8" for k in header)   # standard NVFP4
-        # DiffusionGemma NVFP4: *.weight is U8 AND *.weight_scale is F8_E4M3 (ModelOpt format)
-        has_diffusion_nvfp4 = any(
-            header[k].get("dtype") == "U8" and k.endswith(".weight")
-            and k.removesuffix(".weight") + ".weight_scale" in header
-            and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "F8_E4M3"
-            for k in header
-        )
-        has_fp8_weight = any(
-            header[k].get("dtype") == "F8_E4M3" and k.endswith(".weight")
-            for k in header
-        )
-        # MXFP4/MXFP8: *.weight U8 + *.weight_scale U8 (exponent bytes, not F8_E4M3 like diffusion_nvfp4)
-        has_mx_u8_pair = any(
-            header[k].get("dtype") == "U8" and k.endswith(".weight")
-            and k.removesuffix(".weight") + ".weight_scale" in header
-            and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
-            for k in header
-        )
+        has_qweight = has_wp = has_diffusion_nvfp4 = has_fp8_weight = has_mx_u8_pair = False
+        _bnb_quantized_stats = _bnb_nf4_key = _bnb_absmax = False
+        _ct_i32_key = False
+        _ct_gptq_gpu = bool(ct_meta and ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu")
+        for k in header:
+            dtype = header[k].get("dtype")
+            if k.endswith(".qweight"):
+                has_qweight = True
+            if k.endswith(".weight_packed") and dtype == "U8":
+                has_wp = True  # standard NVFP4
+            if k.endswith(".weight"):
+                base = k.removesuffix(".weight")
+                if dtype == "U8" and base + ".weight_scale" in header:
+                    ws_dtype = header.get(base + ".weight_scale", {}).get("dtype")
+                    if ws_dtype == "F8_E4M3":
+                        has_diffusion_nvfp4 = True
+                    elif ws_dtype == "U8":
+                        has_mx_u8_pair = True
+                elif dtype == "F8_E4M3":
+                    has_fp8_weight = True
+                elif dtype == "I32" and _ct_gptq_gpu and base + ".weight_scale" in header:
+                    _ct_i32_key = True
+            elif k.endswith(".weight_packed"):
+                # compressed-tensors packed INT4 variant
+                base = k.removesuffix(".weight_packed")
+                if dtype == "I32" and _ct_gptq_gpu and base + ".weight_scale" in header:
+                    _ct_i32_key = True
+            if k.endswith(".weight_quantized_stats"):
+                _bnb_quantized_stats = True
+            elif "quant_state.bitsandbytes__nf4" in k:
+                _bnb_nf4_key = True
+            elif k.endswith(".weight.absmax"):
+                if header.get(k.removesuffix(".absmax"), {}).get("dtype") == "U8":
+                    _bnb_absmax = True
         # BnB NF4: companion keys {base}.weight_quantized_stats (older BnB) or
         # {base}.weight.absmax (newer bitsandbytes >= 0.41) alongside U8 weights.
-        has_bnb_nf4 = (
-            any(k.endswith(".weight_quantized_stats") for k in header)
-            or any("quant_state.bitsandbytes__nf4" in k for k in header)
-            or any(
-                k.endswith(".weight.absmax")
-                and header.get(k.removesuffix(".absmax"), {}).get("dtype") == "U8"
-                for k in header
-            )
-        )
+        has_bnb_nf4 = _bnb_quantized_stats or _bnb_nf4_key or _bnb_absmax
         # compressed-tensors pack-quantized INT4: .weight I32 + .weight_scale F16/BF16/F32
         # (e.g. google/gemma-4-12B-it-qat-w4a16-ct). The quantization_config in config.json
         # is read by detect_compressed_tensors_fmt() and stored in ct_meta; the weight tensors
         # themselves use different key names than standard GPTQ (.weight not .qweight, and
         # .weight_scale not .scales), so they need a dedicated loading path.
-        has_ct_pack_int4 = (
-            bool(ct_meta and ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu")
-            and any(
-                header[k].get("dtype") == "I32"
-                and (k.endswith(".weight") or k.endswith(".weight_packed"))
-                and (
-                    (k.endswith(".weight") and k.removesuffix(".weight") + ".weight_scale" in header)
-                    or (k.endswith(".weight_packed") and k.removesuffix(".weight_packed") + ".weight_scale" in header)
-                )
-                for k in header
-            )
-        )
+        has_ct_pack_int4 = _ct_gptq_gpu and _ct_i32_key
 
         if has_qweight:
             # Distinguish AWQ from GPTQ by qweight shape, not qzeros presence.

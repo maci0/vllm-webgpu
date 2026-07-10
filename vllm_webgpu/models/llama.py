@@ -317,14 +317,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             logits: [num_tokens, vocab_size]  float32
         """
         num_tokens = len(input_ids)
-        hidden = self.hidden_size
         self._hstate = 0
 
         self._check_single_sequence(attn_metadata)
 
         vocab = self.vocab_size
-        _rms_base = self._rms_consts
-        sc = self._sc
 
         # Batch prefill: T>1 tokens use matmul_quant_mr4 (all T rows at once) plus
         # sequential causal attention. Layers are chunked across separate command
@@ -583,9 +580,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            rms_base, (1, 1, 1))
 
             # LM head + optional argmax (mirrors _decode_teardown; sets _last_logit_buf/_last_vocab)
-            self._decode_teardown(b["last_norm"], b["logits"], vocab, self._greedy_decode)
+            greedy = self._greedy_decode
+            self._decode_teardown(b["last_norm"], b["logits"], vocab, greedy)
 
-        greedy = self._greedy_decode
         if greedy:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)

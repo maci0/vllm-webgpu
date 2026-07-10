@@ -234,39 +234,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         via _weight_transforms for all checkpoint formats. No GPU readback happens here
         for correctly split fp16 weights.
         """
-        dev = self.wgpu_device.wgpu_device
-
-        for i in range(self.num_layers):
-            if not self._is_full_attn(i):
-                continue
-            p = f"model.layers.{i}"
-
-            # Split fused Q+gate weight when attn_output_gate=True.
-            # HF: q_proj(h).view(batch, seq, num_heads, head_dim*2) → chunk(2, dim=-1)
-            #   → first head_dim per head = Q, last head_dim per head = gate
-            # Weight shape [2*q_dim, hidden] stored as [num_heads, 2*head_dim, hidden].
-            # Query rows (interleaved): head_h[:head_dim] = rows [h*2*hd : h*2*hd+hd]
-            # Gate rows (interleaved):  head_h[head_dim:] = rows [h*2*hd+hd : (h+1)*2*hd]
-            if self._attn_output_gate:
-                q_dim = self.num_q_heads * self.head_dim
-                hd = self.head_dim
-                q_proj_key = f"{p}.self_attn.q_proj.weight"
-                buf = self.weights.get(q_proj_key)
-                if buf is not None and buf.shape[0] == 2 * q_dim:
-                    if self._uq_for_key(q_proj_key) != 0:
-                        raise RuntimeError(
-                            f"Layer {i}: quantized q_proj with shape [2*q_dim, H] and "
-                            f"attn_output_gate=True is not supported. The interleaved "
-                            f"Q+gate rows cannot be split. Use fp16 weights or pre-split "
-                            f"the checkpoint offline."
-                        )
-                    arr = buf.to_numpy().view(np.float16).reshape(self.num_q_heads, 2 * hd, self.hidden_size)
-                    q_arr = np.ascontiguousarray(arr[:, :hd, :].reshape(q_dim, self.hidden_size))
-                    gate_arr = np.ascontiguousarray(arr[:, hd:, :].reshape(q_dim, self.hidden_size))
-                    self.weights[q_proj_key] = WebGPUBuffer.from_numpy(dev, q_arr)
-                    gate_key = f"{p}.self_attn.q_gate_proj.weight"
-                    self.weights[gate_key] = WebGPUBuffer.from_numpy(dev, gate_arr)
-
         self._rms_consts["GEMMA_NORM"] = self._gemma_norm
 
     def _alloc_lin_states(self) -> None:
@@ -462,7 +429,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
           4. matmul_quant(normed_x, a_proj_w) → a_buf      [32 f16]
           5a. matmul_quant(normed_x, b_proj_w) → b_buf     [K_HEADS f16]
           5b. matmul_quant(normed_x, z_proj_w) → z_buf     [4096 f16]
-          6. gdn_state_update(qkv_conv, a)    → gdn_out    [4096 f16], updates ssm_state
+          6. gdn_state_update(qkv_conv, a_buf, b_buf, A_log, dt_bias, ssm_state) → gdn_out [val_dim f16], updates ssm_state
           7. linear_attn_norm_gate(gdn,z)     → gated      [4096 f16]
           8. matmul_quant(gated, out_proj)    → out_buf    [hidden f16]
           9. add(x, out_buf)                  → residual

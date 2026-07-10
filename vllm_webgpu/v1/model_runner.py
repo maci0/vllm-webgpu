@@ -1,6 +1,7 @@
 from __future__ import annotations
 import itertools
 from types import SimpleNamespace
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -220,14 +221,12 @@ class WebGPUModelRunner:
         else:
             head_size = self.vllm_config.model_config.get_head_size()
             num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
-            _lt2 = _layer_types
             # Only trust layer_types when it covers every layer; a partial or
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
-            if _lt2 and len(_lt2) != mc.num_hidden_layers:
-                _lt2 = None
+            lt_filtered = _layer_types if _layer_types and len(_layer_types) == mc.num_hidden_layers else None
             for i in range(mc.num_hidden_layers):
-                if _lt2 is not None and _lt2[i] not in KV_ATTN_TYPES:
+                if lt_filtered is not None and lt_filtered[i] not in KV_ATTN_TYPES:
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     num_kv_heads, head_size)
@@ -363,7 +362,7 @@ class WebGPUModelRunner:
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "list[LogprobsTensors | None]" = (),
+        logprobs_data: "Sequence[LogprobsTensors | None]" = (),
         prompt_logprobs_dict: "dict[str, LogprobsTensors] | None" = None,
     ) -> Any:
         if not req_ids:

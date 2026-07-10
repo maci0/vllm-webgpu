@@ -58,12 +58,11 @@ def _build_layer_params_from_config(
         is_kv_shared = (first_kv_shared > 0) and (i >= first_kv_shared)
 
         # (2) vLLM gemma4.py L467-474: find last non-shared layer of the same type.
-        kv_shared_target = -1
         if is_kv_shared:
             _prev = layer_types[:first_kv_shared]
-            kv_shared_target = next(
-                (j for j in range(len(_prev) - 1, -1, -1) if _prev[j] == lt), -1
-            )
+            kv_shared_target = (len(_prev) - 1 - _prev[::-1].index(lt)) if lt in _prev else -1
+        else:
+            kv_shared_target = -1
 
         # (3) vLLM gemma4.py L561-577: select dims by attention type.
         if lt == "full_attention":

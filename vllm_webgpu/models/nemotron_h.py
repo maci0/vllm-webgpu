@@ -76,13 +76,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         hd = getattr(model_config, "head_dim", None)
         self.head_dim: int = hd if hd is not None else self.hidden_size // self.num_q_heads
         # MLP parameters (used in '-' layers).
-        # intermediate_size may be a list for heterogeneous (puzzle) configs;
-        # store the per-layer list and use the max for scratch buffer sizing.
+        # intermediate_size may be a list for heterogeneous (puzzle) configs.
         _raw_int = model_config.intermediate_size
-        if isinstance(_raw_int, list):
-            self.intermediate_size: int = max(_raw_int)
-        else:
-            self.intermediate_size: int = _raw_int
 
         # Mamba-2 parameters
         self.mamba_num_heads: int = model_config.mamba_num_heads
@@ -225,7 +220,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         CD  = self.conv_dim
         IPD = self.in_proj_dim
         MNH = self.mamba_num_heads
-        I   = max((s for s in self._layer_int_size if s > 0), default=self.intermediate_size)
+        _raw_int_fb = self.model_config.intermediate_size
+        I   = max((s for s in self._layer_int_size if s > 0),
+                  default=(max(_raw_int_fb) if isinstance(_raw_int_fb, list) else _raw_int_fb))
         V   = self.vocab_size
         qd  = self.num_q_heads * self.head_dim
         kd  = self.num_kv_heads * self.head_dim

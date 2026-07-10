@@ -84,8 +84,9 @@ _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=
 logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
 _has_gpu_argmax = model.logit_returns_token_id
+_next_tok = (lambda lg: int(lg[0, 0])) if _has_gpu_argmax else (lambda lg: int(np.argmax(lg[-1])))
 
-decode_tok = int(logits[0, 0]) if _has_gpu_argmax else int(np.argmax(logits[-1]))
+decode_tok = _next_tok(logits)
 pos = len(tok_ids)
 print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")
 
@@ -99,7 +100,7 @@ for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra 
     t0 = time.perf_counter()
     logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _dm)
     elapsed_ms = (time.perf_counter() - t0) * 1000
-    decode_tok = int(logits[0, 0]) if _has_gpu_argmax else int(np.argmax(logits[-1]))
+    decode_tok = _next_tok(logits)
     pos += 1
     if step >= args.warmup_steps:
         prod_times.append(elapsed_ms)
@@ -119,7 +120,7 @@ for step in range(args.decode_steps):
     _dm2 = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=pos + 1)
     t0 = time.perf_counter()
     logits = model.forward(np.array([decode_tok], dtype=np.uint32), np.array([pos], dtype=np.uint32), _dm2)
-    decode_tok = int(logits[0, 0]) if _has_gpu_argmax else int(np.argmax(logits[-1]))
+    decode_tok = _next_tok(logits)
     decode_times.append((time.perf_counter() - t0) * 1000.0)
     pos += 1
 

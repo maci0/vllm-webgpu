@@ -64,9 +64,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             dev = self.wgpu_device.wgpu_device
             Q  = self.num_q_heads  * self.head_dim
             KV = self.num_kv_heads * self.head_dim
-            self._sc["q_bias_tmp"] = WebGPUBuffer.empty(dev, Q  * 2)   # [Q]  f16
-            self._sc["k_bias_tmp"] = WebGPUBuffer.empty(dev, KV * 2)   # [KV] f16
-            self._sc["v_bias_tmp"] = WebGPUBuffer.empty(dev, KV * 2)   # [KV] f16
+            def mk(n: int) -> "WebGPUBuffer":
+                return WebGPUBuffer.empty(dev, max(n, 8))
+            self._sc["q_bias_tmp"] = mk(Q  * 2)   # [Q]  f16
+            self._sc["k_bias_tmp"] = mk(KV * 2)   # [KV] f16
+            self._sc["v_bias_tmp"] = mk(KV * 2)   # [KV] f16
 
     def _attn_block(
         self,

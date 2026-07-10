@@ -7,7 +7,7 @@ from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 import torch
 from vllm.utils.torch_utils import get_dtype_size
-from vllm.v1.kv_cache_interface import FullAttentionSpec
+from vllm.v1.kv_cache_interface import AttentionSpec, FullAttentionSpec
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
 
@@ -180,21 +180,25 @@ def allocate_kv_from_tensors(
                     "accessible to WebGPU shaders.",
                     naive, first_name, k_bytes, v_bytes,
                 )
-        elif spec is not None and hasattr(spec, "real_page_size_bytes"):
-            # Symmetric head dims or non-FullAttentionSpec: fall back to
-            # halving the combined page size.
-            half = spec.real_page_size_bytes * num_blocks // 2
-            k_bytes = half
-            v_bytes = half
+        elif isinstance(spec, AttentionSpec):
+            # Non-FullAttentionSpec (e.g. SlidingWindowSpec): use spec-derived
+            # page size, splitting correctly for potentially asymmetric head dims.
             naive = tensor.size // 2
-            if half != naive:
-                logger.warning(
-                    "KV tensor size contains non-data bytes (per-token-head scale "
-                    "overhead): spec-derived per_buf=%d B, tensor.size//2=%d B "
-                    "(layer %r). Using spec-derived value; scale bytes are not "
-                    "accessible to WebGPU shaders.",
-                    half, naive, first_name,
-                )
+            if hasattr(spec, "head_size_v") and spec.head_size != spec.head_size_v:
+                k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
+                v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * get_dtype_size(spec.dtype)
+            else:
+                half = spec.real_page_size_bytes * num_blocks // 2
+                k_bytes = half
+                v_bytes = half
+                if half != naive:
+                    logger.warning(
+                        "KV tensor size contains non-data bytes (per-token-head scale "
+                        "overhead): spec-derived per_buf=%d B, tensor.size//2=%d B "
+                        "(layer %r). Using spec-derived value; scale bytes are not "
+                        "accessible to WebGPU shaders.",
+                        half, naive, first_name,
+                    )
         elif spec is None:
             half = tensor.size // 2
             k_bytes = half
