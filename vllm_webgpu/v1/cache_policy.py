@@ -204,41 +204,6 @@ def get_layer_types(model, hf_config) -> list | None:
     return None
 
 
-def _make_convertor(hf_cfg):
-    """Instantiate the vLLM model-arch convertor for hf_cfg.
-
-    Single point of dispatch for MODEL_ARCH_CONFIG_CONVERTORS so callers avoid
-    repeating the getattr/get/instantiate pattern.
-
-    This function is only reached from standalone scripts (run_inference.py,
-    profile_kernels.py) that lack a VllmConfig. In the vLLM engine path,
-    vllm_config.model_config already exposes get_total_num_kv_heads() and
-    get_head_size() directly, and allocate_kv_from_tensors is used instead of
-    allocate_kv_from_hf_config, so _make_convertor is never called there.
-    """
-    from vllm.transformers_utils.model_arch_config_convertor import (
-        MODEL_ARCH_CONFIG_CONVERTORS,
-        ModelArchConfigConvertorBase,
-    )
-    from vllm.transformers_utils.config import get_hf_text_config
-    hf_text = get_hf_text_config(hf_cfg)
-    return MODEL_ARCH_CONFIG_CONVERTORS.get(
-        getattr(hf_cfg, "model_type", ""), ModelArchConfigConvertorBase
-    )(hf_cfg, hf_text)
-
-
-
-def get_kv_dims_from_hf_config(hf_cfg) -> tuple[int, int]:
-    """Return (num_kv_heads, head_size) from a raw HuggingFace config object.
-
-    Intended for standalone scripts (e.g. profile_kernels.py) that do not have a
-    VllmConfig available. In contexts where a VllmConfig is present, prefer
-    model_config.get_total_num_kv_heads() / model_config.get_head_size() directly.
-    """
-    conv = _make_convertor(hf_cfg)
-    return conv.get_total_num_kv_heads(), conv.get_head_size()
-
-
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:
     """Sum of weight buffer sizes in bytes (excludes scratch/dummy/rope buffers)."""
     model = worker.model_runner.model if worker.model_runner is not None else None

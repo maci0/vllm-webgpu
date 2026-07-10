@@ -65,7 +65,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             # (uq_g != 0 or uq_u != 0). Allocate lazily on first use in
             # _moe_ffn_layer to avoid wasting GPU memory for f16 MoE models.
             self._moe_act_sz: int = _moe_act_sz
-            self._moe_sc = self._alloc_moe_sc(dev, self._num_experts, self._top_k, _moe_act_sz)
+            self._moe_sc = self._alloc_moe_sc(self._num_experts, self._top_k, _moe_act_sz)
             # Pre-allocated MAP_READ staging buffer for topk idx readback.
             # Copies are recorded into the Phase A encoder so no extra GPU submit
             # is needed after on_submitted_work_done_sync().
@@ -78,7 +78,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
     def _alloc_moe_sc(
         self,
-        dev,
         num_experts: int,
         top_k: int,
         act_sz: int,
@@ -88,6 +87,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         Called from __init__ (Mixtral) and _init_scratch_buffers (Qwen35) to
         avoid duplicating the same dict literal in both subclasses.
         """
+        dev = self.wgpu_device.wgpu_device
+
         def mk(n: int) -> "WebGPUBuffer":
             return WebGPUBuffer.empty(dev, max(n, 8))
         return {
@@ -181,7 +182,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
     def _dispatch_expert_gate_up(
         self,
-        dev,
         normed_x: "WebGPUBuffer",
         gw_key: str,
         uw_key: str,
@@ -207,7 +207,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 (inter, 1, 1),
             )
         else:
-            self._ensure_moe_expert_bufs(dev)
+            self._ensure_moe_expert_bufs()
             qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
             qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
             self._dispatch(
@@ -233,10 +233,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 _vec4_wg(inter),
             )
 
-    def _ensure_moe_expert_bufs(self, dev) -> None:
+    def _ensure_moe_expert_bufs(self) -> None:
         """Lazily allocate expert_gate and expert_up scratch buffers on first quantized call."""
         msc = self._moe_sc
         if "expert_gate" not in msc:
+            dev = self.wgpu_device.wgpu_device
             _act_sz = self._moe_act_sz
             msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
             msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
@@ -390,7 +391,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             suw_k = f"{sp}.{up_key}.weight"
             sdw_k = f"{sp}.{down_key}.weight"
             if all(k in self.weights for k in (sgw_k, suw_k, sdw_k)):
-                self._dispatch_expert_gate_up(dev, normed_x, sgw_k, suw_k, _sinter, extra_gate_consts)
+                self._dispatch_expert_gate_up(normed_x, sgw_k, suw_k, _sinter, extra_gate_consts)
                 uq_sd = self._uq_for_key(sdw_k)
                 qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)
                 self._dispatch(
@@ -415,7 +416,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                              layer_idx, exp_idx)
                 continue
 
-            self._dispatch_expert_gate_up(dev, normed_x, w1_key, w3_key, inter, extra_gate_consts)
+            self._dispatch_expert_gate_up(normed_x, w1_key, w3_key, inter, extra_gate_consts)
 
             # Down projection + weighted accumulate.
             uq_d = self._uq_for_key(w2_key)

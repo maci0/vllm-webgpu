@@ -125,15 +125,15 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             k_bias = self.weights.get(f"{p}.self_attn.k_proj.bias")
             v_bias = self.weights.get(f"{p}.self_attn.v_proj.bias")
             if q_bias is not None:
-                self._dispatch("add", [sc["q_buf"], q_bias, sc["q_bias_tmp"]],
+                self._dispatch("add", [_q_src, q_bias, sc["q_bias_tmp"]],
                                {"N": q_dim}, _vec4_wg(q_dim))
                 _q_src = sc["q_bias_tmp"]
             if k_bias is not None:
-                self._dispatch("add", [sc["k_buf"], k_bias, sc["k_bias_tmp"]],
+                self._dispatch("add", [_k_src, k_bias, sc["k_bias_tmp"]],
                                {"N": kv_dim}, _vec4_wg(kv_dim))
                 _k_src = sc["k_bias_tmp"]
             if v_bias is not None:
-                self._dispatch("add", [sc["v_buf"], v_bias, sc["v_bias_tmp"]],
+                self._dispatch("add", [_v_src, v_bias, sc["v_bias_tmp"]],
                                {"N": kv_dim}, _vec4_wg(kv_dim))
                 _v_src = sc["v_bias_tmp"]
 

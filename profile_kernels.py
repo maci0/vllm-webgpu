@@ -45,7 +45,8 @@ def main() -> None:
 
     from vllm_webgpu.v1.model_runner import _build_model
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
-    from vllm_webgpu.v1.cache_policy import get_kv_dims_from_hf_config, get_layer_types
+    from vllm_webgpu.scripts.kv_utils import get_kv_dims_from_hf_config
+    from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, get_layer_types
     import vllm_webgpu.envs as _envs
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
     model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
@@ -160,7 +161,7 @@ def main() -> None:
             attn_w = 4 * hid * (q_dim2 + num_kv_heads * head_dim)  # Q+K+V+O projections in f16 bytes
             # Per-head QK-norm weights (Qwen3, Llama3.2): q_norm [num_q_heads*head_dim] f16
             # + k_norm [num_kv_heads*head_dim] f16. Add if the checkpoint carries q_norm weights.
-            if model is not None and any('q_norm' in k for k in getattr(model, 'weights', {})):
+            if any('q_norm' in k for k in model.weights):
                 attn_w += (q_dim2 + num_kv_heads * head_dim) * 2  # f16 = 2 bytes
 
             # For hybrid architectures (e.g. NemotronH, Gemma4), layer types differ per layer.
@@ -202,7 +203,7 @@ def main() -> None:
                 total_w_bytes = 0
                 _mlp_idx = 0
                 for idx, lt in enumerate(layer_types):
-                    if lt in ('attention', 'full_attention', 'sliding_attention'):
+                    if lt in KV_ATTN_TYPES:
                         total_w_bytes += attn_w
                     elif lt in ('mlp', 'ffn'):
                         if layer_int_size is not None:

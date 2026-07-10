@@ -105,14 +105,14 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
-    # Compute the blended inv_freq using the same arithmetic as
-    # YaRNScalingRotaryEmbedding._compute_inv_freq, inlined here to avoid
-    # calling a private vLLM method (which would break on any internal refactor).
+    # Blended inv_freq: character-for-character copy of
+    # YaRNScalingRotaryEmbedding._compute_inv_freq in
+    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py.
     # The public helpers yarn_find_correction_range and yarn_linear_ramp_mask
     # are imported from vllm.model_executor.layers.rotary_embedding.common above.
-    # VERSION SYNC: on each vLLM version bump, verify this formula against
-    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
-    # (specifically _compute_inv_freq) and update tests/test_yarn_freqs.py.
+    # VERSION SYNC: on each vLLM version bump, diff this block against
+    # yarn_scaling_rope.py::YaRNScalingRotaryEmbedding._compute_inv_freq
+    # and update tests/test_yarn_freqs.py if the formula changes.
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
@@ -332,12 +332,14 @@ class BaseWebGPUModel(ABC):
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             p = Path(path)
-            actual = str(p / _SAFE_WEIGHTS_NAME) if p.is_dir() else path
+            is_dir = p.is_dir()
+            model_dir = p if is_dir else p.parent
+            actual = str(p / _SAFE_WEIGHTS_NAME) if is_dir else path
             # Read config.json once and share between the unsupported-quant check and
             # the loader, eliminating the redundant second parse in load_safetensors_weights.
-            _cfg_json = (p if p.is_dir() else p.parent) / "config.json"
+            _cfg_json = model_dir / "config.json"
             _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
-            _check_unsupported_quant(p if p.is_dir() else p.parent, quant_cfg=_quant_cfg)
+            _check_unsupported_quant(model_dir, quant_cfg=_quant_cfg)
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,
@@ -349,9 +351,10 @@ class BaseWebGPUModel(ABC):
             # Read config.json once and share with both the unsupported-quant check
             # and the loader, eliminating the redundant second parse inside
             # load_safetensors_weights_sharded (mirrors the single-file branch above).
-            _cfg_json = Path(path) / "config.json"
+            _model_dir = Path(path)
+            _cfg_json = _model_dir / "config.json"
             _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
-            _check_unsupported_quant(Path(path), quant_cfg=_quant_cfg)
+            _check_unsupported_quant(_model_dir, quant_cfg=_quant_cfg)
             self.weights = load_safetensors_weights_sharded(
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,

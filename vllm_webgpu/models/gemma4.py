@@ -431,25 +431,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             **self._quant_extra(_lm_base, uq_lm)},
                            _rows_wg(vocab))
 
-            if self.softcap is not None and self.softcap > 0:
-                capped_buf = pre["capped"]
-                self._dispatch("logit_softcap", [logits_buf, capped_buf],
-                               {"VOCAB": vocab, "CAP": float(self.softcap)},
-                               ((vocab + 255) // 256, num_tokens, 1),
-                               shader_subdir="gemma")
-                result_buf = capped_buf
-            else:
-                result_buf = logits_buf
+            self._dispatch_softcap_and_sample(vocab, logits_buf, pre["capped"])
 
-            greedy = self._greedy_decode
-            if greedy:
-                self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
-                               {"N": vocab}, (1, 1, 1))
-                self._copy_sample_to_staging()
-
-        self._last_logit_buf = result_buf
-        self._last_vocab     = vocab
-        if greedy:
+        if self._greedy_decode:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
@@ -462,6 +446,35 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """
         key = self._lm_head_key()
         return key, self.weights[key], self._uq_for_key(key), key.removesuffix('.weight')
+
+    def _dispatch_softcap_and_sample(
+        self,
+        vocab: int,
+        logits_buf: "WebGPUBuffer",
+        capped_buf: "WebGPUBuffer",
+    ) -> "WebGPUBuffer":
+        """Dispatch optional logit softcap, greedy argmax, and staging copy.
+
+        Must be called from within an active _batched_dispatch() context.
+        Sets _last_logit_buf and _last_vocab, then returns the result buffer
+        (capped_buf if softcap is active, otherwise logits_buf).
+        """
+        if self.softcap is not None and self.softcap > 0:
+            self._dispatch(
+                "logit_softcap", [logits_buf, capped_buf],
+                {"VOCAB": vocab, "CAP": float(self.softcap)},
+                _rows_wg(vocab),
+                shader_subdir="gemma")
+            result_buf = capped_buf
+        else:
+            result_buf = logits_buf
+        if self._greedy_decode:
+            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
+                           {"N": vocab}, (1, 1, 1))
+            self._copy_sample_to_staging()
+        self._last_logit_buf = result_buf
+        self._last_vocab     = vocab
+        return result_buf
 
     def _mr4_quant_supported(self) -> bool:
         """Return True when every layer weight uses a quant format compatible with matmul_quant_mr4.
@@ -883,25 +896,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                  **self._quant_extra(_lm_base, uq_lm)},
                 _rows_wg(vocab))
 
-            if self.softcap is not None and self.softcap > 0:
-                self._dispatch(
-                    "logit_softcap", [b["logits"], b["capped"]],
-                    {"VOCAB": vocab, "CAP": float(self.softcap)},
-                    _rows_wg(vocab),
-                    shader_subdir="gemma")
-                result_buf = b["capped"]
-            else:
-                result_buf = b["logits"]
+            self._dispatch_softcap_and_sample(vocab, b["logits"], b["capped"])
 
-            greedy = self._greedy_decode
-            if greedy:
-                self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
-                               {"N": vocab}, (1, 1, 1))
-                self._copy_sample_to_staging()
-
-        self._last_logit_buf = result_buf
-        self._last_vocab     = vocab
-        if greedy:
+        if self._greedy_decode:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
@@ -981,25 +978,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                  **self._quant_extra(_lm_base, uq_lm)},
                 _rows_wg(vocab))
 
-            if self.softcap is not None and self.softcap > 0:
-                self._dispatch(
-                    "logit_softcap", [pre["logits"], pre["capped"]],
-                    {"VOCAB": vocab, "CAP": float(self.softcap)},
-                    _rows_wg(vocab),
-                    shader_subdir="gemma")
-                result_buf = pre["capped"]
-            else:
-                result_buf = pre["logits"]
+            self._dispatch_softcap_and_sample(vocab, pre["logits"], pre["capped"])
 
-            greedy = self._greedy_decode
-            if greedy:
-                self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
-                               {"N": vocab}, (1, 1, 1))
-                self._copy_sample_to_staging()
-
-        self._last_logit_buf = result_buf
-        self._last_vocab     = vocab
-        if greedy:
+        if self._greedy_decode:
             tok = self._read_sample_tok()
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()

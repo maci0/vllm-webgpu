@@ -336,6 +336,35 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         return result.to_numpy().view(np.float16)[:num_tokens * vocab].reshape(num_tokens, vocab).astype(np.float32)
 
+    def _gemm_adaptive(
+        self,
+        src: "WebGPUBuffer",
+        wk: str,
+        out_b: "WebGPUBuffer",
+        K: int,
+        N: int,
+        num_tokens: int,
+    ) -> None:
+        """Choose matmul_quant_mr4 for batch or matmul_quant (GEMV) for single token."""
+        uq = self._uq_for_key(wk)
+        sc_buf = self._scales_buf(wk, uq, self._dummy_scales_buf)
+        base = wk.removesuffix(".weight")
+        if num_tokens > 1 and uq in (0, 3):
+            _ex: dict = {"K": K, "N": N, "M": num_tokens, "USE_QUANT": uq}
+            _ex.update(self._quant_extra(base, uq))
+            self._dispatch("matmul_quant_mr4",
+                           [src, self.weights[wk], sc_buf, out_b],
+                           _ex, (N, num_tokens, 1))
+        else:
+            if num_tokens > 1:
+                raise RuntimeError(
+                    f"_gemm_adaptive: multi-token requires uq in (0,3), got uq={uq} for {wk}"
+                )
+            self._dispatch("matmul_quant",
+                           [src, self.weights[wk], sc_buf, out_b],
+                           {"K": K, "N": N, "USE_QUANT": uq, **self._quant_extra(base, uq)},
+                           _gemv_wg(N))
+
     # ── Decoder layer (intentionally different signature from parent _transformer_layer) ──
     # Parent Gemma4WebGPUModel._transformer_layer takes normed_x and returns (WebGPUBuffer, WebGPUBuffer).
     # This class uses a fully overridden forward(), so the parent forward() is never called here.
@@ -373,28 +402,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         k_cache, v_cache = self.kv_pool[_kv_layer]
 
-        def _gemm_adaptive(src: "WebGPUBuffer", wk: str, out_b: "WebGPUBuffer",
-                           K: int, N: int) -> None:
-            """Choose matmul_quant_mr4 for batch or matmul_quant (GEMV) for single token."""
-            uq = self._uq_for_key(wk)
-            sc_buf = self._scales_buf(wk, uq, self._dummy_scales_buf)
-            base = wk.removesuffix(".weight")
-            if num_tokens > 1 and uq in (0, 3):
-                _ex: dict = {"K": K, "N": N, "M": num_tokens, "USE_QUANT": uq}
-                _ex.update(self._quant_extra(base, uq))
-                self._dispatch("matmul_quant_mr4",
-                               [src, self.weights[wk], sc_buf, out_b],
-                               _ex, (N, num_tokens, 1))
-            else:
-                if num_tokens > 1:
-                    raise RuntimeError(
-                        f"_gemm_adaptive: multi-token requires uq in (0,3), got uq={uq} for {wk}"
-                    )
-                self._dispatch("matmul_quant",
-                               [src, self.weights[wk], sc_buf, out_b],
-                               {"K": K, "N": N, "USE_QUANT": uq, **self._quant_extra(base, uq)},
-                               _gemv_wg(N))
-
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # ── Attention sublayer ────────────────────────────────────────────
             self._dispatch("rms_norm_f32in",
@@ -404,14 +411,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Q projection: unconditional (KV-shared layers still need Q).
             # K and V projections: skip for KV-shared layers; they reuse the
             # target layer's already-populated cache and never consume these outputs.
-            _gemm_adaptive(sc["normed"], f"{p}.self_attn.q_proj.weight", sc["q_buf"], hidden, q_dim)
+            self._gemm_adaptive(sc["normed"], f"{p}.self_attn.q_proj.weight", sc["q_buf"], hidden, q_dim, num_tokens)
             if not is_kv_shared:
-                _gemm_adaptive(sc["normed"], f"{p}.self_attn.k_proj.weight", sc["k_buf"], hidden, kv_dim)
+                self._gemm_adaptive(sc["normed"], f"{p}.self_attn.k_proj.weight", sc["k_buf"], hidden, kv_dim, num_tokens)
                 # v_proj: global attention layers (no separate V; V=K) have no v_proj weight.
                 # Use the precomputed flag from _build_layer_params_from_config as source of truth.
                 has_v_proj = lp.get("has_v_proj", True)
                 if has_v_proj:
-                    _gemm_adaptive(sc["normed"], f"{p}.self_attn.v_proj.weight", sc["v_buf"], hidden, kv_dim)
+                    self._gemm_adaptive(sc["normed"], f"{p}.self_attn.v_proj.weight", sc["v_buf"], hidden, kv_dim, num_tokens)
                     v_src = sc["v_buf"]
                 else:
                     v_src = sc["k_buf"]  # global attention: V = K
@@ -499,8 +506,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 "CTX_LEN": ctx_len, "ATTN_TOKEN_OFFSET": _t_q_off},
                                (self.num_q_heads, 1, 1))
 
-            _gemm_adaptive(sc["attn_out"], f"{p}.self_attn.o_proj.weight",
-                           sc["o_proj_out"], q_dim, hidden)
+            self._gemm_adaptive(sc["attn_out"], f"{p}.self_attn.o_proj.weight",
+                                sc["o_proj_out"], q_dim, hidden, num_tokens)
 
             # post_attention norm + residual add + pre_feedforward norm
             pan_w = self.weights.get(f"{p}.post_attention_layernorm.weight")
@@ -537,14 +544,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [ffn_in, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
                                {"K": hidden, "N": inter_shared, "GELU": 1}, (inter_shared, 1, 1))
             else:
-                _gemm_adaptive(ffn_in, gw_k, sc["gate_buf"], hidden, inter_shared)
-                _gemm_adaptive(ffn_in, uw_k, sc["up_buf"], hidden, inter_shared)
+                self._gemm_adaptive(ffn_in, gw_k, sc["gate_buf"], hidden, inter_shared, num_tokens)
+                self._gemm_adaptive(ffn_in, uw_k, sc["up_buf"], hidden, inter_shared, num_tokens)
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                {"N": gelu_n_shared}, _vec4_wg(gelu_n_shared),
                                shader_subdir="gemma")
 
-            _gemm_adaptive(sc["ffn_act"], f"{p}.mlp.down_proj.weight", sc["ffn_out"],
-                           inter_shared, hidden)
+            self._gemm_adaptive(sc["ffn_act"], f"{p}.mlp.down_proj.weight", sc["ffn_out"],
+                                inter_shared, hidden, num_tokens)
 
             # MoE layers use post_feedforward_layernorm_1 for the shared MLP stream;
             # non-MoE layers only have the no-suffix key.

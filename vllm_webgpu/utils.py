@@ -56,4 +56,4 @@ def sample_token(
 
     generators = {0: torch.Generator().manual_seed(seed)} if seed is not None else {}
 
-    return random_sample(filtered.softmax(dim=-1, dtype=torch.float32), generators).item()
+    return random_sample(filtered.softmax(dim=-1), generators).item()

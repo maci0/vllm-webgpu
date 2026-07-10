@@ -222,7 +222,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         if self._is_moe:
             _moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
             self._moe_act_sz = _moe_act_sz
-            self._moe_sc = self._alloc_moe_sc(dev, self._moe_num_experts, self._moe_k, _moe_act_sz)
+            self._moe_sc = self._alloc_moe_sc(self._moe_num_experts, self._moe_k, _moe_act_sz)
 
     def _postprocess_weights(self) -> None:
         """Post-load weight fixups for full-attn layers.

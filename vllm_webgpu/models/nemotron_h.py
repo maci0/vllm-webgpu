@@ -56,6 +56,43 @@ except (ImportError, OSError):
     # _validate_mamba_weights checks the actual weight shape at load time.
     pass
 
+# Import-time sentinel: confirm mamba2_state_shape conv_dim formula still matches
+# the expression this code duplicates at NemotronHWebGPUModel.__init__ L138:
+#   conv_dim = mamba_int + 2 * n_groups * ssm_state_size
+# mamba_utils.py mamba2_state_shape uses: conv_dim = intermediate_size + 2 * n_groups * state_size
+# (tp=1, so no divide). Fires at import time so a vLLM change to conv_dim is caught
+# before any model is loaded. Silently skipped on .pyc-only installs.
+try:
+    import inspect as _inspect
+    from vllm.model_executor.layers.mamba import mamba_utils as _mu_mod
+    _mu_src = _inspect.getsource(_mu_mod.MambaStateShapeCalculator.mamba2_state_shape)
+    assert "intermediate_size + 2 * n_groups * state_size" in _mu_src, (
+        "MambaStateShapeCalculator.mamba2_state_shape conv_dim formula may have "
+        "changed upstream. Review the conv_dim assignment in "
+        "NemotronHWebGPUModel.__init__ (mamba_int + 2 * n_groups * ssm_state_size) "
+        "and update it to match before removing this assertion."
+    )
+    del _inspect, _mu_mod, _mu_src
+except (ImportError, OSError):
+    pass
+
+# Import-time sentinel: confirm NemotronHMLPDecoderLayer still computes mlp_index
+# as hybrid_override_pattern[:layer_idx+1].count("-") - 1, which is the formula
+# NemotronHWebGPUModel.__init__ reimplements in the _mlp_count loop.
+# Silently skipped on .pyc-only installs.
+try:
+    import inspect as _inspect
+    from vllm.model_executor.models import nemotron_h as _nh_mod
+    _nh_src = _inspect.getsource(_nh_mod.NemotronHMLPDecoderLayer.__init__)
+    assert 'count("-") - 1' in _nh_src, (
+        "NemotronHMLPDecoderLayer.__init__ mlp_index formula may have changed "
+        "upstream. Review the _mlp_count loop in NemotronHWebGPUModel.__init__ "
+        "and update it before removing this assertion."
+    )
+    del _inspect, _nh_mod, _nh_src
+except (ImportError, OSError):
+    pass
+
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
 # 0 = F16 (no quantization), 3 = GPTQ int4, 4 = AWQ sym int4,
@@ -63,6 +100,10 @@ except (ImportError, OSError):
 # Values 5-8 use the non-AWQ GPU-side byte-concat path in _pack_attn_weights;
 # the _is_awq == 4 check is the sole gate selecting AWQ-specific unpacking.
 
+
+def _neg_exp_transform(arr: np.ndarray) -> np.ndarray:
+    """Negate the exponential of arr — applied to A_log weights before GPU upload."""
+    return -np.exp(arr)
 
 
 class NemotronHWebGPUModel(BaseWebGPUModel):
@@ -154,10 +195,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Applied during load_weights before GPU upload, eliminating a per-layer
         # GPU readback+re-upload that _validate_mamba_weights would otherwise
         # require. The transform uses the HF checkpoint key name (backbone. prefix).
-        _neg_exp = lambda x: -np.exp(x)
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "mamba":
-                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _neg_exp
+                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _neg_exp_transform
 
         # The WebGPU MLP path does not implement bias addition. All known
         # NemotronH checkpoints ship with mlp_bias=False (the default), so

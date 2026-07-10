@@ -29,7 +29,9 @@ if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.lora.request import LoRARequest
     from vllm.tasks import SupportedTask
+    from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
+    from vllm.v1.outputs import AsyncModelRunnerOutput, ModelRunnerOutput
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
 
 logger = init_logger(__name__)
@@ -99,10 +101,14 @@ class WebGPUWorker(WorkerBase):
         set_random_seed(self.model_config.seed)
         return CompilationTimes(language_model=elapsed, encoder=0.0)
 
-    def execute_model(self, scheduler_output: Any) -> Any:
+    def execute_model(
+        self, scheduler_output: "SchedulerOutput"
+    ) -> "ModelRunnerOutput | AsyncModelRunnerOutput | None":
         return self.model_runner.execute_model(scheduler_output)
 
-    def sample_tokens(self, grammar_output: Any) -> Any:
+    def sample_tokens(
+        self, grammar_output: "GrammarOutput"
+    ) -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         return self.model_runner.sample_tokens(grammar_output)
 
     def get_model(self) -> Any:
