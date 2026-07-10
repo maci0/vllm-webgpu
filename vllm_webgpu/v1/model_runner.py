@@ -151,13 +151,15 @@ class WebGPUModelRunner:
     def _get_lp_list(self) -> "list | None":
         """Return per-layer attention params, guarding against model=None.
 
-        Returns None when no per-layer params exist. All callers treat None and
-        [] identically (via truthiness), so an empty list is also a valid
-        "no heterogeneous layers" signal and both map to the uniform KV path.
+        Returns None when no per-layer params exist. Falls back to the HF
+        config attribute only when the model has not set _lp at all (None),
+        not when it is explicitly set to [] — an empty list means the model
+        has confirmed there are no heterogeneous layers, and that signal must
+        not be overridden by a stale HF config attribute.
         """
         mc = self.vllm_config.model_config.hf_config
         lp = getattr(self.model, "_lp", None) if self.model is not None else None
-        return lp or getattr(mc, "_layer_attention_params", None)
+        return lp if lp is not None else getattr(mc, "_layer_attention_params", None)
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
