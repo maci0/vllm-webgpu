@@ -379,6 +379,38 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Last-token prediction extracted via GPU copy_buffer_to_buffer.
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """
+        # APC prefix-cache hit: the first token's absolute position is > 0, meaning
+        # num_computed cached K/V blocks already exist in the KV cache. The batch
+        # prefill shader has no KV-cache binding and applies a batch-local causal
+        # mask starting at index 0, so it cannot attend to the prefix. Fall back to
+        # the sequential path, which drives flash_attn_decode with the full block
+        # table and ctx_len = tok_pos + 1.
+        if int(positions[0]) > 0:
+            return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
+
+        # Fall back to per-token sequential only for formats matmul_quant_mr4 cannot handle.
+        # USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4) are both supported in the batch path.
+        # All other quant types (AWQ, FP8, NF4, Q4_K, ...) fall through to _transformer_layer
+        # which dispatches matmul_quant with the correct USE_QUANT per key.
+        # _batch_matmul_supported is computed once in load_weights; no re-scan per call.
+        if not self._batch_matmul_supported:
+            return self._prefill_sequential_fallback(
+                input_ids, positions, attn_metadata, T,
+            )
+
+        # Sliding Window Attention models must use the sequential path so that
+        # each token's ctx_len is capped by _effective_ctx_len (overridden in
+        # MixtralWebGPUModel). flash_attn_prefill applies standard causal masking
+        # and has no WINDOW_SIZE constant, so batch prefill would attend across the
+        # full context and produce wrong attention beyond the window.
+        # _force_sequential_prefill is a separate flag (set by GptOssWebGPUModel)
+        # that requests the sequential path without touching _sw, keeping
+        # _effective_ctx_len semantics correct.
+        if self._force_sequential_prefill or self._sw is not None:
+            return self._prefill_sequential_fallback(
+                input_ids, positions, attn_metadata, T,
+            )
+
         hidden = self.hidden_size
         vocab = self.vocab_size
         rms_base = self._rms_consts
@@ -392,7 +424,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         inter  = self.intermediate_size
 
         # Temporary batch buffers (T × size). Allocated once per prefill call;
-        # overhead is negligible vs the GEMM savings.
+        # only reached when the batch path is confirmed, so overhead is negligible
+        # vs the GEMM savings.
         b: dict = {
             "x":        alloc(T * hidden),
             "normed":   alloc(T * hidden),
@@ -421,15 +454,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "logits":    self._pre["logits"],
         }
 
-        # APC prefix-cache hit: the first token's absolute position is > 0, meaning
-        # num_computed cached K/V blocks already exist in the KV cache. The batch
-        # prefill shader has no KV-cache binding and applies a batch-local causal
-        # mask starting at index 0, so it cannot attend to the prefix. Fall back to
-        # the sequential path, which drives flash_attn_decode with the full block
-        # table and ctx_len = tok_pos + 1.
-        if int(positions[0]) > 0:
-            return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
-
         slot_map_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
         slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr)
         pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
@@ -447,29 +471,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            {"K": K_in, "N": N_out, "M": T,
                             "USE_QUANT": uq, **self._quant_extra(w_key.removesuffix('.weight'), uq)},
                            (N_out, T, 1))
-
-        # Fall back to per-token sequential only for formats matmul_quant_mr4 cannot handle.
-        # USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4) are both supported in the batch path.
-        # All other quant types (AWQ, FP8, NF4, Q4_K, ...) fall through to _transformer_layer
-        # which dispatches matmul_quant with the correct USE_QUANT per key.
-        # _batch_matmul_supported is computed once in load_weights; no re-scan per call.
-        if not self._batch_matmul_supported:
-            return self._prefill_sequential_fallback(
-                input_ids, positions, attn_metadata, T,
-            )
-
-        # Sliding Window Attention models must use the sequential path so that
-        # each token's ctx_len is capped by _effective_ctx_len (overridden in
-        # MixtralWebGPUModel). flash_attn_prefill applies standard causal masking
-        # and has no WINDOW_SIZE constant, so batch prefill would attend across the
-        # full context and produce wrong attention beyond the window.
-        # _force_sequential_prefill is a separate flag (set by GptOssWebGPUModel)
-        # that requests the sequential path without touching _sw, keeping
-        # _effective_ctx_len semantics correct.
-        if self._force_sequential_prefill or self._sw is not None:
-            return self._prefill_sequential_fallback(
-                input_ids, positions, attn_metadata, T,
-            )
 
         # _CHUNK layers per command encoder keeps each submit under Metal's GPU timeout.
         # At T=19 and inter=9728, a single 36-layer encoder generates ~37M threads and
