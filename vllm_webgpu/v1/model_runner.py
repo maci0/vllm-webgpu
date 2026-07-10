@@ -383,6 +383,16 @@ class WebGPUModelRunner:
                 )
                 built_logprobs = stacked.tolists()
             else:
+                # Derive the dtype of selected_token_ranks from the first real
+                # entry. batched_count_greater_than returns (bool).sum(-1),
+                # which is currently int64, but vLLM's empty_cpu allocates
+                # int32. Pinning to whatever the real data carries avoids a
+                # torch.cat dtype mismatch if vLLM ever changes that.
+                rank_dtype = next(
+                    d.selected_token_ranks.dtype
+                    for d in logprobs_data
+                    if d is not None
+                )
                 pieces = []
                 for d in logprobs_data:
                     if d is not None:
@@ -396,7 +406,7 @@ class WebGPUModelRunner:
                         pieces.append(LogprobsTensors(
                             torch.zeros(1, max_k, dtype=torch.int32),
                             torch.full((1, max_k), -float("inf")),
-                            torch.zeros(1, dtype=torch.int64),
+                            torch.zeros(1, dtype=rank_dtype),
                         ))
                 stacked = LogprobsTensors(
                     torch.cat([p.logprob_token_ids for p in pieces]),
