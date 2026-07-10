@@ -97,15 +97,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.n_groups: int = model_config.n_groups
         self.ssm_state_size: int = model_config.ssm_state_size
         self.conv_kernel: int = model_config.conv_kernel
-        # conv_dim: size of the vector passed through the causal conv
-        # = x (mamba_int) + B (n_groups*state_size) + C (n_groups*state_size)
-        # Mirrors MambaMixer2.conv_dim, vllm/model_executor/layers/mamba/mamba_mixer2.py L313.
-        # Also appears in mamba_utils.py:177 (mamba2_state_shape uses this as
-        # conv_dim = intermediate_size + 2 * n_groups * state_size).
-        # Pinned against vLLM 0.24.0; verify this formula on every vLLM minor bump.
-        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
-        # Verify conv_dim against the authoritative mamba2_state_shape at tp=1.
-        # math.prod(conv_state_shape) == (conv_kernel - 1) * conv_dim for num_spec=0.
         # Both shapes are stored on self so _init_mamba_states can reuse them
         # without a second call to mamba2_state_shape.
         self._mamba_conv_shape, self._mamba_ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
@@ -117,11 +108,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        assert math.prod(self._mamba_conv_shape) == (self.conv_kernel - 1) * self.conv_dim, (
-            f"conv_dim formula drift: expected {(self.conv_kernel - 1) * self.conv_dim}, "
-            f"got {math.prod(self._mamba_conv_shape)} from MambaStateShapeCalculator. "
-            "Update self.conv_dim to match MambaMixer2."
-        )
+        # conv_dim derived from the authoritative shape: math.prod(conv_shape) == (conv_kernel-1) * conv_dim
+        self.conv_dim: int = math.prod(self._mamba_conv_shape) // (self.conv_kernel - 1)
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
