@@ -1312,7 +1312,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
         index_path = p / _SAFE_WEIGHTS_INDEX_NAME
         with open(index_path) as f:
             index = json.load(f)
-        weight_map = index["weight_map"]
+        weight_map = index.get("weight_map", {})
 
     with open(p / "config.json") as f:
         _raw_cfg = json.load(f)
