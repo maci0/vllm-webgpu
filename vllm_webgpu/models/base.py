@@ -229,8 +229,11 @@ class BaseWebGPUModel(ABC):
             # self._active_encoder is still `encoder`.  For the outer CM, inner
             # blocks may have replaced self._active_encoder with a fresh
             # replacement encoder that holds post-layer commands; submit that one.
+            # finish() is a CPU-only serialization step (can take tens–hundreds of µs);
+            # completing it before capturing t0 keeps that overhead out of the GPU timing.
+            cmd = self._active_encoder.finish()
             t0 = time.perf_counter() if (self.profiling and label) else 0.0
-            dev.queue.submit([self._active_encoder.finish()])
+            dev.queue.submit([cmd])
             if self.profiling and label:
                 dev.queue.on_submitted_work_done_sync()
                 self._prof_stats[label].append((time.perf_counter() - t0) * 1000.0)
@@ -309,17 +312,18 @@ class BaseWebGPUModel(ABC):
         )
         fmt = detect_weight_format(path)
         transforms = self._weight_transforms
+        # Shared config.json resolution: both safetensors branches use the same
+        # directory (path itself when it is a directory, parent otherwise) and
+        # the same config.json/quant_cfg loading logic. Computing once avoids
+        # the duplication that previously existed in each branch.
+        _path = Path(path)
+        model_dir = _path if _path.is_dir() else _path.parent
+        _cfg_json = model_dir / "config.json"
+        _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
+        _check_unsupported_quant(model_dir, quant_cfg=_quant_cfg)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
-            p = Path(path)
-            is_dir = p.is_dir()
-            model_dir = p if is_dir else p.parent
-            actual = str(p / _SAFE_WEIGHTS_NAME) if is_dir else path
-            # Read config.json once and share between the unsupported-quant check and
-            # the loader, eliminating the redundant second parse in load_safetensors_weights.
-            _cfg_json = model_dir / "config.json"
-            _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
-            _check_unsupported_quant(model_dir, quant_cfg=_quant_cfg)
+            actual = str(_path / _SAFE_WEIGHTS_NAME) if _path.is_dir() else path
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,
@@ -328,13 +332,6 @@ class BaseWebGPUModel(ABC):
             # MLX affine int4 directories also return "safetensors_sharded" from
             # detect_weight_format; load_safetensors_weights_sharded detects the
             # .biases keys in the already-loaded index and dispatches accordingly.
-            # Read config.json once and share with both the unsupported-quant check
-            # and the loader, eliminating the redundant second parse inside
-            # load_safetensors_weights_sharded (mirrors the single-file branch above).
-            _model_dir = Path(path)
-            _cfg_json = _model_dir / "config.json"
-            _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
-            _check_unsupported_quant(_model_dir, quant_cfg=_quant_cfg)
             self.weights = load_safetensors_weights_sharded(
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,

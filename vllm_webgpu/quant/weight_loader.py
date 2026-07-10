@@ -186,8 +186,17 @@ def load_safetensors_weights_sharded(
         index = json.load(f)
     weight_map = index.get("weight_map", {})
 
-    # MLX affine int4: presence of .biases keys distinguishes it from standard sharded.
-    if any(k.endswith(".biases") for k in weight_map):
+    # Single pass over weight_map keys: detect MLX format, multimodal prefix style.
+    # MLX affine int4 has .biases keys; Gemma3 MM uses "language_model." prefix;
+    # Qwen3.5 MM uses "model.language_model." prefix. Computing all three flags
+    # in one loop avoids three separate O(n) walks over a potentially large map.
+    has_biases = is_gemma_mm = is_qwen35_mm = False
+    for k in weight_map:
+        has_biases   |= k.endswith(".biases")
+        is_gemma_mm  |= k.startswith("language_model.")
+        is_qwen35_mm |= k.startswith("model.language_model.")
+
+    if has_biases:
         if f32_keys:
             raise ValueError("f32_keys is not supported for mlx_int4 format")
         return load_mlx_weights(model_dir, wgpu_device, weight_map=weight_map,
@@ -199,11 +208,6 @@ def load_safetensors_weights_sharded(
     # Inlining as weights.update(load_safetensors_weights(...)) causes Python's GC
     # to drop the temporary dict before wgpu finishes using the mapped GPU buffers,
     # resulting in zeroed buffer contents. The local variable keeps the dict alive.
-    # Detect multimodal models with nested language model prefix.
-    # Gemma3 multimodal: keys start with "language_model." → strip prefix
-    # Qwen3.5 multimodal: keys start with "model.language_model." → remap to "model."
-    is_gemma_mm  = any(k.startswith("language_model.") for k in weight_map)
-    is_qwen35_mm = any(k.startswith("model.language_model.") for k in weight_map)
     is_multimodal = is_gemma_mm or is_qwen35_mm
     if is_multimodal:
         style = "Gemma3" if is_gemma_mm else "Qwen3.5"
@@ -265,18 +269,6 @@ def load_safetensors_weights_sharded(
     return weights
 
 
-
-def _qzeros_symmetric(qzeros: np.ndarray) -> bool:
-    """Return True when every int32 word in qzeros equals 0x88888888.
-
-    0x88888888 encodes every nibble as 8, the uint4 midpoint and the
-    zero-point for symmetric int4 quantization. This check is valid for
-    both AWQ and GPTQ packing orders because 0x88888888 encodes all nibbles
-    as 8 regardless of interleaving. Checkpoints with all-zero qzeros
-    (zero_point=0) or any per-group asymmetric zeros cannot use the GPU
-    shader path and must fall back to CPU dequantization.
-    """
-    return bool(np.all(qzeros == _SYM_ZEROS_INT32))
 
 
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
@@ -840,7 +832,9 @@ def load_safetensors_weights(
                     # GPU dequant path: upload raw quantized data directly.
                     # GPTQ qweight [K//8, N] is transposed to [N, K//8] so all 256
                     # threads in split-K read consecutive INT32s (coalesced access).
-                    if fmt == "gptq" and g_idx is None and (qz is None or _qzeros_symmetric(qz)):
+                    # qz.view(np.int32) reinterprets bytes as signed int32, making the
+                    # comparison correct for both int32 and uint32 source arrays (U32 safetensors dtype).
+                    if fmt == "gptq" and g_idx is None and (qz is None or bool(np.all(qz.view(np.int32) == _SYM_ZEROS_INT32))):
                         # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
                         K8, N_ = qw.shape
                         group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else (K8 * 8)
@@ -851,7 +845,7 @@ def load_safetensors_weights(
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
                     elif (fmt == "awq" and g_idx is None
-                          and (qz is None or _qzeros_symmetric(qz))):
+                          and (qz is None or bool(np.all(qz.view(np.int32) == _SYM_ZEROS_INT32)))):
                         # GPU AWQ: either qzeros absent (implicit symmetric, all zero-points = 8)
                         # or qzeros verified all-8 (every nibble equals exactly 8, i.e., zero_point=8).
                         # The shader hardcodes nibble - 8, which only produces 0 when nibble==8.

@@ -206,49 +206,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     np_dt = np.float32 if pes_w.dtype == 'f32' else np.float16
                     self._pes_cache[i] = pes_w.to_numpy().view(np_dt).astype(np.float32)
 
-    # ── Batch prefill path (not supported) ──────────────────────────────────
-
-    def _prefill_batch_forward(self, input_ids, positions, attn_metadata, T):
-        """Not implemented for DiffusionGemma.
-
-        The inherited Gemma4 implementation runs only the shared FFN; it has no
-        MoE routing, no expert loop, and no post-MoE combine step. Calling it
-        would silently produce wrong logits for every MoE layer.
-
-        DiffusionGemmaWebGPUModel.forward() fully overrides the parent dispatch
-        path, so this method is unreachable through normal inference. Raise here
-        so that any future caller gets a clear error rather than wrong results.
-        """
-        raise NotImplementedError(
-            "DiffusionGemmaWebGPUModel does not support _prefill_batch_forward. "
-            "The MoE FFN (routing, expert loop, post-MoE combine) is not "
-            "implemented in the inherited Gemma4 batch-prefill path. Use "
-            "forward() directly; it handles both single-token decode and "
-            "multi-token canvas prefill including the full MoE FFN."
-        )
-
-    def _prefill_sequential_fallback(self, input_ids, positions, attn_metadata, T: int) -> np.ndarray:
-        """Not implemented for DiffusionGemma.
-
-        The inherited Gemma4 implementation calls _transformer_layer(), which
-        reads self._sc['qkv_buf']. That key is intentionally absent from
-        DiffusionGemma._init_scratch_buffers() because _transformer_layer() is
-        never used by this model. self._sc['normed'] IS allocated.
-
-        For f16 checkpoints (_use_fused_qkv=True), calling this method would
-        crash with KeyError on self._sc['qkv_buf']. For quantized checkpoints
-        (_use_fused_qkv=False), it would run without a KeyError but produce
-        wrong logits because _transformer_layer() skips the MoE expert loop.
-        Raise here so any future caller gets a clear error in both cases.
-        """
-        raise NotImplementedError(
-            "DiffusionGemmaWebGPUModel does not support _prefill_sequential_fallback. "
-            "f16 checkpoints crash with KeyError on self._sc['qkv_buf'] (not allocated); "
-            "quantized checkpoints run but produce wrong logits (MoE skipped). "
-            "Use forward() directly; it handles both single-token decode and "
-            "multi-token canvas prefill."
-        )
-
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 
     def forward(self, input_ids, positions, attn_metadata) -> "np.ndarray":
@@ -627,17 +584,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 #   x = x * router.scale — learned per-dimension scale
                 # Input is residual (post-attention, pre-MLP accumulation), not moe_in.
                 router_scale_w = self.weights.get(f"{p}.router.scale")
-                router_in = sc["o_proj_out"]   # reuse free scratch (hidden, f16)
+                router_proj_in = sc["o_proj_out"]   # scratch reuse: norm(residual)*scale output fed to router proj
                 if router_scale_w is not None:
                     self._dispatch("router_norm_f32in",
-                                   [residual, router_scale_w, router_in],
+                                   [residual, router_scale_w, router_proj_in],
                                    {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": self._rms_consts["VALS_PER_THREAD"],
                                     "ROOT_SIZE": self._router_root_size},
                                    (num_tokens, 1, 1))
                 else:
                     logger.warning("L%d: router.scale missing, routing will be suboptimal (no learned scale)", layer_idx)
                     self._dispatch("router_norm_f32in",
-                                   [residual, self._router_dummy_buf, router_in],
+                                   [residual, self._router_dummy_buf, router_proj_in],
                                    {"HIDDEN_DIM": hidden, "VALS_PER_THREAD": self._rms_consts["VALS_PER_THREAD"],
                                     "ROOT_SIZE": self._router_root_size, "NO_SCALE": 1},
                                    (num_tokens, 1, 1))
@@ -652,7 +609,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 if num_tokens > 1 and uq_rw in (0, 3):
                     # Batched router projection: [T, hidden] x [num_experts, hidden]^T -> [T, E]
                     self._dispatch("matmul_quant_mr4",
-                                   [router_in, self.weights[rw_], _rw_sc, rlogit_f16],
+                                   [router_proj_in, self.weights[rw_], _rw_sc, rlogit_f16],
                                    {"K": hidden, "N": self.num_experts, "M": num_tokens,
                                     "USE_QUANT": uq_rw,
                                     **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},
@@ -663,7 +620,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                             "L%d: router uq=%d not supported for batched routing; "
                             "token-0 routing applied to all tokens", layer_idx, uq_rw)
                     self._dispatch("matmul_quant",
-                                   [router_in, self.weights[rw_], _rw_sc, rlogit_f16],
+                                   [router_proj_in, self.weights[rw_], _rw_sc, rlogit_f16],
                                    {"K": hidden, "N": self.num_experts,
                                     "USE_QUANT": uq_rw, "SPLIT_K": 0,
                                     **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},

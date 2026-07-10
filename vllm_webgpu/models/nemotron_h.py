@@ -89,6 +89,11 @@ try:
         "upstream. Review the _mlp_count loop in NemotronHWebGPUModel.__init__ "
         "and update it before removing this assertion."
     )
+    assert 'intermediate_size[0]' in _nh_src and 'intermediate_size[mlp_index]' in _nh_src, (
+        "NemotronHMLPDecoderLayer.__init__ list-vs-scalar intermediate_size resolution "
+        "may have changed upstream. Review the isinstance(_raw_int, list) branches in "
+        "NemotronHWebGPUModel.__init__ and update them before removing this assertion."
+    )
     del _inspect, _nh_mod, _nh_src
 except (ImportError, OSError):
     pass
@@ -434,10 +439,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     def reset_recurrent_states(self) -> None:
         """Zero all Mamba conv and SSM states. Call before each new request."""
         dev = self.wgpu_device.wgpu_device
-        for buf in self._conv_states.values():
-            zeros = self._zero_buf_cache.setdefault(buf.nbytes, bytearray(buf.nbytes))
-            dev.queue.write_buffer(buf.buf, 0, zeros)
-        for buf in self._ssm_states.values():
+        for buf in (*self._conv_states.values(), *self._ssm_states.values()):
             zeros = self._zero_buf_cache.setdefault(buf.nbytes, bytearray(buf.nbytes))
             dev.queue.write_buffer(buf.buf, 0, zeros)
 
@@ -828,8 +830,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              **self._quant_extra(lm_key.removesuffix(".weight"), uq)},
             _rows_wg(vocab),
         )
-        greedy = self._greedy_decode
-        if greedy:
+        if self._greedy_decode:
             self._dispatch(
                 "argmax_f16",
                 [pre["logits"], self._ensure_sample_buf()],

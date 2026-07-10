@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -100,11 +100,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         )
         self._lin_conv_shape = _lin_conv_shape
         self._lin_ssm_shape = _lin_ssm_shape
-        # conv_dim is embedded in _lin_conv_shape: index 0 for DS layout (dim-first),
-        # index 1 for SD layout (state-first). is_conv_state_dim_first() selects the
-        # correct index. This avoids duplicating the formula from mamba_utils.py and
-        # automatically tracks any future layout changes.
-        self._lin_conv_dim: int = _lin_conv_shape[0] if is_conv_state_dim_first() else _lin_conv_shape[1]
+        # conv_dim = 2 * key_dim + val_dim (mirrors vLLM's internal formula:
+        # head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads). Using the
+        # direct formula avoids relying on the positional layout of _lin_conv_shape.
+        self._lin_conv_dim: int = 2 * _lin_key_dim + self._lin_val_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;

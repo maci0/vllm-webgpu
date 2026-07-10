@@ -47,16 +47,6 @@ def _make_convertor(hf_cfg):
     )(hf_cfg, hf_text)
 
 
-def get_kv_dims_from_hf_config(hf_cfg) -> tuple[int, int]:
-    """Return (num_kv_heads, head_size) from a raw HuggingFace config object.
-
-    Intended for standalone scripts (e.g. profile_kernels.py) that do not have a
-    VllmConfig available. In contexts where a VllmConfig is present, prefer
-    model_config.get_total_num_kv_heads() / model_config.get_head_size() directly.
-    """
-    conv = _make_convertor(hf_cfg)
-    return conv.get_total_num_kv_heads(), conv.get_head_size()
-
 
 def _allocate_kv_pool_hybrid(
     dev,
