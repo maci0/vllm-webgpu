@@ -397,9 +397,8 @@ class WebGPUModelRunner:
                 torch.cat([p.logprob_token_ids for p in pieces]),
                 torch.cat([p.logprobs for p in pieces]),
                 torch.cat([p.selected_token_ranks for p in pieces]),
-                cu,
             )
-            built_logprobs = stacked.tolists()
+            built_logprobs = stacked.tolists(cu)
 
         out = ModelRunnerOutput(
             req_ids=req_ids,
@@ -493,7 +492,7 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            num_logprobs = sp.logprobs if sp is not None else None
+            num_logprobs = sp.num_logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "

@@ -1182,7 +1182,9 @@ def load_safetensors_weights(
                 if name in ct_reserved or name in _i8_companion_skip:
                     continue
                 if not _upload_plain(name, weights):
-                    logger.warning("Skipping %s (dtype=%s)", name, header[name].get("dtype", "?"))
+                    dt = header[name].get("dtype", "?")
+                    if dt not in ("F8_E4M3", "U8", "I32"):
+                        logger.warning("Skipping %s (dtype=%s)", name, dt)
 
             weights.setdefault("__quant_meta__", {})
             for base in ct_bases:

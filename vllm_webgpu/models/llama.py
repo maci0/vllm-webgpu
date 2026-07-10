@@ -426,12 +426,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # which dispatches matmul_quant with the correct USE_QUANT per key.
         # Test every loaded weight key so mixed-quant models (e.g. f16 attn + INT8 FFN) and
         # intermediate layers that were not in the old representative sample are all covered.
-        _rep_keys = [
-            k for k in self.weights
-            if k.endswith(".weight") and "model.layers." in k
-            and "_proj" in k
-        ]
-        if any(self._uq_for_key(k) not in (0, 3) for k in _rep_keys):
+        if any(self._uq_for_key(k) not in (0, 3)
+               for k in self.weights
+               if k.endswith(".weight") and "model.layers." in k and "_proj" in k):
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T,
             )

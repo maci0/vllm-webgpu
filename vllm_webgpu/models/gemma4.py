@@ -53,7 +53,7 @@ def _build_layer_params_from_config(
     lp: list[dict] = []
     for i, lt in enumerate(layer_types):
         inter_l = intermediate_size * (
-            2 if use_dwm and 0 < first_kv_shared < num_layers and i >= first_kv_shared else 1
+            2 if use_dwm and first_kv_shared > 0 and i >= first_kv_shared else 1
         )
         is_kv_shared = (first_kv_shared > 0) and (i >= first_kv_shared)
 
@@ -1105,13 +1105,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                    {**_rope_fused, "HEAD_DIM": head_dim,
                                     "NUM_HEADS": self.num_q_heads, "HAS_WEIGHT": 1,
                                     "GEMMA_NORM": self._GEMMA_NORM, "INPUT_OFFSET": 0},
-                                   (self.num_q_heads, num_tokens, 1))
-                elif _use_fused_qkv:
-                    self._dispatch("fused_per_head_norm_rope",
-                                   [_q_src, _q_src, pos_buf, sc["q_rope"], _freq_buf],
-                                   {**_rope_fused, "HEAD_DIM": head_dim,
-                                    "NUM_HEADS": self.num_q_heads, "HAS_WEIGHT": 0,
-                                    "GEMMA_NORM": 0, "INPUT_OFFSET": 0},
                                    (self.num_q_heads, num_tokens, 1))
                 else:
                     self._dispatch("rope", [_q_src, pos_buf, sc["q_rope"], _freq_buf],

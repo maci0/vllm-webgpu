@@ -445,19 +445,19 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _is_awq:
                 # CPU-side axis=1 concat produces [K, N_total//8] so every row
                 # interleaves q, k, v output groups in the order the shader expects.
-                q_w = self.weights[q_key].to_numpy().view(np.int32).reshape(self.weights[q_key].shape)
-                k_w = self.weights[k_key].to_numpy().view(np.int32).reshape(self.weights[k_key].shape)
-                v_w = self.weights[v_key].to_numpy().view(np.int32).reshape(self.weights[v_key].shape)
+                q_buf = self.weights[q_key]; q_w = q_buf.to_numpy().view(np.int32).reshape(q_buf.shape)
+                k_buf = self.weights[k_key]; k_w = k_buf.to_numpy().view(np.int32).reshape(k_buf.shape)
+                v_buf = self.weights[v_key]; v_w = v_buf.to_numpy().view(np.int32).reshape(v_buf.shape)
                 packed_w = np.concatenate([q_w, k_w, v_w], axis=1)
                 qkv_raw_buf = WebGPUBuffer.from_numpy(dev, packed_w)
             else:
                 # Non-AWQ (GPTQ, FP16, FP8, etc.): GPU-side byte concat is correct.
                 # All weight buffers are 4-byte aligned from the loader.
-                qkv_raw = WebGPUBuffer.empty(dev, max(total_nb, 4)).buf
+                qkv_raw_buf = WebGPUBuffer.empty(dev, max(total_nb, 4))
                 _enc = dev.create_command_encoder()
-                _enc.copy_buffer_to_buffer(self.weights[q_key].buf, 0, qkv_raw, 0, q_nb)
-                _enc.copy_buffer_to_buffer(self.weights[k_key].buf, 0, qkv_raw, q_nb, k_nb)
-                _enc.copy_buffer_to_buffer(self.weights[v_key].buf, 0, qkv_raw, q_nb + k_nb, v_nb)
+                _enc.copy_buffer_to_buffer(self.weights[q_key].buf, 0, qkv_raw_buf.buf, 0, q_nb)
+                _enc.copy_buffer_to_buffer(self.weights[k_key].buf, 0, qkv_raw_buf.buf, q_nb, k_nb)
+                _enc.copy_buffer_to_buffer(self.weights[v_key].buf, 0, qkv_raw_buf.buf, q_nb + k_nb, v_nb)
                 dev.queue.submit([_enc.finish()])
 
             if has_scales:
@@ -467,9 +467,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # scales[grp * N_total + row], which requires row-interleaved [G, N_total].
                 # For G > 1 (e.g. K=4096, group_size=128 -> G=32) every grp > 0 lookup
                 # would land in the wrong projection's data. Stack on axis=1 on the CPU.
-                q_sc = self.weights[q_s].to_numpy().view(np.float32).reshape(self.weights[q_s].shape)
-                k_sc = self.weights[k_s].to_numpy().view(np.float32).reshape(self.weights[k_s].shape)
-                v_sc = self.weights[v_s].to_numpy().view(np.float32).reshape(self.weights[v_s].shape)
+                q_sb = self.weights[q_s]; q_sc = q_sb.to_numpy().view(np.float32).reshape(q_sb.shape)
+                k_sb = self.weights[k_s]; k_sc = k_sb.to_numpy().view(np.float32).reshape(k_sb.shape)
+                v_sb = self.weights[v_s]; v_sc = v_sb.to_numpy().view(np.float32).reshape(v_sb.shape)
                 if q_sc.ndim == 2:
                     # [G, N] layout: concatenate along N axis to get [G, N_total].
                     packed_sc = np.concatenate([q_sc, k_sc, v_sc], axis=1)
@@ -480,14 +480,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 scales_buf = WebGPUBuffer.from_numpy(dev, packed_sc)
 
             qkv_key = f"{p}.qkv_proj.weight"
-            if _is_awq:
-                packed_buf = qkv_raw_buf
-            else:
-                packed_buf = WebGPUBuffer(
-                    buf=qkv_raw, device=dev,
-                    shape=(total_nb // _ELEM_BYTES[src_dtype],),
-                    dtype=src_dtype,
-                )
+            if not _is_awq:
+                qkv_raw_buf.shape = (total_nb // _ELEM_BYTES[src_dtype],)
+                qkv_raw_buf.dtype = src_dtype
+            packed_buf = qkv_raw_buf
             self.weights[qkv_key] = packed_buf
 
             # Propagate quant_meta from q_proj to qkv_proj so _uq_for_key

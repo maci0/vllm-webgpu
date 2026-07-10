@@ -176,7 +176,7 @@ def allocate_kv_from_tensors(
             # dimensions (e.g. MLA-style models where head_size != head_size_v)
             # get correctly sized buffers instead of an averaged size.
             dtype_bytes = get_dtype_size(spec.dtype)
-            storage_bs = getattr(spec, 'storage_block_size', spec.block_size)
+            storage_bs = spec.storage_block_size
             k_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size * dtype_bytes
             v_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size_v * dtype_bytes
             naive = tensor.size // 2
