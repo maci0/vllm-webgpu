@@ -567,33 +567,6 @@ class WebGPUModelRunner:
             if hasattr(self.model, "save_recurrent_states"):
                 prefill_recurrent_states = self.model.save_recurrent_states()
 
-            if last_logits is None:
-                # Mid-prefill chunk: model produced no output logits yet (e.g.
-                # chunked prefill where this is not the final chunk). Register
-                # partial state so the decode loop does not crash with a missing
-                # key if the scheduler promotes this request to cached_reqs
-                # before full prefill completes. The last input token is used as
-                # a sentinel; it will be overwritten when the final chunk runs.
-                # Seed the generator here so it carries over to the final chunk.
-                prev_state = self._req_state.get(rid)
-                if prev_state is not None and prev_state.get("rng") is not None:
-                    chunk_rng = prev_state["rng"]
-                elif sp is not None and sp.seed is not None:
-                    chunk_rng = torch.Generator()
-                    chunk_rng.manual_seed(sp.seed)
-                else:
-                    chunk_rng = None
-                self._req_state[rid] = {
-                    "pos": num_computed + T,
-                    "block_ids": blk_ids,
-                    "last_tok": int(chunk_toks[-1]) if len(chunk_toks) > 0 else 0,
-                    "num_logprobs": num_logprobs,
-                    "sampling_params": sp,
-                    "recurrent_states": prefill_recurrent_states,
-                    "rng": chunk_rng,
-                }
-                continue
-
             # Use the last position's logits for the first generated token.
             # Apply sampling when SamplingParams request non-greedy decoding.
             # Seed a per-request generator once at prefill; the same object is
