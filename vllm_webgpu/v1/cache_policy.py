@@ -195,8 +195,8 @@ def allocate_kv_from_tensors(
             # page size, splitting correctly for potentially asymmetric head dims.
             naive = tensor.size // 2
             if hasattr(spec, "head_size_v") and spec.head_size != spec.head_size_v:
-                k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
-                v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * get_dtype_size(spec.dtype)
+                k_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
+                v_bytes = num_blocks * spec.storage_block_size * spec.num_kv_heads * spec.head_size_v * get_dtype_size(spec.dtype)
             else:
                 half = spec.real_page_size_bytes * num_blocks // 2
                 k_bytes = half
