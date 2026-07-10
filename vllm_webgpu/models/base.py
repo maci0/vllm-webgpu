@@ -61,9 +61,9 @@ def compute_yarn_freqs(
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
     Calls yarn_find_correction_range, yarn_linear_ramp_mask, and yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.common directly, mirroring
-    the body of YaRNScalingRotaryEmbedding._compute_inv_freq without coupling to
-    the private instance method or its attribute layout.
+    from vllm.model_executor.layers.rotary_embedding.common directly, inlining
+    the logic from YaRNScalingRotaryEmbedding._compute_inv_freq without coupling
+    to that private method or its attribute layout.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -80,9 +80,11 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    import torch
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
     )
 
     if rotary_dim is None:
@@ -103,16 +105,21 @@ def compute_yarn_freqs(
         else float(attn_factor)
     )
 
-    mock = SimpleNamespace(
-        base=rope_theta,
-        rotary_dim=rotary_dim,
-        beta_fast=beta_fast,
-        beta_slow=beta_slow,
-        max_position_embeddings=orig_ctx,
-        extrapolation_factor=extrapolation_factor,
-        truncate=truncate,
+    pos_freqs = rope_theta ** (
+        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
-    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(mock, factor)
+    inv_freq_extrapolation = 1.0 / pos_freqs
+    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
+    low, high = yarn_find_correction_range(
+        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
+    )
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
+    ) * extrapolation_factor
+    inv_freq = (
+        inv_freq_interpolation * (1 - inv_freq_mask)
+        + inv_freq_extrapolation * inv_freq_mask
+    )
 
     return inv_freq.numpy(), mscale
 
