@@ -68,14 +68,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             # (uq_g != 0 or uq_u != 0). Allocate lazily on first use in
             # _moe_ffn_layer to avoid wasting GPU memory for f16 MoE models.
             self._moe_act_sz: int = _moe_act_sz
-            self._moe_sc: dict[str, "WebGPUBuffer"] = {
-                "router_out":   mk(self._num_experts * 2),  # [N_E] f16 router logits
-                "topk_idx":     mk(self._top_k * 4),         # [K] u32 expert indices
-                "topk_w":       mk(self._top_k * 4),         # [K] f32 softmax weights
-                "expert_act":   mk(_moe_act_sz * 2),         # [max_inter] f16 activated
-                "expert_out":   mk(self.hidden_size * 2),    # [hidden] f16 accumulated
-                "expert_tmp":   mk(self.hidden_size * 2),    # [hidden] f16 per-expert
-            }
+            self._moe_sc = self._alloc_moe_sc(dev, self._num_experts, self._top_k, _moe_act_sz)
             # Pre-allocated MAP_READ staging buffer for topk idx readback.
             # Copies are recorded into the Phase A encoder so no extra GPU submit
             # is needed after on_submitted_work_done_sync().
@@ -85,6 +78,29 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
             # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
             self._topk_w_staging = None
+
+    def _alloc_moe_sc(
+        self,
+        dev,
+        num_experts: int,
+        top_k: int,
+        act_sz: int,
+    ) -> "dict[str, WebGPUBuffer]":
+        """Allocate the six shared MoE scratch buffers.
+
+        Called from __init__ (Mixtral) and _init_scratch_buffers (Qwen35) to
+        avoid duplicating the same dict literal in both subclasses.
+        """
+        def mk(n: int) -> "WebGPUBuffer":
+            return WebGPUBuffer.empty(dev, max(n, 8))
+        return {
+            "router_out":   mk(num_experts * 2),       # [N_E] f16 router logits
+            "topk_idx":     mk(top_k * 4),             # [K] u32 expert indices
+            "topk_w":       mk(top_k * 4),             # [K] f32 softmax weights
+            "expert_act":   mk(act_sz * 2),            # [max_inter] f16 activated
+            "expert_out":   mk(self.hidden_size * 2),  # [hidden] f16 accumulated
+            "expert_tmp":   mk(self.hidden_size * 2),  # [hidden] f16 per-expert
+        }
 
     def _effective_ctx_len(self, ctx_len: int) -> int:
         """Cap ctx_len at the sliding window size when SWA is configured."""

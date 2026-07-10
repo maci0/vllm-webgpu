@@ -209,17 +209,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         })
 
         if self._is_moe:
-            H = self.hidden_size
             _moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
             self._moe_act_sz = _moe_act_sz
-            self._moe_sc: dict[str, "WebGPUBuffer"] = {
-                "router_out":   mk(self._moe_num_experts * 2),  # [N_E] f16 router logits
-                "topk_idx":     mk(self._moe_k * 4),            # [K] u32 expert indices
-                "topk_w":       mk(self._moe_k * 4),            # [K] f32 softmax weights
-                "expert_act":   mk(_moe_act_sz * 2),            # [max_inter] f16 gate*up activated
-                "expert_out":   mk(H * 2),                      # [hidden] f16 accumulated output
-                "expert_tmp":   mk(H * 2),                      # [hidden] f16 per-expert temp
-            }
+            self._moe_sc = self._alloc_moe_sc(dev, self._moe_num_experts, self._moe_k, _moe_act_sz)
 
     def _postprocess_weights(self) -> None:
         """Post-load weight fixups for full-attn layers.
