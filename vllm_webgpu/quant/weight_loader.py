@@ -159,12 +159,16 @@ def detect_weight_format(path: str) -> str:
         raise ValueError(
             f"Legacy .bin (PyTorch pickle) format not supported; convert to safetensors first: {path}"
         )
-    # Try magic bytes
+    # Try magic bytes. The caller is responsible for validating that the path
+    # exists and is readable before calling this function.
     with open(p, "rb") as f:
         magic = f.read(4)
     if magic == b"GGUF":
         return "gguf"
-    return "safetensors"
+    raise ValueError(
+        f"Unrecognized file format for '{path}' (magic bytes: {magic!r}); "
+        f"expected a .safetensors or .gguf file."
+    )
 
 
 def load_safetensors_weights_sharded(
