@@ -192,11 +192,13 @@ class WebGPUModelRunner:
                 default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
                 global_hd = getattr(mc, "global_head_dim", default_hd)
                 global_kv = getattr(mc, "num_global_key_value_heads", None) or default_kv
+                k_eq_v = getattr(mc, "attention_k_eq_v", False)
                 for i, lt in enumerate(_layer_types):
                     if lt not in KV_ATTN_TYPES:
                         continue
                     if lt == "full_attention":
-                        spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(global_kv, global_hd)
+                        full_kv = global_kv if k_eq_v else default_kv
+                        spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd)
                     else:
                         spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
                 self._kv_cache_spec_cache = spec
