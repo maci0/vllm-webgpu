@@ -170,8 +170,8 @@ class WebGPUWorker(WorkerBase):
             raise RuntimeError(f"WebGPU device health check failed: {e}") from e
 
     def reset_encoder_cache(self) -> None:
-        # WebGPU has no encoder cache; this is a no-op required by the vLLM
-        # executor RPC contract.
+        # No encoder cache to reset; no-op. Defined because the vLLM executor
+        # calls this on all workers via RPC (see gpu_worker.py:785).
         pass
 
     def shutdown(self) -> None:

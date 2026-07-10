@@ -47,7 +47,7 @@ def sample_token(
 
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)
     logits_t = logits_t / temperature
-    k_t = torch.tensor([top_k]) if 0 < top_k < len(logits_1d) else None
+    k_t = torch.tensor([top_k]) if top_k > 0 else None
     p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None
     # allow_cpu_sync=True enables the faster partial-topk path (apply_top_k_only)
     # when only top-k is needed (p_t is None). WebGPU tensors always live on CPU.

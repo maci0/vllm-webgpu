@@ -178,6 +178,60 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             return np.array([[tok]], dtype=np.int32)
         return self.logit_readback()
 
+    def _dispatch_expert_gate_up(
+        self,
+        dev,
+        normed_x: "WebGPUBuffer",
+        gw_key: str,
+        uw_key: str,
+        inter: int,
+        extra_gate_consts: dict,
+    ) -> None:
+        """Dispatch gate + up projections into self._moe_sc["expert_act"].
+
+        Handles both the fused f16 path (fused_gate_act) and the separate
+        quantized matmul + gelu_mul path. gw_key and uw_key are full weight
+        keys (ending in '.weight'); the quant-extra prefix is derived by
+        stripping the suffix.
+        """
+        msc = self._moe_sc
+        hidden = self.hidden_size
+        uq_g = self._uq_for_key(gw_key)
+        uq_u = self._uq_for_key(uw_key)
+        if uq_g == 0 and uq_u == 0:
+            self._dispatch(
+                "fused_gate_act",
+                [normed_x, self.weights[gw_key], self.weights[uw_key], msc["expert_act"]],
+                {"K": hidden, "N": inter, "GELU": 0, **extra_gate_consts},
+                (inter, 1, 1),
+            )
+        else:
+            self._ensure_moe_expert_bufs(dev)
+            qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
+            qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
+            self._dispatch(
+                "matmul_quant",
+                [normed_x, self.weights[gw_key],
+                 self._scales_buf(gw_key, uq_g, self._dummy_scales_buf),
+                 msc["expert_gate"]],
+                {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
+                _gemv_wg(inter),
+            )
+            self._dispatch(
+                "matmul_quant",
+                [normed_x, self.weights[uw_key],
+                 self._scales_buf(uw_key, uq_u, self._dummy_scales_buf),
+                 msc["expert_up"]],
+                {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
+                _gemv_wg(inter),
+            )
+            self._dispatch(
+                "gelu_mul",
+                [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
+                {"N": inter, **extra_gate_consts},
+                _vec4_wg(inter),
+            )
+
     def _ensure_moe_expert_bufs(self, dev) -> None:
         """Lazily allocate expert_gate and expert_up scratch buffers on first quantized call."""
         msc = self._moe_sc
@@ -335,42 +389,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             if self.weights.get(sgw_k) is not None:
                 suw_k = f"{sp}.{up_key}.weight"
                 sdw_k = f"{sp}.{down_key}.weight"
-                uq_sg = self._uq_for_key(sgw_k)
-                uq_su = self._uq_for_key(suw_k)
-                if uq_sg == 0 and uq_su == 0:
-                    self._dispatch(
-                        "fused_gate_act",
-                        [normed_x, self.weights[sgw_k], self.weights[suw_k], msc["expert_act"]],
-                        {"K": hidden, "N": _sinter, "GELU": 0, **extra_gate_consts},
-                        (_sinter, 1, 1),
-                    )
-                else:
-                    # Lazy-allocate expert_gate and expert_up on first quantized call.
-                    self._ensure_moe_expert_bufs(dev)
-                    qi_sg = self._quant_extra(f"{sp}.{gate_key}", uq_sg)
-                    qi_su = self._quant_extra(f"{sp}.{up_key}", uq_su)
-                    self._dispatch(
-                        "matmul_quant",
-                        [normed_x, self.weights[sgw_k],
-                         self._scales_buf(sgw_k, uq_sg, self._dummy_scales_buf),
-                         msc["expert_gate"]],
-                        {"K": hidden, "N": _sinter, "USE_QUANT": uq_sg, **qi_sg},
-                        _gemv_wg(_sinter),
-                    )
-                    self._dispatch(
-                        "matmul_quant",
-                        [normed_x, self.weights[suw_k],
-                         self._scales_buf(suw_k, uq_su, self._dummy_scales_buf),
-                         msc["expert_up"]],
-                        {"K": hidden, "N": _sinter, "USE_QUANT": uq_su, **qi_su},
-                        _gemv_wg(_sinter),
-                    )
-                    self._dispatch(
-                        "gelu_mul",
-                        [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
-                        {"N": _sinter, **extra_gate_consts},
-                        _vec4_wg(_sinter),
-                    )
+                self._dispatch_expert_gate_up(dev, normed_x, sgw_k, suw_k, _sinter, extra_gate_consts)
                 uq_sd = self._uq_for_key(sdw_k)
                 qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)
                 self._dispatch(
@@ -395,46 +414,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                              layer_idx, exp_idx)
                 continue
 
-            uq_g = self._uq_for_key(w1_key)
-            uq_u = self._uq_for_key(w3_key)
-
-            if uq_g == 0 and uq_u == 0:
-                # F16 path: fused gate + up + SiLU in one dispatch.
-                self._dispatch(
-                    "fused_gate_act",
-                    [normed_x, self.weights[w1_key], self.weights[w3_key],
-                     msc["expert_act"]],
-                    {"K": hidden, "N": inter, "GELU": 0, **extra_gate_consts},
-                    (inter, 1, 1),
-                )
-            else:
-                # Quantized path: separate gate and up matmuls then SiLU.
-                # Lazy-allocate expert_gate and expert_up on first quantized call.
-                self._ensure_moe_expert_bufs(dev)
-                qi_g = self._quant_extra(f"{ep}.{gate_key}", uq_g)
-                qi_u = self._quant_extra(f"{ep}.{up_key}", uq_u)
-                self._dispatch(
-                    "matmul_quant",
-                    [normed_x, self.weights[w1_key],
-                     self._scales_buf(w1_key, uq_g, self._dummy_scales_buf),
-                     msc["expert_gate"]],
-                    {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
-                    _gemv_wg(inter),
-                )
-                self._dispatch(
-                    "matmul_quant",
-                    [normed_x, self.weights[w3_key],
-                     self._scales_buf(w3_key, uq_u, self._dummy_scales_buf),
-                     msc["expert_up"]],
-                    {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
-                    _gemv_wg(inter),
-                )
-                self._dispatch(
-                    "gelu_mul",
-                    [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
-                    {"N": inter, **extra_gate_consts},
-                    _vec4_wg(inter),
-                )
+            self._dispatch_expert_gate_up(dev, normed_x, w1_key, w3_key, inter, extra_gate_consts)
 
             # Down projection + weighted accumulate.
             uq_d = self._uq_for_key(w2_key)

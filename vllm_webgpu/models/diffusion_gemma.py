@@ -104,7 +104,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         return getattr(self.model_config, "canvas_length", 256)
 
     def _scratch_inter_size(self) -> int:
-        return max(self.intermediate_size, self.moe_intermediate_size)
+        return max(max(lp["intermediate_size"] for lp in self._lp), self.moe_intermediate_size)
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Allocate scratch buffers without qkv_buf, which _decoder_layer never uses.

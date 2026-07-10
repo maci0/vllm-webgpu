@@ -250,7 +250,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # not re-derive it (and re-read model_config.intermediate_size) on every call.
         self._max_int_size: int = max(
             (s for s in _layer_int_sizes if s > 0),
-            default=(max(_raw_int) if isinstance(_raw_int, list) else _raw_int),
+            default=0,
         )
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()

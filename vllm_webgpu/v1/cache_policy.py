@@ -46,7 +46,12 @@ def _allocate_kv_pool_hybrid(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
-    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * get_dtype_size(dtype)
+    bytes_per_layer = FullAttentionSpec(
+        block_size=block_size,
+        num_kv_heads=num_kv_heads,
+        head_size=head_dim,
+        dtype=dtype,
+    ).real_page_size_bytes * num_blocks // 2
 
     if layer_types is not None and len(layer_types) != num_layers:
         raise ValueError(

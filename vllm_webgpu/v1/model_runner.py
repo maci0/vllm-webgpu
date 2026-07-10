@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+# KV cache dtype used by all WebGPU attention layers. Referenced in both
+# get_kv_cache_spec and get_cache_block_size_bytes so that changing it
+# keeps both methods consistent.
+_KV_DTYPE = torch.float16
 
 ARCH_MAP = {
     "LlamaForCausalLM": "llama",
@@ -151,14 +155,13 @@ class WebGPUModelRunner:
         mc = self.vllm_config.model_config.hf_config
         block_size = self._block_size
         spec: dict[str, Any] = {}
-        _dtype = torch.float16
 
         def _make_spec(num_kv_heads: int, head_size: int) -> Any:
             return FullAttentionSpec(
                 block_size=block_size,
                 num_kv_heads=num_kv_heads,
                 head_size=head_size,
-                dtype=_dtype,
+                dtype=_KV_DTYPE,
             )
 
         # Use per-layer params if available (Gemma4 heterogeneous layers).
@@ -229,7 +232,7 @@ class WebGPUModelRunner:
         if lp_list:
             head_dim = max((lp["head_dim"] for lp in lp_list if lp["num_kv_heads"] > 0), default=head_dim)
             num_kv_heads = max((lp["num_kv_heads"] for lp in lp_list if lp["num_kv_heads"] > 0), default=num_kv_heads)
-        return 2 * block_size * num_kv_heads * head_dim * get_dtype_size(torch.float16)
+        return 2 * block_size * num_kv_heads * head_dim * get_dtype_size(_KV_DTYPE)
 
     def warm_up(self) -> None:
         if self.model is not None:
@@ -370,7 +373,11 @@ class WebGPUModelRunner:
         if has_topk:
             max_k = max(d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None)
             pieces = []
-            cu_list: list[int] = [0] * len(logprobs_data)
+            # -1 is a sentinel for requests without logprobs; overwritten below.
+            # After building pieces, sentinels are replaced with len(pieces) so
+            # any accidental access to stacked (valid indices 0..row-1) fails
+            # loudly rather than silently returning the last row's data.
+            cu_list: list[int] = [-1] * len(logprobs_data)
             row = 0
             for i, d in enumerate(logprobs_data):
                 if d is not None:
@@ -382,6 +389,8 @@ class WebGPUModelRunner:
                         d.selected_token_ranks,
                     ))
                     row += 1
+            _oob = len(pieces)  # out-of-range sentinel replaces -1 for non-logprob entries
+            cu_list = [_oob if v < 0 else v for v in cu_list]
             stacked = LogprobsTensors(
                 torch.cat([p.logprob_token_ids for p in pieces]),
                 torch.cat([p.logprobs for p in pieces]),

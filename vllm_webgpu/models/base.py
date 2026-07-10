@@ -60,10 +60,12 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates the frequency blend to YaRNScalingRotaryEmbedding._compute_inv_freq
-    so the arithmetic stays in sync with vLLM automatically. The class is
-    instantiated via __new__ (skipping __init__) to avoid building the
-    positional cos/sin cache, which is large and unneeded here.
+    Reimplements the YaRN blended inverse-frequency computation using the same
+    public helpers as YaRNScalingRotaryEmbedding._compute_inv_freq
+    (yarn_find_correction_range, yarn_linear_ramp_mask, yarn_get_mscale).
+    The private _compute_inv_freq is not called directly to avoid coupling to
+    vLLM internal method signatures; update this function and
+    tests/test_yarn_freqs.py when bumping the vLLM version.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -108,7 +110,7 @@ def compute_yarn_freqs(
     # calling a private vLLM method (which would break on any internal refactor).
     # The public helpers yarn_find_correction_range and yarn_linear_ramp_mask
     # are imported from vllm.model_executor.layers.rotary_embedding.common above.
-    pos_freqs = torch.tensor(rope_theta, dtype=torch.float) ** (
+    pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
     inv_freq_extrapolation = 1.0 / pos_freqs
