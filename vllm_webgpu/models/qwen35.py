@@ -117,7 +117,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # set rms_norm_type="gemma" to indicate the deviation format; MLX checkpoints
         # do not set this field and store absolute weights instead.
         _rms_norm_type = getattr(model_config, "rms_norm_type", None)
-        self._gemma_norm: int = 1 if _rms_norm_type else 0
+        self._gemma_norm: int = 1 if _rms_norm_type == "gemma" else 0
 
         # GDN_BF16: when set, GDN projection matmuls use bf16-preserved weight buffers
         # (key + "__bf16") instead of the default f16 version. Falls back silently if
