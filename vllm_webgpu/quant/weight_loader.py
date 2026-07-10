@@ -1373,6 +1373,35 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     all_keys: set[str] = set(key_to_shard)
 
     import safetensors.torch as _sft
+    import wgpu as _wgpu
+
+    usage = _wgpu.BufferUsage.STORAGE | _wgpu.BufferUsage.COPY_SRC | _wgpu.BufferUsage.COPY_DST
+
+    # Track pending write_buffer bytes to flush periodically.
+    # Metal silently drops write_buffer operations when the GPU staging buffer
+    # queue exceeds ~1-2 GB. Flush every 512 MB, matching load_safetensors_weights.
+    _pending_bytes = 0
+
+    def _maybe_flush() -> None:
+        nonlocal _pending_bytes
+        if _pending_bytes >= _FLUSH_THRESHOLD:
+            wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+            wgpu_device.queue.on_submitted_work_done_sync()
+            _pending_bytes = 0
+
+    def _upload_f16(arr: np.ndarray, name: str) -> None:
+        """Upload a float16 array to GPU via write_buffer with periodic flushing."""
+        nonlocal _pending_bytes
+        data = np.ascontiguousarray(arr, dtype=np.float16).tobytes()
+        # write_buffer requires 4-byte-aligned size.
+        if len(data) % 4:
+            data = data + b"\x00" * (4 - len(data) % 4)
+        buf = wgpu_device.create_buffer(size=len(data), usage=usage)
+        wgpu_device.queue.write_buffer(buf, 0, data)
+        _pending_bytes += len(data)
+        _maybe_flush()
+        weights[name] = WebGPUBuffer(buf=buf, device=wgpu_device,
+                                     shape=tuple(arr.shape), dtype="f16")
 
     # Pass 2: process tensors shard-by-shard, opening each shard at most once per group.
     # Quantized triplets (weight + scales + biases) are loaded together from their
@@ -1411,7 +1440,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                     local_key = wk.removeprefix("language_model.")
                     if weight_transforms and local_key in weight_transforms:
                         arr = weight_transforms[local_key](arr)
-                    weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
+                    _upload_f16(arr, local_key)
                     continue
 
                 # Load scales and biases. Reuse sf_w when they live in the same shard.
@@ -1431,7 +1460,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
                 arr = np.clip(dequant, -_F16_MAX, _F16_MAX).astype(np.float16)
                 local_key = base.removeprefix("language_model.") + ".weight"
-                weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
+                _upload_f16(arr, local_key)
 
     # Stream non-quantized tensors shard-by-shard.
     shard_files = sorted(set(weight_map.values()))
@@ -1450,7 +1479,11 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 local_key = key.removeprefix("language_model.")
                 if weight_transforms and local_key in weight_transforms:
                     arr = weight_transforms[local_key](arr)
-                weights[local_key] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
+                _upload_f16(arr, local_key)
+
+    # Commit any remaining write_buffer calls before returning.
+    wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+    wgpu_device.queue.on_submitted_work_done_sync()
 
     n_remapped = _apply_multimodal_remap(weights)
     if n_remapped:
