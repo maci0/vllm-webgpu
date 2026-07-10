@@ -414,8 +414,8 @@ class WebGPUModelRunner:
         )
         return out
 
+    @staticmethod
     def _extract_logprob_data(
-        self,
         logits: "np.ndarray",
         row_idx: int,
         tok: int,
@@ -438,7 +438,7 @@ class WebGPUModelRunner:
         if logits.shape[-1] <= 1:
             logger.warning("req %s: logprobs requested but model returned argmax-only output", rid)
             return None
-        return self._compute_request_logprobs(logits[row_idx], tok, num_logprobs)
+        return WebGPUModelRunner._compute_request_logprobs(logits[row_idx], tok, num_logprobs)
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> Any:
         """vLLM >= 0.24 SchedulerOutput format."""
@@ -602,10 +602,9 @@ class WebGPUModelRunner:
             else:
                 rng = None
             if last_logits.shape[-1] > 1:
-                first_decode_tok = (
-                    int(np.argmax(last_logits[-1])) if sp is None
-                    else _sample_token(last_logits[-1], temperature=sp.temperature,
-                                       top_p=sp.top_p, top_k=sp.top_k, generator=rng)
+                first_decode_tok = _sample_token(
+                    last_logits[-1], temperature=sp.temperature,
+                    top_p=sp.top_p, top_k=sp.top_k, generator=rng,
                 )
             else:
                 first_decode_tok = int(last_logits[0, 0])
@@ -770,10 +769,9 @@ class WebGPUModelRunner:
                 if logits.shape[-1] == 1:
                     stok = int(logits[0, 0])
                 else:
-                    stok = (
-                        int(np.argmax(logits[0])) if sp is None
-                        else _sample_token(logits[0], temperature=sp.temperature,
-                                           top_p=sp.top_p, top_k=sp.top_k, generator=rng)
+                    stok = _sample_token(
+                        logits[0], temperature=sp.temperature,
+                        top_p=sp.top_p, top_k=sp.top_k, generator=rng,
                     )
 
                 # Compute logprobs if requested for this request.

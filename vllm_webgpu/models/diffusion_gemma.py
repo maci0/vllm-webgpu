@@ -81,7 +81,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # canvas_length is the max batch size during diffusion inference (default 256).
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
-            max_canvas_len = self._scratch_token_count()
+            max_canvas_len = self._canvas_length
             # Pre-allocated row-index array for vectorized MoE scatter; avoids
             # allocating a new array on every _decoder_layer call.
             self._token_arange = np.arange(max_canvas_len, dtype=np.intp)
@@ -127,6 +127,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         dev = self.wgpu_device.wgpu_device
         T = self._scratch_token_count()
+        self._canvas_length = T
         H = self.hidden_size
         I = self._max_inter
         NQ = self.num_q_heads
@@ -224,7 +225,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         self._check_single_sequence(attn_metadata)
 
-        ctx_len = self._compute_ctx_len(attn_metadata)
+        ctx_len = int(attn_metadata.max_decode_seq_len)
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds 65535")
 

@@ -320,10 +320,6 @@ class BaseWebGPUModel(ABC):
                 "block tables; call forward() once per decode request"
             )
 
-    def _compute_ctx_len(self, attn_metadata: object) -> int:
-        """Derive the decode context length from attn_metadata."""
-        return int(attn_metadata.max_decode_seq_len)
-
     def _bt_arr(self, attn_metadata: object) -> "np.ndarray":
         """Return the block-table as a uint32 numpy array.
 
@@ -460,7 +456,10 @@ class BaseWebGPUModel(ABC):
     def _read_sample_tok(self) -> int:
         """Map and read the staging buffer (no submit/sync — already done by main batch)."""
         if self._gpu_sample_staging is None:
-            return 0
+            raise RuntimeError(
+                "_read_sample_tok called before _ensure_sample_buf; "
+                "GPU argmax was never dispatched"
+            )
         import wgpu as wgpu_lib
         self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
         val = np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32).item()

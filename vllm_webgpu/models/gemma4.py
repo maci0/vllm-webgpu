@@ -1,5 +1,4 @@
 from __future__ import annotations
-import inspect
 import math
 from itertools import batched
 from typing import TYPE_CHECKING
@@ -19,6 +18,7 @@ if TYPE_CHECKING:
 # that changes attention-type dispatch, KV-shared layer boundaries, or head-dim
 # selection will fail loudly here instead of silently mis-sizing buffers.
 try:
+    import inspect
     from vllm.model_executor.models.gemma4 import (
         Gemma4Attention as _Gemma4Attention,
         Gemma4DecoderLayer as _Gemma4DecoderLayer,
@@ -40,6 +40,7 @@ try:
         "Gemma4DecoderLayer no longer references 'num_global_key_value_heads'. "
         "Review _build_layer_params_from_config formula (3) before removing this assertion."
     )
+    del inspect, _Gemma4Attention, _Gemma4DecoderLayer, _g4_decoder_src, _g4_attn_src
 except (ImportError, OSError):
     pass  # vLLM not importable in this environment; skip assertion
 
@@ -399,7 +400,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         if num_tokens > 1:
             return self._prefill_batch_forward(input_ids, positions, attn_metadata, num_tokens)
 
-        ctx_len = self._compute_ctx_len(attn_metadata)
+        ctx_len = int(attn_metadata.max_decode_seq_len)
 
         # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
         pre = self._pre

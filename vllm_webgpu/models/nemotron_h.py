@@ -1,7 +1,5 @@
 from __future__ import annotations
-import functools
 import math
-import operator
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -181,6 +179,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._scale_acc: dict = {}    # {layer_idx: {'q': arr, 'k': arr, 'v': arr}}
         self._scale_transforms: dict = {}  # HF scale key -> (arr) -> None
 
+        def _mksetter(acc, key):
+            def _setter(v): acc[key] = v
+            return _setter
+
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "attention":
                 _acc: dict = {}
@@ -188,7 +190,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _hf_p = f"backbone.layers.{_i}.mixer"
                 for _proj in ("q", "k", "v"):
                     self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
-                        functools.partial(operator.setitem, _acc, _proj)
+                        _mksetter(_acc, _proj)
                     )
 
         # The WebGPU MLP path does not implement bias addition. All known
@@ -895,7 +897,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Decode path (T=1): zero-alloc hot path via pre-allocated buffers.
         dev = self.wgpu_device.wgpu_device
         hidden = self.hidden_size
-        ctx_len = self._compute_ctx_len(attn_metadata)
+        ctx_len = int(attn_metadata.max_decode_seq_len)
 
         pre = self._pre
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())

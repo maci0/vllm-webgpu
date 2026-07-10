@@ -1,5 +1,6 @@
 """Utility helpers for vllm-webgpu."""
 from __future__ import annotations
+import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,12 +30,12 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     random_sample,
 )
 
-# Guard against vLLM moving apply_top_k_top_p_pytorch to a different module.
-# If this assertion fires, re-evaluate the allow_cpu_sync workaround below and
-# check whether vLLM now passes allow_cpu_sync=True for OOT platforms.
-assert apply_top_k_top_p_pytorch.__code__.co_filename.endswith(
-    "topk_topp_sampler.py"
-), "topk dispatch changed, re-evaluate allow_cpu_sync workaround"
+# Guard against vLLM removing the allow_cpu_sync parameter from
+# apply_top_k_top_p_pytorch. If this assertion fires, the partial-topk
+# optimisation path is broken and the workaround must be re-evaluated.
+assert "allow_cpu_sync" in inspect.signature(apply_top_k_top_p_pytorch).parameters, (
+    "apply_top_k_top_p_pytorch lost allow_cpu_sync param, re-evaluate workaround"
+)
 
 SHADERS_DIR = Path(__file__).parent / "shaders"
 

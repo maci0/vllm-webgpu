@@ -88,15 +88,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Q is always at offset 0 (leading element in packed QKV buffer).
         self._gdn_k_base: int = _lin_key_dim
         self._gdn_v_base: int = 2 * _lin_key_dim
-        # Cache state shapes so _alloc_lin_states reuses them without a second call.
-        self._lin_conv_shape, self._lin_ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            tp_world_size=1,
-            num_k_heads=self._lin_k_heads,
-            num_v_heads=self._lin_v_heads,
-            head_k_dim=self._lin_k_dim,
-            head_v_dim=self._lin_v_dim,
-            conv_kernel_size=self._lin_conv_kernel,
-        )
         self._lin_conv_dim: int = 2 * _lin_key_dim + self._lin_val_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
@@ -104,10 +95,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # the standard gate/up/down weights are replaced by a router + per-expert weights.
         self._moe_num_experts: int = getattr(model_config, "num_experts", 0)
         self._moe_k: int           = getattr(model_config, "num_experts_per_tok", 0)
-        _moe_inter_raw = getattr(model_config, "moe_intermediate_size", None)
-        self._moe_inter: int = _moe_inter_raw if _moe_inter_raw is not None else model_config.intermediate_size
-        _moe_shared_inter_raw = getattr(model_config, "shared_expert_intermediate_size", None)
-        self._moe_shared_inter: int = _moe_shared_inter_raw if _moe_shared_inter_raw is not None else model_config.intermediate_size
+        self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or model_config.intermediate_size
+        self._moe_shared_inter: int = getattr(model_config, "shared_expert_intermediate_size", None) or model_config.intermediate_size
         # _is_moe is set from config here and may be overridden in load_weights
         # once we can verify against actual weight keys.
         self._is_moe: bool = self._moe_num_experts > 0 and self._moe_k > 0
@@ -293,9 +282,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         """
         dev = self.wgpu_device.wgpu_device
 
-        # Reuse shapes cached in __init__ to avoid a redundant call to
-        # gated_delta_net_state_shape (the parameters haven't changed).
-        conv_shape, ssm_shape = self._lin_conv_shape, self._lin_ssm_shape
+        conv_shape, ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel,
+        )
         # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, V_DIM, K_DIM] f32,
         # matching vLLM's gated_delta_net_state_shape convention.
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
