@@ -157,7 +157,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                      rope_scaling.get("type", ""))
 
         if rope_type != "yarn":
-            return  # base-class dummy buffer is sufficient; _use_freq_buf stays False
+            if rope_type and rope_type not in ("", "default", "linear"):
+                logger.warning(
+                    "rope_type=%r not implemented; using standard RoPE "
+                    "(long-context accuracy reduced beyond 8192 tokens)",
+                    rope_type,
+                )
+            return
 
         dev = self.wgpu_device.wgpu_device
         rotary_dim = int(rope_scaling.get("rotary_dim", self.head_dim))
