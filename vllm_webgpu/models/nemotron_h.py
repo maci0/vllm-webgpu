@@ -599,19 +599,19 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     # Only F16 (0) and GPTQ (3) store shape[0] == N.
                     if self._uq_for_key(inproj_key) not in (0, 3):
                         _checked_inproj = True
-                        continue
-                    actual_inproj_dim = self.weights[inproj_key].shape[0]
-                    if actual_inproj_dim != self.in_proj_dim:
-                        raise ValueError(
-                            f"{inproj_key} shape[0]={actual_inproj_dim} does not "
-                            f"match computed in_proj_dim={self.in_proj_dim} "
-                            f"(mamba_int={self.mamba_int} + "
-                            f"conv_dim={self.conv_dim} + "
-                            f"mamba_num_heads={self.mamba_num_heads}). "
-                            f"Recheck MambaMixer2Tp output_sizes in "
-                            f"mamba_mixer2.py L328-355 against this vLLM version."
-                        )
-                    _checked_inproj = True
+                    else:
+                        actual_inproj_dim = self.weights[inproj_key].shape[0]
+                        if actual_inproj_dim != self.in_proj_dim:
+                            raise ValueError(
+                                f"{inproj_key} shape[0]={actual_inproj_dim} does not "
+                                f"match computed in_proj_dim={self.in_proj_dim} "
+                                f"(mamba_int={self.mamba_int} + "
+                                f"conv_dim={self.conv_dim} + "
+                                f"mamba_num_heads={self.mamba_num_heads}). "
+                                f"Recheck MambaMixer2Tp output_sizes in "
+                                f"mamba_mixer2.py L328-355 against this vLLM version."
+                            )
+                        _checked_inproj = True
 
             # conv1d.weight: validate element count.
             # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements
