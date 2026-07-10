@@ -69,8 +69,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._rope_interleaved: int = 1 if _rope_params.get("mrope_interleaved", False) else 0
         # Attention output gate: when True, q_proj.weight has shape [2*q_dim, hidden].
         # The first half is Q; the second half is a gate applied as sigmoid(gate)*attn_out
-        # before the o_proj. _postprocess_weights splits the weight and stores the gate
-        # half under self_attn.q_gate_proj.weight.
+        # before the o_proj. The split is performed at load time by the _make_split weight
+        # transform registered in load_weights; the gate half is stored under
+        # self_attn.q_gate_proj.weight.
         self._attn_output_gate: bool = bool(getattr(model_config, "attn_output_gate", True))
 
         # GDN (linear-attention) architecture dimensions from config.
@@ -355,8 +356,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             _dev = self.wgpu_device.wgpu_device
             for _gk, _gate_arr in _q_gate_pending.items():
                 self.weights[_gk] = WebGPUBuffer.from_numpy(_dev, _gate_arr)
-            _q_gate_pending.clear()
-
         self._postprocess_weights()
         self._alloc_lin_states()
         # Confirm MoE detection against actual weight keys.

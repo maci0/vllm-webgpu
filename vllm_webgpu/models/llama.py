@@ -607,7 +607,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         hidden = self.hidden_size
         vocab = self.vocab_size
         rms_base = self._rms_consts
-        dev = self.wgpu_device.wgpu_device
         pre = self._pre
         sc  = self._sc
 

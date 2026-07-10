@@ -39,7 +39,7 @@ def _build_layer_params_from_config(
 
     (2) kv_shared_target reversed-search generator:
         vLLM vllm/model_executor/models/gemma4.py lines 467-474
-        ``next((j for j in range(len(...)-1, -1, -1) if ...[j] == lt), -1)``
+        ``prev_layers[::-1].index(current_layer_type)`` (raises ValueError if not found)
 
     (3) head_dim / num_kv_heads / has_v_proj per attention type:
         vLLM vllm/model_executor/models/gemma4.py lines 561-577
@@ -60,7 +60,12 @@ def _build_layer_params_from_config(
         # (2) vLLM gemma4.py L467-474: find last non-shared layer of the same type.
         if is_kv_shared:
             _prev = layer_types[:first_kv_shared]
-            kv_shared_target = (len(_prev) - 1 - _prev[::-1].index(lt)) if lt in _prev else -1
+            if lt not in _prev:
+                raise ValueError(
+                    f"Layer {i} (type={lt!r}) is KV-shared but type {lt!r} was not "
+                    f"found in the non-shared prefix {_prev}. Check layer_types config."
+                )
+            kv_shared_target = len(_prev) - 1 - _prev[::-1].index(lt)
         else:
             kv_shared_target = -1
 

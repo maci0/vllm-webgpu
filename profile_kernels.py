@@ -164,6 +164,10 @@ if stats:
         inter_sz = max(raw_inter_sz) if isinstance(raw_inter_sz, list) else raw_inter_sz
         q_dim2 = hf_cfg.num_attention_heads * head_dim  # total Q projection dim
         attn_w = 4 * hid * (q_dim2 + num_kv_heads * head_dim)  # Q+K+V+O projections in f16 bytes
+        # Per-head QK-norm weights (Qwen3, Llama3.2): q_norm [num_q_heads*head_dim] f16
+        # + k_norm [num_kv_heads*head_dim] f16. Add if the checkpoint carries q_norm weights.
+        if model is not None and any('q_norm' in k for k in getattr(model, 'weights', {})):
+            attn_w += 2 * (q_dim2 + num_kv_heads * head_dim) * 2  # f16 = 2 bytes
 
         # For hybrid architectures (e.g. NemotronH, Gemma4), layer types differ per layer.
         # Use per-layer type weights rather than applying (attn_w + ffn_w) uniformly.
@@ -229,6 +233,8 @@ if stats:
             if getattr(model, '_is_moe', False):
                 top_k = getattr(model, '_top_k', 1)
                 ffn_w *= top_k
+            # attn_w already includes the qk_norm correction applied above for
+            # models that carry q_norm weights (Qwen3, Llama3.2).
             total_w_bytes = (attn_w + ffn_w) * num_layers
 
         total_w_mb = total_w_bytes / 1e6

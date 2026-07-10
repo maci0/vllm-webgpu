@@ -40,8 +40,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # forward() returns full float32 logits [num_tokens, vocab], not a (1,1) token ID.
     logit_returns_token_id: bool = False
 
-    # V norm is applied unconditionally in _decoder_layer (not gated by self._apply_v_norm).
-    # _decoder_layer here does not consult self._apply_v_norm — V norm is structural, not optional.
+    # V norm is applied unconditionally in _decoder_layer.
+    # _decoder_layer here does not consult _apply_v_norm — V norm is structural.
+    # Set True at the class level so the inherited state is explicit and correct
+    # even though _transformer_layer (which gates on it) is unreachable here.
+    _apply_v_norm: bool = True
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
@@ -194,15 +197,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         super().load_weights(path, f32_keys=f32_keys)
         # Cache per_expert_scale for each MoE layer. Each to_numpy() is a blocking
         # GPU-CPU sync (~100 µs); caching once at load time avoids N syncs per step.
-        self._pes_cache = []
+        self._pes_cache = [None] * self.num_layers
         if self.is_moe:
             for i in range(self.num_layers):
                 p = self._layer_key_prefix(i)
                 pes_w = self.weights.get(f"{p}.router.per_expert_scale")
                 if pes_w is not None:
-                    self._pes_cache.append(pes_w.to_numpy().view(np.float16).astype(np.float32))
-                else:
-                    self._pes_cache.append(None)
+                    self._pes_cache[i] = pes_w.to_numpy().view(np.float16).astype(np.float32)
 
     # ── Batch prefill path (not supported) ──────────────────────────────────
 

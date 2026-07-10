@@ -1,7 +1,6 @@
 from __future__ import annotations
 import itertools
 from types import SimpleNamespace
-from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -21,6 +20,7 @@ from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from vllm.tasks import SupportedTask
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -315,7 +315,7 @@ class WebGPUModelRunner:
         k = min(num_logprobs, logits_1d.shape[0])
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
         lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
-        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
+        return lp
 
     @staticmethod
     def _compute_prompt_logprobs(
@@ -358,7 +358,7 @@ class WebGPUModelRunner:
 
         lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
         lp = Sampler.gather_logprobs(lp_t, k, torch.tensor(tok_ids[1:num_positions + 1], dtype=torch.int64))
-        return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
+        return lp
 
     def _make_model_output(
         self,

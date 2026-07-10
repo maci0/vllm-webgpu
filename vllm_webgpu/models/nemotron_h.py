@@ -89,7 +89,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.conv_kernel: int = model_config.conv_kernel
         # conv_dim: size of the vector passed through the causal conv
         # = x (mamba_int) + B (n_groups*state_size) + C (n_groups*state_size)
-        # MambaMixer2.conv_dim, vllm/model_executor/layers/mamba/mamba_mixer2.py L313
+        # Mirrors MambaMixer2.conv_dim, vllm/model_executor/layers/mamba/mamba_mixer2.py L313.
+        # Pinned against vLLM 0.24.0; verify this formula on every vLLM minor bump.
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
@@ -158,15 +159,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
 
         # Build per-layer intermediate sizes in a single O(num_layers) pass.
-        # MLP index is the running count of "mlp" entries seen so far.
+        # MLP index matches NemotronHMLPDecoderLayer: hybrid_override_pattern[:layer_idx+1].count('-')-1
         _layer_int_sizes: list[int] = []
-        _mlp_counter = 0
         for _li, _lt in enumerate(self._layer_types):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_idx = _mlp_counter
-            _mlp_counter += 1
+            _mlp_idx = self._layer_types[:_li + 1].count("mlp") - 1
             if isinstance(_raw_int, list):
                 _fallback = _raw_int[0] if len(_raw_int) == 1 else _raw_int[_mlp_idx]
             else:

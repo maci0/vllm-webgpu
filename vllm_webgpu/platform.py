@@ -140,6 +140,10 @@ class WebGPUPlatform(_Platform):
         idx = device.index if device.index is not None else 0
         if idx != 0:
             raise ValueError(f"WebGPU only supports device 0, got {device}")
+        # wgpu manages its own device context independently of torch.cpu device
+        # state, so torch.cpu.set_device() has no effect on WebGPU dispatch.
+        # The call is intentionally omitted; the CPU platform's contract is
+        # satisfied structurally (index validated above) but not via torch.cpu.
 
     @classmethod
     def get_device_uuid(cls, device_id: int = 0) -> str:

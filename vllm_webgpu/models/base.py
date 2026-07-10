@@ -80,6 +80,11 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
+    # This function inlines the assembly logic from
+    # YaRNScalingRotaryEmbedding._compute_inv_freq (vLLM ≥0.8). Both this
+    # function and the private method use the same three helpers below. If
+    # vLLM changes the YaRN formula, update this function to match.
+    # Pinned against vLLM 0.8.x; review on every vLLM minor bump.
     import torch
     from vllm.model_executor.layers.rotary_embedding.common import (
         yarn_find_correction_range,

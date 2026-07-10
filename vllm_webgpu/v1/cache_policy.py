@@ -218,13 +218,12 @@ def allocate_kv_from_tensors(
                 first_name or "<unknown>",
                 type(spec).__name__,
             )
-        if tensor.shared_by:
-            layer_name = tensor.shared_by[0]
+        if first_name is not None:
             try:
-                idx = extract_layer_index(layer_name)
+                idx = extract_layer_index(first_name)
                 layer_kv_bytes[idx] = (k_bytes, v_bytes)
             except Exception:
-                logger.warning("Cannot parse layer index from KVCacheTensor.shared_by entry %r", layer_name)
+                logger.warning("Cannot parse layer index from KVCacheTensor.shared_by entry %r", first_name)
 
     model.kv_pool.clear()
     total_bytes = 0

@@ -812,13 +812,6 @@ def load_safetensors_weights(
                         # Fall back to CPU dequantization.
                         if fmt == "awq" and qz is not None:
                             w_f16 = _dequant_awq(qw, sc, qz)
-                        elif fmt == "awq" and qz is None:
-                            # AWQ without qzeros: assume symmetric (all zero-points = 8).
-                            # Symmetric AWQ uses zero_point=8 (uint4 midpoint), so every nibble
-                            # is 8, encoded as 0x88888888 per int32 word.
-                            # qzeros shape is (G, N//8) where G=sc.shape[0], N//8=qw.shape[1].
-                            qz_sym = np.full((sc.shape[0], qw.shape[1]), fill_value=_SYM_ZEROS_INT32, dtype=np.int32)
-                            w_f16 = _dequant_awq(qw, sc, qz_sym)
                         else:
                             if qz is None:
                                 if g_idx is not None:
