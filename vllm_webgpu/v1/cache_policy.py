@@ -76,7 +76,7 @@ def allocate_kv_from_tensors(
         # head_size_v instead of allocating each buffer at its correct size.
         first_name = tensor.shared_by[0] if tensor.shared_by else None
         spec = layer_spec_map.get(first_name)
-        if spec is not None and isinstance(spec, MLAAttentionSpec):
+        if isinstance(spec, MLAAttentionSpec):
             raise NotImplementedError(
                 f"MLA KV cache ({type(spec).__name__}) is not supported by the WebGPU backend. "
                 "MLAAttentionSpec uses a compressed latent layout that differs from the standard "

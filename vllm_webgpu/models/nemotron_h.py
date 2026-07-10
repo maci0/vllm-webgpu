@@ -162,20 +162,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
-        # Verify conv_dim matches mamba2_state_shape (tp=1, so no TP sharding).
-        # DS layout: _mamba_conv_shape = (conv_dim, state_len); SD: (state_len, conv_dim).
-        _conv_dim_from_shape = (
+        self.conv_dim: int = (
             self._mamba_conv_shape[0]  # DS: (conv_dim, state_len)
             if is_conv_state_dim_first()
             else self._mamba_conv_shape[1]  # SD: (state_len, conv_dim)
         )
-        assert self.conv_dim == _conv_dim_from_shape, (
-            f"conv_dim mismatch: formula gives {self.conv_dim}, "
-            f"mamba2_state_shape gives {_conv_dim_from_shape}. "
-            "mamba2_state_shape or the conv_dim formula may have changed upstream."
-        )
-        del _conv_dim_from_shape
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353

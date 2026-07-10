@@ -1,4 +1,5 @@
 from __future__ import annotations
+import inspect
 import math
 from itertools import batched
 from typing import TYPE_CHECKING
@@ -11,6 +12,36 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
+
+
+# Verify that the three formulas transcribed in _build_layer_params_from_config
+# are still present in the upstream vLLM Gemma4 implementation. Any vLLM upgrade
+# that changes attention-type dispatch, KV-shared layer boundaries, or head-dim
+# selection will fail loudly here instead of silently mis-sizing buffers.
+try:
+    from vllm.model_executor.models.gemma4 import (
+        Gemma4Attention as _Gemma4Attention,
+        Gemma4DecoderLayer as _Gemma4DecoderLayer,
+    )
+    _g4_decoder_src = inspect.getsource(_Gemma4DecoderLayer)
+    _g4_attn_src = inspect.getsource(_Gemma4Attention)
+    # Formula (1): KV-shared boundary uses num_kv_shared_layers.
+    assert "num_kv_shared_layers" in _g4_decoder_src, (
+        "Gemma4DecoderLayer no longer references 'num_kv_shared_layers'. "
+        "Review _build_layer_params_from_config formula (1) before removing this assertion."
+    )
+    # Formula (2): KV-shared target uses reversed layer_types index search.
+    assert "[::-1].index" in _g4_attn_src, (
+        "Gemma4Attention no longer uses reversed layer_types index search. "
+        "Review _build_layer_params_from_config formula (2) before removing this assertion."
+    )
+    # Formula (3): head-dim selection uses num_global_key_value_heads.
+    assert "num_global_key_value_heads" in _g4_decoder_src, (
+        "Gemma4DecoderLayer no longer references 'num_global_key_value_heads'. "
+        "Review _build_layer_params_from_config formula (3) before removing this assertion."
+    )
+except ImportError:
+    pass  # vLLM not importable in this environment; skip assertion
 
 
 def _build_layer_params_from_config(
@@ -631,8 +662,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
                     # Per-layer rope constants: fused shaders get ROTARY_DIM + FREQ_DIM;
                     # plain rope.wgsl only accepts ROPE_BASE, LN_ROPE_BASE, USE_FREQ_BUF.
-                    _rc          = self._rope_consts[i]
-                    _rope_fused  = _rc
+                    _rope_fused  = self._rope_consts[i]
                     _rope_plain  = self._rope_plain_consts[i]
 
                     residual = b[_H_NAMES[(_hstate + 1) % 3]]
@@ -1098,8 +1128,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             _freq_buf = self._rope_freq_buf
             # Per-layer rope constants: fused shaders accept ROTARY_DIM + FREQ_DIM;
             # plain rope.wgsl only accepts ROPE_BASE, LN_ROPE_BASE, USE_FREQ_BUF.
-            _rc         = self._rope_consts[layer_idx]
-            _rope_fused = _rc
+            _rope_fused = self._rope_consts[layer_idx]
             _rope_plain = self._rope_plain_consts[layer_idx]
 
             if is_kv_shared:

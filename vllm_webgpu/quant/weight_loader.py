@@ -1362,7 +1362,12 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     p = Path(model_dir)
 
     if weight_map is None:
-        index_path = p / _SAFE_WEIGHTS_INDEX_NAME
+        try:
+            from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _find_index
+            _found = _find_index(str(p))
+        except Exception:
+            _found = None
+        index_path = Path(_found) if _found else p / _SAFE_WEIGHTS_INDEX_NAME
         with open(index_path) as f:
             index = json.load(f)
         weight_map = index.get("weight_map", {})

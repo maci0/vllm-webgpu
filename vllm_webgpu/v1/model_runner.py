@@ -152,7 +152,7 @@ class WebGPUModelRunner:
         return lp if lp is not None else getattr(mc, "_layer_attention_params", None)
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
-        if isinstance(self._kv_cache_spec_cache, dict):
+        if self._kv_cache_spec_cache is not None:
             return self._kv_cache_spec_cache
         mc = self.vllm_config.model_config.hf_config
         num_hidden_layers = self.vllm_config.model_config.get_total_num_hidden_layers()
@@ -364,7 +364,6 @@ class WebGPUModelRunner:
         # never exposed to callers because the scheduler guards slice_request on
         # num_logprobs.
         built_logprobs = None
-        merged_prompt_logprobs = prompt_logprobs_dict
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
             _widths = {d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None}
@@ -430,11 +429,10 @@ class WebGPUModelRunner:
         """
         if num_logprobs is None:
             return None
-        full = logits if logits.shape[-1] > 1 else None
-        if full is None:
+        if logits.shape[-1] <= 1:
             logger.warning("req %s: logprobs requested but model returned argmax-only output", rid)
             return None
-        return self._compute_request_logprobs(full[row_idx], tok, num_logprobs)
+        return self._compute_request_logprobs(logits[row_idx], tok, num_logprobs)
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> Any:
         """vLLM >= 0.24 SchedulerOutput format."""

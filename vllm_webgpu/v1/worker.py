@@ -10,6 +10,7 @@ import torch
 # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
 # Update this comment and pyproject.toml when bumping the vLLM version.
 from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
+from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.distributed.utils import get_cpu_distributed_timeout_or_none
 from vllm.logger import init_logger
 from vllm.utils.torch_utils import set_random_seed           # vllm>=0.24
@@ -91,7 +92,6 @@ class WebGPUWorker(WorkerBase):
 
     def initialize_from_config(self, kv_cache_config: "KVCacheConfig") -> None:
         self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
-        from vllm.distributed.kv_transfer.kv_transfer_state import ensure_kv_transfer_initialized
         ensure_kv_transfer_initialized(self.vllm_config, kv_cache_config)
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
