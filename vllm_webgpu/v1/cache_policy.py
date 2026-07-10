@@ -6,7 +6,8 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
-from vllm.v1.kv_cache_interface import AttentionSpec, FullAttentionSpec
+from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
+                                         HiddenStateCacheSpec, MLAAttentionSpec)
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
 _MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
@@ -72,7 +73,13 @@ def allocate_kv_from_tensors(
         # head_size_v instead of allocating each buffer at its correct size.
         first_name = tensor.shared_by[0] if tensor.shared_by else None
         spec = layer_spec_map.get(first_name)
-        if spec is not None and isinstance(spec, FullAttentionSpec):
+        if spec is not None and isinstance(spec, (MLAAttentionSpec, HiddenStateCacheSpec)):
+            raise NotImplementedError(
+                f"MLA KV cache ({type(spec).__name__}) is not supported by the WebGPU backend. "
+                "MLAAttentionSpec uses a compressed latent layout that differs from the standard "
+                "per-head K/V formula and cannot be sized with storage_block_size * head_size * dtype_bytes."
+            )
+        elif spec is not None and isinstance(spec, FullAttentionSpec):
             if spec.kv_quant_mode.is_nvfp4:
                 raise NotImplementedError(
                     "NVFP4 KV cache quantization is not supported by the WebGPU backend. "
