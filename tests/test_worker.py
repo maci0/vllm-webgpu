@@ -223,6 +223,7 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
     vllm_config.model_config.hf_text_config = hf_config
     vllm_config.model_config.get_total_num_kv_heads.return_value = default_kv
     vllm_config.model_config.get_head_size.return_value = default_hd
+    vllm_config.model_config.get_total_num_hidden_layers.return_value = num_hidden_layers
 
     runner = MagicMock(spec=WebGPUModelRunner)
     runner.model = None  # not yet loaded
@@ -293,6 +294,7 @@ def test_get_kv_cache_spec_pre_load_gemma4_uniform_fallback():
     vllm_config.model_config.hf_config = hf_config
     vllm_config.model_config.get_head_size.return_value = 128
     vllm_config.model_config.get_total_num_kv_heads.return_value = 4
+    vllm_config.model_config.get_total_num_hidden_layers.return_value = 4
 
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
     runner = MagicMock(spec=WebGPUModelRunner)

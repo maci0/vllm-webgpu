@@ -152,6 +152,7 @@ class WebGPUModelRunner:
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
+        num_hidden_layers = self.vllm_config.model_config.get_total_num_hidden_layers()
         block_size = self._block_size
         spec: dict[str, Any] = {}
 
@@ -183,7 +184,7 @@ class WebGPUModelRunner:
         _layer_types = get_layer_types(None, self.vllm_config.model_config.hf_text_config)
 
         if not lp_list:
-            if _layer_types and len(_layer_types) == mc.num_hidden_layers:
+            if _layer_types and len(_layer_types) == num_hidden_layers:
                 default_hd = self.vllm_config.model_config.get_head_size()
                 default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
                 global_hd = getattr(mc, "global_head_dim", default_hd)
@@ -197,9 +198,9 @@ class WebGPUModelRunner:
                         spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
                 return spec
 
-        if lp_list and len(lp_list) == mc.num_hidden_layers:
+        if lp_list and len(lp_list) == num_hidden_layers:
             for i, lp in enumerate(lp_list):
-                if _layer_types and len(_layer_types) == mc.num_hidden_layers and _layer_types[i] not in KV_ATTN_TYPES:
+                if _layer_types and len(_layer_types) == num_hidden_layers and _layer_types[i] not in KV_ATTN_TYPES:
                     continue
                 if lp["num_kv_heads"] == 0:
                     # Non-attention layer: skip regardless of _layer_types to
@@ -213,8 +214,8 @@ class WebGPUModelRunner:
             # Only trust layer_types when it covers every layer; a partial or
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
-            lt_filtered = _layer_types if _layer_types and len(_layer_types) == mc.num_hidden_layers else None
-            for i in range(mc.num_hidden_layers):
+            lt_filtered = _layer_types if _layer_types and len(_layer_types) == num_hidden_layers else None
+            for i in range(num_hidden_layers):
                 if lt_filtered is not None and lt_filtered[i] not in KV_ATTN_TYPES:
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
