@@ -105,12 +105,26 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
+    import inspect
     import torch
     from vllm.model_executor.layers.rotary_embedding.common import (
         yarn_find_correction_range,
         yarn_get_mscale,
         yarn_linear_ramp_mask,
     )
+
+    # Guard against silent breakage if vLLM renames or reorders parameters.
+    # yarn_find_correction_range is called positionally with 6 args, so any
+    # reordering would produce wrong frequencies with no TypeError. The other
+    # two helpers are called by keyword or have short stable signatures.
+    _expected = ["low_rot", "high_rot", "dim", "base", "max_position_embeddings", "truncate"]
+    _actual = list(inspect.signature(yarn_find_correction_range).parameters)
+    if _actual != _expected:
+        raise AssertionError(
+            f"yarn_find_correction_range signature changed in this vLLM build. "
+            f"Expected params {_expected}, got {_actual}. "
+            "Update compute_yarn_freqs in base.py to match the new API."
+        )
 
     if rotary_dim is None:
         rotary_dim = head_dim
