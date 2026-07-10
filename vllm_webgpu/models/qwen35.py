@@ -218,23 +218,41 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def _postprocess_weights(self) -> None:
         """Post-load weight fixups for full-attn layers.
 
-        When attn_output_gate=True, the q_proj.weight split is now handled entirely
-        at load time via _weight_transforms (registered in load_weights above).  The
-        transform returns only the Q half; the gate half is stashed in a local dict and
-        uploaded immediately after super().load_weights() returns, with no GPU round-trip.
+        When attn_output_gate=True, the q_proj.weight split is handled at load time
+        via _weight_transforms (registered in load_weights above).  The transform
+        returns only the Q half; the gate half is stashed in a local dict and uploaded
+        immediately after super().load_weights() returns, with no GPU round-trip.
 
-        This method retains the split logic as a safety net for two edge cases:
-          - Checkpoints where the weight was not reached by the transform (e.g., the key
-            was absent in one shard and present in another with a mismatched shape).
-          - Quantized (I8) q_proj weights: the loader ignores transforms for those keys,
-            so the weight arrives here with its original [2*q_dim, H] shape and the
-            existing error is raised.
+        For quantized (I8) q_proj weights the loader skips transforms entirely, so the
+        weight arrives with its original [2*q_dim, H] shape and q_gate_proj.weight is
+        never created.  This method detects that case and raises a clear error rather
+        than letting the gate be silently bypassed at inference time.
 
         Note: q_norm/k_norm tiling and GEMMA_NORM detection are handled at load time
         via _weight_transforms for all checkpoint formats. No GPU readback happens here
         for correctly split fp16 weights.
         """
         self._rms_consts["GEMMA_NORM"] = self._gemma_norm
+
+        if self._attn_output_gate:
+            q_dim = self.num_q_heads * self.head_dim
+            for i in range(self.num_layers):
+                if not self._is_full_attn(i):
+                    continue
+                prefix = f"model.layers.{i}.self_attn"
+                q_key = f"{prefix}.q_proj.weight"
+                gate_key = f"{prefix}.q_gate_proj.weight"
+                if gate_key not in self.weights and q_key in self.weights:
+                    buf = self.weights[q_key]
+                    if buf.shape[0] == 2 * q_dim:
+                        raise ValueError(
+                            f"Layer {i}: q_gate_proj.weight is missing but "
+                            f"q_proj.weight has shape {buf.shape} == [2*q_dim, H]. "
+                            "This checkpoint appears to use quantized (I8) q_proj weights "
+                            "whose split transform was skipped by the loader. "
+                            "Load an fp16 checkpoint, or pre-split the q_proj tensor "
+                            "before quantizing."
+                        )
 
     def _alloc_lin_states(self) -> None:
         """Allocate GPU buffers for persistent GDN recurrent state.
@@ -299,10 +317,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # is enabled.  The loader calls weight_transforms[name](arr) with the fp16
         # numpy array before uploading; by returning only the Q half here, the gate
         # half is stashed without any GPU round-trip.  _postprocess_weights sees
-        # shape[0] == q_dim (not 2*q_dim) and skips the GPU download/split/reupload.
+        # shape[0] == q_dim (not 2*q_dim) for correctly split weights.
         # Quantized q_proj weights are NOT split here — the loader ignores transforms
-        # for I8 keys, so the weight lands with its original shape and _postprocess_weights
-        # raises the existing error for that case.
+        # for I8 keys, so the weight lands with its original shape.  _postprocess_weights
+        # detects the missing gate key and raises a clear error in that case.
         _q_gate_pending: dict[str, np.ndarray] = {}
         if self._attn_output_gate:
             _q_dim = self.num_q_heads * self.head_dim
