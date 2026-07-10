@@ -218,6 +218,9 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
 
     vllm_config = MagicMock()
     vllm_config.model_config.hf_config = hf_config
+    # hf_text_config is now used by get_layer_types; point it at the same mock
+    # since these test configs are single-modal (no wrapper config).
+    vllm_config.model_config.hf_text_config = hf_config
     vllm_config.model_config.get_total_num_kv_heads.return_value = default_kv
     vllm_config.model_config.get_head_size.return_value = default_hd
 

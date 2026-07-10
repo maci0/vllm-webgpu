@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -295,6 +294,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # after weights are loaded (device is available from __init__).
         self._conv_states: dict[int, "WebGPUBuffer"] = {}
         self._ssm_states: dict[int, "WebGPUBuffer"] = {}
+        # Reusable zero-byte buffers for reset_recurrent_states, keyed by size.
+        # Avoids repeated allocation of the same zero buffer on every decode step.
+        self._zero_buf_cache: dict[int, bytearray] = {}
 
         self._rms_base: dict = {
             "HIDDEN_DIM": self.hidden_size,
@@ -383,8 +385,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # state and f32 for the SSM state. These sizes are not configurable
         # via mamba_cache_dtype on the WebGPU path; the shaders are compiled
         # ahead-of-time and cannot switch dtype at runtime.
-        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
-        ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
+        conv_bytes = int(np.prod(conv_shape)) * _ELEM_BYTES["f16"]
+        ssm_bytes  = int(np.prod(ssm_shape))  * _ELEM_BYTES["f32"]
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -396,9 +398,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Zero all Mamba conv and SSM states. Call before each new request."""
         dev = self.wgpu_device.wgpu_device
         for buf in self._conv_states.values():
-            dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
+            zeros = self._zero_buf_cache.setdefault(buf.nbytes, bytearray(buf.nbytes))
+            dev.queue.write_buffer(buf.buf, 0, zeros)
         for buf in self._ssm_states.values():
-            dev.queue.write_buffer(buf.buf, 0, bytes(buf.nbytes))
+            zeros = self._zero_buf_cache.setdefault(buf.nbytes, bytearray(buf.nbytes))
+            dev.queue.write_buffer(buf.buf, 0, zeros)
 
     def save_recurrent_states(self) -> dict:
         """Snapshot all Mamba conv/SSM state buffers to CPU in one GPU readback.
@@ -725,7 +729,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             cw_key = f"{p}.conv1d.weight"
             if cw_key in self.weights:
                 expected = self.conv_dim * self.conv_kernel
-                actual = math.prod(self.weights[cw_key].shape)
+                actual = int(np.prod(self.weights[cw_key].shape))
                 if actual != expected:
                     raise ValueError(
                         f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"

@@ -435,11 +435,10 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
 def _find_u8_u8_bases(header: dict) -> list[str]:
     """Return sorted base names where both .weight and .weight_scale have dtype U8."""
     return sorted(
-        base
+        k.removesuffix(".weight")
         for k in header
         if k.endswith(".weight") and header[k].get("dtype") == "U8"
-        for base in (k.removesuffix(".weight"),)
-        if header.get(base + ".weight_scale", {}).get("dtype") == "U8"
+        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
     )
 
 

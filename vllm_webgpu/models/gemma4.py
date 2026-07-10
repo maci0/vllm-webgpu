@@ -240,6 +240,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 "FREQ_DIM":     _freq_dim,
             })
 
+        # Subset of _rope_consts needed by plain rope.wgsl (no ROTARY_DIM/FREQ_DIM).
+        # Precomputed once so the decode hot path and prefill batch loop don't
+        # allocate a new dict on every layer iteration.
+        self._rope_plain_consts: list[dict] = [
+            {k: rc[k] for k in ("ROPE_BASE", "LN_ROPE_BASE", "USE_FREQ_BUF")}
+            for rc in self._rope_consts
+        ]
+
         # Register q_norm/k_norm tiling transforms so load_weights tiles at upload time,
         # avoiding a GPU roundtrip (to_numpy → tile → re-upload) per weight per layer.
         # Gemma4 checkpoints store shared norm as (head_dim,); the shader expects
@@ -608,7 +616,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     # plain rope.wgsl only accepts ROPE_BASE, LN_ROPE_BASE, USE_FREQ_BUF.
                     _rc          = self._rope_consts[i]
                     _rope_fused  = _rc
-                    _rope_plain  = {k: _rc[k] for k in ("ROPE_BASE", "LN_ROPE_BASE", "USE_FREQ_BUF")}
+                    _rope_plain  = self._rope_plain_consts[i]
 
                     residual = b[_H_NAMES[(_hstate + 1) % 3]]
                     out_h    = b[_H_NAMES[(_hstate + 2) % 3]]
@@ -1107,7 +1115,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # plain rope.wgsl only accepts ROPE_BASE, LN_ROPE_BASE, USE_FREQ_BUF.
             _rc         = self._rope_consts[layer_idx]
             _rope_fused = _rc
-            _rope_plain = {k: _rc[k] for k in ("ROPE_BASE", "LN_ROPE_BASE", "USE_FREQ_BUF")}
+            _rope_plain = self._rope_plain_consts[layer_idx]
 
             if is_kv_shared:
                 # KV-shared layer (last N sliding-attention layers in laptop Gemma4 variant):

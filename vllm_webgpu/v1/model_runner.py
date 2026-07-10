@@ -180,7 +180,7 @@ class WebGPUModelRunner:
         # NemotronH attention layers live under .mixer, not .self_attn.
         _archs = getattr(mc, "architectures", None) or []
         _attn_suffix = ".mixer" if "NemotronHForCausalLM" in _archs else ".self_attn"
-        _layer_types = get_layer_types(None, mc)
+        _layer_types = get_layer_types(None, self.vllm_config.model_config.hf_text_config)
 
         if not lp_list:
             if _layer_types and len(_layer_types) == mc.num_hidden_layers:
@@ -485,7 +485,7 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            num_logprobs = sp.logprobs if sp is not None else None
+            num_logprobs = sp.num_logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "

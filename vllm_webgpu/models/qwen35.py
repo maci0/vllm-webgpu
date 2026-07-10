@@ -333,8 +333,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             return arr
 
         _key = "model.layers.0.input_layernorm.weight"
-        if _key not in self._weight_transforms:
-            self._weight_transforms[_key] = _gemma_norm_detect
+        self._weight_transforms[_key] = _gemma_norm_detect
 
         # Register CPU-side split transforms for q_proj.weight when attn_output_gate
         # is enabled.  The loader calls weight_transforms[name](arr) with the fp16
@@ -351,15 +350,14 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             _nh = self.num_q_heads
             _hs = self.hidden_size
 
-            def _make_split(gk, pending=_q_gate_pending,
-                            nh=_nh, hd=_hd, q_dim=_q_dim, hs=_hs):
+            def _make_split(gk, pending=_q_gate_pending):
                 def _split(arr):
-                    if arr.shape[0] != 2 * q_dim:
+                    if arr.shape[0] != 2 * _q_dim:
                         return arr  # already split or unexpected shape; pass through
                     # arr is always float16: loader converts BF16/F32 before invoking transforms
-                    a = arr.reshape(nh, 2 * hd, hs)
-                    q_half   = np.ascontiguousarray(a[:, :hd, :].reshape(q_dim, hs))
-                    gate_half = np.ascontiguousarray(a[:, hd:, :].reshape(q_dim, hs))
+                    a = arr.reshape(_nh, 2 * _hd, _hs)
+                    q_half    = a[:, :_hd, :].reshape(_q_dim, _hs)
+                    gate_half = a[:, _hd:, :].reshape(_q_dim, _hs)
                     pending[gk] = gate_half
                     return q_half
                 return _split
