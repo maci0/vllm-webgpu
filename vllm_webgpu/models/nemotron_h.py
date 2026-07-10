@@ -565,19 +565,45 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Validate weights for all Mamba layers.
 
         Checks:
-        1. conv1d.weight element count (shape may be [conv_dim, 1, kernel] or
+        1. in_proj.weight shape[0] against in_proj_dim (first Mamba layer only).
+           Catches a silent formula mismatch if vLLM changes MambaMixer2Tp's
+           conv_dim or in_proj output_sizes, which would mis-size scratch buffers.
+        2. conv1d.weight element count (shape may be [conv_dim, 1, kernel] or
            [conv_dim, kernel]; both are row-major identical).
-        2. Presence and f32 dtype for A, D, and dt_bias. The mamba2_ssm_step
+        3. Presence and f32 dtype for A, D, and dt_bias. The mamba2_ssm_step
            shader binds all three as array<f32>; a missing key or f16 upload
            produces silent garbage with no GPU-side error.
 
         The A_log to -exp(A) transform is a CPU-side weight_transform applied
         before GPU upload, so no GPU round-trip is needed here.
         """
+        _checked_inproj = False
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
                 continue
             p = f"model.layers.{i}.mixer"
+
+            # in_proj.weight: machine-check in_proj_dim formula against the
+            # actual checkpoint (first Mamba layer only). The formula mirrors
+            # MambaMixer2Tp.in_proj output_sizes in mamba_mixer2.py L328-355
+            # and is pinned at init time with no upstream guard. A vLLM bump
+            # that changes conv_dim or adds an extra output group would
+            # silently mis-size mamba_inproj / mamba_conv_in / mamba_dt.
+            if not _checked_inproj:
+                inproj_key = f"{p}.in_proj.weight"
+                if inproj_key in self.weights:
+                    actual_inproj_dim = self.weights[inproj_key].shape[0]
+                    if actual_inproj_dim != self.in_proj_dim:
+                        raise ValueError(
+                            f"{inproj_key} shape[0]={actual_inproj_dim} does not "
+                            f"match computed in_proj_dim={self.in_proj_dim} "
+                            f"(mamba_int={self.mamba_int} + "
+                            f"conv_dim={self.conv_dim} + "
+                            f"mamba_num_heads={self.mamba_num_heads}). "
+                            f"Recheck MambaMixer2Tp output_sizes in "
+                            f"mamba_mixer2.py L328-355 against this vLLM version."
+                        )
+                    _checked_inproj = True
 
             # conv1d.weight: validate element count.
             # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements
