@@ -431,7 +431,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             **self._quant_extra(_lm_base, uq_lm)},
                            _rows_wg(vocab))
 
-            self._dispatch_softcap_and_sample(vocab, logits_buf, pre["capped"])
+            self._dispatch_softcap_and_sample(vocab, logits_buf, pre.get("capped", self._dummy_scales_buf))
 
         if self._greedy_decode:
             tok = self._read_sample_tok()
@@ -896,7 +896,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                  **self._quant_extra(_lm_base, uq_lm)},
                 _rows_wg(vocab))
 
-            self._dispatch_softcap_and_sample(vocab, b["logits"], b["capped"])
+            self._dispatch_softcap_and_sample(vocab, b["logits"], b.get("capped", self._dummy_scales_buf))
 
         if self._greedy_decode:
             tok = self._read_sample_tok()
@@ -978,7 +978,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                  **self._quant_extra(_lm_base, uq_lm)},
                 _rows_wg(vocab))
 
-            self._dispatch_softcap_and_sample(vocab, pre["logits"], pre["capped"])
+            self._dispatch_softcap_and_sample(vocab, pre["logits"], pre.get("capped", self._dummy_scales_buf))
 
         if self._greedy_decode:
             tok = self._read_sample_tok()
