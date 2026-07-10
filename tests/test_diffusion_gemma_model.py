@@ -147,8 +147,9 @@ def test_diffusion_gemma_moe_forward(wgpu_device):
     model.weights[f"{p}.mlp.up_proj.weight"]   = f16((inter,  hidden))
     model.weights[f"{p}.mlp.down_proj.weight"] = f16((hidden, inter))
 
-    # MoE pre-norm (required: absence causes silent f32→f16 misinterpretation)
-    model.weights[f"{p}.pre_feedforward_layernorm_2.weight"] = f16((hidden,))
+    # MoE norms (required: absence of either causes incorrect compute or silent misinterpretation)
+    model.weights[f"{p}.post_feedforward_layernorm_1.weight"] = f16((hidden,))
+    model.weights[f"{p}.pre_feedforward_layernorm_2.weight"]  = f16((hidden,))
 
     # MoE router: [num_experts, hidden]
     model.weights[f"{p}.router.proj.weight"] = f16((n_experts, hidden))

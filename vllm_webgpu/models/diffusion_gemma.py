@@ -502,11 +502,20 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # MoE layers use post_feedforward_layernorm_1 for the shared MLP stream;
             # non-MoE layers only have the no-suffix key.
             _pfn1_key_1 = f"{p}.post_feedforward_layernorm_1.weight"
-            if _pfn1_key_1 in self.weights and self.is_moe:
-                pfn1_w = self.weights[_pfn1_key_1]
-                self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
-                               (num_tokens, 1, 1))
-                hidden_states_1 = self._shared_res_buf
+            if self.is_moe:
+                if _pfn1_key_1 in self.weights:
+                    pfn1_w = self.weights[_pfn1_key_1]
+                    self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
+                                   (num_tokens, 1, 1))
+                    hidden_states_1 = self._shared_res_buf
+                else:
+                    raise ValueError(
+                        f"MoE layer {layer_idx} missing post_feedforward_layernorm_1.weight. "
+                        "The shared-MLP output cannot be passed directly to the combine dispatch: "
+                        "sc['ffn_out'] is overwritten by the expert loop and the alias would use "
+                        "the last expert's down-projection result instead of the shared expert output. "
+                        "A correctly loaded DiffusionGemma checkpoint always has this weight."
+                    )
             else:
                 hidden_states_1 = sc["ffn_out"]
 
