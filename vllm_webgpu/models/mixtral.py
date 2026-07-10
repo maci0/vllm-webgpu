@@ -279,6 +279,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 (hidden, 1, 1),
             )
         else:
+            self._ensure_moe_expert_bufs()
             qi_d = self._quant_extra(f"{ep}.{down_key_name}", uq_d)
             self._dispatch(
                 "matmul_quant",
