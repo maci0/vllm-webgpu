@@ -429,14 +429,18 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 result_buf = logits_buf
 
-            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
-                           {"N": vocab}, (1, 1, 1))
-            self._copy_sample_to_staging()
+            greedy = self._greedy_decode
+            if greedy:
+                self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
+                               {"N": vocab}, (1, 1, 1))
+                self._copy_sample_to_staging()
 
         self._last_logit_buf = result_buf
         self._last_vocab     = vocab
-        tok = self._read_sample_tok()
-        return np.array([[tok]], dtype=np.int32)
+        if greedy:
+            tok = self._read_sample_tok()
+            return np.array([[tok]], dtype=np.int32)
+        return self.logit_readback()
 
     def _lm_head_parts(self) -> "tuple[str, object, int, str]":
         """Return (key, weight_buf, uq, base_key) for the LM head.
@@ -877,14 +881,18 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 result_buf = b["logits"]
 
-            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
-                           {"N": vocab}, (1, 1, 1))
-            self._copy_sample_to_staging()
+            greedy = self._greedy_decode
+            if greedy:
+                self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
+                               {"N": vocab}, (1, 1, 1))
+                self._copy_sample_to_staging()
 
         self._last_logit_buf = result_buf
         self._last_vocab     = vocab
-        tok = self._read_sample_tok()
-        return np.array([[tok]], dtype=np.int32)
+        if greedy:
+            tok = self._read_sample_tok()
+            return np.array([[tok]], dtype=np.int32)
+        return self.logit_readback()
 
     def _prefill_sequential_fallback(
         self,
@@ -968,14 +976,18 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 result_buf = pre["logits"]
 
-            self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
-                           {"N": vocab}, (1, 1, 1))
-            self._copy_sample_to_staging()
+            greedy = self._greedy_decode
+            if greedy:
+                self._dispatch("argmax_f16", [result_buf, self._ensure_sample_buf()],
+                               {"N": vocab}, (1, 1, 1))
+                self._copy_sample_to_staging()
 
         self._last_logit_buf = result_buf
         self._last_vocab     = vocab
-        tok = self._read_sample_tok()
-        return np.array([[tok]], dtype=np.int32)
+        if greedy:
+            tok = self._read_sample_tok()
+            return np.array([[tok]], dtype=np.int32)
+        return self.logit_readback()
 
     def _transformer_layer(
         self,
