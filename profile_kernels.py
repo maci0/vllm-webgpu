@@ -66,14 +66,15 @@ except Exception as e:
 
 # ── Setup fake KV pool ────────────────────────────────────────────────────────
 dev = wgpu_dev.wgpu_device
-num_blocks = 512  # enough for profiling
+
+# Compute block count before allocating so the pool covers every block ID in bt.
+total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
+bt_blocks = (total_toks + block_size - 1) // block_size
+num_blocks = max(512, bt_blocks)
 
 allocate_kv_from_hf_config(dev, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
 
 # ── Run prefill ───────────────────────────────────────────────────────────────
-# Allocate enough blocks for prompt + warmup + profiling steps
-total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
-bt_blocks = (total_toks + block_size - 1) // block_size
 bt = np.arange(bt_blocks, dtype=np.uint32)
 
 print("Running prefill...")
