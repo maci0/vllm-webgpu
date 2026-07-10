@@ -79,14 +79,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         num_q = self.num_q_heads
         num_kv = self.num_kv_heads
 
+        _q_xform = lambda a: np.tile(a, num_q) if a.shape == (head_dim,) else a
+        _k_xform = lambda a: np.tile(a, num_kv) if a.shape == (head_dim,) else a
         for _i in range(self.num_layers):
             _p = f"model.layers.{_i}"
-            self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = (
-                lambda a: np.tile(a, num_q) if a.shape == (head_dim,) else a
-            )
-            self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
-                lambda a: np.tile(a, num_kv) if a.shape == (head_dim,) else a
-            )
+            self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = _q_xform
+            self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = _k_xform
 
     def _init_scratch_buffers(self, max_ctx: int, qkv_size: "int | None" = None) -> None:
         """Pre-allocate all intermediate scratch buffers used in _transformer_layer.

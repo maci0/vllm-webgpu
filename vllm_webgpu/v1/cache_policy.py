@@ -178,7 +178,6 @@ def allocate_kv_from_tensors(
             storage_bs = spec.storage_block_size
             k_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size * dtype_bytes
             v_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size_v * dtype_bytes
-            naive = tensor.size // 2
             if k_bytes + v_bytes != tensor.size:
                 logger.warning(
                     "Spec-derived total (%d B) does not match tensor.size (%d B) "

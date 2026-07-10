@@ -104,13 +104,14 @@ class WebGPUModelRunner:
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
         self._zeros_cache: dict[int, bytes] = {}  # amortizes zero-byte alloc across scheduling steps
+        self._block_size: int = vllm_config.cache_config.block_size
 
     def load_model(self) -> None:
         mc = self.vllm_config.model_config
         arch = (mc.architectures or ["LlamaForCausalLM"])[0]
         hf_config = mc.hf_config
 
-        block_size = self.vllm_config.cache_config.block_size
+        block_size = self._block_size
 
         # NemotronH Mamba conv state buffers are sized for num_spec=0:
         # each buffer holds (conv_kernel - 1) * conv_dim slots (f16), matching
@@ -164,7 +165,7 @@ class WebGPUModelRunner:
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
-        block_size = self.vllm_config.cache_config.block_size
+        block_size = self._block_size
         spec: dict[str, Any] = {}
         _dtype = torch.float16
 
@@ -235,7 +236,7 @@ class WebGPUModelRunner:
         return spec
 
     def get_cache_block_size_bytes(self) -> int:
-        block_size = self.vllm_config.cache_config.block_size
+        block_size = self._block_size
         head_dim = self.vllm_config.model_config.get_head_size()
         num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
         # Use the maximum per-layer values when heterogeneous layer params are available
@@ -384,10 +385,13 @@ class WebGPUModelRunner:
         if has_topk:
             max_k = max(d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None)
             pieces = []
-            cu = []   # cumulative row count, one entry per request
+            cu = []   # cumulative row count, one entry per request; -1 sentinel for requests without logprobs
             row = 0
             for d in logprobs_data:
-                cu.append(row)
+                if d is not None:
+                    cu.append(row)
+                else:
+                    cu.append(-1)  # sentinel: slice_request must not be called for this request
                 if d is not None:
                     pad = max_k - d.logprob_token_ids.shape[1]
                     pieces.append(LogprobsTensors(
@@ -460,7 +464,7 @@ class WebGPUModelRunner:
 
         cached = scheduler_output.scheduled_cached_reqs
         new_reqs = scheduler_output.scheduled_new_reqs
-        block_size = self.vllm_config.cache_config.block_size
+        block_size = self._block_size
 
         all_req_ids: list[str] = []
         all_sampled: list[int] = []

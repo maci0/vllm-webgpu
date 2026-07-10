@@ -342,25 +342,25 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             _hd = self.head_dim
             _nh = self.num_q_heads
             _hs = self.hidden_size
+
+            def _make_split(gk, pending=_q_gate_pending,
+                            nh=_nh, hd=_hd, q_dim=_q_dim, hs=_hs):
+                def _split(arr):
+                    if arr.shape[0] != 2 * q_dim:
+                        return arr  # already split or unexpected shape; pass through
+                    # arr is always float16: loader converts BF16/F32 before invoking transforms
+                    a = arr.reshape(nh, 2 * hd, hs)
+                    q_half   = np.ascontiguousarray(a[:, :hd, :].reshape(q_dim, hs))
+                    gate_half = np.ascontiguousarray(a[:, hd:, :].reshape(q_dim, hs))
+                    pending[gk] = gate_half
+                    return q_half
+                return _split
+
             for _i in range(self.num_layers):
                 if not self._is_full_attn(_i):
                     continue
                 _q_key = f"model.layers.{_i}.self_attn.q_proj.weight"
                 _g_key = f"model.layers.{_i}.self_attn.q_gate_proj.weight"
-
-                def _make_split(gk, pending=_q_gate_pending,
-                                nh=_nh, hd=_hd, q_dim=_q_dim, hs=_hs):
-                    def _split(arr):
-                        if arr.shape[0] != 2 * q_dim:
-                            return arr  # already split or unexpected shape; pass through
-                        # arr is always float16: loader converts BF16/F32 before invoking transforms
-                        a = arr.reshape(nh, 2 * hd, hs)
-                        q_half   = np.ascontiguousarray(a[:, :hd, :].reshape(q_dim, hs))
-                        gate_half = np.ascontiguousarray(a[:, hd:, :].reshape(q_dim, hs))
-                        pending[gk] = gate_half
-                        return q_half
-                    return _split
-
                 self._weight_transforms[_q_key] = _make_split(_g_key)
 
         super().load_weights(path, f32_keys=f32_keys)

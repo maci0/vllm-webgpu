@@ -4,7 +4,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from transformers.utils import SAFE_WEIGHTS_INDEX_NAME as _SAFE_WEIGHTS_INDEX_NAME
+from huggingface_hub.constants import SAFETENSORS_INDEX_FILE as _SAFE_WEIGHTS_INDEX_NAME
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -153,6 +153,7 @@ def load_safetensors_weights_sharded(
     f32_keys: "frozenset[str] | None" = None,
     weight_transforms: "dict | None" = None,
     skip_prefixes: "frozenset[str] | None" = None,
+    quant_cfg: "dict | None" = None,
 ) -> dict:
     """Load multi-shard safetensors from a directory with model.safetensors.index.json.
 
@@ -192,7 +193,7 @@ def load_safetensors_weights_sharded(
     # Detect compressed-tensors quantization format before loading shards.
     # The I8 and F8_E4M3 dtypes are already handled per-shard inside load_safetensors_weights,
     # but we apply comprehensive quant_meta here for any layers not caught by dtype detection.
-    ct_meta = detect_compressed_tensors_fmt(Path(model_dir) / "config.json")
+    ct_meta = detect_compressed_tensors_fmt(Path(model_dir) / "config.json", quant_cfg=quant_cfg)
     if ct_meta:
         logger.info("compressed-tensors format detected: %s", ct_meta.get("__global__", {}))
 

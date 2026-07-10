@@ -304,7 +304,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "up_buf":     mk(T * I * 2),           # f16
             "ffn_act":    mk(T * I * 2),
             "ffn_out":    mk(T * H * 2),
-            "ffn_normed": mk(T * H * 2),           # f16 (fallback when pre_ffn_norm present, post_ffn_norm absent)
             # Residual buffers stored in f32 for precision.
             # Gemma4 has output_norm weights up to 600 which cause f16 saturation
             # when accumulated across 48 layers — f32 residuals prevent this.
@@ -1225,9 +1224,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 ffn_normed = sc["normed"]
             else:
                 if post_attn_norm_w is not None:
-                    self._dispatch("rms_norm", [sc["o_proj_out"], post_attn_norm_w, sc["ffn_normed"]],
-                                   _rms_consts, (num_tokens, 1, 1))
-                    attn_delta = sc["ffn_normed"]
+                    attn_delta = sc["o_proj_out"]
                 else:
                     attn_delta = sc["o_proj_out"]
 

@@ -116,6 +116,11 @@ def compute_yarn_freqs(
     inv_freq_mask = (
         1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
     ) * extrapolation_factor
+    # The five lines below mirror YaRNScalingRotaryEmbedding._compute_inv_freq
+    # (vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py, lines 50-72).
+    # Instantiating that class would trigger a full cos/sin cache build (expensive),
+    # so the blend is reproduced here using the same three utility functions imported above.
+    # If vLLM changes the blend formula, update this block to match.
     inv_freq = (
         inv_freq_interpolation * (1 - inv_freq_mask)
         + inv_freq_extrapolation * inv_freq_mask
@@ -335,10 +340,16 @@ class BaseWebGPUModel(ABC):
             # MLX affine int4 directories also return "safetensors_sharded" from
             # detect_weight_format; load_safetensors_weights_sharded detects the
             # .biases keys in the already-loaded index and dispatches accordingly.
-            _check_unsupported_quant(Path(path))
+            # Read config.json once and share with both the unsupported-quant check
+            # and the loader, eliminating the redundant second parse inside
+            # load_safetensors_weights_sharded (mirrors the single-file branch above).
+            _cfg_json = Path(path) / "config.json"
+            _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
+            _check_unsupported_quant(Path(path), quant_cfg=_quant_cfg)
             self.weights = load_safetensors_weights_sharded(
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
-                weight_transforms=transforms, skip_prefixes=skip_prefixes)
+                weight_transforms=transforms, skip_prefixes=skip_prefixes,
+                quant_cfg=_quant_cfg)
         elif fmt == "gguf":
             raise ValueError(
                 f"GGUF format not supported by this plugin — use the vllm-gguf plugin: {path}"

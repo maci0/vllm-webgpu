@@ -5,8 +5,11 @@ from dataclasses import dataclass
 
 import vllm_webgpu.envs as envs
 
-# WebGPU spec power preference values (stable since the spec was published).
-VALID_POWER_PREFERENCES = frozenset({"low-power", "high-performance"})
+try:
+    from wgpu.enums import PowerPreference as _WP
+    VALID_POWER_PREFERENCES = frozenset(_WP)
+except ImportError:
+    VALID_POWER_PREFERENCES = frozenset({"low-power", "high-performance"})
 
 
 @dataclass(frozen=True)

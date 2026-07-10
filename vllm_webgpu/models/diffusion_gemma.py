@@ -292,10 +292,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            self._rms_consts,
                            (num_tokens, 1, 1))
 
-            _lm_key = self._lm_head_key()
-            _lm_base = _lm_key.removesuffix(".weight")
-            lm_head_w = self.weights[_lm_key]
-            uq_lm = self._uq_for_key(_lm_key)
+            _lm_key, lm_head_w, uq_lm, _lm_base = self._lm_head_parts()
             sc_lm = self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf)
             if num_tokens > 1:
                 # Batched LM head: vocab_size (256128) exceeds the WebGPU 65535
