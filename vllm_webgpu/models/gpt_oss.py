@@ -48,6 +48,12 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # Moving it here consolidates config reads and lets us use self.intermediate_size
         # (set by the parent) as the natural fallback instead of reaching back to model_config.
         self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or self.intermediate_size
+        # Batch prefill bypasses _attn_block and cannot honour per-layer context
+        # overrides or inject attention biases. Force sequential prefill whenever
+        # either condition is present. The dangerous case for layer_types is
+        # sliding_attention (batch prefill applies no per-layer SWA cap); full_attention
+        # layers require no special handling.
+        self._force_sequential_prefill = bool(self._attn_bias or 'sliding_attention' in self._layer_types)
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
