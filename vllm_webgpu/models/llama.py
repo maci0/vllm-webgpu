@@ -102,7 +102,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             a non-standard qkv buffer (e.g. Qwen35 GDN layers) pass this to
             avoid allocating the standard-sized buffer only to immediately replace it.
         """
-        dev = self.wgpu_device.wgpu_device
         T = 1  # decode: num_tokens == 1
         H = self.hidden_size
         I = self.intermediate_size

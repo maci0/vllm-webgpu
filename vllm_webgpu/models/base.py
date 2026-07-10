@@ -12,6 +12,10 @@ import numpy as np
 
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME, CONFIG_NAME
 from vllm.logger import init_logger
+from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+    YaRNScalingRotaryEmbedding,
+)
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
@@ -106,11 +110,6 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
-    )
-
     if rotary_dim is None:
         rotary_dim = head_dim
 

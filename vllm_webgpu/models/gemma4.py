@@ -523,9 +523,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 keys.append(f"{p}.self_attn.k_proj.weight")
                 if lp.get("has_v_proj", True):
                     keys.append(f"{p}.self_attn.v_proj.weight")
-            for k in keys:
-                if k in self.weights and self._uq_for_key(k) not in (0, 3):
-                    return False
+            if any(k in self.weights and self._uq_for_key(k) not in (0, 3) for k in keys):
+                return False
         return True
 
     def _prefill_batch_forward(  # noqa: C901

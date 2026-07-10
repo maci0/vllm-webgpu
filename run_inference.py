@@ -72,7 +72,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # KV cache
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
-    max_ctx = min(getattr(cfg, "max_position_embeddings", 8192), 65535)
+    # num_blocks is capped at 4096 (the KV pool ceiling for this script).
+    max_ctx = getattr(cfg, "max_position_embeddings", 8192)
     num_blocks = min((max_ctx + block_size - 1) // block_size + 4, 4096)
 
     allocate_kv_from_hf_config(device.wgpu_device, model, cfg, num_blocks=num_blocks, block_size=block_size)

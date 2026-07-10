@@ -563,7 +563,6 @@ def load_safetensors_weights(
     import safetensors.torch as sft
     import torch
     import wgpu as wgpu_lib
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
     # Read the safetensors header before opening the file a second time.
     # parse_safetensors_file_metadata does a single binary read of the header
@@ -1423,7 +1422,6 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     in the numpy dequant path and a runtime error in the MLX path.
     """
     import torch as _torch
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
     p = Path(model_dir)
 

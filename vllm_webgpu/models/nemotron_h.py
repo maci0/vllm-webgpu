@@ -817,13 +817,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def _finalize_output(self, vocab: int) -> np.ndarray:
         """Record logit buffer and return sampled token or full logits."""
-        pre = self._pre
-        self._last_logit_buf = pre["logits"]
+        self._last_logit_buf = self._pre["logits"]
         self._last_vocab = vocab
-        if self._greedy_decode:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return self._finish_forward(self._greedy_decode)
 
     def _run_final_norm_and_lm_head(
         self, x_buf: "WebGPUBuffer", vocab: int, num_tokens: int

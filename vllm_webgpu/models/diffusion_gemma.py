@@ -176,29 +176,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         }
         self._hstate: int = 0
 
-    # ── Methods inherited from Gemma4WebGPUModel that must not be called ────
-
-    def _transformer_layer(self, *args, **kwargs):
-        raise NotImplementedError(
-            "DiffusionGemma uses _decoder_layer; qkv_buf is not allocated, "
-            "so _transformer_layer (inherited from Gemma4WebGPUModel) would crash "
-            "with KeyError on sc['qkv_buf']."
-        )
-
-    def _prefill_batch_forward(self, *args, **kwargs):
-        raise NotImplementedError(
-            "DiffusionGemma uses forward(); _prefill_batch_forward (inherited from "
-            "Gemma4WebGPUModel) calls _transformer_layer which requires qkv_buf, "
-            "but that buffer is not allocated in this model."
-        )
-
-    def _prefill_sequential_fallback(self, *args, **kwargs):
-        raise NotImplementedError(
-            "DiffusionGemma uses forward(); _prefill_sequential_fallback (inherited "
-            "from Gemma4WebGPUModel) calls _transformer_layer which requires qkv_buf, "
-            "but that buffer is not allocated in this model."
-        )
-
     # ── Weight key helpers ───────────────────────────────────────────────────
 
     def _layer_key_prefix(self, layer_idx: int) -> str:
