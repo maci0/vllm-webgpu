@@ -115,13 +115,9 @@ def allocate_kv_from_tensors(
                 f"SlidingWindowSpec KV cache is not supported by the WebGPU backend."
             )
         else:
-            assert spec is not None, (
-                f"No spec in layer_spec_map for {first_name!r}; "
-                "vLLM planner contract violated (shared_by name missing from kv_cache_groups)"
-            )
-            assert isinstance(spec, AttentionSpec), (
-                f"Unexpected spec type {type(spec).__name__} for {first_name!r}; "
-                "only AttentionSpec subclasses are expected in layer_spec_map"
+            raise NotImplementedError(
+                f"Unsupported KV cache spec type {type(spec).__name__} for {first_name!r}; "
+                "add an explicit branch to handle it."
             )
         if first_name is not None:
             try:
