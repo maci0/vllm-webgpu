@@ -603,7 +603,12 @@ def load_safetensors_weights(
             # MXFP4 or MXFP8: U8 weight + U8 exponent scale. Distinguish via config files.
             # _raw_quant_cfg was loaded once above; pass it here to skip a second disk read.
             _mx = _detect_mx_quant(Path(path).parent, quant_cfg=_raw_quant_cfg)
-            fmt = _mx if _mx in ("mxfp4", "mxfp8") else "plain"
+            if _mx not in ("mxfp4", "mxfp8"):
+                raise ValueError(
+                    f"U8+U8 weight pair detected but MXFP format unrecognized in "
+                    f"{Path(path).parent}; check hf_quant_config.json or config.json quant_type"
+                )
+            fmt = _mx
         elif has_ct_pack_int4:
             fmt = "ct_pack_int4"
         else:
