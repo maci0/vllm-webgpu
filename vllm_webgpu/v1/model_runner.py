@@ -375,11 +375,11 @@ class WebGPUModelRunner:
 
         # Build LogprobsLists for top-k sampled-token logprob entries.
         # Stack only non-None entries (one row per logprob-having request).
-        # cu_num_generated_tokens maps req_index -> row in the stacked tensor;
-        # only requests with logprobs are included. The scheduler already guards
-        # slice_request with `num_logprobs is not None`, so missing keys are
-        # never accessed. Requests without logprobs are excluded entirely,
-        # keeping all mapped values non-negative and the contract clean.
+        # cu maps req_index -> row in the stacked tensor for requests that have
+        # logprob data. tolists() requires a plain list, so we expand cu into
+        # a list of the same length as logprobs_data, using 0 as a placeholder
+        # for req-indices with no logprob rows (those positions are never read
+        # because the scheduler guards slice_request with num_logprobs is not None).
         built_logprobs = None
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = any(d is not None for d in logprobs_data)
@@ -403,7 +403,8 @@ class WebGPUModelRunner:
                 torch.cat([p.logprobs for p in pieces]),
                 torch.cat([p.selected_token_ranks for p in pieces]),
             )
-            built_logprobs = stacked.tolists(cu)
+            cu_list = [cu.get(i, 0) for i in range(len(logprobs_data))]
+            built_logprobs = stacked.tolists(cu_list)
 
         out = ModelRunnerOutput(
             req_ids=req_ids,
