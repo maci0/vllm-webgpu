@@ -180,6 +180,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
             # Match Mixtral's lazy pattern: only allocate when debug logging is active.
             self._topk_w_staging = None
+            self._expert_out_zeros = bytearray(self.hidden_size * 2)
 
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
