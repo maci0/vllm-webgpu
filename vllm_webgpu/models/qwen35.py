@@ -147,13 +147,13 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         # Seed _rms_consts with GEMMA_NORM so all add_rms_norm dispatches (including
         # GDN layers, which read _rms_consts directly) have the constant from the moment
-        # the object is constructed. _postprocess_weights updates it after load_weights()
-        # detects the actual format from the checkpoint weights.
+        # the object is constructed. GEMMA_NORM is fixed from model_config.rms_norm_type
+        # at construction time and not updated after load.
         self._rms_consts["GEMMA_NORM"] = self._gemma_norm
 
         # Seed _rope_base so _attn_block can read it before load_weights completes (e.g.
-        # unit tests that call _attn_block directly). _postprocess_weights overwrites this
-        # with the detected GEMMA_NORM value once the checkpoint is loaded.
+        # unit tests that call _attn_block directly). GEMMA_NORM is fixed from
+        # model_config.rms_norm_type at construction time and not updated after load.
         self._rope_base = {
             **self._rope_consts,
             "GEMMA_NORM": self._gemma_norm,
