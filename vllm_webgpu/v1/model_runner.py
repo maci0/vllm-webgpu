@@ -381,11 +381,12 @@ class WebGPUModelRunner:
                         d.selected_token_ranks,
                     ))
                     row += 1
+            assert row == len(pieces), (
+                f"row counter {row} disagrees with pieces length {len(pieces)}; "
+                "loop was likely refactored incorrectly"
+            )
             _oob = len(pieces)  # out-of-range sentinel replaces placeholders for non-logprob entries
             row_index_map = [_oob if v < 0 else v for v in row_index_map]
-            assert _oob == len(pieces) and all(
-                v == _oob or 0 <= v < _oob for v in row_index_map
-            ), f"row_index_map invariant violated: _oob={_oob}, map={row_index_map}"
             stacked = LogprobsTensors(
                 torch.cat([p.logprob_token_ids for p in pieces]),
                 torch.cat([p.logprobs for p in pieces]),
