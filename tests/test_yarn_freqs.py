@@ -1,12 +1,9 @@
-"""Regression test: compute_yarn_freqs must stay in sync with vLLM's YaRN formula.
+"""Regression tests for compute_yarn_freqs.
 
-This test compares compute_yarn_freqs against vLLM's internal _compute_inv_freq
-on a small known config. Any vLLM version bump that changes the YaRN formula will
-cause this test to fail, surfacing the divergence before it reaches inference.
-
-On vLLM upgrade, diff:
-  vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py lines 49-73
-    (_compute_inv_freq body) and lines 40-44 (__init__ parameters).
+compute_yarn_freqs now delegates to YaRNScalingRotaryEmbedding._compute_inv_freq
+via object.__new__ (bypassing the cos/sin cache build). The helper _vllm_yarn_freqs
+below uses the same delegation pattern as a reference so the comparison verifies
+that compute_yarn_freqs wires the attributes correctly and forwards the call.
 """
 from __future__ import annotations
 
@@ -74,7 +71,7 @@ def _vllm_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> "t
     reason="vllm not installed",
 )
 def test_yarn_freqs_matches_vllm():
-    """compute_yarn_freqs output must match vLLM's internal YaRN formula."""
+    """compute_yarn_freqs must produce the same output as the vLLM reference."""
     from vllm_webgpu.models.base import compute_yarn_freqs
 
     freqs_ours, mscale_ours = compute_yarn_freqs(
