@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -327,7 +328,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(10)  # logging.DEBUG == 10
+        _debug_weights = logger.isEnabledFor(logging.DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

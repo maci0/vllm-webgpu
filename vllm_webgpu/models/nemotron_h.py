@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -385,8 +386,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # state and f32 for the SSM state. These sizes are not configurable
         # via mamba_cache_dtype on the WebGPU path; the shaders are compiled
         # ahead-of-time and cannot switch dtype at runtime.
-        conv_bytes = int(np.prod(conv_shape)) * _ELEM_BYTES["f16"]
-        ssm_bytes  = int(np.prod(ssm_shape))  * _ELEM_BYTES["f32"]
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -729,7 +730,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             cw_key = f"{p}.conv1d.weight"
             if cw_key in self.weights:
                 expected = self.conv_dim * self.conv_kernel
-                actual = int(np.prod(self.weights[cw_key].shape))
+                actual = math.prod(self.weights[cw_key].shape)
                 if actual != expected:
                     raise ValueError(
                         f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"

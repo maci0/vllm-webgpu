@@ -435,10 +435,12 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
 def _find_u8_u8_bases(header: dict) -> list[str]:
     """Return sorted base names where both .weight and .weight_scale have dtype U8."""
     return sorted(
-        k.removesuffix(".weight")
+        base
         for k in header
-        if k.endswith(".weight") and header[k].get("dtype") == "U8"
-        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+        if k.endswith(".weight")
+        for base in (k.removesuffix(".weight"),)
+        if header[k].get("dtype") == "U8"
+        and header.get(base + ".weight_scale", {}).get("dtype") == "U8"
     )
 
 
@@ -923,9 +925,12 @@ def load_safetensors_weights(
             # DiffusionGemma ModelOpt NVFP4: *.weight (U8) + *.weight_scale (F8_E4M3) + *.weight_scale_2 (F32)
             # Used for quantized expert weights. Non-expert weights (BF16) uploaded normally.
             dnvfp4_bases = sorted(set(
-                k.removesuffix(".weight") for k in header
-                if k.endswith(".weight") and header[k].get("dtype") == "U8"
-                and k.removesuffix(".weight") + ".weight_scale" in header
+                base
+                for k in header
+                if k.endswith(".weight")
+                for base in (k.removesuffix(".weight"),)
+                if header[k].get("dtype") == "U8"
+                and base + ".weight_scale" in header
             ))
             dnvfp4_set = set()
             for base in dnvfp4_bases:

@@ -272,6 +272,10 @@ class BaseWebGPUModel(ABC):
         lines.append(f"  {'TOTAL':<40s} {'':7s}       {'':6s}  {total:8.3f} ms")
         return "\n".join(lines)
 
+    def get_prof_stats(self) -> dict[str, list[float]]:
+        """Return a copy of the raw profiling data keyed by shader label."""
+        return dict(self._prof_stats)
+
     def profile_reset(self) -> None:
         self._prof_stats.clear()
 

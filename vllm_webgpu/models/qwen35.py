@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -264,8 +263,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     # For GPTQ: shape is (2*q_dim, hidden//8), total = 2*q_dim*hidden//8.
                     # shape[0] == 2*q_dim only catches fp16 and GPTQ (not AWQ) on larger
                     # variants where hidden != 2*q_dim. Use total element count instead.
-                    fp16_unsplit  = math.prod(buf.shape) == 2 * q_dim * hidden
-                    quant_unsplit = math.prod(buf.shape) == 2 * q_dim * (hidden // 8)
+                    fp16_unsplit  = np.prod(buf.shape) == 2 * q_dim * hidden
+                    quant_unsplit = np.prod(buf.shape) == 2 * q_dim * (hidden // 8)
                     if fp16_unsplit or quant_unsplit:
                         raise ValueError(
                             f"Layer {i}: q_gate_proj.weight is missing but "
@@ -296,8 +295,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         conv_shape, ssm_shape = self._lin_conv_shape, self._lin_ssm_shape
         # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, V_DIM, K_DIM] f32,
         # matching vLLM's gated_delta_net_state_shape convention.
-        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
-        ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
+        conv_bytes = np.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = np.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers
@@ -327,9 +326,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         #   1 = safetensors deviation format (mean≈0.2)
         # The detection result is static per checkpoint; every layer gives the same
         # answer, so firing for multiple layers is harmless.
-        def _gemma_norm_detect(arr, _self=self):
+        def _gemma_norm_detect(arr):
             mean_abs = float(np.abs(arr).mean())
-            _self._gemma_norm = 0 if mean_abs > 0.7 else 1
+            self._gemma_norm = 0 if mean_abs > 0.7 else 1
             return arr
 
         _key = "model.layers.0.input_layernorm.weight"

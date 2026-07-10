@@ -7,7 +7,7 @@ from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (AttentionSpec, FullAttentionSpec,
-                                         HiddenStateCacheSpec, MLAAttentionSpec,
+                                         MLAAttentionSpec,
                                          SlidingWindowMLASpec)
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
@@ -74,7 +74,7 @@ def allocate_kv_from_tensors(
         # head_size_v instead of allocating each buffer at its correct size.
         first_name = tensor.shared_by[0] if tensor.shared_by else None
         spec = layer_spec_map.get(first_name)
-        if spec is not None and isinstance(spec, (MLAAttentionSpec, HiddenStateCacheSpec)):
+        if spec is not None and isinstance(spec, MLAAttentionSpec):
             raise NotImplementedError(
                 f"MLA KV cache ({type(spec).__name__}) is not supported by the WebGPU backend. "
                 "MLAAttentionSpec uses a compressed latent layout that differs from the standard "

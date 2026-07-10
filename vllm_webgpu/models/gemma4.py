@@ -5,15 +5,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.logger import init_logger
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-
-logger = init_logger(__name__)
 
 
 def _build_layer_params_from_config(

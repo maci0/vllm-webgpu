@@ -3,7 +3,7 @@
 
 Usage:
     source .venv/bin/activate
-    python3 profile_kernels.py [--model MODEL_PATH] [--tokens N]
+    python3 profile_kernels.py [--model MODEL_PATH] [--decode-steps N] [--warmup-steps N]
 """
 import argparse
 import math
@@ -140,7 +140,7 @@ def main() -> None:
     print()
 
     # ── Per-component breakdown ────────────────────────────────────────────────────
-    stats = model._prof_stats
+    stats = model.get_prof_stats()
     if stats:
         total = sum(np.mean(v) for v in stats.values())
 
