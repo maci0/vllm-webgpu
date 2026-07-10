@@ -30,22 +30,35 @@ _ROPE_THETA = 10000.0
 
 
 def _vllm_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> "tuple[np.ndarray, float]":
-    """Compute expected inv_freq via vLLM's own YaRN helpers."""
-    import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
+    """Compute expected inv_freq by calling YaRNScalingRotaryEmbedding._compute_inv_freq directly.
+
+    Constructs a minimal stub instance via object.__new__ to avoid triggering
+    the full __init__ (which builds the cos/sin cache), then calls the private
+    method so this reference always tracks any formula changes in vLLM.
+    """
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
     )
 
-    factor = float(rope_scaling.get("factor", 1.0))
-    beta_fast = int(rope_scaling.get("beta_fast", 32))
-    beta_slow = int(rope_scaling.get("beta_slow", 1))
-    orig_ctx = int(rope_scaling.get("original_max_position_embeddings", 4096))
+    factor               = float(rope_scaling.get("factor", 1.0))
+    beta_fast            = int(rope_scaling.get("beta_fast", 32))
+    beta_slow            = int(rope_scaling.get("beta_slow", 1))
+    orig_ctx             = int(rope_scaling.get("original_max_position_embeddings", 4096))
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
-    attn_factor = float(rope_scaling.get("attn_factor", 1.0))
-    apply_yarn_scaling = bool(rope_scaling.get("apply_yarn_scaling", True))
-    truncate = bool(rope_scaling.get("truncate", True))
+    attn_factor          = float(rope_scaling.get("attn_factor", 1.0))
+    apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
+
+    inst = object.__new__(YaRNScalingRotaryEmbedding)
+    inst.base                    = rope_theta
+    inst.rotary_dim              = head_dim
+    inst.beta_fast               = beta_fast
+    inst.beta_slow               = beta_slow
+    inst.max_position_embeddings = orig_ctx
+    inst.truncate                = bool(rope_scaling.get("truncate", True))
+    inst.extrapolation_factor    = extrapolation_factor
+
+    inv_freq = inst._compute_inv_freq(factor)
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
@@ -53,22 +66,6 @@ def _vllm_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> "t
         else float(attn_factor)
     )
 
-    pos_freqs = rope_theta ** (
-        torch.arange(0, head_dim, 2, dtype=torch.float32) / head_dim
-    )
-    inv_freq_extrapolation = 1.0 / pos_freqs
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
-
-    low, high = yarn_find_correction_range(
-        beta_fast, beta_slow, head_dim, rope_theta, orig_ctx, truncate
-    )
-    inv_freq_mask = (
-        1 - yarn_linear_ramp_mask(low, high, head_dim // 2, dtype=torch.float32)
-    ) * extrapolation_factor
-    inv_freq = (
-        inv_freq_interpolation * (1 - inv_freq_mask)
-        + inv_freq_extrapolation * inv_freq_mask
-    )
     return inv_freq.numpy().astype(np.float32), mscale
 
 
