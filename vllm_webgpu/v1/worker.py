@@ -111,20 +111,11 @@ class WebGPUWorker(WorkerBase):
     ) -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         return self.model_runner.sample_tokens(grammar_output)
 
-    def apply_model(self, fn: Any) -> Any:
-        raise NotImplementedError(
-            "WebGPU models are not nn.Module instances; apply_model is not supported."
-        )
-
-    def get_model_inspection(self) -> str:
-        raise NotImplementedError(
-            "WebGPU models are not nn.Module instances; model inspection is not supported."
-        )
-
     def get_model(self) -> Any:
         raise NotImplementedError(
-            "WebGPU models are not nn.Module instances; "
-            "use model_runner.model directly."
+            "WebGPU models are not nn.Module instances; apply_model and model "
+            "inspection are not supported. Access the model via "
+            "model_runner.model directly."
         )
 
     def update_max_model_len(self, max_model_len: int) -> None:

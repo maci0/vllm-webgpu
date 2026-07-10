@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vec4_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vals_per_thread, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
@@ -60,7 +60,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             raise ValueError(f"head_dim={self.head_dim} must be even for f16 GEMV")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         # Precompute constants that are used every forward pass.
-        _vpt = self._vals_per_thread(self.hidden_size)
+        _vpt = _vals_per_thread(self.hidden_size)
         self._rms_consts: dict = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt}
         self._init_scratch_buffers(max_ctx)
         self._init_rope_freq_buf()
@@ -940,7 +940,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # Single dispatch: GEMV for gate+up with inline SiLU -> ffn_act.
             self._dispatch("fused_gate_act",
                            [normed_x, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
-                           {"K": hidden, "N": inter, "GELU": 0}, (inter, 1, 1))
+                           {"K": hidden, "N": inter}, (inter, 1, 1))
         else:
             for out_b, w_k, uq2, mlp_proj in [
                     (sc["gate_buf"], gw_k, uq_g, "gate_proj"),

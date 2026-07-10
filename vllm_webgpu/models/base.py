@@ -48,6 +48,19 @@ def _rows_wg(N: int) -> tuple:
     """
     return ((N + 255) // 256, 1, 1)
 
+
+def _vals_per_thread(hidden_size: int) -> int:
+    """Return the VALS_PER_THREAD constant for rms_norm shaders.
+
+    Each workgroup covers 256 threads. When hidden_size fits within
+    256*16 elements, each thread handles ceil(hidden/256) values.
+    Larger hidden sizes require a different shader path (0 signals
+    the caller to fall back).
+    """
+    if hidden_size <= 256 * 16:
+        return (hidden_size + 255) // 256
+    return 0
+
 logger = init_logger(__name__)
 
 
@@ -170,19 +183,6 @@ class BaseWebGPUModel(ABC):
         # Populated by subclasses (e.g. LlamaWebGPUModel tiles shared norm weights)
         # to avoid a GPU roundtrip (to_numpy → tile → re-upload) in _postprocess_weights.
         self._weight_transforms: dict = {}
-
-    @staticmethod
-    def _vals_per_thread(hidden_size: int) -> int:
-        """Return the VALS_PER_THREAD constant for rms_norm shaders.
-
-        Each workgroup covers 256 threads. When hidden_size fits within
-        256*16 elements, each thread handles ceil(hidden/256) values.
-        Larger hidden sizes require a different shader path (0 signals
-        the caller to fall back).
-        """
-        if hidden_size <= 256 * 16:
-            return (hidden_size + 255) // 256
-        return 0
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):

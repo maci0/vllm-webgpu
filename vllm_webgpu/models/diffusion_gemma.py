@@ -487,9 +487,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [sc["o_proj_out"], pan_w, x_buf, pfn_w, residual, sc["normed"]],
                                _rms, (num_tokens, 1, 1))
             else:
-                self._dispatch("add_f32", [x_buf, sc["o_proj_out"], residual],
-                               {"N": add_n}, _vec4_wg(add_n))
-                self._dispatch("rms_norm_f32in", [residual, pfn_w, sc["normed"]],
+                self._dispatch("add_f32_rms_norm",
+                               [x_buf, sc["o_proj_out"], pfn_w, residual, sc["normed"]],
                                _rms, (num_tokens, 1, 1))
             ffn_in = sc["normed"]
 

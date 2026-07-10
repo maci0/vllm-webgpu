@@ -105,7 +105,7 @@ def allocate_kv_from_tensors(
             # k_bytes + v_bytes == real_page_size_bytes * num_blocks by construction:
             # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes,
             # and storage_bs == block_size for FullAttentionSpec (storage_block_size returns self.block_size).
-        elif isinstance(spec, SlidingWindowMLASpec):
+        elif spec is not None and isinstance(spec, SlidingWindowMLASpec):
             raise NotImplementedError(
                 f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
                 "SlidingWindowMLASpec stores a single MLA latent per position, so "

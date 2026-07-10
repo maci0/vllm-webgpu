@@ -363,28 +363,38 @@ class WebGPUModelRunner:
         merged_prompt_logprobs = prompt_logprobs_dict or {}
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
-            max_k = max(d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None)
-            pieces = []
-            for d in logprobs_data:
-                if d is not None:
-                    pad = max_k - d.logprob_token_ids.shape[1]
-                    pieces.append(LogprobsTensors(
-                        F.pad(d.logprob_token_ids, (0, pad), value=0),
-                        F.pad(d.logprobs, (0, pad), value=-float("inf")),
-                        d.selected_token_ranks,
-                    ))
-                else:
-                    pieces.append(LogprobsTensors(
-                        torch.zeros(1, max_k, dtype=torch.int32),
-                        torch.full((1, max_k), -float("inf")),
-                        torch.zeros(1, dtype=torch.int32),
-                    ))
-            stacked = LogprobsTensors(
-                torch.cat([p.logprob_token_ids for p in pieces]),
-                torch.cat([p.logprobs for p in pieces]),
-                torch.cat([p.selected_token_ranks for p in pieces]),
-            )
-            built_logprobs = stacked.tolists()
+            _widths = {d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None}
+            max_k = max(_widths)
+            # Short-circuit when all real entries have the same width: skip padding.
+            if len(_widths) == 1 and all(d is not None for d in logprobs_data):
+                stacked = LogprobsTensors(
+                    torch.cat([d.logprob_token_ids for d in logprobs_data]),
+                    torch.cat([d.logprobs for d in logprobs_data]),
+                    torch.cat([d.selected_token_ranks for d in logprobs_data]),
+                )
+                built_logprobs = stacked.tolists()
+            else:
+                pieces = []
+                for d in logprobs_data:
+                    if d is not None:
+                        pad = max_k - d.logprob_token_ids.shape[1]
+                        pieces.append(LogprobsTensors(
+                            F.pad(d.logprob_token_ids, (0, pad), value=0),
+                            F.pad(d.logprobs, (0, pad), value=-float("inf")),
+                            d.selected_token_ranks,
+                        ))
+                    else:
+                        pieces.append(LogprobsTensors(
+                            torch.zeros(1, max_k, dtype=torch.int64),
+                            torch.full((1, max_k), -float("inf")),
+                            torch.zeros(1, dtype=torch.int64),
+                        ))
+                stacked = LogprobsTensors(
+                    torch.cat([p.logprob_token_ids for p in pieces]),
+                    torch.cat([p.logprobs for p in pieces]),
+                    torch.cat([p.selected_token_ranks for p in pieces]),
+                )
+                built_logprobs = stacked.tolists()
 
         out = ModelRunnerOutput(
             req_ids=req_ids,

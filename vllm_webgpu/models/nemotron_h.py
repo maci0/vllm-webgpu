@@ -4,10 +4,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import _ELEM_BYTES
 
 if TYPE_CHECKING:
@@ -175,9 +175,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
         )
-        # conv_dim is already embedded in _mamba_conv_shape by mamba2_state_shape; extract
-        # it using is_conv_state_dim_first() to select the correct axis (DS vs SD layout).
-        self.conv_dim: int = self._mamba_conv_shape[0] if is_conv_state_dim_first() else self._mamba_conv_shape[1]
+        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
@@ -196,9 +194,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Applied during load_weights before GPU upload, eliminating a per-layer
         # GPU readback+re-upload that _validate_mamba_weights would otherwise
         # require. The transform uses the HF checkpoint key name (backbone. prefix).
+        _a_log_transform = lambda arr: -np.exp(arr)  # noqa: E731
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "mamba":
-                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = lambda arr: -np.exp(arr)
+                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _a_log_transform
 
         # The WebGPU MLP path does not implement bias addition. All known
         # NemotronH checkpoints ship with mlp_bias=False (the default), so
@@ -342,7 +341,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         self._rms_base: dict = {
             "HIDDEN_DIM": self.hidden_size,
-            "VALS_PER_THREAD": self._vals_per_thread(self.hidden_size),
+            "VALS_PER_THREAD": _vals_per_thread(self.hidden_size),
         }
         self._hstate: int = 0
         self._init_scratch_buffers()
@@ -492,6 +491,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # the "mtp." prefix; none are accessed during inference.
         # vLLM's own NemotronHForCausalLM skips these the same way.
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=frozenset(["mtp."]))
+        _missing_transforms = [k for k in self._weight_transforms if k not in self.weights]
+        assert not _missing_transforms, (
+            f"Registered weight transforms not consumed (key not in checkpoint): "
+            f"{_missing_transforms}. Check whether the checkpoint key format changed."
+        )
         self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
         qmeta = self.weights.get("__quant_meta__")
         if qmeta:
