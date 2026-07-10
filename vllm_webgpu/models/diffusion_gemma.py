@@ -204,6 +204,27 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 else:
                     self._pes_cache.append(None)
 
+    # ── Batch prefill path (not supported) ──────────────────────────────────
+
+    def _prefill_batch_forward(self, input_ids, positions, attn_metadata, T):
+        """Not implemented for DiffusionGemma.
+
+        The inherited Gemma4 implementation runs only the shared FFN; it has no
+        MoE routing, no expert loop, and no post-MoE combine step. Calling it
+        would silently produce wrong logits for every MoE layer.
+
+        DiffusionGemmaWebGPUModel.forward() fully overrides the parent dispatch
+        path, so this method is unreachable through normal inference. Raise here
+        so that any future caller gets a clear error rather than wrong results.
+        """
+        raise NotImplementedError(
+            "DiffusionGemmaWebGPUModel does not support _prefill_batch_forward. "
+            "The MoE FFN (routing, expert loop, post-MoE combine) is not "
+            "implemented in the inherited Gemma4 batch-prefill path. Use "
+            "forward() directly; it handles both single-token decode and "
+            "multi-token canvas prefill including the full MoE FFN."
+        )
+
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 
     def forward(self, input_ids, positions, attn_metadata) -> "np.ndarray":
