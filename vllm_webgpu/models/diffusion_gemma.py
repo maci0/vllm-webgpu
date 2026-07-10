@@ -566,7 +566,20 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         layer_scalar = self._layer_scales[layer_idx]
 
         def _add_and_scale(src) -> None:
-            """Residual add + optional layer scalar, shared by MoE and dense tails."""
+            """Residual add + optional layer scalar, shared by MoE and dense tails.
+
+            Encoder lifecycle note: layer_scalar is captured from the enclosing
+            scope (read before this closure is defined) so it is always correct
+            regardless of which encoder is active at call time.
+
+            For the MoE branch this closure is called from inside the L{i}P
+            _batched_dispatch block (second encoder). For the non-MoE branch it
+            is called from inside the L{i}T block (first/only encoder). In both
+            cases self._active_encoder is whatever _batched_dispatch last set,
+            which is the intended target for these dispatches. There is no
+            ordering hazard here; the distinction is purely which encoder
+            carries these commands.
+            """
             self._dispatch("add_f32", [residual, src, out],
                            {"N": add_n}, _vec4_wg(add_n))
             if abs(layer_scalar - 1.0) > 1e-6:
