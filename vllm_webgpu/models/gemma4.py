@@ -196,11 +196,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         layer_types = getattr(model_config, "layer_types", None)
 
         # Capability flag: only Gemma4 applies per-head RMS norm to V before caching.
-        # Gemma3 does NOT normalize V; DiffusionGemma handles V-norm unconditionally in _decoder_layer.
-        # Use model_type as the discriminator: Gemma3TextConfig.__post_init__ always auto-generates
-        # layer_types of length num_hidden_layers even when absent from the JSON, so the old
-        # len(layer_types)==num_layers check incorrectly matched Gemma3 configs too.
-        self._apply_v_norm = (getattr(model_config, "model_type", "") == "gemma4")
+        # Gemma3 does NOT normalize V; DiffusionGemmaWebGPUModel overrides _decoder_layer and
+        # applies V-norm unconditionally there, so this flag is not consulted for that subclass.
+        # Prefer an explicit config field so future variants (e.g. gemma4_moe) can opt in/out
+        # without this string comparison silently diverging from the DiffusionGemma path.
+        self._apply_v_norm = getattr(
+            model_config, "apply_v_norm",
+            getattr(model_config, "model_type", "") == "gemma4",
+        )
         # Gemma3 trains norm weights as deviations from zero (GemmaRMSNorm), so the shader
         # must compute (1+w)*x. Gemma4 uses plain RMSNorm; weights are actual scale values.
         self._GEMMA_NORM = 1 if getattr(model_config, "model_type", "") == "gemma3" else 0
