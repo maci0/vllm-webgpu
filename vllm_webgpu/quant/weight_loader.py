@@ -406,10 +406,11 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
                  g_idx: "np.ndarray | None" = None) -> np.ndarray:
     """Dequantize AWQ int4 weights to float16.
 
-    This is a CPU numpy fallback used only when the checkpoint cannot be uploaded
-    in GPU-quantized form (asymmetric zero-points, desc-act g_idx). vLLM provides
-    no public CPU-side numpy dequant path. A future simplification: if auto-awq is
-    installed as a vLLM transitive dep, prefer auto_awq.utils.packing.unpack_awq.
+    Prefers auto_awq.utils.packing_utils.dequantize_gemm when the package is
+    installed (eliminates the custom nibble arithmetic below). Falls back to the
+    numpy path on ImportError or any runtime failure, and always uses numpy for
+    desc-act checkpoints (g_idx is not None) since the ecosystem function does not
+    support non-uniform group assignments.
 
     AWQ packs 8 int4 weights per int32 along the output (N) dimension,
     using nibble order [0,4,1,5,2,6,3,7] within each int32. Output is
@@ -425,6 +426,18 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     N = N8 * 8
     G = scales.shape[0]
     group_size = K // G
+
+    if g_idx is None:
+        try:
+            import torch as _torch
+            from auto_awq.utils.packing_utils import dequantize_gemm as _awq_dq
+            t_qw = _torch.from_numpy(qweight.astype(np.int32))
+            t_qz = _torch.from_numpy(qzeros.astype(np.int32))
+            t_sc = _torch.from_numpy(scales)
+            out = _awq_dq(t_qw, t_qz, t_sc, bits=4, group_size=group_size)
+            return np.ascontiguousarray(out.numpy().astype(np.float16))
+        except (ImportError, Exception):
+            pass
 
     qw = qweight.astype(np.int32)            # (K, N//8)
     qz = qzeros.astype(np.int32)             # (G, N//8)
@@ -442,11 +455,11 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
                   g_idx: "np.ndarray | None" = None) -> np.ndarray:
     """Dequantize GPTQ int4 weights to float16.
 
-    This is a CPU numpy fallback used only when the checkpoint cannot be uploaded
-    in GPU-quantized form (asymmetric zero-points, desc-act g_idx). vLLM provides
-    no public CPU-side numpy dequant path. A future simplification: if auto-gptq is
-    installed as a vLLM transitive dep, prefer
-    auto_gptq.nn_modules.qlinear.qlinear_cuda._unpack_qzeros for zero-point unpacking.
+    auto_gptq embeds its weight/zero unpacking entirely inside each backend's
+    forward() method and exposes no standalone CPU dequantization utility.
+    This numpy path is therefore always used. If a suitable public API is added
+    to auto_gptq, add a try-import guard here following the _dequant_mlx_int4
+    pattern.
 
     GPTQ packs 8 int4 weights per int32 along the input (K) dimension,
     using standard nibble order [0,1,2,3,4,5,6,7]. Output is (N, K) F16.
