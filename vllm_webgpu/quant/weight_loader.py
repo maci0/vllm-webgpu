@@ -121,14 +121,17 @@ def _load_quant_cfg(config_path: Path) -> dict:
     Uses compressed_tensors.get_quantization_config to handle nested locations
     (text_config, compression_config) and multimodal variants.
     compressed_tensors is a hard dependency of vllm (Requires-Dist), so
-    _ct_get_quant_cfg is always non-None. Returns {} when config is absent;
-    propagates json.JSONDecodeError so malformed config.json is not silently
-    treated as an unquantized model.
+    _ct_get_quant_cfg is always non-None. Returns {} when config is absent.
+    Propagates json.JSONDecodeError so a malformed config.json is not silently
+    treated as an unquantized model. Other unexpected errors are logged as
+    warnings and also return {}.
     """
     try:
         return _ct_get_quant_cfg(str(config_path)) or {}
     except (FileNotFoundError, KeyError):
         return {}
+    except json.JSONDecodeError:
+        raise
     except Exception as exc:
         logger.warning("Failed to parse quantization config %s: %s", config_path, exc)
         return {}
