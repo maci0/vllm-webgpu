@@ -508,9 +508,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [sc["o_proj_out"], pan_w, x_buf, pfn_w, residual, sc["normed"]],
                                _rms, (num_tokens, 1, 1))
             else:
-                self._dispatch("add_f32_rms_norm",
-                               [x_buf, sc["o_proj_out"], pfn_w, residual, sc["normed"]],
-                               _rms, (num_tokens, 1, 1))
+                raise ValueError(
+                    f"Layer {layer_idx} missing post_attention_layernorm.weight "
+                    "— vLLM creates this norm unconditionally; absence indicates a "
+                    "corrupt checkpoint"
+                )
             ffn_in = sc["normed"]
 
             # Shared expert gate + up → tanh-GELU activation

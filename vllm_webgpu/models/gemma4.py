@@ -844,7 +844,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 _rms, (T, 1, 1))
                             attn_delta = b["ffn_n"]
                         else:
-                            attn_delta = b["o_proj"]
+                            raise ValueError(
+                                f"Layer {i} missing post_attention_layernorm.weight "
+                                "— vLLM creates this norm unconditionally; absence "
+                                "indicates a corrupt checkpoint"
+                            )
                         if pre_ffn_w is not None:
                             self._dispatch(
                                 "add_f32_rms_norm",
@@ -1266,7 +1270,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                    _rms, (num_tokens, 1, 1))
                     attn_delta = sc["normed"]
                 else:
-                    attn_delta = sc["o_proj_out"]
+                    raise ValueError(
+                        f"Layer {layer_idx} missing post_attention_layernorm.weight "
+                        "— vLLM creates this norm unconditionally; absence indicates "
+                        "a corrupt checkpoint"
+                    )
 
                 if pre_ffn_norm_w is not None:
                     self._dispatch("add_f32_rms_norm",
