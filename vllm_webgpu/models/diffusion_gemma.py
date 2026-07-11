@@ -165,6 +165,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # would silently break if a future read of sc["normed"] were inserted
             # between the L{i}R and L{i}P command encoders.
             "moe_ffn_in": self._make_buf(T * H * 2),
+            # Dedicated buffer for router_norm_f32in output (router projection input).
+            # Formerly aliased to sc["o_proj_out"], which receives two semantically
+            # unrelated writes in the same dispatch sequence (o_proj matmul in L{i},
+            # then router norm in L{i}R). Giving it its own buffer removes the implicit
+            # ordering dependency that would break if the router norm were ever moved
+            # to a separate command encoder.
+            "router_in":  self._make_buf(T * H * 2),
             "h0":         self._make_buf(T * H * 4),
             "h1":         self._make_buf(T * H * 4),
             "h2":         self._make_buf(T * H * 4),
@@ -627,7 +634,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 #   x = x * router.scale — learned per-dimension scale
                 # Input is residual (post-attention, pre-MLP accumulation), not moe_in.
                 router_scale_w = self.weights.get(f"{p}.router.scale")
-                router_proj_in = sc["o_proj_out"]   # scratch reuse: norm(residual)*scale output fed to router proj
+                router_proj_in = sc["router_in"]
                 if router_scale_w is not None:
                     self._dispatch("router_norm_f32in",
                                    [residual, router_scale_w, router_proj_in],
