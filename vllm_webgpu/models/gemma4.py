@@ -199,7 +199,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     Every 6th layer (indices 5, 11, 17, ...) is a global attention layer.
     Scratch buffers are allocated at maximum dimensions to handle both types.
     """
-    _GEMMA_NORM: int  # set per instance in __init__; 1 for gemma3, 0 for gemma4
+    _GEMMA_NORM: int = 0  # overridden per instance in __init__; 1 for gemma3, 0 for gemma4
     # Subclasses that override forward() and never read lp["scale"] set this to True
     # to skip the O(num_layers) scale computation in __init__.
     _skip_attn_scale: bool = False
@@ -247,13 +247,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Gemma3 trains norm weights as deviations from zero (GemmaRMSNorm), so the shader
         # must compute (1+w)*x. Gemma4 uses plain RMSNorm; weights are actual scale values.
         self._GEMMA_NORM = 1 if getattr(model_config, "model_type", "") == "gemma3" else 0
-        # Hoisted per-model constants for the attention SCALE computation.
-        # Both attributes are fixed at construction time; evaluating them per layer
-        # (48 layers x N chunks per prefill) is unnecessary work.
-        _query_pre_attn_scalar: float | None = (
-            None if self._apply_v_norm
-            else getattr(model_config, "query_pre_attn_scalar", None)
-        )
         if raw_lp and len(raw_lp) == self.num_layers:
             for lp_entry in raw_lp:
                 lp_entry.setdefault("intermediate_size", self.intermediate_size)
@@ -349,12 +342,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # from the per-layer entry rather than a model-level attribute.
         # Skipped for subclasses (e.g. DiffusionGemmaWebGPUModel) that never read lp["scale"].
         if not self._skip_attn_scale:
-            for _lp_e in self._lp:
-                if self._apply_v_norm:
+            if self._apply_v_norm:
+                for _lp_e in self._lp:
                     _lp_e["scale"] = 1.0
-                else:
-                    _scalar = _query_pre_attn_scalar
-                    _lp_e["scale"] = (_scalar if _scalar is not None else _lp_e["head_dim"]) ** -0.5
+            else:
+                _query_pre_attn_scalar: float | None = getattr(model_config, "query_pre_attn_scalar", None)
+                for _lp_e in self._lp:
+                    _lp_e["scale"] = (_query_pre_attn_scalar if _query_pre_attn_scalar is not None else _lp_e["head_dim"]) ** -0.5
 
         # Register q_norm/k_norm tiling transforms so load_weights tiles at upload time,
         # avoiding a GPU roundtrip (to_numpy → tile → re-upload) per weight per layer.

@@ -95,7 +95,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # matches the vLLM formula regardless of future changes to mamba_utils.py.
         # The shape calculator returns a 2-tuple; extract conv_dim from the axis that
         # holds it (axis order depends on VLLM_SSM_CONV_STATE_LAYOUT).
-        self._gdn_conv_shape, self._gdn_ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
+        self._gdn_conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
             tp_world_size=1,
             num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
             head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,

@@ -92,7 +92,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._topk_idx_buf     = WebGPUBuffer.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
             self._topk_weight_buf  = WebGPUBuffer.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] f32
             self._router_logit_buf     = WebGPUBuffer.empty(_dev, max_canvas_len * self.num_experts * 4)  # [T, E] f32
+            self._router_logit_buf.dtype = 'f32'
             self._router_logit_f16_buf = WebGPUBuffer.empty(_dev, max_canvas_len * self.num_experts * 2)  # [T, E] f16 matmul scratch
+            self._router_logit_f16_buf.dtype = 'f16'
             self._moe_acc_buf      = WebGPUBuffer.empty(_dev, max_canvas_len * self.hidden_size * 2)    # [T, H] f16
             # Packed routing weights: [num_unique_experts, T] f32, pre-filled before the
             # expert loop so a single write_buffer covers all experts. Sized for worst
@@ -627,35 +629,20 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = self._uq_for_key(rw_)
-                _rw_sc = self._scales_buf(rw_, uq_rw, self._dummy_buf)
                 # Router matmul writes f16 into the scratch buffer; we upcast to f32
                 # before top-K so that logits differing by less than one f16 ULP are
                 # not collapsed to the same value (matches vLLM's GateLinear f32 path).
                 rlogit_f16 = self._router_logit_f16_buf
-                if num_tokens > 1 and uq_rw in (0, 3):
-                    # Batched router projection: [T, hidden] x [num_experts, hidden]^T -> [T, E]
-                    self._dispatch("matmul_quant_mr4",
-                                   [router_proj_in, self.weights[rw_], _rw_sc, rlogit_f16],
-                                   {"K": hidden, "N": self.num_experts, "M": num_tokens,
-                                    "USE_QUANT": uq_rw,
-                                    **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},
-                                   (self.num_experts, num_tokens, 1))
-                else:
-                    if num_tokens > 1:
-                        raise RuntimeError(
-                            f"L{layer_idx}: router.proj.weight quant uq={uq_rw} is not "
-                            f"supported for batched routing (num_tokens={num_tokens}). "
-                            f"Only uq=0 (f16) and uq=3 (GPTQ) are handled by "
-                            f"matmul_quant_mr4. Routing tokens 1..T-1 via zero logits "
-                            f"produces deterministic wrong expert assignments (always "
-                            f"experts 0..K-1), not uniform routing."
-                        )
-                    self._dispatch("matmul_quant",
-                                   [router_proj_in, self.weights[rw_], _rw_sc, rlogit_f16],
-                                   {"K": hidden, "N": self.num_experts,
-                                    "USE_QUANT": uq_rw,
-                                    **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},
-                                   _gemv_wg(self.num_experts))
+                if num_tokens > 1 and uq_rw not in (0, 3):
+                    raise RuntimeError(
+                        f"L{layer_idx}: router.proj.weight quant uq={uq_rw} is not "
+                        f"supported for batched routing (num_tokens={num_tokens}). "
+                        f"Only uq=0 (f16) and uq=3 (GPTQ) are handled by "
+                        f"matmul_quant_mr4. Routing tokens 1..T-1 via zero logits "
+                        f"produces deterministic wrong expert assignments (always "
+                        f"experts 0..K-1), not uniform routing."
+                    )
+                self._gemm_adaptive(router_proj_in, rw_, rlogit_f16, hidden, self.num_experts, num_tokens)
                 # Upcast f16 logits to f32 before top-K selection.
                 n_logits = num_tokens * self.num_experts
                 self._dispatch("f16_to_f32",

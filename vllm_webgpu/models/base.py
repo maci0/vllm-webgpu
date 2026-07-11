@@ -119,6 +119,10 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
+    # Lines below mirror YaRNScalingRotaryEmbedding._compute_inv_freq exactly
+    # (vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py:49-73).
+    # No public standalone function exposes this computation, so inlining is forced.
+    # On every vLLM version bump, diff against that method to catch formula changes.
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
@@ -561,7 +565,7 @@ class BaseWebGPUModel(ABC):
             if len(bindings) not in (4, 5):
                 raise ValueError(f"matmul_quant expects 4 or 5 bindings, got {len(bindings)}")
             if len(bindings) == 4:
-                bindings = list(bindings) + [self._dummy_buf]
+                bindings = bindings + [self._dummy_buf]
 
         key = PipelineKey(
             shader_name=f"{shader_subdir}/{shader_name}",

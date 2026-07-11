@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from functools import partial
 from itertools import batched
 from typing import TYPE_CHECKING
@@ -68,7 +67,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
             "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": math.log(self.rope_theta),
+            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
