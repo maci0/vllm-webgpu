@@ -1130,6 +1130,13 @@ def load_safetensors_weights(
 
             _upload_non_quant(header, mx4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))
 
+            if _decompress_mx_scale is None:
+                raise ImportError(
+                    "MXFP4 dequant requires compressed_tensors "
+                    "(compressed_tensors.compressors.mx_utils.decompress_mx_scale); "
+                    "install compressed_tensors to load MXFP4 models"
+                )
+
             for base in mxfp4_bases:
                 try:
                     wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
