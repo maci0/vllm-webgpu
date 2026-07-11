@@ -283,7 +283,8 @@ def load_safetensors_weights_sharded(
         if f32_keys:
             raise ValueError("f32_keys is not supported for mlx_int4 format")
         return load_mlx_weights(model_dir, wgpu_device, weight_map=weight_map,
-                                weight_transforms=weight_transforms)
+                                weight_transforms=weight_transforms,
+                                skip_prefixes=skip_prefixes)
 
     shard_files = sorted(set(weight_map.values()))
     weights: dict = {}
@@ -1400,6 +1401,7 @@ def _dequant_mlx_int4(
 
 def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = None,
                      weight_transforms: "dict | None" = None,
+                     skip_prefixes: "frozenset[str] | None" = None,
                      group_size: int = 64) -> dict:
     """Load MLX affine int4 safetensors weights, dequantize to f16, upload to GPU.
 
@@ -1457,6 +1459,8 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     # First handle quantized triplets: find all .weight keys that form a quant group.
     quant_bases: list[str] = []
     for key in sorted(all_keys):
+        if skip_prefixes and any(key.startswith(pfx) for pfx in skip_prefixes):
+            continue
         if key.endswith(".weight"):
             base = key.removesuffix(".weight")
             if base + ".scales" in all_keys and base + ".biases" in all_keys:
@@ -1526,6 +1530,8 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
         with _sft.safe_open(shard_path, framework="pt") as sf:
             for key in sf.keys():
                 if key in processed:
+                    continue
+                if skip_prefixes and any(key.startswith(pfx) for pfx in skip_prefixes):
                     continue
                 t = sf.get_tensor(key)
                 if t.dtype not in (_torch.bfloat16, _torch.float32, _torch.float16):
