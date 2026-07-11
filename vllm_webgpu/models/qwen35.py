@@ -656,6 +656,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         dev.queue.write_buffer(self._pre["bt"].buf, 0, bt_arr.tobytes())
         bt_buf = self._pre["bt"]
 
+        # Cast at construction time: attn_metadata.slot_mapping may be a plain Python
+        # list, not a numpy array. Slicing a list does not yield a numpy array, so the
+        # dtype must be enforced here rather than at each slice site. By contrast,
+        # input_ids and positions are already numpy arrays (passed from the model runner),
+        # so their .astype(copy=False) calls at the slice site are free.
         slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
         tok_ids_bufs: list = []
         tok_pos_bufs: list = []

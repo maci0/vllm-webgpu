@@ -91,7 +91,7 @@ except (ImportError, OSError):
     pass
 
 # Import-time guard: verify that NemotronHMLPDecoderLayer.__init__ still contains
-# the list/scalar intermediate_size resolution logic that _resolve() mirrors,
+# the list/scalar intermediate_size resolution logic that _resolve_intermediate_size() mirrors,
 # AND that mlp_index is still computed as count("-") - 1, which is the semantic
 # equivalent of the running counter (_mlp_count) used in __init__.
 # Any vLLM upgrade changing either will fail here rather than silently producing
@@ -131,9 +131,9 @@ try:
     )
     assert _MLP_INTERMEDIATE_SIZE_ANCHOR in _mlp_init_src, (
         "NemotronHMLPDecoderLayer.__init__ intermediate_size resolution block "
-        "no longer matches the snapshot used by _resolve() (vLLM 0.24 L286-292). "
+        "no longer matches the snapshot used by _resolve_intermediate_size() (vLLM 0.24 L286-292). "
         "The upstream formula has changed (new branch, renamed index variable, or "
-        "restructured logic). Review _resolve() in NemotronHWebGPUModel.__init__, "
+        "restructured logic). Review _resolve_intermediate_size() in NemotronHWebGPUModel.__init__, "
         "update it to match the new upstream logic, then update this anchor string "
         "before removing this assertion."
     )
@@ -148,6 +148,22 @@ except (ImportError, OSError):
 # mamba2_state_shape. _validate_mamba_weights provides the authoritative runtime
 # guard by checking the actual in_proj.weight shape.
 
+
+
+def _resolve_intermediate_size(v, idx: int) -> int:
+    """Resolve a possibly-list intermediate_size to a scalar for layer `idx`.
+
+    Mirrors NemotronHMLPDecoderLayer.__init__ lines 286-292 (vLLM 0.24). No
+    public vLLM API exposes this logic, so the copy is forced. Defined here at
+    module scope so it is created once rather than inside every __init__ call.
+
+    IMPORTANT: on every vLLM version bump, update this function AND the
+    _MLP_INTERMEDIATE_SIZE_ANCHOR string above. The anchor detects structural
+    changes to the upstream block; this function must then be updated to match.
+    """
+    if isinstance(v, list):
+        return v[0] if len(v) == 1 else v[idx]
+    return v
 
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
@@ -330,22 +346,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # A slice + count() per layer is O(n^2). The running counter below is O(n).
         # VERSION SYNC: verify on each vLLM version bump that this resolution
         # logic has not changed.
-        def _resolve(v, idx):
-            """Resolve a possibly-list intermediate_size to a scalar, matching vLLM.
-
-            Uses the same single-expression form as vLLM's NemotronHMLPDecoderLayer
-            (vLLM 0.24, lines 286-292). A parallel copy is unavoidable because vLLM
-            does not expose this as a public API; the running-counter caller avoids
-            the O(n^2) slice+count that the upstream code uses per layer.
-
-            IMPORTANT: on every vLLM version bump, update BOTH this function AND
-            the _MLP_INTERMEDIATE_SIZE_ANCHOR anchor string at the top of this file.
-            The anchor detects structural changes to the upstream block but cannot
-            auto-fix this copy. If the anchor fires, review the new upstream logic
-            first, then update _resolve to match, then update the anchor string.
-            """
-            return v[0] if isinstance(v, list) and len(v) == 1 else v[idx] if isinstance(v, list) else v
-
         _layer_int_sizes: list[int] = []
         _mlp_count = 0  # 0-indexed MLP position; matches vLLM's mlp_index = count("-") - 1
         for _li, _lt in enumerate(self._layer_types):
@@ -384,10 +384,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                         f"checkpoint. Fix the per-layer config or remove the "
                         f"get_nemotron_h_config_for_layer override."
                     )
-                _isize = _resolve(_lcfg.intermediate_size, _mlp_count)
+                _isize = _resolve_intermediate_size(_lcfg.intermediate_size, _mlp_count)
                 _layer_int_sizes.append(_isize)
             else:
-                _layer_int_sizes.append(_resolve(model_config.intermediate_size, _mlp_count))
+                _layer_int_sizes.append(_resolve_intermediate_size(model_config.intermediate_size, _mlp_count))
             _mlp_count += 1  # post-increment: index for the next MLP layer
         self._layer_int_size: list[int] = _layer_int_sizes
         # Cache the maximum intermediate size once so _init_scratch_buffers does

@@ -178,18 +178,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         }
         self._hstate: int = 0
 
-    # ── Parent path guards ───────────────────────────────────────────────────
-
-    def _prefill_sequential_fallback(self, *args, **kwargs):
-        raise NotImplementedError(
-            "DiffusionGemma uses _decoder_layer; _prefill_sequential_fallback is not supported"
-        )
-
-    def _prefill_batch_forward(self, *args, **kwargs):
-        raise NotImplementedError(
-            "DiffusionGemma uses _decoder_layer; _prefill_batch_forward is not supported"
-        )
-
     # ── Weight key helpers ───────────────────────────────────────────────────
 
     def _layer_key_prefix(self, layer_idx: int) -> str:
@@ -411,7 +399,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     v_src = sc["k_buf"]  # global attention: V = K
 
             _freq_buf = self._rope_freq_buf
-            _dg_rc    = self._rope_consts[layer_idx]
+            rc = self._rope_consts[layer_idx]
             # Q: norm+RoPE unconditionally (KV-shared layers still project and use Q).
             # K: norm+RoPE only for non-shared layers; shared layers read K from cache directly.
             _q_nw = self.weights.get(f"{p}.self_attn.q_norm.weight")
@@ -442,28 +430,38 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 # Binding 4 (inv_freq_buf): always provided.
                 self._dispatch("fused_per_head_norm_rope",
                                [sc["q_buf"], _q_nw, pos_buf, sc["q_rope"], _freq_buf],
-                               {**_dg_rc, "HEAD_DIM": head_dim, "NUM_HEADS": self.num_q_heads,
+                               {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
+                                "USE_FREQ_BUF": rc.use_freq_buf, "ROTARY_DIM": rc.rotary_dim,
+                                "FREQ_DIM": rc.freq_dim, "HEAD_DIM": head_dim,
+                                "NUM_HEADS": self.num_q_heads,
                                 "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
                                 "INPUT_OFFSET": 0},
                                (self.num_q_heads, num_tokens, 1))
             else:
                 # Binding 3 (inv_freq_buf): always provided.
                 self._dispatch("rope", [sc["q_buf"], pos_buf, sc["q_rope"], _freq_buf],
-                               {**self._rope_plain_consts[layer_idx], "HEAD_DIM": head_dim, "NUM_HEADS": self.num_q_heads},
+                               {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
+                                "USE_FREQ_BUF": rc.use_freq_buf,
+                                "HEAD_DIM": head_dim, "NUM_HEADS": self.num_q_heads},
                                (num_tokens, self.num_q_heads, 1))
             if not is_kv_shared:
                 if _k_nw is not None:
                     # Binding 4 (inv_freq_buf): always provided.
                     self._dispatch("fused_per_head_norm_rope",
                                    [sc["k_buf"], _k_nw, pos_buf, sc["k_rope"], _freq_buf],
-                                   {**_dg_rc, "HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads,
+                                   {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
+                                    "USE_FREQ_BUF": rc.use_freq_buf, "ROTARY_DIM": rc.rotary_dim,
+                                    "FREQ_DIM": rc.freq_dim, "HEAD_DIM": head_dim,
+                                    "NUM_HEADS": num_kv_heads,
                                     "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
                                     "INPUT_OFFSET": 0},
                                    (num_kv_heads, num_tokens, 1))
                 else:
                     # Binding 3 (inv_freq_buf): always provided.
                     self._dispatch("rope", [sc["k_buf"], pos_buf, sc["k_rope"], _freq_buf],
-                                   {**self._rope_plain_consts[layer_idx], "HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads},
+                                   {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
+                                    "USE_FREQ_BUF": rc.use_freq_buf,
+                                    "HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads},
                                    (num_tokens, num_kv_heads, 1))
 
             # Per-head RMSNorm (no weight) on V before caching — required for DiffusionGemma.
@@ -581,28 +579,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 hidden_states_1 = sc["ffn_out"]
 
         layer_scalar = self._layer_scales[layer_idx]
-
-        def _add_and_scale(src) -> None:
-            """Residual add + optional layer scalar, shared by MoE and dense tails.
-
-            Encoder lifecycle note: layer_scalar is captured from the enclosing
-            scope (read before this closure is defined) so it is always correct
-            regardless of which encoder is active at call time.
-
-            For the MoE branch this closure is called from inside the L{i}P
-            _batched_dispatch block (second encoder). For the non-MoE branch it
-            is called from inside the L{i}T block (first/only encoder). In both
-            cases self._active_encoder is whatever _batched_dispatch last set,
-            which is the intended target for these dispatches. There is no
-            ordering hazard here; the distinction is purely which encoder
-            carries these commands.
-            """
-            self._dispatch("add_f32", [residual, src, out],
-                           {"N": add_n}, _vec4_wg(add_n))
-            if abs(layer_scalar - 1.0) > 1e-6:
-                self._dispatch("f32_scale_inplace", [out],
-                               {"N": add_n, "SCALE": layer_scalar},
-                               (cdiv(add_n, 256), 1, 1))
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe:
@@ -879,7 +855,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     )
                 self._dispatch("rms_norm", [sc["normed"], post_ffw_w, sc["ffn_out"]], _rms,
                                (num_tokens, 1, 1))
-                _add_and_scale(sc["ffn_out"])
+                self._dispatch("add_f32", [residual, sc["ffn_out"], out],
+                               {"N": add_n}, _vec4_wg(add_n))
+                if abs(layer_scalar - 1.0) > 1e-6:
+                    self._dispatch("f32_scale_inplace", [out],
+                                   {"N": add_n, "SCALE": layer_scalar},
+                                   (cdiv(add_n, 256), 1, 1))
         else:
             # Apply post_feedforward_layernorm before residual add, matching vLLM's
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
@@ -894,7 +875,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._dispatch("rms_norm", [hidden_states_1, post_ffw_w, sc["normed"]], _rms,
                                (num_tokens, 1, 1))
                 hidden_states_1 = sc["normed"]
-                _add_and_scale(hidden_states_1)
+                self._dispatch("add_f32", [residual, hidden_states_1, out],
+                               {"N": add_n}, _vec4_wg(add_n))
+                if abs(layer_scalar - 1.0) > 1e-6:
+                    self._dispatch("f32_scale_inplace", [out],
+                                   {"N": add_n, "SCALE": layer_scalar},
+                                   (cdiv(add_n, 256), 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
         return out

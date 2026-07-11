@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.utils.math_utils import cdiv
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
@@ -37,7 +38,7 @@ def _vec4_wg(N: int) -> tuple:
     Each thread handles 4 elements packed as vec4<f16>. The formula rounds the
     thread count up to fill complete workgroups of 256.
     """
-    return (-(N // -1024), 1, 1)
+    return (cdiv(N, 1024), 1, 1)
 
 
 def _rows_wg(N: int) -> tuple:
@@ -46,7 +47,7 @@ def _rows_wg(N: int) -> tuple:
     Each workgroup covers 256 output rows. Used for lm_head and other matmuls
     where SPLIT_K=0 assigns one workgroup per output tile of 256 rows.
     """
-    return (-(N // -256), 1, 1)
+    return (cdiv(N, 256), 1, 1)
 
 
 def _vals_per_thread(hidden_size: int) -> int:
@@ -59,7 +60,7 @@ def _vals_per_thread(hidden_size: int) -> int:
     VALS_PER_THREAD > 0u internally (rms_norm.wgsl, add_rms_norm.wgsl).
     """
     if hidden_size <= 256 * 16:
-        return -(hidden_size // -256)
+        return cdiv(hidden_size, 256)
     return 0
 
 logger = init_logger(__name__)
@@ -82,10 +83,11 @@ def compute_yarn_freqs(
         head_dim:    Full attention head dimension.
         rope_theta:  RoPE base frequency (e.g. 10000.0).
         rope_scaling: rope_scaling config dict from the model config.
-        rotary_dim:  Number of head dimensions that receive RoPE. Defaults to
-                     head_dim (full rotation). Pass rope_scaling.get('rotary_dim',
-                     head_dim) for models that use partial RoPE; omitting it for
-                     those models would produce wrong frequencies.
+        rotary_dim:  Number of head dimensions that receive RoPE. When None,
+                     derived from rope_scaling["rope_dim"] if present, otherwise
+                     from rope_scaling["partial_rotary_factor"] * head_dim
+                     (defaulting to 1.0, i.e. full rotation). Mirrors the logic
+                     in vllm/model_executor/layers/rotary_embedding/__init__.py:66-72.
 
     Returns:
         freqs:  [rotary_dim // 2] float32 array of scaled inv_freq values.
@@ -100,7 +102,15 @@ def compute_yarn_freqs(
         yarn_linear_ramp_mask,
     )
     if rotary_dim is None:
-        rotary_dim = head_dim
+        if rd := rope_scaling.get("rope_dim", None):
+            rotary_dim = int(rd)
+        else:
+            partial_rotary_factor = float(rope_scaling.get("partial_rotary_factor", 1.0))
+            if not (0.0 < partial_rotary_factor <= 1.0):
+                raise ValueError(
+                    f"partial_rotary_factor must be in (0, 1], got {partial_rotary_factor}"
+                )
+            rotary_dim = int(head_dim * partial_rotary_factor)
 
     factor               = float(rope_scaling.get("factor", 1.0))
     beta_fast            = int(rope_scaling.get("beta_fast", 32))
@@ -112,15 +122,15 @@ def compute_yarn_freqs(
     truncate             = bool(rope_scaling.get("truncate", True))
 
     # Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq from
-    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py (vLLM
-    # 0.24.0). That method cannot be called directly without instantiating the
-    # class, which triggers _compute_cos_sin_cache and pre-allocates large
-    # position tables. No public vLLM API returns the raw frequencies as a
-    # numpy array, so the formula is reproduced here.
+    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py, lines
+    # 49-73 (vLLM 0.24.0). That method cannot be called directly without
+    # instantiating the class, which triggers _compute_cos_sin_cache and
+    # pre-allocates large position tables. No public vLLM API returns the raw
+    # frequencies as a numpy array, so the formula is reproduced here.
     #
     # VERSION-BUMP CHECKLIST: when upgrading vLLM, diff
-    # yarn_scaling_rope.YaRNScalingRotaryEmbedding._compute_inv_freq against
-    # the block below and update accordingly.
+    # yarn_scaling_rope.YaRNScalingRotaryEmbedding._compute_inv_freq (lines
+    # 49-73) against the block below and update accordingly.
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )

@@ -170,18 +170,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return
 
         dev = self.wgpu_device.wgpu_device
-        # rotary_dim derivation mirrors vllm/model_executor/layers/rotary_embedding/__init__.py:66-72.
-        # Check that file for drift when bumping the vLLM version.
-        if rotary_dim := rope_scaling.get("rope_dim", None):
-            rotary_dim = int(rotary_dim)
-        else:
-            partial_rotary_factor = float(rope_scaling.get("partial_rotary_factor", 1.0))
-            if not (0.0 < partial_rotary_factor <= 1.0):
-                raise ValueError(
-                    f"partial_rotary_factor must be in (0, 1], got {partial_rotary_factor}"
-                )
-            rotary_dim = int(self.head_dim * partial_rotary_factor)
-        freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling, rotary_dim)
+        # rotary_dim derivation is delegated to compute_yarn_freqs, which mirrors
+        # vllm/model_executor/layers/rotary_embedding/__init__.py:66-72.
+        freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale
         self._use_freq_buf = True

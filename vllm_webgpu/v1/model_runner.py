@@ -370,7 +370,7 @@ class WebGPUModelRunner:
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "list[LogprobsTensors | None] | None" = None,
+        logprobs_data: "list[LogprobsTensors | None]" = (),
         prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
     ) -> Any:
         if not req_ids:
@@ -511,6 +511,11 @@ class WebGPUModelRunner:
 
             # Extract per-request logprob counts via the stable SamplingParams property.
             sp = req.sampling_params
+            if sp is not None and sp.logprob_token_ids and sp.logprobs is None:
+                raise NotImplementedError(
+                    f"req {rid}: logprob_token_ids without logprobs is not supported on the WebGPU backend; "
+                    "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
+                )
             num_logprobs = sp.num_logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(

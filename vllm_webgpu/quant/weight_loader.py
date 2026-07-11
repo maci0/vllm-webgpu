@@ -1424,8 +1424,6 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
     key_to_shard: dict[str, str] = {k: str(p / v) for k, v in weight_map.items()}
-    all_keys: set[str] = set(key_to_shard)
-
     import safetensors.torch as _sft
     import wgpu as _wgpu
 
@@ -1456,12 +1454,12 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
 
     # First handle quantized triplets: find all .weight keys that form a quant group.
     quant_bases: list[str] = []
-    for key in sorted(all_keys):
+    for key in sorted(key_to_shard):
         if skip_prefixes and any(key.startswith(pfx) for pfx in skip_prefixes):
             continue
         if key.endswith(".weight"):
             base = key.removesuffix(".weight")
-            if base + ".scales" in all_keys and base + ".biases" in all_keys:
+            if base + ".scales" in key_to_shard and base + ".biases" in key_to_shard:
                 quant_bases.append(base)
 
     # Group quantized triplets by the shard that holds the .weight key.
