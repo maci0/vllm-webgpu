@@ -36,6 +36,11 @@ def _locate_index(directory: "Path") -> "Path | None":
     (Requires-Dist), so _ct_find_index is always non-None at runtime.
     Returns None when no index is found.
     """
+    if _ct_find_index is None:
+        raise ImportError(
+            "compressed_tensors is required but could not be imported. "
+            "Install it with: pip install compressed_tensors"
+        )
     found = _ct_find_index(str(directory))
     return Path(found) if found else None
 
