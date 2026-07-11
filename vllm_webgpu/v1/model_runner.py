@@ -180,6 +180,9 @@ class WebGPUModelRunner:
 
         self.model = _build_model(arch, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
         if family == "nemotron_h":
+            # num_spec is always 0 here: the raise above blocks any non-zero value.
+            # Kept explicit so NemotronHWebGPUModel.load_weights can accept it when
+            # speculative decoding is eventually implemented in execute_model.
             self.model.load_weights(mc.model, num_spec=num_spec)
         else:
             self.model.load_weights(mc.model)
@@ -313,7 +316,7 @@ class WebGPUModelRunner:
         return spec
 
     def get_cache_block_size_bytes(self) -> int:
-        specs = self.get_kv_cache_spec()
+        specs = self.kv_cache_spec
         return sum(s.page_size_bytes for s in specs.values())
 
     def warm_up(self) -> None:
@@ -677,6 +680,13 @@ class WebGPUModelRunner:
             new_block_ids = cached.new_block_ids
             resumed_req_ids = cached.resumed_req_ids
 
+            # Hoist attribute presence checks: the model object is fixed after
+            # load_model() and these attributes do not change between requests.
+            _has_restore = hasattr(self.model, "restore_recurrent_states")
+            _has_reset = hasattr(self.model, "reset_recurrent_states")
+            _has_replay = hasattr(self.model, "replay_prefix_for_ssm")
+            _has_save = hasattr(self.model, "save_recurrent_states")
+
             for i, rid in enumerate(cached.req_ids):
                 state = self._req_state.get(rid)
                 if state is None:
@@ -725,12 +735,12 @@ class WebGPUModelRunner:
                 # in-place-updated state left by the previous request instead of
                 # its own saved state, producing wrong recurrent outputs for every
                 # request beyond the first in a multi-sequence decode batch.
-                if hasattr(self.model, "restore_recurrent_states"):
+                if _has_restore:
                     saved_recurrent = state.get("recurrent_states")
                     rolled_back = rid in resumed_req_ids and pos < state["pos"]
                     if not rolled_back and saved_recurrent is not None:
                         self.model.restore_recurrent_states(saved_recurrent)
-                    elif hasattr(self.model, "reset_recurrent_states"):
+                    elif _has_reset:
                         # Reset Mamba conv/SSM states to zero before decoding.
                         self.model.reset_recurrent_states()
                         if rolled_back and pos > 0:
@@ -741,7 +751,7 @@ class WebGPUModelRunner:
                             # writes since the cache is already populated) to reconstruct
                             # the SSM state before the first resumed decode step.
                             token_history = state.get("token_history")
-                            if not hasattr(self.model, "replay_prefix_for_ssm"):
+                            if not _has_replay:
                                 raise RuntimeError(
                                     f"req {rid}: preempted and resumed at pos={pos} with "
                                     f"prefix-cached KV but model does not implement "
@@ -770,7 +780,7 @@ class WebGPUModelRunner:
                 # Save recurrent state immediately after the forward pass, before
                 # any other request's forward can overwrite the shared GPU buffers.
                 decode_recurrent_states = None
-                if hasattr(self.model, "save_recurrent_states"):
+                if _has_save:
                     decode_recurrent_states = self.model.save_recurrent_states()
 
                 # Greedy path: model returns (1, 1) int32 with the argmax index.
@@ -799,7 +809,7 @@ class WebGPUModelRunner:
                 state["block_ids"] = blk_ids
                 state["last_tok"] = stok
                 state["recurrent_states"] = decode_recurrent_states
-                if hasattr(self.model, "replay_prefix_for_ssm"):
+                if _has_replay:
                     state.setdefault("token_history", []).append(stok)
                 all_req_ids.append(rid)
                 all_sampled.append(stok)

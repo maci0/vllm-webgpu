@@ -53,6 +53,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         self.moe_intermediate_size: int = getattr(model_config, "moe_intermediate_size",
                                                    getattr(model_config, "expert_intermediate_size",
                                                            model_config.intermediate_size))
+        if self.moe_intermediate_size % 4 != 0:
+            raise ValueError(
+                f"moe_intermediate_size={self.moe_intermediate_size} must be divisible by 4 "
+                f"for vec4<f16> shaders"
+            )
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
@@ -60,11 +65,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         # MoE configuration
         self.num_experts: int = getattr(model_config, "num_experts", 0)
         self.top_k_experts: int = getattr(model_config, "top_k_experts", 8)
-        if self.moe_intermediate_size % 4 != 0:
-            raise ValueError(
-                f"moe_intermediate_size={self.moe_intermediate_size} must be divisible by 4 "
-                f"for vec4<f16> shaders"
-            )
         self.is_moe: bool = (
             getattr(model_config, "enable_moe_block", False)
             or getattr(model_config, "use_second_mlp_block", False)

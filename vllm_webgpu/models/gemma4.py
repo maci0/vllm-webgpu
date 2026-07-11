@@ -74,12 +74,15 @@ def _build_layer_params_from_config(
     k_eq_v           = getattr(model_config, "attention_k_eq_v", False)
 
     # (1) vLLM gemma4.py L601 (Gemma4DecoderLayer)
+    # Mirror vLLM's chained comparison: is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
+    # The > 0 guard suppresses doubling when num_kv_shared_layers == num_hidden_layers (first_kv_shared=0),
+    # matching Gemma4DecoderLayer line 602 exactly.
     first_kv_shared = num_layers - getattr(model_config, "num_kv_shared_layers", 0)
     use_dwm = getattr(model_config, "use_double_wide_mlp", False)
 
     lp: list[dict] = []
     for i, lt in enumerate(layer_types):
-        is_kv_shared = i >= first_kv_shared
+        is_kv_shared = (first_kv_shared > 0) and (i >= first_kv_shared)
         inter_l = intermediate_size * (2 if use_dwm and is_kv_shared else 1)
 
         # (2) vLLM gemma4.py L467-474: find last non-shared layer of the same type.

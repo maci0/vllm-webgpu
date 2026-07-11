@@ -137,7 +137,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Only opt out to GEMMA_NORM=0 for checkpoints that explicitly signal a non-Gemma
         # format via a field vLLM itself reads, such as a dedicated MLX-format indicator.
         _rms_norm_type = getattr(model_config, "rms_norm_type", None)
-        self._gemma_norm: int = 0 if _rms_norm_type not in ("gemma", None) else 1
+        self._gemma_norm: int = int(_rms_norm_type in ("gemma", None))
 
         # GDN_BF16: when set, GDN projection matmuls use bf16-preserved weight buffers
         # (key + "__bf16") instead of the default f16 version. Falls back silently if

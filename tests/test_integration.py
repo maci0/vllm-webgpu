@@ -89,6 +89,9 @@ def test_full_pipeline_smoke(wgpu_device, tmp_path):
 
     cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
 
+    class _FakeArchConfig:
+        quantization_config = None
+
     class _FakeConfig:
         hidden_size = hidden
         num_hidden_layers = layers
@@ -99,6 +102,7 @@ def test_full_pipeline_smoke(wgpu_device, tmp_path):
         max_position_embeddings = 128
         rope_theta = 10000.0
         architectures = ["LlamaForCausalLM"]
+        model_arch_config = _FakeArchConfig()
 
     model = LlamaWebGPUModel(_FakeConfig(), wgpu_device, cache)
     model.load_weights(str(weight_path))

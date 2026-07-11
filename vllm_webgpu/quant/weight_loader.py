@@ -124,8 +124,15 @@ def _load_quant_cfg(config_path: Path) -> dict:
         return {}
     except json.JSONDecodeError:
         raise
-    except Exception as exc:
+    except (AttributeError, KeyError, TypeError) as exc:
+        # These can arise from malformed config structures in the upstream library
+        # and are safe to treat as "no quantization config found".
         logger.warning("Failed to parse quantization config %s: %s", config_path, exc)
+        return {}
+    except Exception as exc:
+        # Unexpected errors (e.g. import failures in upstream library) are surfaced
+        # at ERROR level so silent misconfiguration is not treated as "no quant".
+        logger.error("Unexpected error reading quantization config %s: %s", config_path, exc)
         return {}
 
 
@@ -197,12 +204,17 @@ def _remap_prefixes(d: dict) -> None:
     d.update(to_add)
 
 
-def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("F8_E4M3", "U8", "I32")):
+def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("U8", "I32")):
     """Upload all tensors in header that are not part of the quantized set.
 
     Skips names in `reserved` (the quantized-weight keys) and `i8_skip` (int8
     companion keys). For tensors that _upload_plain cannot handle, warns unless
     the dtype is in `allowed_special` (known dtypes that are intentionally skipped).
+
+    F8_E4M3 is NOT in the default allowed_special: every F8_E4M3 weight key is
+    captured in the format-specific reserved set (fp8_set for the fp8 path,
+    nvfp4_set for nvfp4 weight_scale keys), so no unclaimed F8_E4M3 tensor
+    should reach this function. An unexpected F8_E4M3 key warrants a warning.
     """
     for name in header:
         if name in reserved or name in i8_skip:
@@ -213,10 +225,10 @@ def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("F8
                 logger.warning("Skipping %s (dtype=%s)", name, dt)
 
 
-def detect_weight_format(path: str) -> "tuple[str, Path | None]":
+def detect_weight_format(path: str) -> "tuple[str, str | None]":
     """Return (format_string, index_path) for the given model path.
 
-    index_path is the Path to the safetensors index JSON for sharded models,
+    index_path is the str path to the safetensors index JSON for sharded models,
     or None for all other formats. Returning it avoids a second directory scan
     in load_safetensors_weights_sharded.
     """
@@ -257,7 +269,7 @@ def load_safetensors_weights_sharded(
     skip_prefixes: "frozenset[str] | None" = None,
     quant_cfg: "dict | None" = None,
     scale_transforms: "dict | None" = None,
-    index_path: "Path | None" = None,
+    index_path: "str | None" = None,
 ) -> dict:
     """Load multi-shard safetensors from a directory with model.safetensors.index.json.
 
@@ -266,7 +278,7 @@ def load_safetensors_weights_sharded(
     This avoids parsing the index twice (detect_weight_format returns 'safetensors_sharded'
     for both formats and lets this function distinguish them using the already-loaded index).
 
-    index_path: pre-found path to model.safetensors.index.json from detect_weight_format.
+    index_path: pre-found str path to model.safetensors.index.json from detect_weight_format.
     When None, the directory is scanned again via _ct_find_index (backwards compatibility).
     """
     _check_unsupported_quant(quant_cfg or {})
@@ -782,15 +794,6 @@ def load_safetensors_weights(
                 _flush_pending(wgpu_device)
                 _pending_bytes = 0
 
-        def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
-            """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
-
-            Used for FP8 E4M3 and NVFP4 packed weights. The shader reads via
-            rd_byte_at() which unpacks individual bytes from the u32 array.
-            """
-            arr_flat = np.ascontiguousarray(arr.ravel().view(np.uint8))
-            _upload(arr_flat, np.uint8, 'u8', name, weights, logical_shape=tuple(arr.shape))
-
         def _upload(arr: np.ndarray, np_dtype, wgpu_dtype: str, name: str, weights: dict,
                     logical_shape: "tuple | None" = None) -> None:
             """Upload an array to GPU after casting to np_dtype.
@@ -806,6 +809,15 @@ def load_safetensors_weights(
             nonlocal _pending_bytes
             _pending_bytes += _upload_tensor(arr, np_dtype, wgpu_dtype, name, weights, wgpu_device, usage, logical_shape)
             _maybe_flush()
+
+        def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
+            """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
+
+            Used for FP8 E4M3 and NVFP4 packed weights. The shader reads via
+            rd_byte_at() which unpacks individual bytes from the u32 array.
+            """
+            arr_flat = np.ascontiguousarray(arr.ravel().view(np.uint8))
+            _upload(arr_flat, np.uint8, 'u8', name, weights, logical_shape=tuple(arr.shape))
 
         weights: dict = {}
 

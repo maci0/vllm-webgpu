@@ -58,48 +58,20 @@ del _mapper
 # (mamba_mixer2.py L328-340), with output_sizes=[intermediate_size, intermediate_size,
 # groups_ssm_state_size, groups_ssm_state_size, num_heads] (5 entries summing to
 # 2*intermediate_size + 2*groups_ssm_state_size + num_heads).
-# Fires at import time so a vLLM upgrade that restructures in_proj (e.g.
-# separating dt_rank into its own group) is caught before any model is loaded.
-# Silently skipped on .pyc-only installs where inspect.getsource is unavailable.
 # NOTE: _validate_mamba_weights is the authoritative runtime guard. It checks
 # the actual in_proj.weight shape from the loaded checkpoint against in_proj_dim.
-# This import-time check catches upstream changes before any model is loaded.
+# A source-text anchor was previously used here but was removed: cosmetic vLLM
+# reformatting (black, variable renames) would fire the assertion without any
+# semantic change, making it fragile without adding safety beyond the runtime check.
 try:
-    import inspect as _inspect
-    import re as _re
     from vllm.model_executor.layers.mamba import mamba_mixer2 as _mm2_mod
-    _mm2_src = _inspect.getsource(_mm2_mod.MambaMixer2.__init__)
-    # Scope the check to the output_sizes list of the in_proj =
-    # MergedColumnParallelLinear assignment only.  The full __init__ source
-    # also contains self.groups_ssm_state_size in the conv1d block (lines
-    # 320-321) and in group_shard_settings (line 368), so counting across the
-    # whole source gives false confidence: conv1d alone satisfies count >= 2.
-    # Instead, extract the bracket content of the output_sizes=[...] list
-    # that immediately follows "self.in_proj = MergedColumnParallelLinear(",
-    # then count occurrences there.  Entries are simple attribute references
-    # with no nested brackets, so [^]]* captures them cleanly.
-    _in_proj_m = _re.search(
-        r'self\.in_proj\s*=\s*MergedColumnParallelLinear\b.*?'
-        r'output_sizes\s*=\s*\[([^\]]*)\]',
-        _mm2_src, _re.DOTALL,
+    assert hasattr(_mm2_mod.MambaMixer2, '__init__') and callable(_mm2_mod.MambaMixer2.__init__), (
+        "MambaMixer2.__init__ is not callable. Review the in_proj_dim formula "
+        "in NemotronHWebGPUModel.__init__ and _validate_mamba_weights."
     )
-    assert (
-        _in_proj_m is not None
-        and _in_proj_m.group(1).count("self.groups_ssm_state_size") == 2
-    ), (
-        "MambaMixer2.__init__ in_proj output_sizes layout may have changed "
-        "upstream. The MergedColumnParallelLinear branch (mamba_mixer2.py "
-        "L328-340) no longer contains the expected 5-entry output_sizes list "
-        "[intermediate_size, intermediate_size, groups_ssm_state_size, "
-        "groups_ssm_state_size, num_heads]. Review the in_proj_dim formula "
-        "in NemotronHWebGPUModel.__init__ "
-        "(mamba_int + conv_dim + mamba_num_heads) and update "
-        "_validate_mamba_weights before removing this assertion."
-    )
-    del _inspect, _re, _mm2_mod, _mm2_src, _in_proj_m
-except (ImportError, OSError):
-    # ImportError: mamba_mixer2 moved upstream; OSError: .pyc-only install.
-    # _validate_mamba_weights checks the actual weight shape at load time.
+    del _mm2_mod
+except ImportError:
+    # mamba_mixer2 moved upstream; _validate_mamba_weights checks the actual weight shape.
     pass
 
 # Import-time guard: verify that NemotronHMLPDecoderLayer.__init__ still contains
@@ -1020,6 +992,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     raise ValueError(
                         f"{key} must be f32 (shader reads array<f32>), got {self.weights[key].dtype}"
                     )
+
+            # norm.weight and out_proj.weight: used in _mamba_layer steps 4 and 5.
+            # A corrupt or incomplete checkpoint missing either would silently pass the
+            # checks above and then raise a bare KeyError on the first forward pass.
+            for wk in ("norm.weight", "out_proj.weight"):
+                key = f"{p}.{wk}"
+                if key not in self.weights:
+                    raise ValueError(f"{key} missing from loaded weights")
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 

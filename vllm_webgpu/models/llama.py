@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from functools import partial
 from itertools import batched
 from typing import TYPE_CHECKING
@@ -67,7 +68,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
             "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
+            "LN_ROPE_BASE": math.log(self.rope_theta),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
@@ -124,7 +125,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         self._sc: dict[str, "WebGPUBuffer"] = {
             "normed":  self._make_buf(T * H * 2),
-            "qkv_buf": self._make_buf(qkv_size or T * (Q + 2 * KV) * 2),  # [Q|K|V] f16
+            "qkv_buf": self._make_buf(qkv_size if qkv_size is not None else T * (Q + 2 * KV) * 2),  # [Q|K|V] f16
             "q_buf":       self._make_buf(T * Q * 2),
             "k_buf":       self._make_buf(T * KV * 2),
             "v_buf":       self._make_buf(T * KV * 2),
