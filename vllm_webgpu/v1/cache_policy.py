@@ -7,11 +7,13 @@ from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (FullAttentionSpec,
+                                         KVCacheSpec,
                                          KVQuantMode,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
                                          SlidingWindowSpec,
-                                         TQFullAttentionSpec)
+                                         TQFullAttentionSpec,
+                                         UniformTypeKVCacheSpecs)
 
 OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
 MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
@@ -56,7 +58,17 @@ def allocate_kv_from_tensors(
 
     # Build layer_name -> KVCacheSpec map so we can use real_page_size_bytes,
     # which excludes the per-token-head scale overhead that page_size_bytes adds.
-    layer_spec_map = {name: group.kv_cache_spec for group in kv_cache_groups for name in group.layer_names}
+    # UniformTypeKVCacheSpecs wraps per-layer specs (e.g. heterogeneous-but-same-type
+    # attention layers like Gemma4's 4-head local vs 8-head global); unpack it so
+    # each layer name resolves to its individual spec rather than the umbrella object.
+    layer_spec_map: dict[str, KVCacheSpec] = {}
+    for group in kv_cache_groups:
+        gs = group.kv_cache_spec
+        if isinstance(gs, UniformTypeKVCacheSpecs):
+            layer_spec_map.update(gs.kv_cache_specs)
+        else:
+            for name in group.layer_names:
+                layer_spec_map[name] = gs
 
     # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
