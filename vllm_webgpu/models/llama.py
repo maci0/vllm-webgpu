@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from functools import partial
 from itertools import batched
 from typing import TYPE_CHECKING
@@ -7,7 +8,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vals_per_thread, _vec4_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _rows_wg, _vals_per_thread, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
@@ -67,7 +68,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
             "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
+            "LN_ROPE_BASE": math.log(self.rope_theta),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
@@ -731,7 +732,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 "matmul_quant",
                 [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, self._dummy_buf), out_buf],
                 {"K": hidden, "N": dim, "USE_QUANT": uq, **qi},
-                _gemv_wg(dim),
+                (dim, 1, 1),
             )
         return sc["q_buf"], sc["k_buf"], sc["v_buf"]
 
@@ -849,7 +850,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
                                         self._scales_buf(w_key, uq, self._dummy_buf), sc["o_proj_out"]],
                        {"K": q_dim, "N": hidden, "USE_QUANT": uq, **qi},
-                       _gemv_wg(hidden))
+                       (hidden, 1, 1))
 
         return sc["o_proj_out"]
 
@@ -962,7 +963,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                [normed_x, self.weights[w_k],
                                 self._scales_buf(w_k, uq2, self._dummy_buf), out_b],
                                {"K": hidden, "N": inter, "USE_QUANT": uq2, **qi2},
-                               _gemv_wg(inter))
+                               (inter, 1, 1))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                            {"N": gelu_n}, _vec4_wg(gelu_n))
 
@@ -974,5 +975,5 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                        [sc["ffn_act"], self.weights[w_k],
                         self._scales_buf(w_k, uq, self._dummy_buf), sc["ffn_out"]],
                        {"K": inter, "N": hidden, "USE_QUANT": uq, **qi3},
-                       _gemv_wg(hidden))
+                       (hidden, 1, 1))
         return sc["ffn_out"]

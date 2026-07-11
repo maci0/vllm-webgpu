@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import _gemv_wg, _rows_wg, _vec4_wg
+from vllm_webgpu.models.base import _rows_wg, _vec4_wg
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 
 if TYPE_CHECKING:
@@ -252,6 +252,10 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 (inter, 1, 1),
             )
         else:
+            if inter % 4 != 0:
+                raise ValueError(
+                    f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
+                )
             self._ensure_moe_expert_bufs()
             qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
             qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
@@ -261,7 +265,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                  self._scales_buf(gw_key, uq_g, self._dummy_buf),
                  msc["expert_gate"]],
                 {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
-                _gemv_wg(inter),
+                (inter, 1, 1),
             )
             self._dispatch(
                 "matmul_quant",
@@ -269,12 +273,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                  self._scales_buf(uw_key, uq_u, self._dummy_buf),
                  msc["expert_up"]],
                 {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
-                _gemv_wg(inter),
+                (inter, 1, 1),
             )
-            if inter % 4 != 0:
-                raise ValueError(
-                    f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
-                )
             self._dispatch(
                 "gelu_mul",
                 [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
@@ -320,7 +320,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 [msc["expert_act"], self.weights[w2_key],
                  msc["expert_out"], msc["topk_w"]],
                 {"K": inter, "N": hidden, "K_IDX": k_idx},
-                _gemv_wg(hidden),
+                (hidden, 1, 1),
             )
         else:
             self._ensure_moe_expert_bufs()
@@ -331,7 +331,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                  self._scales_buf(w2_key, uq_d, self._dummy_buf),
                  msc["expert_tmp"]],
                 {"K": inter, "N": hidden, "USE_QUANT": uq_d, **qi_d},
-                _gemv_wg(hidden),
+                (hidden, 1, 1),
             )
             self._dispatch(
                 "moe_accumulate",
@@ -424,7 +424,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             "matmul_quant",
             router_bindings,
             router_consts,
-            _gemv_wg(N_E),
+            (N_E, 1, 1),
         )
         self._dispatch(
             "topk_sort",
@@ -514,7 +514,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 [msc["expert_act"], self.weights[sdw_k],
                  self._scales_buf(sdw_k, uq_sd, self._dummy_buf), msc["expert_out"]],
                 {"K": _sinter, "N": hidden, "USE_QUANT": uq_sd, **qi_sd},
-                _gemv_wg(hidden),
+                (hidden, 1, 1),
             )
             # Apply sigmoid gate if provided (Qwen3.5-MoE shared_expert_gate).
             # The gate weight maps hidden -> 1 scalar; sigmoid of that scalar
@@ -533,7 +533,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                          self._scales_buf(segate_k, uq_sg, self._dummy_buf),
                          msc["router_out"]],
                         {"K": hidden, "N": 1, "USE_QUANT": uq_sg, **qi_sg},
-                        _gemv_wg(1),
+                        (1, 1, 1),
                     )
                     self._dispatch(
                         "sigmoid_scalar_scale",

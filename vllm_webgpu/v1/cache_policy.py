@@ -30,9 +30,25 @@ logger = init_logger(__name__)
 # Layer type strings that carry KV state and require cache allocation.
 # Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
 # this constant and uses it as the authoritative set.
+#
+# Note: Minimax models encode layer type as an integer where 1 = attention and
+# 0 = non-attention. That integer sentinel is NOT in this frozenset. Use
+# is_attn_layer() rather than direct `in KV_ATTN_TYPES` checks to handle both
+# string and integer encodings at every call site.
 KV_ATTN_TYPES: frozenset[str] = frozenset(
     {"attention", "full_attention", "sliding_attention"}
 )
+
+
+def is_attn_layer(lt: "str | int") -> bool:
+    """Return True when a layer-type value represents an attention layer.
+
+    Handles both string layer types (in KV_ATTN_TYPES) and the Minimax integer
+    encoding where 1 means attention and 0 means non-attention (Mamba/MLP).
+    Use this instead of bare `lt in KV_ATTN_TYPES` everywhere so that the
+    integer sentinel never needs to be repeated at individual call sites.
+    """
+    return lt in KV_ATTN_TYPES or lt == 1
 
 
 def allocate_kv_from_tensors(
@@ -164,7 +180,7 @@ def allocate_kv_from_tensors(
     if _model_layer_types is not None and len(_model_layer_types) == num_total_layers:
         _missing_attn = [
             i for i, lt in enumerate(_model_layer_types)
-            if (lt in KV_ATTN_TYPES or lt == 1) and i not in layer_kv_bytes
+            if is_attn_layer(lt) and i not in layer_kv_bytes
         ]
         if _missing_attn:
             raise RuntimeError(
@@ -242,7 +258,7 @@ def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:
     """Sum of weight buffer sizes in bytes. The isinstance guard excludes the
     "__quant_meta__" dict entry that the quantized weight loader stores in
     model.weights alongside real buffers."""
-    model = worker.model_runner.model if worker.model_runner is not None else None
+    model = getattr(worker.model_runner, "model", None)
     if model is None:
         return 0
     return sum(buf.nbytes for buf in model.weights.values() if isinstance(buf, WebGPUBuffer))

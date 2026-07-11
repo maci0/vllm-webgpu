@@ -24,14 +24,6 @@ if TYPE_CHECKING:
 _H_NAMES: tuple[str, str, str] = ("h0", "h1", "h2")
 
 
-def _gemv_wg(N: int) -> tuple:
-    """Workgroup count for matmul_quant dispatch.
-
-    SPLIT_K=1 (one workgroup per output row): always (N, 1, 1).
-    """
-    return (N, 1, 1)
-
-
 def _vec4_wg(N: int) -> tuple:
     """Workgroup count for element-wise vec4 dispatches (gelu_mul, add, ...).
 

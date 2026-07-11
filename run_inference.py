@@ -60,6 +60,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Build model
     print("\nBuilding model...")
     from vllm_webgpu.v1.model_runner import _build_model
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     import vllm_webgpu.envs as _envs
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
     model = _build_model(arch, cfg, device, pipeline_cache, block_size)
@@ -68,7 +69,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nLoading weights (this may take a while)...")
     t0 = time.perf_counter()
     model.load_weights(model_dir)
-    print(f"  Loaded {sum(not k.startswith('__') for k in model.weights)} tensors in {time.perf_counter() - t0:.1f}s")
+    print(f"  Loaded {sum(isinstance(v, WebGPUBuffer) for v in model.weights.values())} tensors in {time.perf_counter() - t0:.1f}s")
 
     # KV cache
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config

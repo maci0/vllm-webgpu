@@ -14,7 +14,7 @@ from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types, is_attn_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
@@ -249,6 +249,9 @@ class WebGPUModelRunner:
         # NemotronH attention layers live under .mixer, not .self_attn.
         _archs = self.vllm_config.model_config.architectures or []
         _attn_suffix = ".mixer" if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" else ".self_attn"
+        # model=None: the vLLM engine always calls get_kv_cache_spec before weight
+        # loading, so the model object is never available here. The first probe in
+        # get_layer_types (model._layer_types) is always a no-op on this path.
         _layer_types = get_layer_types(
             None,
             self.vllm_config.model_config.hf_text_config,
@@ -274,7 +277,7 @@ class WebGPUModelRunner:
                 global_kv = default_kv
             k_eq_v = getattr(tc, "attention_k_eq_v", False)
             for i, lt in enumerate(_layer_types):
-                if lt not in KV_ATTN_TYPES and lt != 1:
+                if not is_attn_layer(lt):
                     continue
                 if lt == "full_attention":
                     full_kv = global_kv if k_eq_v else default_kv
@@ -369,8 +372,10 @@ class WebGPUModelRunner:
         req_ids: list[str],
         sampled: list[int],
         logprobs_data: "Sequence[LogprobsTensors | None]" = (),
-        prompt_logprobs_dict: "dict[str, LogprobsTensors | None]" = {},
+        prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
     ) -> Any:
+        if prompt_logprobs_dict is None:
+            prompt_logprobs_dict = {}
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
@@ -483,7 +488,7 @@ class WebGPUModelRunner:
         all_req_ids: list[str] = []
         all_sampled: list[int] = []
         all_logprobs_data: list[LogprobsTensors | None] = []  # per-request logprob data
-        prompt_logprobs_dict: dict[str, Any] = {}  # req_id -> LogprobsTensors for prefill
+        prompt_logprobs_dict: dict[str, LogprobsTensors | None] = {}  # req_id -> LogprobsTensors for prefill
 
         # ── Prefill: new requests ──────────────────────────────────────────────
         for req in new_reqs:

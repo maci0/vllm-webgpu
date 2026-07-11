@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from vllm_webgpu.models.base import _gemv_wg, _rows_wg, _vec4_wg
+from vllm_webgpu.models.base import _rows_wg, _vec4_wg
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 
 if TYPE_CHECKING:
@@ -98,9 +98,9 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         destination (free at this call site). Per-layer context length respects
         the layer_types list: full_attention layers ignore the sliding window cap.
         """
-        eff = (ctx_len if (layer_idx < len(self._layer_types)
-               and self._layer_types[layer_idx] == "full_attention")
-               else self._effective_ctx_len(ctx_len))
+        is_full = (layer_idx < len(self._layer_types)
+                   and self._layer_types[layer_idx] == "full_attention")
+        eff = ctx_len if is_full else self._effective_ctx_len(ctx_len)
 
         sc = self._sc
         hidden = self.hidden_size
@@ -175,8 +175,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             (num_tokens, self.num_kv_heads, 1),
         )
 
-        is_full = (layer_idx < len(self._layer_types)
-                   and self._layer_types[layer_idx] == "full_attention")
         self._dispatch(
             "flash_attn_decode",
             [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
@@ -199,7 +197,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
              self._scales_buf(w_key, uq, self._dummy_buf), sc["o_proj_out"]],
             {"K": q_dim, "N": hidden, "USE_QUANT": uq,
              **qi},
-            _gemv_wg(hidden),
+            (hidden, 1, 1),
         )
 
         # O-projection bias: write to sc['o_bias_tmp'], a dedicated buffer sized
@@ -303,14 +301,14 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             [normed_x, self.weights[gw_key],
              self._scales_buf(gw_key, uq_g, self._dummy_buf), msc["expert_gate"]],
             {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
-            _gemv_wg(inter),
+            (inter, 1, 1),
         )
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[uw_key],
              self._scales_buf(uw_key, uq_u, self._dummy_buf), msc["expert_up"]],
             {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
-            _gemv_wg(inter),
+            (inter, 1, 1),
         )
 
         # Inject gate bias: expert_gate → expert_gate_biased (different src/dst: no alias).
@@ -381,7 +379,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
              self._scales_buf(w2_key, uq_d, self._dummy_buf),
              msc["expert_tmp"], w2_bias],
             {"K": inter, "N": hidden, "USE_QUANT": uq_d, "HAS_BIAS": 1, **qi_d},
-            _gemv_wg(hidden),
+            (hidden, 1, 1),
         )
         # Weighted accumulate into expert_out from the biased down output.
         self._dispatch(

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
@@ -1152,7 +1152,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 self._scales_buf(qw, uq, self._dummy_buf), sc["q_buf"]],
                                {"K": hidden, "N": q_dim, "USE_QUANT": uq,
                                 **self._quant_extra(f"{p}.self_attn.q_proj", uq)},
-                               _gemv_wg(q_dim))
+                               (q_dim, 1, 1))
                 if not is_kv_shared:
                     uq = uq_k
                     self._dispatch("matmul_quant",
@@ -1160,7 +1160,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                     self._scales_buf(kw, uq, self._dummy_buf), sc["k_buf"]],
                                    {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
                                     **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
-                                   _gemv_wg(kv_dim))
+                                   (kv_dim, 1, 1))
                     if has_v:
                         uq = uq_v
                         self._dispatch("matmul_quant",
@@ -1168,7 +1168,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                         self._scales_buf(vw, uq, self._dummy_buf), sc["v_buf"]],
                                        {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
                                         **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
-                                       _gemv_wg(kv_dim))
+                                       (kv_dim, 1, 1))
                         _v_src = sc["v_buf"]
                     else:
                         _v_src = sc["k_buf"]  # global attention: V = K
@@ -1303,7 +1303,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             self._scales_buf(ow, uq, self._dummy_buf), sc["o_proj_out"]],
                            {"K": q_dim, "N": hidden, "USE_QUANT": uq,
                             **self._quant_extra(f"{p}.self_attn.o_proj", uq)},
-                           _gemv_wg(hidden))
+                           (hidden, 1, 1))
 
             # Correct Gemma4 attention sublayer (matches HF Gemma3DecoderLayer.forward):
             #   residual = x
@@ -1357,7 +1357,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                     self._scales_buf(w_k, uq2, self._dummy_buf), out_b],
                                    {"K": hidden, "N": inter, "USE_QUANT": uq2,
                                     **self._quant_extra(f"{p}.mlp.{proj}", uq2)},
-                                   _gemv_wg(inter))
+                                   (inter, 1, 1))
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                {"N": gelu_n}, _vec4_wg(gelu_n),
                                shader_subdir="gemma")
@@ -1370,7 +1370,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             self._scales_buf(w_k, uq, self._dummy_buf), sc["ffn_out"]],
                            {"K": inter, "N": hidden, "USE_QUANT": uq,
                             **self._quant_extra(f"{p}.mlp.down_proj", uq)},
-                           _gemv_wg(hidden))
+                           (hidden, 1, 1))
 
             # Post-FFN norm on FFN output (before residual add), then fused residual + next pre-norm.
             # When post_ffw_w and next input_layernorm both exist (all non-last layers),

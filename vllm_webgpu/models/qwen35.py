@@ -10,7 +10,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import (
     is_conv_state_dim_first,
 )
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
+from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
 
@@ -469,7 +469,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                         self._scales_buf(wk, uq, self._dummy_buf),
                         out_buf],
                        {"K": K, "N": N, "USE_QUANT": uq, "USE_BF16": bf16, **qi},
-                       _gemv_wg(N))
+                       (N, 1, 1))
 
     def _gdn_layer_gpu(
         self,
@@ -544,14 +544,14 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                            {"K_DIM": self._lin_k_dim, "V_DIM": self._lin_v_dim,
                             "NUM_K_HEADS": kh, "NUM_V_HEADS": vh,
                             "Q_BASE": 0, "K_BASE": self._gdn_k_base, "V_BASE": self._gdn_v_base},
-                           _gemv_wg(vh))
+                           (vh, 1, 1))
 
             # 7. Per-head RMSNorm + SiLU gate (z * sigmoid(z)) → gated
             self._dispatch("linear_attn_norm_gate",
                            [sc["gdn_out"], self.weights[f"{p}.norm.weight"],
                             sc["z_buf"], sc["gated"]],
                            {"NUM_V_HEADS": vh, "V_DIM": self._lin_v_dim},
-                           _gemv_wg(vh))
+                           (vh, 1, 1))
 
             # 8. Output projection: [val_dim] → [hidden]
             self._gdn_proj(p, "out_proj", sc["gated"], sc["o_proj_out"], vd, hidden)
@@ -805,7 +805,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                 self._scales_buf(gate_wk, uq_gate, self._dummy_buf),
                                 sc["q_gate_buf"]],
                                {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, "USE_BF16": 0, **qi_gate},
-                               _gemv_wg(q_dim))
+                               (q_dim, 1, 1))
 
         # Per-head RMSNorm + RoPE with Qwen3.5-specific constants.
         _q_norm_w = self.weights[f"{p}.self_attn.q_norm.weight"]
@@ -862,7 +862,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                        [o_proj_in, self.weights[w_key],
                         self._scales_buf(w_key, uq, self._dummy_buf), sc["o_proj_out"]],
                        {"K": q_dim, "N": hidden, "USE_QUANT": uq, **qi},
-                       _gemv_wg(hidden))
+                       (hidden, 1, 1))
 
         return sc["o_proj_out"]
 

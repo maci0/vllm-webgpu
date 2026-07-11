@@ -5,7 +5,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
+from vllm_webgpu.models.base import _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -92,9 +92,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._topk_idx_buf     = WebGPUBuffer.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
             self._topk_weight_buf  = WebGPUBuffer.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] f32
             self._router_logit_buf     = WebGPUBuffer.empty(_dev, max_canvas_len * self.num_experts * 4)  # [T, E] f32
-            self._router_logit_buf.dtype = 'f32'
             self._router_logit_f16_buf = WebGPUBuffer.empty(_dev, max_canvas_len * self.num_experts * 2)  # [T, E] f16 matmul scratch
-            self._router_logit_f16_buf.dtype = 'f16'
             self._moe_acc_buf      = WebGPUBuffer.empty(_dev, max_canvas_len * self.hidden_size * 2)    # [T, H] f16
             # Packed routing weights: [num_unique_experts, T] f32, pre-filled before the
             # expert loop so a single write_buffer covers all experts. Sized for worst
@@ -267,9 +265,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            [self.weights[self._embed_key()], ids_buf, x_buf],
                            {"HIDDEN_DIM": hidden}, (num_tokens, 1, 1))
 
+            normed_ready = False
             for i in range(self.num_layers):
-                x_buf = self._decoder_layer(
-                    i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+                x_buf, normed_ready = self._decoder_layer(
+                    i, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens,
+                    normed_ready=normed_ready)
 
             self._dispatch("rms_norm_f32in",
                            [x_buf, self.weights[self._norm_key()], norm_out],
@@ -338,7 +338,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._dispatch("matmul_quant",
                            [src, self.weights[wk], sc_buf, out_b],
                            {"K": K, "N": N, "USE_QUANT": uq, **self._quant_extra(wk.removesuffix(".weight"), uq)},
-                           _gemv_wg(N))
+                           (N, 1, 1))
 
     # ── Decoder layer (intentionally different signature from parent _transformer_layer) ──
     # Parent Gemma4WebGPUModel._transformer_layer takes normed_x and returns (WebGPUBuffer, WebGPUBuffer).
@@ -357,8 +357,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
-    ) -> "WebGPUBuffer":
-        """DiffusionGemma transformer layer with shared + MoE FFN."""
+        normed_ready: bool = False,
+    ) -> "tuple[WebGPUBuffer, bool]":
+        """DiffusionGemma transformer layer with shared + MoE FFN.
+
+        Returns (out, normed_ready) where normed_ready=True means sc["normed"]
+        already contains input_layernorm(out) for the next layer, allowing the
+        caller to skip the opening rms_norm_f32in on the next iteration.
+        """
         sc = self._sc
         lp = self._lp[layer_idx]
         hidden = self.hidden_size
@@ -381,9 +387,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # ── Attention sublayer ────────────────────────────────────────────
-            self._dispatch("rms_norm_f32in",
-                           [x_buf, self.weights[f"{p}.input_layernorm.weight"], sc["normed"]],
-                           _rms, (num_tokens, 1, 1))
+            if not normed_ready:
+                self._dispatch("rms_norm_f32in",
+                               [x_buf, self.weights[f"{p}.input_layernorm.weight"], sc["normed"]],
+                               _rms, (num_tokens, 1, 1))
+            # else: sc["normed"] already has input_layernorm(x_buf) from the
+            # previous layer's rms_norm_add_f32_rms_norm tail — skip the re-dispatch.
 
             # Q projection: unconditional (KV-shared layers still need Q).
             # K and V projections: skip for KV-shared layers; they reuse the
@@ -783,7 +792,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        {"K": inter_moe, "N": hidden,
                                         "USE_QUANT": uq_dk,
                                         **self._quant_extra(dk.removesuffix(".weight"), uq_dk)},
-                                       _gemv_wg(hidden))
+                                       (hidden, 1, 1))
                         # K_IDX=expert_slot: reads packed_w[expert_slot] from the pre-filled
                         # [num_unique_experts] f32 array (T=1 so each row is a single scalar).
                         self._dispatch("moe_accumulate",
@@ -841,17 +850,36 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         "— vLLM applies this norm unconditionally; a missing weight "
                         "indicates a corrupt or incomplete checkpoint."
                     )
-                self._dispatch("rms_norm", [hidden_states_1, post_ffw_w, sc["normed"]], _rms,
-                               (num_tokens, 1, 1))
-                hidden_states_1 = sc["normed"]
-                self._dispatch("add_f32", [residual, hidden_states_1, out],
-                               {"N": add_n}, _vec4_wg(add_n))
-                if abs(layer_scalar - 1.0) > 1e-6:
-                    self._dispatch("f32_scale_inplace", [out],
-                                   {"N": add_n, "SCALE": layer_scalar},
-                                   (cdiv(add_n, 256), 1, 1))
+                is_last = (layer_idx == self.num_layers - 1)
+                if not is_last:
+                    # Fuse: rms_norm(ffn_out, post_ffw_w) + add_f32(residual) + rms_norm_f32in(next_ln_w)
+                    # into one dispatch. Saves 2 dispatches vs the 3-op sequence, matching
+                    # Gemma4WebGPUModel._transformer_layer (lines 1385-1394). RMSNorm is
+                    # scale-invariant, so sc["normed"] is correct even after f32_scale_inplace on out.
+                    next_ln_w = self.weights[
+                        f"{self._layer_key_prefix(layer_idx + 1)}.input_layernorm.weight"
+                    ]
+                    self._dispatch("rms_norm_add_f32_rms_norm",
+                                   [hidden_states_1, post_ffw_w, residual, next_ln_w, out, sc["normed"]],
+                                   _rms, (num_tokens, 1, 1))
+                    if abs(layer_scalar - 1.0) > 1e-6:
+                        self._dispatch("f32_scale_inplace", [out],
+                                       {"N": add_n, "SCALE": layer_scalar},
+                                       (cdiv(add_n, 256), 1, 1))
+                    self._hstate = (self._hstate + 2) % 3
+                    return out, True
+                else:
+                    self._dispatch("rms_norm", [hidden_states_1, post_ffw_w, sc["normed"]], _rms,
+                                   (num_tokens, 1, 1))
+                    hidden_states_1 = sc["normed"]
+                    self._dispatch("add_f32", [residual, hidden_states_1, out],
+                                   {"N": add_n}, _vec4_wg(add_n))
+                    if abs(layer_scalar - 1.0) > 1e-6:
+                        self._dispatch("f32_scale_inplace", [out],
+                                       {"N": add_n, "SCALE": layer_scalar},
+                                       (cdiv(add_n, 256), 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
-        return out
+        return out, False
 
 

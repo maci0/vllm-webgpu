@@ -26,6 +26,7 @@ def main() -> None:
     from huggingface_hub import snapshot_download
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.utils import SHADERS_DIR
     from vllm_webgpu.config import get_config
     from vllm.utils.math_utils import cdiv
@@ -156,7 +157,7 @@ def main() -> None:
         # shader on every quantized GEMV and '.layers.' appears in their key.
         total_w_bytes = sum(
             v.nbytes for k, v in model.weights.items()
-            if not k.startswith('__') and '.layers.' in k
+            if isinstance(v, WebGPUBuffer) and '.layers.' in k
         )
         total_w_mb = total_w_bytes / 1e6
         print(f"  Weight data moved: {total_w_mb:.0f} MB  ({total_w_mb/num_layers:.1f} MB/layer avg)")

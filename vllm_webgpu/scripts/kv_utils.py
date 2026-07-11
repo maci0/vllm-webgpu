@@ -18,6 +18,7 @@ from vllm_webgpu.v1.cache_policy import (
     KV_ATTN_TYPES,
     MIN_WEBGPU_BUFFER_BYTES,
     get_layer_types,
+    is_attn_layer,
 )
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -143,7 +144,7 @@ def _allocate_kv_pool_hybrid(
 
     kv_layer_count = 0
     for i in range(num_layers):
-        needs_kv_cache = layer_types is None or layer_types[i] in KV_ATTN_TYPES
+        needs_kv_cache = layer_types is None or is_attn_layer(layer_types[i])
         if needs_kv_cache:
             k_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
             v_buf = WebGPUBuffer.empty(dev, bytes_per_layer)

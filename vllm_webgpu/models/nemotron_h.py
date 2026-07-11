@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -8,7 +9,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculat
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
 
 if TYPE_CHECKING:
@@ -20,7 +21,7 @@ logger = init_logger(__name__)
 
 # Import-time sentinel: verify the f16 element byte count that _init_mamba_states
 # uses to size conv state buffers. The buffer sizing formula
-#   conv_bytes = int(np.prod(conv_shape)) * _ELEM_BYTES["f16"]
+#   conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
 # is hard-coded to f16 because the WGSL shaders are compiled at a fixed precision
 # and cannot switch dtype at runtime. If _ELEM_BYTES is ever refactored, this
 # assertion fires immediately rather than silently under-allocating state buffers.
@@ -523,8 +524,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # state and f32 for the SSM state. These sizes are not configurable
         # via mamba_cache_dtype on the WebGPU path; the shaders are compiled
         # ahead-of-time and cannot switch dtype at runtime.
-        conv_bytes = int(np.prod(conv_shape)) * _ELEM_BYTES["f16"]
-        ssm_bytes  = int(np.prod(ssm_shape))  * _ELEM_BYTES["f32"]
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -985,7 +986,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if cw_key not in self.weights:
                 raise ValueError(f"{cw_key} missing from loaded weights")
             expected = self.conv_dim * self.conv_kernel
-            actual = int(np.prod(self.weights[cw_key].shape))
+            actual = math.prod(self.weights[cw_key].shape)
             if actual != expected:
                 raise ValueError(
                     f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"
@@ -1220,7 +1221,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(in_w, uq, self._dummy_buf), sc["mamba_inproj"]],
             {"K": H, "N": self.in_proj_dim, "USE_QUANT": uq,
              **self._quant_extra(f"{p}.in_proj", uq)},
-            _gemv_wg(self.in_proj_dim),
+            (self.in_proj_dim, 1, 1),
         )
 
         # GPU-side byte copies to extract the three portions of in_proj output.
@@ -1289,7 +1290,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(out_w, uq2, self._dummy_buf), sc["mixer_out"]],
             {"K": MI, "N": H, "USE_QUANT": uq2,
              **self._quant_extra(f"{p}.out_proj", uq2)},
-            _gemv_wg(H),
+            (H, 1, 1),
         )
 
     def _attn_layer(
@@ -1322,7 +1323,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(qkv_w, uq, self._dummy_buf), sc["qkv_buf"]],
             {"K": H, "N": total_qkv, "USE_QUANT": uq,
              **self._quant_extra(f"{p}.qkv_proj", uq)},
-            _gemv_wg(total_qkv),
+            (total_qkv, 1, 1),
         )
 
         # GPU-side extraction: split QKV buffer into Q, K, V.
@@ -1368,7 +1369,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(ow, uq2, self._dummy_buf), sc["mixer_out"]],
             {"K": q_dim, "N": H, "USE_QUANT": uq2,
              **self._quant_extra(f"{p}.o_proj", uq2)},
-            _gemv_wg(H),
+            (H, 1, 1),
         )
 
     def _mlp_layer(
@@ -1396,7 +1397,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(uw, uq, self._dummy_buf), sc["up_buf"]],
             {"K": H, "N": I, "USE_QUANT": uq,
              **self._quant_extra(f"{p}.up_proj", uq)},
-            _gemv_wg(I),
+            (I, 1, 1),
         )
 
         # relu^2 element-wise activation.
@@ -1420,7 +1421,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
              self._scales_buf(dw, uq2, self._dummy_buf), sc["mixer_out"]],
             {"K": I, "N": H, "USE_QUANT": uq2,
              **self._quant_extra(f"{p}.down_proj", uq2)},
-            _gemv_wg(H),
+            (H, 1, 1),
         )
 
     # ── Prefill fallback ──────────────────────────────────────────────────────
