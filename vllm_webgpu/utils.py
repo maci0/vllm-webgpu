@@ -60,7 +60,7 @@ def sample_token(
             steps. When None, sampling is non-deterministic.
     """
     if temperature < 1e-5:
-        return int(logits_1d.argmax())
+        return logits_1d.argmax().item()
 
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)
     logits_t = logits_t / temperature

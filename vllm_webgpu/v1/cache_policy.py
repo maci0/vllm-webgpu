@@ -179,8 +179,11 @@ def get_layer_types(model, hf_config) -> list | None:
     this function with model=None (before weight loading), so the first probe is
     a permanent no-op in the engine code path.
     """
+    if model is not None:
+        v = getattr(model, "_layer_types", None)
+        if v is not None:
+            return v
     for obj, attr in [
-        (model, "_layer_types"),
         (hf_config, "layers_block_type"),
         (hf_config, "layer_types"),
     ]:

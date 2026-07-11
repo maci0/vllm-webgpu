@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm.transformers_utils.config import patch_legacy_rope_type
 from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vals_per_thread, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -160,7 +159,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             else getattr(self.model_config, "rope_scaling", None)
             or {}
         )
-        patch_legacy_rope_type(rope_scaling)
         rope_type = rope_scaling.get("rope_type", "")
 
         if rope_type != "yarn":

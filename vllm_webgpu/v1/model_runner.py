@@ -89,7 +89,7 @@ class WebGPUModelRunner:
         self.model: "BaseWebGPUModel | None" = None
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
-        self._zeros_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc across scheduling steps; see also NemotronHWebGPUModel._zero_buf_cache for the analogous Mamba-state cache
+        self._zeros_cache: dict[int, bytes] = {}  # amortizes zero-byte alloc across scheduling steps; see also NemotronHWebGPUModel._zero_buf_cache for the analogous Mamba-state cache
         self._block_size: int = vllm_config.cache_config.block_size
         self._kv_cache_spec_cache = None
 
@@ -257,10 +257,10 @@ class WebGPUModelRunner:
         queue = self.wgpu_device.wgpu_device.queue
         _zeros_cache = self._zeros_cache
 
-        def _get_zeros(n: int) -> bytearray:
+        def _get_zeros(n: int) -> bytes:
             z = _zeros_cache.get(n)
             if z is None:
-                _zeros_cache[n] = z = bytearray(n)
+                _zeros_cache[n] = z = bytes(n)
             return z
 
         for k_buf, v_buf in self.model.kv_pool:
@@ -505,8 +505,8 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            # logprob_token_ids rejected above; read sp.num_logprobs directly for the topk count.
-            num_logprobs = sp.logprobs if sp is not None else None
+            # logprob_token_ids rejected above; use sp.num_logprobs for the topk count.
+            num_logprobs = sp.num_logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "

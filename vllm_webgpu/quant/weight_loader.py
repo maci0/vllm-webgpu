@@ -83,11 +83,6 @@ _BNB_GROUP_K = 64
 _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
 
-def _pad4(data: bytes) -> bytes:
-    """Pad to 4-byte boundary — WebGPU write_buffer requires 4-byte-aligned size."""
-    return data + b"\x00" * (-len(data) % 4)
-
-
 def _flush_pending(wgpu_device) -> None:
     """Submit all pending GPU write_buffer operations and block until complete.
 
@@ -116,7 +111,9 @@ def _upload_tensor(
     """
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     arr = np.ascontiguousarray(arr, dtype=np_dtype)
-    data = _pad4(arr.tobytes())
+    raw = arr.tobytes()
+    # pad to 4-byte boundary: WebGPU write_buffer requires 4-byte-aligned size
+    data = raw + b"\x00" * (-len(raw) % 4)
     buf = wgpu_device.create_buffer(size=len(data), usage=usage)
     wgpu_device.queue.write_buffer(buf, 0, data)
     weights[name] = WebGPUBuffer(
@@ -161,7 +158,7 @@ def _load_quant_cfg(config_path: Path) -> dict:
         return {}
 
 
-def _check_unsupported_quant(model_dir: Path, quant_cfg: dict) -> None:
+def _check_unsupported_quant(quant_cfg: dict) -> None:
     """Raise ValueError if config.json names an unsupported quantization scheme.
 
     Detects AQLM, HQQ, and QuIP# by reading quant_type/quant_method from

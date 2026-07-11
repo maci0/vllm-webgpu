@@ -347,7 +347,7 @@ class BaseWebGPUModel(ABC):
         model_dir = _path if _path.is_dir() else _path.parent
         _cfg_json = model_dir / "config.json"
         _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
-        _check_unsupported_quant(model_dir, quant_cfg=_quant_cfg)
+        _check_unsupported_quant(quant_cfg=_quant_cfg)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             actual = str(_path / "model.safetensors") if _path.is_dir() else path
@@ -556,9 +556,8 @@ class BaseWebGPUModel(ABC):
         # all call sites pass exactly 4 bindings (HAS_BIAS=0 is always the default).
         # The assertion guards against silent misuse if the binding count ever changes.
         if shader_name == "matmul_quant":
-            assert len(bindings) in (4, 5), (
-                f"matmul_quant expects 4 or 5 bindings, got {len(bindings)}"
-            )
+            if len(bindings) not in (4, 5):
+                raise ValueError(f"matmul_quant expects 4 or 5 bindings, got {len(bindings)}")
             if len(bindings) == 4:
                 bindings = list(bindings) + [self._dummy_buf]
 

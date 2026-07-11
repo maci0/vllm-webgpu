@@ -10,6 +10,7 @@ from pathlib import Path
 import time
 from types import SimpleNamespace
 import numpy as np
+from vllm.utils.math_utils import cdiv
 
 
 def main() -> None:
@@ -66,7 +67,7 @@ def main() -> None:
     # ── Setup fake KV pool ────────────────────────────────────────────────────────
     # Compute block count before allocating so the pool covers every block ID in bt.
     total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
-    bt_blocks = (total_toks + block_size - 1) // block_size
+    bt_blocks = cdiv(total_toks, block_size)
     num_blocks = max(512, bt_blocks)
 
     allocate_kv_from_hf_config(wgpu_dev.wgpu_device, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
