@@ -144,7 +144,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     Every 6th layer (indices 5, 11, 17, ...) is a global attention layer.
     Scratch buffers are allocated at maximum dimensions to handle both types.
     """
-    _GEMMA_NORM: int = 1  # all Gemma models use (1+w) RMSNorm
+    _GEMMA_NORM: int = 1  # overridden per instance; see __init__
 
     # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
     logit_returns_token_id: bool = True
@@ -166,7 +166,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self.block_size: int = block_size
 
         # Gemma3 vs Gemma4 capability flags:
-        # - GEMMA_NORM=1: all Gemma models use (1+w) RMSNorm (weights trained as deviations from 0)
+        # - GEMMA_NORM=1: Gemma3 norms store weights as deviations from zero (GemmaRMSNorm, (1+w) formula).
+        #   Gemma4 uses plain RMSNorm; checkpoint weights are actual scale values (~1.0), so GEMMA_NORM=0.
         # - _apply_v_norm: only Gemma4 applies per-head RMS norm to V before caching
         # Per-layer attention parameters (head_dim, num_kv_heads, q_dim, kv_dim, has_v_proj).
         # Set from _layer_attention_params if available (parsed from GGUF), otherwise derive
@@ -185,6 +186,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # layer_types of length num_hidden_layers even when absent from the JSON, so the old
         # len(layer_types)==num_layers check incorrectly matched Gemma3 configs too.
         self._apply_v_norm = (getattr(model_config, "model_type", "") == "gemma4")
+        # Gemma3 trains norm weights as deviations from zero (GemmaRMSNorm), so the shader
+        # must compute (1+w)*x. Gemma4 uses plain RMSNorm; weights are actual scale values.
+        self._GEMMA_NORM = 1 if getattr(model_config, "model_type", "") == "gemma3" else 0
         # Hoisted per-model constants for the attention SCALE computation.
         # Both attributes are fixed at construction time; evaluating them per layer
         # (48 layers x N chunks per prefill) is unnecessary work.
