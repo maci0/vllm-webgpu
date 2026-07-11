@@ -4,7 +4,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from huggingface_hub.constants import SAFETENSORS_INDEX_FILE
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
@@ -32,21 +31,13 @@ _SYM_ZEROS_INT32: int = -2004318072  # 0x88888888 as int32: all eight nibbles = 
 def _locate_index(directory: "Path") -> "Path | None":
     """Return the safetensors index path for a directory, or None if absent.
 
-    Tries compressed_tensors' find_safetensors_index_path when available (handles
-    non-standard index filenames), then falls back to the standard
-    model.safetensors.index.json path, and finally globs for any
-    *.safetensors.index.json file to cover non-standard AutoHF-style shards.
+    Delegates to compressed_tensors' find_safetensors_index_path, which handles
+    non-standard index filenames. compressed_tensors is a hard vLLM dependency
+    (Requires-Dist), so _ct_find_index is always non-None at runtime.
     Returns None when no index is found.
     """
-    if _ct_find_index is not None:
-        found = _ct_find_index(str(directory))
-        return Path(found) if found else None
-    fallback = directory / SAFETENSORS_INDEX_FILE
-    if fallback.exists():
-        return fallback
-    # Fall back to a glob scan for any *.safetensors.index.json to cover non-standard index filenames.
-    candidates = sorted(directory.glob("*.safetensors.index.json"))
-    return candidates[0] if candidates else None
+    found = _ct_find_index(str(directory))
+    return Path(found) if found else None
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -1131,7 +1122,6 @@ def load_safetensors_weights(
                 # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
                 # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
                 # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-                mxfp4_bases = mx_bases
                 if _decompress_mx_scale is None:
                     raise ImportError(
                         "MXFP4 dequant requires compressed_tensors "
@@ -1139,7 +1129,7 @@ def load_safetensors_weights(
                         "install compressed_tensors to load MXFP4 models"
                     )
 
-                for base in mxfp4_bases:
+                for base in mx_bases:
                     try:
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                         ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
@@ -1159,7 +1149,6 @@ def load_safetensors_weights(
                 # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
                 # CPU dequant: avoids shader changes for per-block FP8.
                 # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
-                mxfp8_bases = mx_bases
                 try:
                     from vllm.model_executor.layers.quantization.utils.mxfp8_utils import dequant_mxfp8_to_bf16
                 except ImportError as exc:
@@ -1167,7 +1156,7 @@ def load_safetensors_weights(
                         f"MXFP8 dequant requires vllm.model_executor.layers.quantization.utils.mxfp8_utils "
                         f"(failed to import: {exc})"
                     ) from exc
-                for base in mxfp8_bases:
+                for base in mx_bases:
                     try:
                         w_t = sf.get_tensor(f"{base}.weight")
                         ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents

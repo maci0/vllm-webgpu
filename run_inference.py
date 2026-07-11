@@ -159,8 +159,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
 
 if __name__ == "__main__":
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent))
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--model",       required=True)

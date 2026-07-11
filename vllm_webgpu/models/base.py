@@ -110,6 +110,8 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
+    # Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq (yarn_scaling_rope.py:49).
+    # Verify against a freshly instantiated YaRNScalingRotaryEmbedding on each vLLM bump.
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )

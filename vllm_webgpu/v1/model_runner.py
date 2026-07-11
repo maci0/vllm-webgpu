@@ -215,7 +215,6 @@ class WebGPUModelRunner:
                     spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd)
                 else:
                     spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
-            return spec
         else:
             head_size = self.vllm_config.model_config.get_head_size()
             num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()

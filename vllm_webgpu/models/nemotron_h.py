@@ -1,4 +1,5 @@
 from __future__ import annotations
+import functools
 import math
 from typing import TYPE_CHECKING
 
@@ -7,6 +8,7 @@ import numpy as np
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
+from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
 
@@ -218,10 +220,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._scale_acc: dict = {}    # {layer_idx: {'q': arr, 'k': arr, 'v': arr}}
         self._scale_transforms: dict = {}  # HF scale key -> (arr) -> None
 
-        def _mksetter(acc, key):
-            def _setter(v): acc[key] = v
-            return _setter
-
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "attention":
                 _acc: dict = {}
@@ -229,7 +227,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _hf_p = f"backbone.layers.{_i}.mixer"
                 for _proj in ("q", "k", "v"):
                     self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
-                        _mksetter(_acc, _proj)
+                        functools.partial(dict.__setitem__, _acc, _proj)
                     )
 
         # The WebGPU MLP path does not implement bias addition. All known
@@ -397,7 +395,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         kd  = self.num_kv_heads * self.head_dim
 
         max_ctx = self.model_config.max_position_embeddings
-        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
+        max_bt_blocks = max(4096, cdiv(max_ctx, self.block_size))
 
         # Fixed pre-allocated decode buffers (zero-alloc hot path for T=1).
         self._pre: dict[str, "WebGPUBuffer"] = {

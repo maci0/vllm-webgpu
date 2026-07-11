@@ -105,7 +105,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        self._lin_conv_dim: int = self._gdn_conv_shape[0] if is_conv_state_dim_first() else self._gdn_conv_shape[1]
+        # conv_dim = Q_dim + K_dim + V_dim = 2 * key_dim + val_dim
+        # (head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads, mamba_utils.py)
+        self._lin_conv_dim: int = 2 * _lin_key_dim + self._lin_val_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
