@@ -180,7 +180,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         # rotary_dim derivation is delegated to compute_yarn_freqs, which mirrors
         # vllm/model_executor/layers/rotary_embedding/__init__.py:66-72.
-        freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling)
+        freqs, mscale = compute_yarn_freqs(self.head_dim, rope_scaling.get("rope_theta", self.rope_theta), rope_scaling)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale
         self._use_freq_buf = True

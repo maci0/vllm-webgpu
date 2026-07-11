@@ -333,6 +333,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
                 lambda a, hd=_hd, n=_nkv: np.tile(a, n) if a.shape == (hd,) else a
             )
+        # Updated to True/False in load_weights() once weights are known.
+        # Defaults to True so tests that bypass load_weights() reach the batch path.
+        self._mr4_ok: bool = True
 
     def _scratch_token_count(self) -> int:
         """Number of tokens to size T-dependent scratch buffers for. Override in subclasses."""
@@ -428,6 +431,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                      skip_prefixes: "frozenset[str] | None" = None) -> None:
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
         self._load_layer_scales()
+        self._mr4_ok: bool = self._mr4_quant_supported()
 
     def forward(
         self,
@@ -619,7 +623,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         under Metal's per-command-buffer GPU timeout.
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """
-        if not self._mr4_quant_supported():
+        if not self._mr4_ok:
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 
         dev = self.wgpu_device.wgpu_device
@@ -1096,7 +1100,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             kw = f"{p}.self_attn.k_proj.weight"
             uq_q = self._uq_for_key(qw)
             uq_k = self._uq_for_key(kw)
-            if has_v:
+            if has_v and not is_kv_shared:
                 vw = f"{p}.self_attn.v_proj.weight"
                 uq_v = self._uq_for_key(vw)
                 _use_fused_qkv = (uq_q == 0 and uq_k == 0 and uq_v == 0)

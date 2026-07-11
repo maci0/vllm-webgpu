@@ -349,7 +349,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # half is stashed without any GPU round-trip.  _postprocess_weights sees
         # shape[0] == q_dim (not 2*q_dim) for correctly split weights.
         # Quantized q_proj weights are NOT split here — the loader ignores transforms
-        # for I8 keys, so the weight lands with its original shape.  _postprocess_weights
+        # for all quantized keys (I32 for GPTQ/AWQ, U8 for INT8/NVFP4/FP8/NF4, I8 for BnB int8),
+        # so the weight lands with its original shape.  _postprocess_weights
         # detects the missing gate key and raises a clear error in that case.
         _q_gate_pending: dict[str, np.ndarray] = {}
         if self._attn_output_gate:

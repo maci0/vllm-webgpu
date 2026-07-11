@@ -167,6 +167,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 return self._prefill_sequential_fallback(
                     input_ids, positions, attn_metadata, len(input_ids)
                 )
+            if not self.weights:
+                raise RuntimeError("load_weights() must be called before forward()")
             return self._moe_decode_forward(input_ids, positions, attn_metadata)
         # Mistral dense (SWA, _is_moe=False): delegate to LlamaWebGPUModel.forward().
         # For T > 1 (prefill), that calls _prefill_batch_forward(), which checks

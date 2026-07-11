@@ -119,6 +119,7 @@ def _allocate_kv_pool_hybrid(
     head_dim: int,
     layer_types: list | None = None,
     dtype: torch.dtype = torch.float16,
+    head_dim_v: int | None = None,
 ) -> None:
     """Allocate KV pool for all layers.
 
@@ -126,13 +127,15 @@ def _allocate_kv_pool_hybrid(
     gets a full KV cache buffer. When layer_types is provided, layers whose type
     is not in KV_ATTN_TYPES get 16-byte placeholder buffers.
 
-    bytes_per_layer is the per-buffer (K or V) allocation:
-      num_blocks * block_size * num_kv_heads * head_dim * dtype_bytes
-    K and V are allocated separately at this size each.
+    K and V buffers are allocated separately. When head_dim_v is provided, the V
+    buffer uses that head dim instead of head_dim (for architectures with asymmetric
+    K/V head sizes). This mirrors the formula used by allocate_kv_from_tensors.
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
-    bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * get_dtype_size(dtype)
+    dtype_bytes = get_dtype_size(dtype)
+    k_bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * dtype_bytes
+    v_bytes_per_layer = num_blocks * block_size * num_kv_heads * (head_dim_v or head_dim) * dtype_bytes
 
     if layer_types is not None and len(layer_types) != num_layers:
         raise ValueError(
@@ -145,8 +148,8 @@ def _allocate_kv_pool_hybrid(
     for i in range(num_layers):
         needs_kv_cache = layer_types is None or is_attn_layer(layer_types[i])
         if needs_kv_cache:
-            k_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
-            v_buf = WebGPUBuffer.empty(dev, bytes_per_layer)
+            k_buf = WebGPUBuffer.empty(dev, k_bytes_per_layer)
+            v_buf = WebGPUBuffer.empty(dev, v_bytes_per_layer)
             kv_layer_count += 1
         else:
             k_buf = WebGPUBuffer.empty(dev, MIN_WEBGPU_BUFFER_BYTES)
@@ -154,13 +157,13 @@ def _allocate_kv_pool_hybrid(
         model.kv_pool.append((k_buf, v_buf))
 
     if layer_types is None:
-        total_mb = (bytes_per_layer * num_layers * 2) // MiB_bytes
+        total_mb = ((k_bytes_per_layer + v_bytes_per_layer) * num_layers) // MiB_bytes
         logger.info(
             "KV cache: %d blocks × %d tokens/block × %d layers × %d KV heads × %d head_dim (%s, K+V) = %dMiB",
             num_blocks, block_size, num_layers, num_kv_heads, head_dim, dtype, total_mb,
         )
     else:
-        total_mb = (bytes_per_layer * kv_layer_count * 2) // MiB_bytes
+        total_mb = ((k_bytes_per_layer + v_bytes_per_layer) * kv_layer_count) // MiB_bytes
         logger.info(
             "KV cache (hybrid): %d kv-attn × %d blocks × %d tokens/block × %d KV heads × %d head_dim (%s, K+V) = %dMiB",
             kv_layer_count, num_blocks, block_size, num_kv_heads, head_dim, dtype, total_mb,

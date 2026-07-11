@@ -27,7 +27,6 @@ _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = np.finfo(np.float16).max
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
-_SYM_ZEROS_INT32: int = -2004318072  # 0x88888888 as int32: all eight nibbles = 8, the AutoGPTQ symmetric zero-point sentinel
 
 
 def _unpack_nibbles_gptq(packed: "np.ndarray", out_rows: int, in_cols: int) -> "np.ndarray":
@@ -44,10 +43,16 @@ def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
     """Return True when qzeros is absent or every nibble equals 8 (symmetric zero-point).
 
     Fast path: check the first int32 element before doing a full np.all scan.
+    Sentinel is 0x88888888 = -2004318072 as int32: eight nibbles each equal to 8.
     """
     if qz is None:
         return True
-    return bool(np.all(qz.view(np.int32) == _SYM_ZEROS_INT32))
+    # 0x88888888 viewed as int32 = -2004318072 (all eight nibbles = 8).
+    _sentinel = np.int32(-2004318072)
+    v = qz.view(np.int32)
+    if v.flat[0] != _sentinel:
+        return False
+    return bool(np.all(v == _sentinel))
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -303,7 +308,7 @@ def load_safetensors_weights_sharded(
     """
     _check_unsupported_quant(quant_cfg or {})
     if index_path is None:
-        index_path = _ct_find_index(Path(model_dir))
+        index_path = _ct_find_index(model_dir)
     if index_path is None:
         raise ValueError(f"No safetensors index file found in {model_dir}")
     with open(index_path) as f:
@@ -463,8 +468,8 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
             t_sc = _torch.from_numpy(scales.astype(np.float16))
             out = _awq_dq(t_qw, t_qz, t_sc, bits=4, group_size=group_size)
             return np.ascontiguousarray(out.numpy().astype(np.float16))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug("auto_awq dequantize_gemm failed, using numpy fallback: %s", _e)
 
     qw = qweight.astype(np.int32)            # (K, N//8)
     qz = qzeros.astype(np.int32)             # (G, N//8)
@@ -593,7 +598,7 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
     if w_args.num_bits == 8 and w_args.type == _QuantizationType.FLOAT and w_args.strategy in (_QuantizationStrategy.TENSOR, _QuantizationStrategy.CHANNEL):
         return {"__global__": {"fmt": "fp8_gpu", "group_size": None}}
     if w_args.num_bits == 4 and w_args.type == _QuantizationType.INT and w_args.strategy == _QuantizationStrategy.GROUP:
-        return {"__global__": {"fmt": "gptq_gpu", "group_size": w_args.group_size or 128}}
+        return {"__global__": {"fmt": "gptq_gpu", "group_size": w_args.group_size}}
     logger.warning(
         "compressed-tensors: unsupported format (num_bits=%d, type=%s, strategy=%s), "
         "no quant_meta applied", w_args.num_bits, w_args.type, w_args.strategy)
@@ -1204,13 +1209,16 @@ def load_safetensors_weights(
 
         elif fmt in ("mxfp4", "mxfp8"):
             # Both formats identify bases by U8 weight + U8 weight_scale; collect once.
-            mx_bases = sorted(
-                base
-                for k in header
-                if k.endswith(".weight")
-                and header[k].get("dtype") == "U8"
-                and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
-            )
+            mx_bases_set = []
+            for k in header:
+                if not k.endswith(".weight"):
+                    continue
+                if header[k].get("dtype") != "U8":
+                    continue
+                base = k.removesuffix(".weight")
+                if header.get(base + ".weight_scale", {}).get("dtype") == "U8":
+                    mx_bases_set.append(base)
+            mx_bases = sorted(mx_bases_set)
             mx_set: set = {f"{b}.weight" for b in mx_bases} | {f"{b}.weight_scale" for b in mx_bases}
             _upload_non_quant(header, mx_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 

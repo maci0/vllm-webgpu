@@ -276,8 +276,10 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     memory and clamps to 0 KV blocks.
 
     """
-    # NOTE: vllm/v1/worker/gpu_worker.py L412 has the identical truthiness pattern.
-    # Both should move to is-not-None together when vLLM fixes theirs.
+    # NOTE: gpu_worker.py uses a walrus+truthiness check (`if kv_cache_memory_bytes := ...`),
+    # which treats 0 as not-set and falls through to the profiling path. This path
+    # intentionally uses is-not-None so that an explicit kv_cache_memory_bytes=0 is
+    # honoured rather than silently falling through.
     if (explicit := worker.cache_config.kv_cache_memory_bytes) is not None:
         return explicit
 

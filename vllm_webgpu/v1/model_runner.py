@@ -394,7 +394,7 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
             if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
-                assert all(d is not None for d in logprobs_data)
+                # all entries non-None: guaranteed by len(widths) == len(logprobs_data)
                 built_logprobs = _stack(logprobs_data)
             else:
                 # Derive the dtype of selected_token_ranks from the first real
@@ -419,7 +419,7 @@ class WebGPUModelRunner:
                     else:
                         pieces.append(LogprobsTensors(
                             torch.zeros(1, max_k, dtype=torch.int32),
-                            torch.full((1, max_k), -float("inf")),
+                            torch.full((1, max_k), -float("inf"), dtype=torch.float32),
                             torch.zeros(1, dtype=rank_dtype),
                         ))
                 built_logprobs = _stack(pieces)
@@ -565,7 +565,7 @@ class WebGPUModelRunner:
                     f"block table too short for req {rid}: token {bad} needs block "
                     f"{bad // block_size} but only {len(blk_ids)} blocks allocated"
                 )
-            slots = (bt.astype(np.int64)[blk_idx] * block_size + abs_idx % block_size).tolist()
+            slots = (bt[blk_idx].astype(np.int64) * block_size + abs_idx % block_size).tolist()
 
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
