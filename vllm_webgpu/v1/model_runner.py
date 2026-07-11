@@ -767,7 +767,7 @@ class WebGPUModelRunner:
                 # Use the persisted per-request generator so the RNG state
                 # advances between steps (not reset to the same seed each step).
                 rng = state.get("rng")
-                if logits.shape[-1] == 1:
+                if logits.shape[-1] == 1 or sp is None:
                     stok = int(logits[0, 0])
                 else:
                     stok = _sample_token(
