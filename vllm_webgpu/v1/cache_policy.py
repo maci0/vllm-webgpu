@@ -145,6 +145,28 @@ def allocate_kv_from_tensors(
             )
             raise
 
+    # Verify that every attention layer in hybrid models got a real KV buffer.
+    # Models with _layer_types (e.g. NemotronH) index kv_pool unconditionally in
+    # _attn_layer; a 16-byte placeholder there silently corrupts kv_cache_store_both
+    # and flash_attn_decode without any GPU-side error.
+    # Pure-attention models lack _layer_types, so the check is safely skipped.
+    _model_layer_types = getattr(model, "_layer_types", None)
+    if _model_layer_types is not None and len(_model_layer_types) == num_total_layers:
+        _missing_attn = [
+            i for i, lt in enumerate(_model_layer_types)
+            if lt in KV_ATTN_TYPES and i not in layer_kv_bytes
+        ]
+        if _missing_attn:
+            raise RuntimeError(
+                f"Attention layer(s) {_missing_attn} were not assigned real KV "
+                f"buffers (kv_cache_tensors covered layers "
+                f"{sorted(layer_kv_bytes.keys())}). These layers would receive "
+                f"16-byte placeholder buffers, silently corrupting "
+                f"kv_cache_store_both and flash_attn_decode dispatches. "
+                f"Verify that kv_cache_config.kv_cache_tensors includes entries "
+                f"for all attention layers declared in the model's layer type list."
+            )
+
     model.kv_pool.clear()
     total_bytes = 0
     for i in range(num_total_layers):
