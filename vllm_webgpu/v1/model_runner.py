@@ -8,7 +8,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -81,8 +81,14 @@ def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache:
     )
 
 
-def _stack(items: "list[LogprobsTensors]") -> "Any":
-    """Cat a list of LogprobsTensors along the batch dimension and convert to lists."""
+def _stack(items: list[LogprobsTensors]) -> LogprobsLists:
+    """Cat a list of LogprobsTensors along the batch dimension and convert to lists.
+
+    cu_num_generated_tokens is intentionally left as None. WebGPU produces
+    exactly one output row per request, so LogprobsLists.slice_request(i, n)
+    uses i directly as the row index when cu_num_generated_tokens is None
+    (see vllm/v1/outputs.py:41-42).
+    """
     return LogprobsTensors(
         torch.cat([x.logprob_token_ids for x in items]),
         torch.cat([x.logprobs for x in items]),
