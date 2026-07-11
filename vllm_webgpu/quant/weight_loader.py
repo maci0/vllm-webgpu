@@ -230,7 +230,7 @@ def _remap_prefixes(d: dict) -> None:
     remapped = {}
     for k, v in d.items():
         if k.startswith("model.language_model."):
-            remapped["model." + k.removeprefix("model.language_model.")] = v
+            remapped[k.replace("model.language_model.", "model.", 1)] = v
         elif k.startswith("language_model."):
             remapped[k.removeprefix("language_model.")] = v
     d.update(remapped)
@@ -387,6 +387,37 @@ def load_safetensors_weights_sharded(
 
 
 
+def _scale_dequant(
+    w_int4: np.ndarray,
+    z_int4: np.ndarray,
+    sc: np.ndarray,
+    group_size: int,
+    g_idx: "np.ndarray | None" = None,
+) -> np.ndarray:
+    """Expand scales/zeros and dequantize int4 weights to float32 (K, N).
+
+    Shared by both AWQ and GPTQ after format-specific nibble unpacking.
+    Returns (K, N) float32; callers transpose and cast to float16.
+
+    Args:
+        w_int4:     (K, N) int or uint8 — unpacked weight nibbles
+        z_int4:     (G, N) int or uint8 — unpacked zero-point nibbles
+        sc:         (G, N) float32      — per-group scales
+        group_size: K // G for uniform-group layouts
+        g_idx:      (K,) int32 optional — group index per input dim (desc_act)
+    """
+    if g_idx is not None:
+        groups = g_idx.astype(np.int32)
+        sc_exp = sc[groups]
+        z_exp  = z_int4[groups].astype(np.float32)
+    else:
+        # np.repeat avoids the intermediate index array; all groups are the same
+        # size by construction (group_size = K // G).
+        sc_exp = np.repeat(sc, group_size, axis=0)           # (K, N)
+        z_exp  = np.repeat(z_int4, group_size, axis=0).astype(np.float32)  # (K, N)
+    return sc_exp * (w_int4.astype(np.float32) - z_exp)      # (K, N)
+
+
 def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
     """Dequantize AWQ int4 weights to float16.
 
@@ -412,15 +443,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) ->
     w_int4 = ((qw[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(K, N).astype(np.uint8)
     z_int4 = ((qz[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(G, N).astype(np.uint8)
 
-    # Expand scales/zeros to (K, N) shape using uniform group repeat.
-    # np.repeat(arr, group_size, axis=0) is equivalent to arr[np.arange(K)//group_size]
-    # when all groups have the same size (guaranteed by group_size = K // G above),
-    # avoids the intermediate index array, and is faster for large K.
-    sc_exp = np.repeat(sc, group_size, axis=0)           # (K, N)
-    z_exp  = np.repeat(z_int4, group_size, axis=0).astype(np.float32)  # (K, N)
-
-    # Dequantize: weight(K, N) then transpose to (N, K) for our shader
-    w_f32 = sc_exp * (w_int4.astype(np.float32) - z_exp)  # (K, N)
+    w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size)
     return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
 
 
@@ -463,18 +486,7 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
         packed_dim=1,
     ).numpy().astype(np.int8)
 
-    # Group index: which group each input dim belongs to.
-    # For the uniform-groups path, np.repeat avoids the intermediate index array
-    # (all groups have the same size by construction: group_size = K // G).
-    if g_idx is not None:
-        groups = g_idx.astype(np.int32)
-        sc_exp = sc[groups]
-        z_exp  = z_int4[groups].astype(np.float32)
-    else:
-        sc_exp = np.repeat(sc, group_size, axis=0)          # (K, N)
-        z_exp  = np.repeat(z_int4, group_size, axis=0).astype(np.float32)  # (K, N)
-
-    w_f32 = sc_exp * (w_int4.astype(np.float32) - z_exp)  # (K, N)
+    w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
     return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
 
 
@@ -993,18 +1005,15 @@ def load_safetensors_weights(
                             qz_awq = np.full((G_, N8_), _SYM_ZEROS_INT32, dtype=np.int32)
                             w_f16 = _dequant_awq(qw, sc, qz_awq)
                         else:
-                            if qz is None:
-                                if g_idx is not None:
-                                    raise ValueError(
-                                        f"{base}: desc_act GPTQ layer (g_idx present) has no qzeros. "
-                                        "Cannot determine whether zero_point=8 (AutoGPTQ symmetric) "
-                                        "or zero_point=0 (raw HF format) was intended. Include qzeros "
-                                        "in the checkpoint; dequantizing without them would silently "
-                                        "shift every weight value by 8 scale units."
-                                    )
-                                qz_gptq = np.full((sc.shape[0], qw.shape[1] // 8), _SYM_ZEROS_INT32, dtype=np.int32)
-                            else:
-                                qz_gptq = qz
+                            if g_idx is not None and qz is None:
+                                raise ValueError(
+                                    f"{base}: desc_act GPTQ layer (g_idx present) has no qzeros. "
+                                    "Cannot determine whether zero_point=8 (AutoGPTQ symmetric) "
+                                    "or zero_point=0 (raw HF format) was intended. Include qzeros "
+                                    "in the checkpoint; dequantizing without them would silently "
+                                    "shift every weight value by 8 scale units."
+                                )
+                            qz_gptq = qz
                             w_f16 = _dequant_gptq(qw, sc, qz_gptq, g_idx)
                         _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
                 except Exception as exc:

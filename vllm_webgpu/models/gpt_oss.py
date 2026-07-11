@@ -91,7 +91,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         destination (free at this call site). Per-layer context length respects
         the layer_types list: full_attention layers ignore the sliding window cap.
         """
-        eff = (ctx_len if (self._layer_types and layer_idx < len(self._layer_types)
+        eff = (ctx_len if (layer_idx < len(self._layer_types)
                and self._layer_types[layer_idx] == "full_attention")
                else self._effective_ctx_len(ctx_len))
 

@@ -6,9 +6,9 @@ import numpy as np
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -75,7 +75,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Extra scratch buffer: shared-expert residual (F16; unlike h0/h1/h2 which are F32).
             # Needed because the 3-buffer h-rotation doesn't accommodate 4 distinct
             # tensor states (x_buf, post-attn, post-shared-expert, post-moe).
-            from vllm_webgpu.webgpu.buffer import WebGPUBuffer as _WB
             _dev = wgpu_device.wgpu_device
             # canvas_length is the max batch size during diffusion inference (default 256).
             # All per-token scratch buffers must be sized for the full canvas to avoid
@@ -84,17 +83,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Pre-allocated row-index array for vectorized MoE scatter; avoids
             # allocating a new array on every _decoder_layer call.
             self._token_arange = np.arange(max_canvas_len, dtype=np.intp)
-            self._shared_res_buf = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2)  # F16
+            self._shared_res_buf = WebGPUBuffer.empty(_dev, max_canvas_len * self.hidden_size * 2)  # F16
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
-            self._topk_idx_buf     = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
-            self._topk_weight_buf  = _WB.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] f32
-            self._router_logit_buf     = _WB.empty(_dev, max_canvas_len * self.num_experts * 4)  # [T, E] f32
-            self._router_logit_f16_buf = _WB.empty(_dev, max_canvas_len * self.num_experts * 2)  # [T, E] f16 matmul scratch
-            self._moe_acc_buf      = _WB.empty(_dev, max_canvas_len * self.hidden_size * 2)    # [T, H] f16
+            self._topk_idx_buf     = WebGPUBuffer.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
+            self._topk_weight_buf  = WebGPUBuffer.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] f32
+            self._router_logit_buf     = WebGPUBuffer.empty(_dev, max_canvas_len * self.num_experts * 4)  # [T, E] f32
+            self._router_logit_f16_buf = WebGPUBuffer.empty(_dev, max_canvas_len * self.num_experts * 2)  # [T, E] f16 matmul scratch
+            self._moe_acc_buf      = WebGPUBuffer.empty(_dev, max_canvas_len * self.hidden_size * 2)    # [T, H] f16
             # Packed routing weights: [num_unique_experts, T] f32, pre-filled before the
             # expert loop so a single write_buffer covers all experts. Sized for worst
             # case: all num_experts active across max_canvas_len tokens.
-            self._moe_per_expert_weight_buf = _WB.empty(
+            self._moe_per_expert_weight_buf = WebGPUBuffer.empty(
                 _dev, self.num_experts * max_canvas_len * 4)
             # Pre-allocated dense routing weight matrix: [num_experts, max_canvas_len] f32.
             # Reused across all _decoder_layer calls; only active token columns are zeroed.
@@ -103,7 +102,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # is bound but the result is discarded by select when NO_SCALE=1.
             # Sized to hidden_size elements so the binding covers the full scale
             # array the shader declares, avoiding reliance on OOB robustness.
-            self._router_dummy_buf = _WB.empty(_dev, self.hidden_size * 2)  # hidden_size x f16
+            self._router_dummy_buf = WebGPUBuffer.empty(_dev, self.hidden_size * 2)  # hidden_size x f16
 
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
@@ -123,8 +122,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         that is immediately freed. This override replicates only what _decoder_layer
         actually uses.
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self.wgpu_device.wgpu_device
         T = self._scratch_token_count()
         self._canvas_length = T

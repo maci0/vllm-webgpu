@@ -58,6 +58,24 @@ except (ImportError, OSError):
     # _validate_mamba_weights checks the actual weight shape at load time.
     pass
 
+# Import-time guard: verify that NemotronHMLPDecoderLayer.__init__ still contains
+# the list/scalar intermediate_size resolution logic that _resolve() mirrors.
+# Any vLLM upgrade changing intermediate_size handling will fail here rather than
+# silently producing wrong per-layer sizes.
+try:
+    import inspect as _inspect
+    from vllm.model_executor.models.nemotron_h import NemotronHMLPDecoderLayer as _NemotronHMLPDecoder
+    _mlp_init_src = _inspect.getsource(_NemotronHMLPDecoder.__init__)
+    assert "isinstance" in _mlp_init_src and "len(" in _mlp_init_src, (
+        "NemotronHMLPDecoderLayer.__init__ no longer contains the expected "
+        "list/scalar intermediate_size resolution (isinstance + len check). "
+        "Review the _resolve() function in NemotronHWebGPUModel.__init__ and "
+        "update it to match the new upstream logic before removing this assertion."
+    )
+    del _inspect, _NemotronHMLPDecoder, _mlp_init_src
+except (ImportError, OSError):
+    pass
+
 # conv_dim is computed here from config params using the same formula as MambaMixer2
 # (mamba_mixer2.py L313: conv_dim = intermediate_size + 2 * groups_ssm_state_size).
 # For tp=1, extra_groups_for_head_shards returns 0, so this exactly matches
@@ -144,8 +162,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._layer_types: list[str] = model_config.layers_block_type
         # Length invariant is enforced by NemotronHConfig.__init__ asserting
         # len(hybrid_override_pattern) == num_hidden_layers.
-        self._num_mamba_layers = self._layer_types.count("mamba")
-        self._num_attn_layers = self._layer_types.count("attention")
 
         # Register CPU-side A_log → -exp(A) transforms for all Mamba layers.
         # Applied during load_weights before GPU upload, eliminating a per-layer
@@ -461,7 +477,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Skip mtp.* keys before any GPU buffer allocation. The raw HF keys use
         # the "mtp." prefix; none are accessed during inference.
         # vLLM's own NemotronHForCausalLM skips these the same way.
-        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=frozenset(["mtp."]),
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=frozenset({"mtp."}),
                              scale_transforms=self._scale_transforms)
         _missing_transforms = [k for k in self._weight_transforms if k not in self.weights]
         assert not _missing_transforms, (
@@ -485,8 +501,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         logger.info(
             "NemotronH: loaded %d weight tensors (%d Mamba layers, %d attn layers)",
             len(self.weights),
-            self._num_mamba_layers,
-            self._num_attn_layers,
+            self._layer_types.count("mamba"),
+            self._layer_types.count("attention"),
         )
 
     def _pack_attn_weights(self) -> None:

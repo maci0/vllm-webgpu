@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -304,8 +304,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Pre-allocate scratch buffers at maximum layer dimensions."""
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         dev = self.wgpu_device.wgpu_device
         T = self._scratch_token_count()
         H = self.hidden_size
@@ -541,8 +539,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         under Metal's per-command-buffer GPU timeout.
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         if not self._mr4_quant_supported():
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 

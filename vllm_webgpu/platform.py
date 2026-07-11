@@ -135,7 +135,7 @@ class WebGPUPlatform(_Platform):
             logger.warning(
                 "WebGPU platform does not support MLA; falling back to CPU_ATTN."
             )
-        elif attn_selector_config.use_sparse:
+        if attn_selector_config.use_sparse:
             logger.warning(
                 "WebGPU platform does not support sparse attention; "
                 "falling back to CPU_ATTN."

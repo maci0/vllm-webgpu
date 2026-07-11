@@ -80,10 +80,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         num_q = self.num_q_heads
         num_kv = self.num_kv_heads
 
-        def _tile_xform(n):
-            return lambda a: np.tile(a, n) if a.shape == (head_dim,) else a
-        _q_xform = _tile_xform(num_q)
-        _k_xform = _tile_xform(num_kv)
+        _q_xform = lambda a: np.tile(a, num_q) if a.shape == (head_dim,) else a  # noqa: E731
+        _k_xform = lambda a: np.tile(a, num_kv) if a.shape == (head_dim,) else a  # noqa: E731
         for _i in range(self.num_layers):
             _p = f"model.layers.{_i}"
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = _q_xform

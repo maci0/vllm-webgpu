@@ -176,12 +176,14 @@ def compute_yarn_freqs(
     obj.beta_slow                 = beta_slow
     obj.truncate                  = truncate
     obj.extrapolation_factor      = extrapolation_factor
+    obj.scaling_factor            = factor
+    obj.attn_factor               = attn_factor
     inv_freq = obj._compute_inv_freq(factor)
 
     mscale = (
-        float(yarn_get_mscale(factor) * attn_factor)
+        float(yarn_get_mscale(obj.scaling_factor) * obj.attn_factor)
         if apply_yarn_scaling
-        else float(attn_factor)
+        else float(obj.attn_factor)
     )
     return inv_freq.numpy().astype(np.float32), mscale
 

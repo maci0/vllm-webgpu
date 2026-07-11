@@ -522,7 +522,8 @@ class WebGPUModelRunner:
                 )
 
             raw_bids = req.block_ids
-            assert raw_bids, f"req {rid}: scheduler produced NewRequestData with empty block_ids"
+            if not raw_bids:
+                raise RuntimeError(f"req {rid}: scheduler produced NewRequestData with empty block_ids")
             blk_ids = list(itertools.chain.from_iterable(raw_bids))
 
             bt = np.array(blk_ids, dtype=np.uint32)
