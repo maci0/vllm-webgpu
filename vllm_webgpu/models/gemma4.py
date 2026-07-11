@@ -199,7 +199,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     Every 6th layer (indices 5, 11, 17, ...) is a global attention layer.
     Scratch buffers are allocated at maximum dimensions to handle both types.
     """
-    _GEMMA_NORM: int = 0  # overridden per instance in __init__; 1 for gemma3, 0 for gemma4
     # Subclasses that override forward() and never read lp["scale"] set this to True
     # to skip the O(num_layers) scale computation in __init__.
     _skip_attn_scale: bool = False

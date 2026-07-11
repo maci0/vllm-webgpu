@@ -257,7 +257,7 @@ class WebGPUModelRunner:
         # Mamba, MLP, and linear-attention layers carry no KV state and must be
         # excluded — emitting a FullAttentionSpec for them over-reports KV memory.
         # NemotronH attention layers live under .mixer, not .self_attn.
-        _archs = getattr(self.vllm_config.model_config.hf_config, "architectures", None) or []
+        _archs = self.vllm_config.model_config.architectures or []
         _attn_suffix = ".mixer" if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" else ".self_attn"
         _layer_types = get_layer_types(
             None,
@@ -428,7 +428,7 @@ class WebGPUModelRunner:
             req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
             sampled_token_ids=[[t] for t in sampled],
             logprobs=built_logprobs,
-            prompt_logprobs_dict=prompt_logprobs_dict or {},
+            prompt_logprobs_dict=prompt_logprobs_dict,
         )
         return out
 

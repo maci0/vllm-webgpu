@@ -90,12 +90,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        self._lin_key_dim: int  = self._lin_k_heads * self._lin_k_dim  # total key dim (= Q dim)
+        _lin_key_dim: int  = self._lin_k_heads * self._lin_k_dim  # total key dim (= Q dim)
         # Derive conv_dim directly from MambaStateShapeCalculator so CONV_DIM always
         # matches the vLLM formula regardless of future changes to mamba_utils.py.
         # The shape calculator returns a 2-tuple; extract conv_dim from the axis that
         # holds it (axis order depends on VLLM_SSM_CONV_STATE_LAYOUT).
-        self._gdn_conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+        _gdn_conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
             tp_world_size=1,
             num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
             head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
@@ -104,13 +104,13 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # conv_dim is read back from the shape the calculator already returned so
         # any upstream formula change is automatically reflected here.
         # DS layout: (dim, state_len) → index 0; SD layout: (state_len, dim) → index 1.
-        self._lin_conv_dim: int = self._gdn_conv_shape[0] if is_conv_state_dim_first() else self._gdn_conv_shape[1]
+        self._lin_conv_dim: int = _gdn_conv_shape[0] if is_conv_state_dim_first() else _gdn_conv_shape[1]
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         # _gdn_v_base derives from _lin_conv_dim (= 2*key_dim + val_dim per vLLM formula)
         # rather than the raw local formula so both values stay in sync with future
         # vLLM conv_dim changes automatically.
-        self._gdn_k_base: int = self._lin_key_dim
+        self._gdn_k_base: int = _lin_key_dim
         self._gdn_v_base: int = self._lin_conv_dim - self._lin_val_dim
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).

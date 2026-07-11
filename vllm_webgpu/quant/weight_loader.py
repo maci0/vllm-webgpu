@@ -206,7 +206,7 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = new_pfx + k[len(old_pfx):]
+                new_k = new_pfx + k.removeprefix(old_pfx)
                 if new_k not in d:
                     to_add[new_k] = v
                 break
@@ -432,7 +432,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
             t_sc = _torch.from_numpy(scales)
             out = _awq_dq(t_qw, t_qz, t_sc, bits=4, group_size=group_size)
             return np.ascontiguousarray(out.numpy().astype(np.float16))
-        except (ImportError, Exception):
+        except Exception:
             pass
 
     qw = qweight.astype(np.int32)            # (K, N//8)

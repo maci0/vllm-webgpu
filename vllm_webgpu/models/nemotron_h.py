@@ -263,14 +263,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Keys are HF-format scale key names (backbone. prefix, before mapper).
         self._scale_acc: dict[int, dict[str, np.ndarray]] = {}
         self._scale_transforms: dict[str, Callable[[np.ndarray], None]] = {}
-        self._mamba_count: int = 0
-        self._attn_count: int = 0
 
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "mamba":
                 # -exp(A_log): transforms HF A_log checkpoint values before GPU upload.
                 self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _a_log_transform
-                self._mamba_count += 1
             if _lt == "attention":
                 _acc: dict = {}
                 self._scale_acc[_i] = _acc
@@ -279,7 +276,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
                         partial(_acc.__setitem__, _proj)
                     )
-                self._attn_count += 1
 
         # The WebGPU MLP path does not implement bias addition. All known
         # NemotronH checkpoints ship with mlp_bias=False (the default), so
@@ -651,8 +647,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         logger.info(
             "NemotronH: loaded %d weight tensors (%d Mamba layers, %d attn layers)",
             len(self.weights),
-            self._mamba_count,
-            self._attn_count,
+            self._layer_types.count("mamba"),
+            self._layer_types.count("attention"),
         )
 
     def _pack_attn_weights(self) -> None:
@@ -974,14 +970,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 
-    def _finalize_output(self, vocab: int) -> np.ndarray:
+    def _finalize_output(self) -> np.ndarray:
         """Record logit buffer and return sampled token or full logits."""
         self._last_logit_buf = self._pre["logits"]
-        self._last_vocab = vocab
+        self._last_vocab = self.vocab_size
         return self._finish_forward(self._greedy_decode)
 
     def _run_final_norm_and_lm_head(
-        self, x_buf: "WebGPUBuffer", vocab: int, num_tokens: int
+        self, x_buf: "WebGPUBuffer", num_tokens: int
     ) -> None:
         """Dispatch final RMS norm, LM head matmul, and optional on-GPU argmax.
 
@@ -990,6 +986,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """
         pre = self._pre
         hidden = self.hidden_size
+        vocab = self.vocab_size
         self._dispatch(
             "rms_norm",
             [x_buf, self.weights["model.norm_f.weight"], pre["norm_out"]],
@@ -1032,12 +1029,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         self._check_single_sequence(attn_metadata)
 
-        vocab = self.vocab_size
-
         if num_tokens > 1:
             return self._prefill_forward(
                 input_ids, positions, attn_metadata,
-                num_tokens, vocab,
+                num_tokens,
             )
 
         # Decode path (T=1): zero-alloc hot path via pre-allocated buffers.
@@ -1087,9 +1082,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 )
 
             # Final norm, LM head, and optional argmax.
-            self._run_final_norm_and_lm_head(x_buf, vocab, num_tokens)
+            self._run_final_norm_and_lm_head(x_buf, num_tokens)
 
-        return self._finalize_output(vocab)
+        return self._finalize_output()
 
     def _layer_dispatch(
         self,
@@ -1401,7 +1396,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         positions: np.ndarray,
         attn_metadata: object,
         T: int,
-        vocab: int,
     ) -> np.ndarray:
         """Process T prompt tokens one at a time through the decode path.
 
@@ -1454,7 +1448,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     )
 
                 if t == T - 1:
-                    self._run_final_norm_and_lm_head(x_buf, vocab, 1)
+                    self._run_final_norm_and_lm_head(x_buf, 1)
 
-        return self._finalize_output(vocab)
+        return self._finalize_output()
 

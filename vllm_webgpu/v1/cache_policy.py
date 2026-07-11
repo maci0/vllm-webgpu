@@ -7,7 +7,6 @@ from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (FullAttentionSpec,
-                                         KVCacheSpec,
                                          KVQuantMode,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
@@ -20,7 +19,7 @@ MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
 
 if TYPE_CHECKING:
     import wgpu
-    from vllm.v1.kv_cache_interface import KVCacheGroupSpec, KVCacheTensor
+    from vllm.v1.kv_cache_interface import KVCacheGroupSpec, KVCacheSpec, KVCacheTensor
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.v1.worker import WebGPUWorker
 
