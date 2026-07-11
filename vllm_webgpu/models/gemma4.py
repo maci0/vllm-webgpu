@@ -249,7 +249,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         for _i, _lp_e in enumerate(self._lp):
             _lt = layer_types[_i] if (layer_types and _i < len(layer_types)) else None
             _rp: dict = _rope_params_map.get(_lt, {}) if _lt else {}
-            _rope_base  = float(_rp.get("rope_theta", self.rope_theta))
+            # Flat-format legacy configs (no layer-type keys) return {} for any layer type.
+            # Mirror vLLM's override: sliding layers use rope_local_base_freq (default 10000),
+            # not the global rope_theta which is the full-attention value (e.g. 1e6).
+            if not _rp and _lt == "sliding_attention":
+                _rope_base = float(getattr(model_config, "rope_local_base_freq", 10000.0))
+            else:
+                _rope_base = float(_rp.get("rope_theta", self.rope_theta))
             _partial    = float(_rp.get("partial_rotary_factor", 1.0))
             _rope_type  = str(_rp.get("rope_type", "default"))
             _hd         = _lp_e["head_dim"]
