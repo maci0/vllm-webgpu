@@ -152,9 +152,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         When rope_type == 'yarn', replaces the base-class dummy buffer with actual
         YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
         """
+        _rope_parameters = getattr(self.model_config, "rope_parameters", None)
         rope_scaling = dict(
-            getattr(self.model_config, "rope_parameters", None)
-            or getattr(self.model_config, "rope_scaling", None)
+            _rope_parameters
+            if _rope_parameters is not None
+            else getattr(self.model_config, "rope_scaling", None)
             or {}
         )
         patch_legacy_rope_type(rope_scaling)
