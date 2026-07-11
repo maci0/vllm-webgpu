@@ -134,6 +134,12 @@ def allocate_kv_from_tensors(
                     "sink-token logic, producing silently wrong output."
                 )
             elif isinstance(spec, FullAttentionSpec):
+                if spec.sliding_window is not None:
+                    raise NotImplementedError(
+                        f"FullAttentionSpec with sliding_window={spec.sliding_window!r} is not supported by the WebGPU backend. "
+                        "Buffer sizes would be correct but flash_attn_decode does not implement "
+                        "sliding window masking, producing silently wrong output."
+                    )
                 if spec.kv_quant_mode != KVQuantMode.NONE:
                     raise NotImplementedError(
                         f"Quantized KV cache (kv_quant_mode={spec.kv_quant_mode!r}) is not supported by the WebGPU backend; KV shaders expect float16 data."
