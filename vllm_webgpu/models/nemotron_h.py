@@ -615,12 +615,19 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Skip mtp.* keys before any GPU buffer allocation. The raw HF keys use
         # the "mtp." prefix; none are accessed during inference.
         # vLLM's own NemotronHForCausalLM skips these the same way.
-        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=frozenset({"mtp."}),
+        skip_prefixes = frozenset({"mtp."})
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
                              scale_transforms=self._scale_transforms)
-        _missing_transforms = [k for k in self._weight_transforms if k not in self.weights]
+        _missing_transforms = [
+            k for k in self._weight_transforms
+            if k not in self.weights
+            and not any(k.startswith(p) for p in skip_prefixes)
+        ]
         assert not _missing_transforms, (
-            f"Registered weight transforms not consumed (key not in checkpoint): "
-            f"{_missing_transforms}. Check whether the checkpoint key format changed."
+            f"Registered weight transforms not consumed: {_missing_transforms}. "
+            f"Either the checkpoint key format changed, or the key falls under a "
+            f"skipped prefix ({skip_prefixes}) and the transform registration needs "
+            f"to be guarded accordingly."
         )
         self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
         qmeta = self.weights.get("__quant_meta__")
