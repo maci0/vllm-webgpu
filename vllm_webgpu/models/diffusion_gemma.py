@@ -76,10 +76,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         # MoE configuration
         self.num_experts: int = getattr(model_config, "num_experts", 0)
         self.top_k_experts: int = getattr(model_config, "top_k_experts", 8)
-        self.is_moe: bool = (
-            getattr(model_config, "enable_moe_block", False)
-            or getattr(model_config, "use_second_mlp_block", False)
-        )
+        self.is_moe: bool = _enable_moe
 
         if self.is_moe:
             # _pes_cache is populated by load_weights(); initialize here so that

@@ -67,7 +67,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._init_rope_freq_buf()
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
-            "ROPE_BASE": float(self.rope_theta),
+            # LN_ROPE_BASE is the only theta value shaders read (theta_i = exp(-2i/HEAD_DIM * LN_ROPE_BASE)).
+            # ROPE_BASE is declared as an override in rope.wgsl and fused variants but never referenced
+            # in shader bodies, so it is intentionally excluded to keep the pipeline cache key minimal.
             "LN_ROPE_BASE": math.log(self.rope_theta),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,

@@ -93,7 +93,9 @@ def compute_yarn_freqs(
 
     if rotary_dim is None:
         # Mirrors vllm/model_executor/layers/rotary_embedding/__init__.py get_rope() L66-72.
-        # If that derivation ever changes, update this block to match.
+        # To catch upstream drift: grep -n "rope_dim\|partial_rotary_factor" in that file
+        # and verify the branch order matches this block. The vLLM function cannot be called
+        # directly here because it also constructs the full RoPE layer object.
         if rd := rope_scaling.get("rope_dim", None):
             rotary_dim = int(rd)
         else:

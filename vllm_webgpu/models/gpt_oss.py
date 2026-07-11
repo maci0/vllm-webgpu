@@ -34,7 +34,18 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
     ) -> None:
         self._swiglu_limit: float = getattr(model_config, "swiglu_limit", 0.0)
         self._attn_bias: bool = bool(getattr(model_config, "attention_bias", False))
-        self._layer_types: list[str] = getattr(model_config, "layer_types", None) or []
+        _layer_types = getattr(model_config, "layer_types", None)
+        # GPT-OSS uses non-uniform per-layer attention types (the defining feature of the
+        # architecture). An absent layer_types with a non-None sliding_window means every
+        # layer silently gets the SWA context cap applied, including full_attention layers.
+        # Fail loudly rather than produce wrong attention scores.
+        if _layer_types is None and getattr(model_config, "sliding_window", None) is not None:
+            raise ValueError(
+                "GptOssWebGPUModel: sliding_window is set but layer_types is absent from "
+                "model_config. Cannot determine which layers use full_attention vs. "
+                "sliding_attention. Pass layer_types in the model config."
+            )
+        self._layer_types: list[str] = _layer_types or []
         # SwigluOAI: x*sigmoid(1.702*x) with (up+1) bias; optional symmetric up clamp when swiglu_limit > 0
         self._clamp_extra: dict = {"ACTIVATION": 1, "UP_BIAS": 1.0}
         if self._swiglu_limit > 0:

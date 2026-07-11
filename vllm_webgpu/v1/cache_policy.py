@@ -141,10 +141,8 @@ def allocate_kv_from_tensors(
                 # Compute K and V sizes independently so that asymmetric head
                 # dimensions (e.g. MLA-style models where head_size != head_size_v)
                 # get correctly sized buffers instead of an averaged size.
-                dtype_bytes = get_dtype_size(spec.dtype)
-                block_size = spec.block_size
-                k_bytes = num_blocks * block_size * spec.num_kv_heads * spec.head_size * dtype_bytes
-                v_bytes = num_blocks * block_size * spec.num_kv_heads * spec.head_size_v * dtype_bytes
+                k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
+                v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * get_dtype_size(spec.dtype)
                 # k_bytes + v_bytes == real_page_size_bytes * num_blocks by construction:
                 # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes.
             elif isinstance(spec, SlidingWindowMLASpec):
@@ -272,7 +270,9 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     memory and clamps to 0 KV blocks.
 
     """
-    if explicit := worker.cache_config.kv_cache_memory_bytes:
+    # NOTE: vllm/v1/worker/gpu_worker.py L412 has the identical truthiness pattern.
+    # Both should move to is-not-None together when vLLM fixes theirs.
+    if (explicit := worker.cache_config.kv_cache_memory_bytes) is not None:
         return explicit
 
     _model = getattr(worker.model_runner, "model", None)

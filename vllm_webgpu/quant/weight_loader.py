@@ -30,6 +30,16 @@ _F16_MAX: float = np.finfo(np.float16).max
 _SYM_ZEROS_INT32: int = -2004318072  # 0x88888888 as int32: all eight nibbles = 8, the AutoGPTQ symmetric zero-point sentinel
 
 
+def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
+    """Return True when qzeros is absent or every nibble equals 8 (symmetric zero-point).
+
+    Fast path: check the first int32 element before doing a full np.all scan.
+    """
+    if qz is None:
+        return True
+    sym = qz.view(np.int32)
+    return bool(sym.ravel()[0] == _SYM_ZEROS_INT32 and np.all(sym == _SYM_ZEROS_INT32))
+
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     """Convert a BF16, F32, or F16 torch tensor to a float16 numpy array."""
@@ -303,6 +313,8 @@ def load_safetensors_weights_sharded(
             break
         is_gemma_mm  |= k.startswith("language_model.")
         is_qwen35_mm |= k.startswith("model.language_model.")
+        if is_gemma_mm or is_qwen35_mm:
+            break
 
     if has_biases:
         if f32_keys:
@@ -438,7 +450,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
             from auto_awq.utils.packing_utils import dequantize_gemm as _awq_dq
             t_qw = _torch.from_numpy(qweight.astype(np.int32))
             t_qz = _torch.from_numpy(qzeros.astype(np.int32))
-            t_sc = _torch.from_numpy(scales)
+            t_sc = _torch.from_numpy(scales.astype(np.float16))
             out = _awq_dq(t_qw, t_qz, t_sc, bits=4, group_size=group_size)
             return np.ascontiguousarray(out.numpy().astype(np.float16))
         except Exception:
@@ -964,7 +976,7 @@ def load_safetensors_weights(
                     # threads in split-K read consecutive INT32s (coalesced access).
                     # qz.view(np.int32) reinterprets bytes as signed int32, making the
                     # comparison correct for both int32 and uint32 source arrays (U32 safetensors dtype).
-                    if fmt == "gptq" and g_idx is None and (qz is None or ((_sym := qz.view(np.int32)).ravel()[0] == _SYM_ZEROS_INT32 and np.all(_sym == _SYM_ZEROS_INT32))):
+                    if fmt == "gptq" and g_idx is None and _is_sym_zeros(qz):
                         # GPU GPTQ: either qzeros absent (implicit zero_point=8, AutoGPTQ symmetric
                         # convention) or qzeros verified all-8 (every nibble equals exactly 8).
                         # The gptq_sym shader hardcodes nibble - 8, which only produces 0 when
@@ -987,8 +999,7 @@ def load_safetensors_weights(
                             _upload(sc_gn, np.float32, 'f32', sc_key, weights)
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
-                    elif (fmt == "awq" and g_idx is None
-                          and (qz is None or ((_sym := qz.view(np.int32)).ravel()[0] == _SYM_ZEROS_INT32 and np.all(_sym == _SYM_ZEROS_INT32)))):
+                    elif fmt == "awq" and g_idx is None and _is_sym_zeros(qz):
                         # GPU AWQ: either qzeros absent (implicit symmetric, all zero-points = 8)
                         # or qzeros verified all-8 (every nibble equals exactly 8, i.e., zero_point=8).
                         # The shader hardcodes nibble - 8, which only produces 0 when nibble==8.

@@ -21,7 +21,6 @@ from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
 if TYPE_CHECKING:
-    from typing import Sequence
     from vllm.tasks import SupportedTask
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -349,13 +348,9 @@ class WebGPUModelRunner:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
                 continue
             bpb = k_buf.nbytes // self._num_kv_blocks
-            if bpb not in _zeros_cache:
-                _zeros_cache[bpb] = bytes(bpb)
-            zeros = _zeros_cache[bpb]
+            zeros = _zeros_cache.setdefault(bpb, bytes(bpb))
             bpb_v = v_buf.nbytes // self._num_kv_blocks
-            if bpb_v not in _zeros_cache:
-                _zeros_cache[bpb_v] = bytes(bpb_v)
-            zeros_v = _zeros_cache[bpb_v]
+            zeros_v = zeros if bpb_v == bpb else _zeros_cache.setdefault(bpb_v, bytes(bpb_v))
             for block_id in block_ids:
                 queue.write_buffer(k_buf.buf, block_id * bpb, zeros)
                 queue.write_buffer(v_buf.buf, block_id * bpb_v, zeros_v)
@@ -375,11 +370,13 @@ class WebGPUModelRunner:
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "Sequence[LogprobsTensors | None]" = (),
+        logprobs_data: "list[LogprobsTensors | None] | None" = None,
         prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
     ) -> Any:
         if prompt_logprobs_dict is None:
             prompt_logprobs_dict = {}
+        if logprobs_data is None:
+            logprobs_data = []
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
@@ -397,7 +394,7 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
             if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
-                built_logprobs = _stack(list(logprobs_data))
+                built_logprobs = _stack(logprobs_data)  # type: ignore[arg-type]
             else:
                 # Derive the dtype of selected_token_ranks from the first real
                 # entry. batched_count_greater_than returns (bool).sum(-1),

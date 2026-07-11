@@ -30,6 +30,11 @@ assert _ELEM_BYTES["f16"] == 2, (
     "_init_mamba_states conv state buffer sizing is wrong. "
     "Review the conv_bytes formula before removing this assertion."
 )
+assert _ELEM_BYTES["f32"] == 4, (
+    f"_ELEM_BYTES['f32'] is {_ELEM_BYTES['f32']!r}, expected 4; "
+    "_init_mamba_states SSM state buffer sizing is wrong. "
+    "Review the ssm_bytes formula at _init_mamba_states before removing this assertion."
+)
 
 # Shared transform for all Mamba A_log weights: -exp(A_log) converts the log-space
 # parameter to the negative-real value expected by the Mamba SSM kernel.
