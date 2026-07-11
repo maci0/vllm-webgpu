@@ -43,7 +43,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     on WebGPU using custom WGSL kernels:
       - causal_conv_step.wgsl: single-step causal depthwise convolution
       - gdn_state_update.wgsl: delta-rule SSM state update
-      - linear_attn_norm_gate.wgsl: per-head RMSNorm + sigmoid gate
+      - linear_attn_norm_gate.wgsl: per-head RMSNorm + SiLU gate (z * sigmoid(z))
 
     Persistent recurrent state (SSM matrix + conv history) lives in GPU buffers
     that are updated in-place each decode step. No CPU↔GPU transfers in the
@@ -129,6 +129,16 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # (key + "__bf16") instead of the default f16 version. Falls back silently if
         # the __bf16 buffer is absent (model not BF16 or flag off).
         self._gdn_bf16: bool = _webgpu_envs.GDN_BF16
+
+        # linear_attn_norm_gate.wgsl hard-codes SiLU (z * sigmoid(z)). Reject
+        # checkpoints that specify a different gate so the mismatch is caught at
+        # load time rather than producing wrong outputs silently.
+        _otype = getattr(model_config, "output_gate_type", "silu")
+        if _otype not in ("silu", "swish"):
+            raise NotImplementedError(
+                f"Qwen35WebGPUModel requires output_gate_type silu/swish; "
+                f"linear_attn_norm_gate.wgsl hard-codes SiLU, got {_otype!r}."
+            )
 
         # Persistent GPU buffers for recurrent state (allocated after load_weights).
         # SSM state:  [NUM_V_HEADS, V_DIM, K_DIM] f32 = 2MB per linear-attn layer

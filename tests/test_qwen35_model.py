@@ -35,6 +35,7 @@ def make_qwen35_config(num_layers=4, vocab_size=32):
     cfg.linear_conv_kernel_dim = 4
     cfg.full_attention_interval = 4
     cfg.attn_output_gate = False
+    cfg.output_gate_type = "silu"
     cfg.partial_rotary_factor = 1.0
     cfg.mrope_interleaved = False
     # 3 linear-attention layers followed by 1 full-attention layer
