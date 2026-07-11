@@ -234,7 +234,7 @@ def _remap_prefixes(d: dict) -> None:
     d.update({
         new_k: v
         for k, v in d.items()
-        if (new_k := _MM_PREFIX_MAPPER._map_name(k)) != k
+        if (new_k := _MM_PREFIX_MAPPER._map_name(k)) is not None and new_k != k
     })
 
 
