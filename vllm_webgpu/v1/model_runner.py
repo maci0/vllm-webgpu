@@ -547,7 +547,7 @@ class WebGPUModelRunner:
 
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
-            self.model._greedy_decode = (sp is None or sp.sampling_type == SamplingType.GREEDY) and num_logprobs is None
+            self.model._greedy_decode = (sp is None or sp.sampling_type == SamplingType.GREEDY) and num_logprobs is None and num_prompt_logprobs is None
 
             # Each prefill request starts from zero recurrent state. Reset here
             # (inside the loop) so that multiple new requests in the same step
