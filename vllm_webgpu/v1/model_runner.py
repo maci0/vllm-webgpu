@@ -636,7 +636,7 @@ class WebGPUModelRunner:
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
-                **({"token_history": list(tok_ids)} if hasattr(self.model, "replay_prefix_for_ssm") else {}),
+                **({"token_history": list(tok_ids) + [first_decode_tok]} if hasattr(self.model, "replay_prefix_for_ssm") else {}),
             }
 
         # ── Decode: cached requests ────────────────────────────────────────────
