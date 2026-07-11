@@ -92,6 +92,8 @@ def compute_yarn_freqs(
     from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
 
     if rotary_dim is None:
+        # Mirrors vllm/model_executor/layers/rotary_embedding/__init__.py get_rope() L66-72.
+        # If that derivation ever changes, update this block to match.
         if rd := rope_scaling.get("rope_dim", None):
             rotary_dim = int(rd)
         else:
@@ -112,6 +114,19 @@ def compute_yarn_freqs(
     truncate             = bool(rope_scaling.get("truncate", True))
 
     from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import YaRNScalingRotaryEmbedding
+    # Verify at model load time that the stub covers every self.xxx attribute read by
+    # _compute_inv_freq. If vLLM adds a new attribute (e.g. self.scaling_factor), the
+    # AttributeError fires here rather than silently at the first forward pass.
+    import inspect as _inspect, re as _re
+    _stub_attrs = frozenset(("base", "rotary_dim", "beta_fast", "beta_slow",
+                             "max_position_embeddings", "extrapolation_factor", "truncate"))
+    _used_attrs = set(_re.findall(r'self\.(\w+)', _inspect.getsource(YaRNScalingRotaryEmbedding._compute_inv_freq)))
+    _uncovered = _used_attrs - _stub_attrs
+    if _uncovered:
+        raise AttributeError(
+            f"YaRNScalingRotaryEmbedding._compute_inv_freq now reads self.{_uncovered} "
+            f"which are absent from the stub in compute_yarn_freqs — update base.py"
+        )
     stub = SimpleNamespace(
         base=rope_theta,
         rotary_dim=rotary_dim,

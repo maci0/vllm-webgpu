@@ -7,9 +7,9 @@ from typing import TYPE_CHECKING
 from vllm.logger import init_logger
 from vllm.utils.mem_utils import get_cpu_memory
 
-from vllm.platforms import Platform as _Platform, PlatformEnum as _PlatformEnum
+from vllm.platforms import Platform, PlatformEnum
 
-from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE
+from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
 if TYPE_CHECKING:
     import torch
@@ -39,8 +39,8 @@ def _get_wgpu_adapter():
 
 
 
-class WebGPUPlatform(_Platform):
-    _enum = _PlatformEnum.OOT
+class WebGPUPlatform(Platform):
+    _enum = PlatformEnum.OOT
     device_name: str = "webgpu"
     device_type: str = "cpu"
 
@@ -138,7 +138,7 @@ class WebGPUPlatform(_Platform):
     @classmethod
     def get_attn_backend_cls(
         cls,
-        selected_backend: _ABE,
+        selected_backend: AttentionBackendEnum,
         attn_selector_config: AttentionSelectorConfig,
         num_heads: int | None = None,
     ) -> str:
@@ -146,13 +146,13 @@ class WebGPUPlatform(_Platform):
             raise NotImplementedError("MLA is not supported on WebGPU.")
         if attn_selector_config.use_sparse:
             raise NotImplementedError("Sparse attention is not supported on WebGPU.")
-        if selected_backend is not None and selected_backend != _ABE.CPU_ATTN:
+        if selected_backend is not None and selected_backend != AttentionBackendEnum.CPU_ATTN:
             logger.info(
                 "WebGPU platform only supports CPU_ATTN backend, "
                 "but selected_backend is %r. Overriding to CPU_ATTN.",
                 selected_backend,
             )
-        return _ABE.CPU_ATTN.get_path()
+        return AttentionBackendEnum.CPU_ATTN.get_path()
 
     @classmethod
     def is_pin_memory_available(cls) -> bool:

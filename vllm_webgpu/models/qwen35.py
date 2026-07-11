@@ -217,7 +217,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             "populate layer_types from full_attention_interval at init time."
         )
 
-    def _init_scratch_buffers(self, max_ctx: int, qkv_size: "int | None" = None) -> None:
+    def _init_scratch_buffers(self, max_ctx: int) -> None:
         # Inherit standard _pre (7 keys), _sc (17 keys), and _hstate from parent.
         # Pass qkv_size so the parent allocates qkv_buf at the correct GDN size
         # directly, avoiding an allocate-then-discard cycle on every instantiation.
@@ -806,7 +806,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                [normed_x, gate_w,
                                 self._scales_buf(gate_wk, uq_gate, self._dummy_buf),
                                 sc["q_gate_buf"]],
-                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, "USE_BF16": 0, **qi_gate},
+                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, **qi_gate},
                                (q_dim, 1, 1))
 
         # Per-head RMSNorm + RoPE with Qwen3.5-specific constants.

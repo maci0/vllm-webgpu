@@ -15,7 +15,6 @@ from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.torch_utils import get_dtype_size
 
 from vllm_webgpu.v1.cache_policy import (
-    KV_ATTN_TYPES,
     MIN_WEBGPU_BUFFER_BYTES,
     get_layer_types,
     is_attn_layer,

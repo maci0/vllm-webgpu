@@ -964,7 +964,7 @@ def load_safetensors_weights(
                     # threads in split-K read consecutive INT32s (coalesced access).
                     # qz.view(np.int32) reinterprets bytes as signed int32, making the
                     # comparison correct for both int32 and uint32 source arrays (U32 safetensors dtype).
-                    if fmt == "gptq" and g_idx is None and (qz is None or np.all(qz.view(np.int32) == _SYM_ZEROS_INT32)):
+                    if fmt == "gptq" and g_idx is None and (qz is None or ((_sym := qz.view(np.int32)).ravel()[0] == _SYM_ZEROS_INT32 and np.all(_sym == _SYM_ZEROS_INT32))):
                         # GPU GPTQ: either qzeros absent (implicit zero_point=8, AutoGPTQ symmetric
                         # convention) or qzeros verified all-8 (every nibble equals exactly 8).
                         # The gptq_sym shader hardcodes nibble - 8, which only produces 0 when
@@ -975,7 +975,7 @@ def load_safetensors_weights(
                         # qzeros tensor so the ambiguity can be resolved.
                         # Transpose qweight [K//8, N] → [N, K//8] for coalesced access.
                         K8, N_ = qw.shape
-                        group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else (K8 * 8)
+                        group_size = (K8 * 8) // sc.shape[0]
                         qw_t = np.ascontiguousarray(qw.T)  # [N, K//8]
                         sc_gn = sc.astype(np.float32)      # [G, N] f32
                         _upload(qw_t, np.int32, 'i32', f"{base}.weight", weights)
@@ -988,7 +988,7 @@ def load_safetensors_weights(
                         weights.setdefault("__quant_meta__", {})[base] = {"fmt": "gptq_sym", "group_size": group_size}
                         logger.debug("GPU GPTQ: %s (K=%d, N=%d, G=%d)", base, K8*8, N_, sc.shape[0])
                     elif (fmt == "awq" and g_idx is None
-                          and (qz is None or np.all(qz.view(np.int32) == _SYM_ZEROS_INT32))):
+                          and (qz is None or ((_sym := qz.view(np.int32)).ravel()[0] == _SYM_ZEROS_INT32 and np.all(_sym == _SYM_ZEROS_INT32)))):
                         # GPU AWQ: either qzeros absent (implicit symmetric, all zero-points = 8)
                         # or qzeros verified all-8 (every nibble equals exactly 8, i.e., zero_point=8).
                         # The shader hardcodes nibble - 8, which only produces 0 when nibble==8.
@@ -996,7 +996,7 @@ def load_safetensors_weights(
                         K_, N8_ = qw.shape  # qw is [K, N//8]
                         N_ = N8_ * 8
                         G_ = sc.shape[0] if sc.ndim == 2 else 1
-                        group_size = K_ // G_ if G_ > 0 else K_
+                        group_size = K_ // G_
                         # GPU AWQ: store [K, N//8] INT32 directly (no transpose needed
                         # since AWQ access pattern is already per-k, per-output-group)
                         sc_gn = sc.astype(np.float32)  # [G, N] f32
@@ -1235,11 +1235,10 @@ def load_safetensors_weights(
                         w_t = sf.get_tensor(f"{base}.weight")
                         ws_u8_t = sf.get_tensor(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                         N_, K_ = w_t.shape
-                        n_blocks = ws_u8_t.shape[1] if ws_u8_t.ndim == 2 else 1
                         w_bf16 = dequant_mxfp8_to_bf16(w_t.view(torch.float8_e4m3fn), ws_u8_t)
                         w_f16 = np.ascontiguousarray(_torch_to_f16_numpy(w_bf16))
                         _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
-                        logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
+                        logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, ws_u8_t.shape[1] if ws_u8_t.ndim == 2 else 1)
                     except Exception as exc:
                         logger.warning("Failed to process MXFP8 %s: %s", base, exc)
 
@@ -1402,7 +1401,7 @@ def load_safetensors_weights(
                     qw = _load_raw(weight_key)                 # [N, K//8] I32
                     sc_raw = _load_raw(f"{base}.weight_scale") # [N, G] F16/BF16/F32
 
-                    sc = sc_raw.astype(np.float32)
+                    sc = sc_raw.astype(np.float32, copy=False)
 
                     # Transpose scale [N, G] → [G, N] to match shader expectation.
                     if sc.ndim == 2:
@@ -1606,10 +1605,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 _upload_f16(arr, wk)
 
     # Stream non-quantized tensors shard-by-shard.
-    shard_files = sorted(set(weight_map.values()))
-    for shard_file in shard_files:
-        shard_path = str(p / shard_file)
-        logger.info("Loading MLX shard %s", shard_file)
+    shard_paths = sorted(set(key_to_shard.values()))
+    for shard_path in shard_paths:
+        logger.info("Loading MLX shard %s", shard_path)
         with _sft.safe_open(shard_path, framework="pt") as sf:
             for key in sf.keys():
                 if key in processed:

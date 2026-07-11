@@ -288,11 +288,10 @@ class WebGPUModelRunner:
                     full_kv = global_kv if k_eq_v else default_kv
                     _hd_v = getattr(tc, "head_size_v", None) or global_hd
                     spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd, head_size_v=_hd_v)
-                elif lt == "sliding_attention":
-                    # Treated as full-attention: SlidingWindowSpec is not supported by
-                    # allocate_kv_from_tensors, so we allocate for the full context window.
-                    spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
                 else:
+                    # Treat all non-full-attention types (including sliding_attention) as
+                    # full-attention: SlidingWindowSpec is not supported by
+                    # allocate_kv_from_tensors, so we allocate for the full context window.
                     spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
         else:
             head_size = self.vllm_config.model_config.get_head_size()
