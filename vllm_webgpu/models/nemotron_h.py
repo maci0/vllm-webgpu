@@ -19,6 +19,18 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+# Import-time sentinel: verify the f16 element byte count that _init_mamba_states
+# uses to size conv state buffers. The buffer sizing formula
+#   conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+# is hard-coded to f16 because the WGSL shaders are compiled at a fixed precision
+# and cannot switch dtype at runtime. If _ELEM_BYTES is ever refactored, this
+# assertion fires immediately rather than silently under-allocating state buffers.
+assert _ELEM_BYTES["f16"] == 2, (
+    f"_ELEM_BYTES['f16'] is {_ELEM_BYTES['f16']!r}, expected 2; "
+    "_init_mamba_states conv state buffer sizing is wrong. "
+    "Review the conv_bytes formula before removing this assertion."
+)
+
 # Shared transform for all Mamba A_log weights: -exp(A_log) converts the log-space
 # parameter to the negative-real value expected by the Mamba SSM kernel.
 # Defined once at module scope so the same function object is reused across all
@@ -473,7 +485,20 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     # ── Mamba state management ────────────────────────────────────────────────
 
     def _init_mamba_states(self, num_spec: int = 0) -> None:
-        """Allocate zero-initialized GPU buffers for each Mamba layer's state."""
+        """Allocate zero-initialized GPU buffers for each Mamba layer's state.
+
+        Buffer dtypes are fixed by the WGSL shader precision and are NOT driven
+        by ``vllm_config.cache_config.mamba_cache_dtype``:
+
+        - conv state: always f16 (2 bytes/element)
+        - SSM state: always f32 (4 bytes/element)
+
+        The shaders are compiled ahead-of-time at these precisions and cannot
+        switch dtype at runtime, so ``mamba_cache_dtype`` is intentionally
+        ignored on the WebGPU path. The import-time assertion on
+        ``_ELEM_BYTES["f16"]`` guards against silent under-allocation if
+        the byte-size table is ever refactored.
+        """
         conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
             tp_world_size=1,
             intermediate_size=self.mamba_int,
