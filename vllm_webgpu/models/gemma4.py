@@ -928,7 +928,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         self._dispatch(
                             "f32_scale_inplace", [out_h],
                             {"N": add_n, "SCALE": _ls},
-                            ((add_n + 255) // 256, 1, 1))
+                            (cdiv(add_n, 256), 1, 1))
 
                     normed_x = b["normed"]
                     x_res    = out_h
@@ -1375,7 +1375,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             if abs(_ls - 1.0) > 1e-6:
                 self._dispatch("f32_scale_inplace", [out],
                                {"N": add_n, "SCALE": _ls},
-                               ((add_n + 255) // 256, 1, 1))
+                               (cdiv(add_n, 256), 1, 1))
 
         self._hstate = (self._hstate + 2) % 3
         return sc["normed"], out

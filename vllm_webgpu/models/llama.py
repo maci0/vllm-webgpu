@@ -125,7 +125,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         self._sc: dict[str, "WebGPUBuffer"] = {
             "normed":  self._make_buf(T * H * 2),
-            "qkv_buf": self._make_buf(qkv_size if qkv_size is not None else T * (Q + 2 * KV) * 2),  # [Q|K|V] f16
+            "qkv_buf": self._make_buf(qkv_size or T * (Q + 2 * KV) * 2),  # [Q|K|V] f16
             "q_buf":       self._make_buf(T * Q * 2),
             "k_buf":       self._make_buf(T * KV * 2),
             "v_buf":       self._make_buf(T * KV * 2),

@@ -7,8 +7,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import math
 import numpy as np
-from vllm.utils.math_utils import cdiv
 
 
 
@@ -75,7 +75,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
     # num_blocks is capped at 4096 (the KV pool ceiling for this script).
     max_ctx = getattr(cfg, "max_position_embeddings", 8192)
-    num_blocks = min(cdiv(max_ctx, block_size) + 4, 4096)
+    num_blocks = min(math.ceil(max_ctx / block_size) + 4, 4096)
 
     allocate_kv_from_hf_config(device.wgpu_device, model, cfg, num_blocks=num_blocks, block_size=block_size)
 
@@ -87,7 +87,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
     T = len(input_ids_list)
     block_table = np.zeros(num_blocks, dtype=np.uint32)
-    n_blks = cdiv(T, block_size)
+    n_blks = math.ceil(T / block_size)
     block_table[:n_blks] = np.arange(n_blks, dtype=np.uint32)
     slots = list(range(T))
 

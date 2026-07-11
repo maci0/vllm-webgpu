@@ -211,8 +211,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.ssm_state_size: int = model_config.ssm_state_size
         self.conv_kernel: int = model_config.conv_kernel
         # conv_dim from MambaMixer2 L313: intermediate_size + 2 * n_groups * ssm_state_size
-        # (tp=1, extra_groups_for_head_shards returns 0). Using the direct formula avoids
-        # the mamba2_state_shape division, which would give wrong results if num_spec > 0.
+        # (tp=1, extra_groups_for_head_shards returns 0).
+        # Direct formula: mamba2_state_shape returns conv_dim//tp_world_size at an
+        # orientation-dependent index in the shape tuple; reverse-extraction is fragile.
+        # The formula matches MambaMixer2 L313 for tp=1 (extra_groups_for_head_shards returns 0).
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
@@ -909,39 +911,38 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # + num_heads, mapped here as mamba_int + conv_dim + mamba_num_heads.
             # A vLLM bump that changes conv_dim or adds an extra output group
             # would silently mis-size mamba_inproj / mamba_conv_in / mamba_dt.
+            inproj_key = f"{p}.in_proj.weight"
+            if inproj_key not in self.weights:
+                raise ValueError(f"{inproj_key} missing from loaded weights")
             if not _checked_inproj:
-                inproj_key = f"{p}.in_proj.weight"
-                if inproj_key in self.weights:
-                    # AWQ stores in_proj.weight as [K, N//8]; all other formats
-                    # (F16, GPTQ, FP8, INT8, NF4, NVFP4) store shape[0] == N.
-                    if self._uq_for_key(inproj_key) == 4:  # AWQ: shape[0]=K, shape[1]=N//8
-                        actual = self.weights[inproj_key].shape[1] * 8
-                        if actual != self.in_proj_dim:
-                            raise ValueError(
-                                f"{inproj_key} AWQ shape[1]*8={actual} does not "
-                                f"match computed in_proj_dim={self.in_proj_dim} "
-                                f"(mamba_int={self.mamba_int} + "
-                                f"conv_dim={self.conv_dim} + "
-                                f"mamba_num_heads={self.mamba_num_heads}). "
-                                f"Recheck MambaMixer2Tp output_sizes in "
-                                f"mamba_mixer2.py L328-355 against this vLLM version."
-                            )
-                        _checked_inproj = True
-                    else:
-                        actual_inproj_dim = self.weights[inproj_key].shape[0]
-                        if actual_inproj_dim != self.in_proj_dim:
-                            raise ValueError(
-                                f"{inproj_key} shape[0]={actual_inproj_dim} does not "
-                                f"match computed in_proj_dim={self.in_proj_dim} "
-                                f"(mamba_int={self.mamba_int} + "
-                                f"conv_dim={self.conv_dim} + "
-                                f"mamba_num_heads={self.mamba_num_heads}). "
-                                f"Recheck MambaMixer2Tp output_sizes in "
-                                f"mamba_mixer2.py L328-355 against this vLLM version."
-                            )
-                        _checked_inproj = True
+                # AWQ stores in_proj.weight as [K, N//8]; all other formats
+                # (F16, GPTQ, FP8, INT8, NF4, NVFP4) store shape[0] == N.
+                if self._uq_for_key(inproj_key) == 4:  # AWQ: shape[0]=K, shape[1]=N//8
+                    actual = self.weights[inproj_key].shape[1] * 8
+                    if actual != self.in_proj_dim:
+                        raise ValueError(
+                            f"{inproj_key} AWQ shape[1]*8={actual} does not "
+                            f"match computed in_proj_dim={self.in_proj_dim} "
+                            f"(mamba_int={self.mamba_int} + "
+                            f"conv_dim={self.conv_dim} + "
+                            f"mamba_num_heads={self.mamba_num_heads}). "
+                            f"Recheck MambaMixer2Tp output_sizes in "
+                            f"mamba_mixer2.py L328-355 against this vLLM version."
+                        )
+                    _checked_inproj = True
                 else:
-                    raise ValueError(f"{inproj_key} missing from loaded weights")
+                    actual_inproj_dim = self.weights[inproj_key].shape[0]
+                    if actual_inproj_dim != self.in_proj_dim:
+                        raise ValueError(
+                            f"{inproj_key} shape[0]={actual_inproj_dim} does not "
+                            f"match computed in_proj_dim={self.in_proj_dim} "
+                            f"(mamba_int={self.mamba_int} + "
+                            f"conv_dim={self.conv_dim} + "
+                            f"mamba_num_heads={self.mamba_num_heads}). "
+                            f"Recheck MambaMixer2Tp output_sizes in "
+                            f"mamba_mixer2.py L328-355 against this vLLM version."
+                        )
+                    _checked_inproj = True
 
             # conv1d.weight: validate element count.
             # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements

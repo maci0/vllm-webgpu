@@ -458,9 +458,17 @@ class WebGPUModelRunner:
         if scheduler_output.new_block_ids_to_zero:
             self._zero_kv_blocks(scheduler_output.new_block_ids_to_zero)
 
-        # Prune state for requests that completed in the previous step.
+        # Prune state for requests that completed or were preempted in the previous step.
+        # Preempted requests that are not being resumed this step will not appear in
+        # scheduled_cached_reqs, so their state would otherwise accumulate indefinitely.
         for rid in scheduler_output.finished_req_ids:
             self._req_state.pop(rid, None)
+        preempted = scheduler_output.preempted_req_ids
+        if preempted:
+            resumed = getattr(scheduler_output.scheduled_cached_reqs, "resumed_req_ids", set()) or set()
+            for rid in preempted:
+                if rid not in resumed:
+                    self._req_state.pop(rid, None)
 
         cached = scheduler_output.scheduled_cached_reqs
         new_reqs = scheduler_output.scheduled_new_reqs

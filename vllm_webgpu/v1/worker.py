@@ -54,8 +54,6 @@ class WebGPUWorker(WorkerBase):
             is_driver_worker=is_driver_worker,
         )
         self.webgpu_config = get_config()
-        # disable_custom_all_reduce defaults to False; the uni executor has no
-        # distributed backend so custom all-reduce is never invoked.
         self.wgpu_device: "WebGPUDevice | None" = None
 
     def init_device(self) -> None:

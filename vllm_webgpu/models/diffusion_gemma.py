@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -589,7 +590,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             if abs(layer_scalar - 1.0) > 1e-6:
                 self._dispatch("f32_scale_inplace", [out],
                                {"N": add_n, "SCALE": layer_scalar},
-                               ((add_n + 255) // 256, 1, 1))
+                               (cdiv(add_n, 256), 1, 1))
 
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe:
@@ -793,7 +794,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                         self._moe_per_expert_weight_buf],
                                        {"N": add_n, "H": hidden,
                                         "EXPERT_SLOT": expert_slot},
-                                       ((add_n + 255) // 256, 1, 1))
+                                       (cdiv(add_n, 256), 1, 1))
                     else:
                         # Single-token GEMV path (num_tokens==1).
                         # uq_g and uq_u were computed at lines above; reuse to avoid redundant dict lookups.
@@ -825,7 +826,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        [moe_acc, sc["ffn_out"],
                                         self._moe_per_expert_weight_buf],
                                        {"N": add_n, "K_IDX": expert_slot},
-                                       ((add_n + 255) // 256, 1, 1))
+                                       (cdiv(add_n, 256), 1, 1))
             # Post-MoE norm + single residual add (vLLM Gemma4 pattern)
             with self._batched_dispatch(label=f"L{layer_idx:02d}P"):
                 pfn2_out_w = self.weights.get(f"{p}.post_feedforward_layernorm_2.weight")

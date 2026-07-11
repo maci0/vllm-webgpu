@@ -53,7 +53,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # either condition is present. The dangerous case for layer_types is
         # sliding_attention (batch prefill applies no per-layer SWA cap); full_attention
         # layers require no special handling.
-        self._force_sequential_prefill = bool(self._attn_bias or 'sliding_attention' in self._layer_types)
+        # Note: _force_sequential_prefill is intentionally not set here. GptOss has no
+        # forward() override for batch prefill: MoE+T>1 raises NotImplementedError before
+        # _prefill_batch_forward is reached, and MoE+T=1 uses _moe_decode_forward. The flag
+        # would have no observable effect. Restore it alongside a forward() override if
+        # batch-prefill support is added for GptOss.
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
@@ -276,8 +280,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             )
 
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
-        # Allocate only expert_gate and expert_up here; expert_tmp is only consumed by the
-        # down-projection bias path and is lazily allocated there via _ensure_moe_expert_bufs.
+        # Allocate only expert_gate and expert_up here; expert_tmp is allocated by the
+        # 'if "expert_tmp" not in msc:' guard in _dispatch_expert_down, not by _ensure_moe_expert_bufs.
         msc = self._moe_sc
         if "expert_gate" not in msc:
             _act_sz = self._moe_act_sz
@@ -355,7 +359,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             super()._dispatch_expert_down(ep, down_key_name, w2_key, k_idx, inter)
             return
 
-        self._ensure_moe_expert_bufs()
         msc = self._moe_sc
         if "expert_tmp" not in msc:
             msc["expert_tmp"] = self._make_buf(self.hidden_size * 2)
