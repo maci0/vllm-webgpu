@@ -48,6 +48,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Use explicit head_dim when present (e.g. Qwen3: head_dim=128, hidden=2560, heads=32,
         # so hidden//heads=80 but actual Q dim per head is 128).
         self.head_dim: int = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
+        self._attn_scale: float = self.head_dim ** -0.5
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
         self.block_size: int = block_size
         # add.wgsl and gelu_mul.wgsl use vec4<f16>: dimensions must be divisible by 4.
@@ -547,7 +548,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                    {"NUM_Q_HEADS": self.num_q_heads,
                                     "NUM_KV_HEADS": self.num_kv_heads,
                                     "HEAD_DIM": self.head_dim,
-                                    "NUM_T": T},
+                                    "NUM_T": T,
+                                    "SCALE": self._attn_scale},
                                    (self.num_q_heads, T, 1))
 
                     # ── O projection (batch GEMM) ─────────────────────────────────
@@ -832,7 +834,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                         "NUM_KV_HEADS": self.num_kv_heads,
                         "HEAD_DIM": self.head_dim,
                         "CTX_LEN": self._effective_ctx_len(ctx_len),
-                        "START_BLOCK": self._start_block(ctx_len)},
+                        "START_BLOCK": self._start_block(ctx_len),
+                        "SCALE": self._attn_scale},
                        (self.num_q_heads, 1, 1))
 
         # Output projection.
