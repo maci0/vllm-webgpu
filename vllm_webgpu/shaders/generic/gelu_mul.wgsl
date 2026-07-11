@@ -31,7 +31,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var act4: vec4<f32>;
     if (ACTIVATION == 1u) {
         // x * sigmoid(1.702 * x)  (SwigluOAI)
-        act4 = g4 * (vec4<f32>(1.0) / (vec4<f32>(1.0) + exp(-1.702f * g4)));
+        // Clamp gate input *before* activation (matches vLLM SiluAndMulWithClamp: gate = clamp(raw, max=limit) then gate*sigmoid(alpha*gate)).
+        var g4_c = g4;
+        if (CLAMP_MAX > 0.0) { g4_c = min(g4_c, vec4<f32>(CLAMP_MAX)); }
+        act4 = g4_c * (vec4<f32>(1.0) / (vec4<f32>(1.0) + exp(-1.702f * g4_c)));
     } else if (ACTIVATION == 2u) {
         // ReLU² (squared ReLU, Nemotron-3): max(x, 0)²
         let r4 = max(g4, vec4<f32>(0.0));
@@ -40,9 +43,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // SiLU: x * sigmoid(x)  (Llama/Qwen default)
         act4 = g4 / (vec4<f32>(1.0) + exp(-g4));
     }
-    if (CLAMP_MAX > 0.0) { act4 = min(act4, vec4<f32>(CLAMP_MAX)); }
-    var u4_f = u4 + vec4<f32>(UP_BIAS);
-    if (CLAMP_MIN < 0.0) { u4_f = clamp(u4_f, vec4<f32>(CLAMP_MIN), vec4<f32>(-CLAMP_MIN)); }
+    // Clamp raw up *before* adding UP_BIAS (matches vLLM: up = clamp(raw_up, ...) then up + beta).
+    var u4_raw = u4;
+    if (CLAMP_MIN < 0.0) { u4_raw = clamp(u4_raw, vec4<f32>(CLAMP_MIN), vec4<f32>(-CLAMP_MIN)); }
+    let u4_f = u4_raw + vec4<f32>(UP_BIAS);
     // Clip before casting: gate × up can overflow f16 (e.g. 18000 × 18000 = 324M >> 65504).
     let product = clamp(act4 * u4_f, vec4<f32>(-65504.0), vec4<f32>(65504.0));
     output[i] = vec4<f16>(product);
