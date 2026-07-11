@@ -708,24 +708,29 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self,
         normed_x: "WebGPUBuffer",
         layer_idx: int,
+        uq_q: int,
+        uq_k: int,
+        uq_v: int,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer, WebGPUBuffer]":
         """Dispatch separate Q/K/V matmul projections into pre-allocated scratch buffers.
 
         Returns (q_buf, k_buf, v_buf) from self._sc. Used by the non-fused attention
         path in LlamaWebGPUModel and GptOssWebGPUModel.
+
+        uq_q/uq_k/uq_v are the quantization modes for each projection, already
+        computed by the caller (avoids redundant _uq_for_key lookups).
         """
         sc = self._sc
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}"
         q_dim = self.num_q_heads * self.head_dim
         kv_dim = self.num_kv_heads * self.head_dim
-        for out_buf, proj, dim in [
+        for (out_buf, proj, dim), uq in zip([
             (sc["q_buf"], "q_proj", q_dim),
             (sc["k_buf"], "k_proj", kv_dim),
             (sc["v_buf"], "v_proj", kv_dim),
-        ]:
+        ], [uq_q, uq_k, uq_v]):
             w_key = f"{p}.self_attn.{proj}.weight"
-            uq = self._uq_for_key(w_key)
             qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
             self._dispatch(
                 "matmul_quant",
@@ -780,7 +785,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             _v_src = sc["qkv_buf"]
             _v_offset = q_dim + kv_dim  # f16 elements before V section
         else:
-            _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx)
+            _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx, uq_q, uq_k, uq_v)
             _v_offset = 0
 
         # Per-head norm + RoPE for Q and K.
@@ -934,7 +939,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         p = f"model.layers.{layer_idx}"
         hidden = self.hidden_size
         inter = self.intermediate_size
-        gelu_n = num_tokens * inter
 
         gw_k = f"{p}.mlp.gate_proj.weight"
         uw_k = f"{p}.mlp.up_proj.weight"
@@ -946,6 +950,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            [normed_x, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
                            {"K": hidden, "N": inter}, (inter, 1, 1))
         else:
+            gelu_n = num_tokens * inter
             for out_b, w_k, uq2, mlp_proj in [
                     (sc["gate_buf"], gw_k, uq_g, "gate_proj"),
                     (sc["up_buf"],  uw_k, uq_u, "up_proj")]:

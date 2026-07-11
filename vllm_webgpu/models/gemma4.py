@@ -435,7 +435,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         norm_out   = pre["norm_out"]
         logits_buf = pre["logits"]
 
-        _rms_base = self._rms_consts
+        _rms = self._rms_consts
         sc = self._sc
 
         with self._batched_dispatch():
@@ -448,7 +448,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # layer's final add_f32_rms_norm dispatch).
             self._dispatch("rms_norm_f32in",
                            [x_buf, self.weights[f"{self._layer_key_prefix(0)}.input_layernorm.weight"], sc["normed"]],
-                           _rms_base, (num_tokens, 1, 1))
+                           _rms, (num_tokens, 1, 1))
 
             normed_x = sc["normed"]
             for i in range(self.num_layers):
@@ -458,7 +458,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Final norm: reads f32 residual, writes f16 norm_out
             self._dispatch("rms_norm_f32in",
                            [x_buf, self.weights[self._norm_key()], norm_out],
-                           _rms_base, (num_tokens, 1, 1))
+                           _rms, (num_tokens, 1, 1))
 
             _lm_key, lm_head_w, uq_lm, _lm_base = self._lm_head_parts()
             # vocab_size exceeds the 65535 workgroup-per-dimension limit, so the split-K
@@ -1053,7 +1053,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         out = sc[_H_NAMES[(self._hstate + 2) % 3]]
         add_n = num_tokens * hidden
         gelu_n = num_tokens * inter
-        _rms_consts = self._rms_consts
+        _rms = self._rms_consts
 
         _kv_layer = kv_shared_target if (is_kv_shared and kv_shared_target >= 0) else layer_idx
         k_cache, v_cache = self.kv_pool[_kv_layer]
@@ -1257,13 +1257,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                [sc["o_proj_out"], post_attn_norm_w,
                                 x_buf, pre_ffn_norm_w,
                                 residual, sc["normed"]],
-                               _rms_consts, (num_tokens, 1, 1))
+                               _rms, (num_tokens, 1, 1))
                 ffn_normed = sc["normed"]
             else:
                 if post_attn_norm_w is not None:
                     self._dispatch("rms_norm",
                                    [sc["o_proj_out"], post_attn_norm_w, sc["normed"]],
-                                   _rms_consts, (num_tokens, 1, 1))
+                                   _rms, (num_tokens, 1, 1))
                     attn_delta = sc["normed"]
                 else:
                     attn_delta = sc["o_proj_out"]
@@ -1271,7 +1271,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 if pre_ffn_norm_w is not None:
                     self._dispatch("add_f32_rms_norm",
                                    [x_buf, attn_delta, pre_ffn_norm_w, residual, sc["normed"]],
-                                   _rms_consts, (num_tokens, 1, 1))
+                                   _rms, (num_tokens, 1, 1))
                     ffn_normed = sc["normed"]
                 else:
                     raise ValueError(
@@ -1333,11 +1333,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                [sc["ffn_out"], post_ffw_w,
                                 residual, next_w,
                                 out, sc["normed"]],
-                               _rms_consts, (num_tokens, 1, 1))
+                               _rms, (num_tokens, 1, 1))
             else:
                 # Last layer: no next pre-norm, just update residual.
                 self._dispatch("rms_norm", [sc["ffn_out"], post_ffw_w, sc["o_proj_out"]],
-                               _rms_consts, (num_tokens, 1, 1))
+                               _rms, (num_tokens, 1, 1))
                 ffn_delta = sc["o_proj_out"]
                 self._dispatch("add_f32", [residual, ffn_delta, out],
                                {"N": add_n}, _vec4_wg(add_n))

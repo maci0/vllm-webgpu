@@ -772,7 +772,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         # QKV projections (always separate; fused_qkv is incompatible with attn_output_gate).
-        _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx)
+        _uq_q = _uq(f"{p}.self_attn.q_proj.weight")
+        _uq_k = _uq(f"{p}.self_attn.k_proj.weight")
+        _uq_v = _uq(f"{p}.self_attn.v_proj.weight")
+        _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx, _uq_q, _uq_k, _uq_v)
 
         # When attn_output_gate=True, q_proj.weight was split at load time.
         # Compute the gate projection: normed_x → q_gate_buf [q_dim f16].

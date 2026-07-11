@@ -64,14 +64,12 @@ def main() -> None:
         tok_ids = list(range(1, 33))
 
     # ── Setup fake KV pool ────────────────────────────────────────────────────────
-    dev = wgpu_dev.wgpu_device
-
     # Compute block count before allocating so the pool covers every block ID in bt.
     total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
     bt_blocks = (total_toks + block_size - 1) // block_size
     num_blocks = max(512, bt_blocks)
 
-    allocate_kv_from_hf_config(dev, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
+    allocate_kv_from_hf_config(wgpu_dev.wgpu_device, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
 
     model.warmup()
     if hasattr(model, 'reset_recurrent_states'):
@@ -104,7 +102,7 @@ def main() -> None:
         return _next_tok(lg), elapsed
 
     # ── Decode warmup + production timing ─────────────────────────────────────────
-    print(f"Warming up ({args.warmup_steps} steps)...")
+    print(f"Warming up ({args.warmup_steps} steps), then timing {args.decode_steps} production steps...")
     prod_times = []
     for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra for production timing
         decode_tok, elapsed_ms = _run_decode_step(decode_tok, pos)

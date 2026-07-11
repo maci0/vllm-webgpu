@@ -104,7 +104,12 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         k_cache, v_cache = self.kv_pool[layer_idx]
 
         # QKV projections (always separate; GPT-OSS has no q_norm/k_norm).
-        _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx)
+        _q_src, _k_src, _v_src = self._qkv_proj(
+            normed_x, layer_idx,
+            self._uq_for_key(f"{p}.self_attn.q_proj.weight"),
+            self._uq_for_key(f"{p}.self_attn.k_proj.weight"),
+            self._uq_for_key(f"{p}.self_attn.v_proj.weight"),
+        )
 
         # Bias addition before RoPE: WebGPU forbids a buffer appearing as both
         # STORAGE_READ (binding 0) and STORAGE_READ_WRITE (binding 2) in the

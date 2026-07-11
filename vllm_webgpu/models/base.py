@@ -64,12 +64,6 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
-# _WGPU_DTYPE_TO_NP is now defined in webgpu/buffer.py and imported above.
-# Inverse of _DTYPE_MAP: wgpu dtype string -> numpy dtype.
-# Defined alongside _DTYPE_MAP so that adding a new dtype only requires updating buffer.py.
-
-
-
 
 def compute_yarn_freqs(
     head_dim: int,
