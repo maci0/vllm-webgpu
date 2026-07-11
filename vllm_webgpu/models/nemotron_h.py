@@ -285,6 +285,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             guard at the top of this file, which detects changes to the upstream
             resolution pattern.
             """
+            # TODO: Mirrors NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24).
+            # Update together with the guard at module top if upstream adds a new
+            # branch (e.g. per-head lists). The guard detects structural changes
+            # but cannot autofix this copy.
             if isinstance(v, list):
                 return v[0] if len(v) == 1 else v[idx]
             return v
