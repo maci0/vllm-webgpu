@@ -893,12 +893,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     next_ln_w = self.weights[
                         f"{self._layer_key_prefix(layer_idx + 1)}.input_layernorm.weight"
                     ]
-                    assert layer_scalar > 0, (
-                        f"layer_scalar={layer_scalar} must be positive for the normed_ready "
-                        "optimization: RMSNorm is scale-invariant only for positive scalars; "
-                        "a negative scalar would flip the sign of sc['normed'] relative to "
-                        "what the next layer expects."
-                    )
+                    if layer_scalar <= 0:
+                        raise RuntimeError(
+                            f"layer_scalar={layer_scalar} must be positive for the normed_ready "
+                            "optimization: RMSNorm is scale-invariant only for positive scalars; "
+                            "a negative scalar would flip the sign of sc['normed'] relative to "
+                            "what the next layer expects."
+                        )
                     self._dispatch("rms_norm_add_f32_rms_norm",
                                    [hidden_states_1, post_ffw_w, residual, next_ln_w, out, sc["normed"]],
                                    _rms, (num_tokens, 1, 1))
