@@ -148,7 +148,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # objects across resets to avoid allocating ~58 MB of Python heap per reset
         # (27 GDN layers × 2 MB SSM + 49 KB conv each on Qwen3.5-9B).
         # Matches the NemotronHWebGPUModel pattern.
-        self._zero_buf_cache: dict[int, bytearray] = {}
+        self._zero_buf_cache: dict[int, bytes] = {}
 
         # Seed _rms_consts with GEMMA_NORM so all add_rms_norm dispatches (including
         # GDN layers, which read _rms_consts directly) have the constant from the moment
@@ -338,18 +338,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         _q_gate_pending: dict[str, np.ndarray] = {}
         if self._attn_output_gate:
             _q_dim = self.num_q_heads * self.head_dim
-            _hd = self.head_dim
-            _nh = self.num_q_heads
-            _hs = self.hidden_size
 
             def _make_split(gk, pending=_q_gate_pending):
                 def _split(arr):
                     if arr.shape[0] != 2 * _q_dim:
                         return arr  # already split or unexpected shape; pass through
                     # arr is always float16: loader converts BF16/F32 before invoking transforms
-                    a = arr.reshape(_nh, 2 * _hd, _hs)
-                    q_half    = a[:, :_hd, :].reshape(_q_dim, _hs)
-                    gate_half = a[:, _hd:, :].reshape(_q_dim, _hs)
+                    a = arr.reshape(self.num_q_heads, 2 * self.head_dim, self.hidden_size)
+                    q_half    = a[:, :self.head_dim, :].reshape(_q_dim, self.hidden_size)
+                    gate_half = a[:, self.head_dim:, :].reshape(_q_dim, self.hidden_size)
                     pending[gk] = gate_half
                     return q_half
                 return _split
@@ -389,7 +386,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             if buf is not None:
                 zeros = self._zero_buf_cache.get(buf.nbytes)
                 if zeros is None:
-                    zeros = bytearray(buf.nbytes)
+                    zeros = bytes(buf.nbytes)
                     self._zero_buf_cache[buf.nbytes] = zeros
                 dev.queue.write_buffer(buf.buf, 0, zeros)
 
@@ -460,7 +457,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         qi = self._quant_extra(f"{p}.{proj_name}", uq)
         self._dispatch("matmul_quant",
                        [in_buf, w,
-                        self._scales_buf(wk, uq, self._dummy_scales_buf),
+                        self._scales_buf(wk, uq, self._dummy_buf),
                         out_buf],
                        {"K": K, "N": N, "USE_QUANT": uq, "USE_BF16": bf16, **qi},
                        _gemv_wg(N))
@@ -780,7 +777,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 qi_gate = self._quant_extra(f"{p}.self_attn.q_gate_proj", uq_gate)
                 self._dispatch("matmul_quant",
                                [normed_x, gate_w,
-                                self._scales_buf(gate_wk, uq_gate, self._dummy_scales_buf),
+                                self._scales_buf(gate_wk, uq_gate, self._dummy_buf),
                                 sc["q_gate_buf"]],
                                {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, **qi_gate},
                                _gemv_wg(q_dim))
@@ -814,7 +811,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                    (n_heads, num_tokens, 1))
                 else:
                     self._dispatch("fused_per_head_norm_rope",
-                                   [src, self._dummy_scales_buf, pos_buf, dst, _freq_buf],
+                                   [src, self._dummy_buf, pos_buf, dst, _freq_buf],
                                    {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 0, "INPUT_OFFSET": 0},
                                    (n_heads, num_tokens, 1))
 
@@ -853,7 +850,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
         self._dispatch("matmul_quant",
                        [o_proj_in, self.weights[w_key],
-                        self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
+                        self._scales_buf(w_key, uq, self._dummy_buf), sc["o_proj_out"]],
                        {"K": q_dim, "N": hidden, "USE_QUANT": uq, **qi},
                        _gemv_wg(hidden))
 

@@ -18,8 +18,10 @@ import torch
 # full sort instead of the partial top-k optimisation, losing performance on
 # every batch-1 top-k-only decode step. apply_top_k_top_p_pytorch is a
 # public module-level function in vllm.v1.sample.ops.topk_topp_sampler that
-# calls apply_top_k_only directly and is therefore the correct choice for
-# WebGPU's CPU-backed tensor workflow.
+# calls apply_top_k_only directly when allow_cpu_sync=True and no top-p threshold
+# is active (p is None); for combined top-k+top-p requests it still uses the sort
+# path, which is acceptable given WebGPU's single-request batch size. It is therefore
+# the correct choice for WebGPU's CPU-backed tensor workflow.
 # When vLLM fixes apply_top_k_top_p to pass allow_cpu_sync=True for OOT
 # platforms, replace the two imports below with:
 #   from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample

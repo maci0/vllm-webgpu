@@ -222,7 +222,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [normed_x, self.weights[gw_key],
-                 self._scales_buf(gw_key, uq_g, self._dummy_scales_buf),
+                 self._scales_buf(gw_key, uq_g, self._dummy_buf),
                  msc["expert_gate"]],
                 {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
                 _gemv_wg(inter),
@@ -230,7 +230,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [normed_x, self.weights[uw_key],
-                 self._scales_buf(uw_key, uq_u, self._dummy_scales_buf),
+                 self._scales_buf(uw_key, uq_u, self._dummy_buf),
                  msc["expert_up"]],
                 {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
                 _gemv_wg(inter),
@@ -288,7 +288,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [msc["expert_act"], self.weights[w2_key],
-                 self._scales_buf(w2_key, uq_d, self._dummy_scales_buf),
+                 self._scales_buf(w2_key, uq_d, self._dummy_buf),
                  msc["expert_tmp"]],
                 {"K": inter, "N": hidden, "USE_QUANT": uq_d, **qi_d},
                 _gemv_wg(hidden),
@@ -365,7 +365,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         rb_k = f"{p}.{router_subkey}.bias"
         router_bias = self.weights.get(rb_k)
         router_bindings = [normed_x, self.weights[rw_k],
-                           self._scales_buf(rw_k, uq_r, self._dummy_scales_buf),
+                           self._scales_buf(rw_k, uq_r, self._dummy_buf),
                            msc["router_out"]]
         router_consts: dict = {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **qi_r}
         if router_bias is not None:
@@ -462,7 +462,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [msc["expert_act"], self.weights[sdw_k],
-                 self._scales_buf(sdw_k, uq_sd, self._dummy_scales_buf), msc["expert_out"]],
+                 self._scales_buf(sdw_k, uq_sd, self._dummy_buf), msc["expert_out"]],
                 {"K": _sinter, "N": hidden, "USE_QUANT": uq_sd, **qi_sd},
                 _gemv_wg(hidden),
             )

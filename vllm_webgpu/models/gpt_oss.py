@@ -181,7 +181,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [sc["attn_out"], self.weights[w_key],
-             self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
+             self._scales_buf(w_key, uq, self._dummy_buf), sc["o_proj_out"]],
             {"K": q_dim, "N": hidden, "USE_QUANT": uq,
              **qi},
             _gemv_wg(hidden),
@@ -278,14 +278,14 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[gw_key],
-             self._scales_buf(gw_key, uq_g, self._dummy_scales_buf), msc["expert_gate"]],
+             self._scales_buf(gw_key, uq_g, self._dummy_buf), msc["expert_gate"]],
             {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
             _gemv_wg(inter),
         )
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[uw_key],
-             self._scales_buf(uw_key, uq_u, self._dummy_scales_buf), msc["expert_up"]],
+             self._scales_buf(uw_key, uq_u, self._dummy_buf), msc["expert_up"]],
             {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
             _gemv_wg(inter),
         )
@@ -351,7 +351,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [msc["expert_act"], self.weights[w2_key],
-             self._scales_buf(w2_key, uq_d, self._dummy_scales_buf),
+             self._scales_buf(w2_key, uq_d, self._dummy_buf),
              msc["expert_tmp"]],
             {"K": inter, "N": hidden, "USE_QUANT": uq_d, **qi_d},
             _gemv_wg(hidden),

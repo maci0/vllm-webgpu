@@ -14,7 +14,7 @@ from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, allocate_kv_from_tensors, get_layer_types
+from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
@@ -269,7 +269,7 @@ class WebGPUModelRunner:
             return z
 
         for k_buf, v_buf in self.model.kv_pool:
-            if k_buf.nbytes <= 16:
+            if k_buf.nbytes <= MIN_WEBGPU_BUFFER_BYTES:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
                 continue
             bytes_per_block = k_buf.nbytes // self._num_kv_blocks
@@ -543,8 +543,9 @@ class WebGPUModelRunner:
             chunk_toks = tok_ids[num_computed:num_computed + T]
             abs_idx = np.arange(num_computed, num_computed + T)
             blk_idx = abs_idx // block_size
-            if np.any(blk_idx >= len(blk_ids)):
-                bad = int(abs_idx[blk_idx >= len(blk_ids)][0])
+            oob = blk_idx >= len(blk_ids)
+            if np.any(oob):
+                bad = int(abs_idx[oob][0])
                 raise RuntimeError(
                     f"block table too short for req {rid}: token {bad} needs block "
                     f"{bad // block_size} but only {len(blk_ids)} blocks allocated"
@@ -787,7 +788,7 @@ class WebGPUModelRunner:
             all_req_ids, all_sampled, all_logprobs_data, prompt_logprobs_dict
         )
 
-    def sample_tokens(self, grammar_output: "GrammarOutput | None") -> Any:
+    def sample_tokens(self, grammar_output: "GrammarOutput") -> Any:
         raise NotImplementedError(
             "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
             "is not supported on the WebGPU backend. The GPU argmax path discards "

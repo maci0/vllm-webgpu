@@ -11,7 +11,7 @@ from vllm.logger import init_logger
 # parse_safetensors_file_metadata is sourced from vllm.transformers_utils.utils and
 # returns {key: {"dtype": str, "shape": list, "data_offsets": [start, end]}}. If vLLM
 # renames or moves this function, or changes its return shape, the header comprehension
-# in _load_safetensors_shard will silently skip all tensors. Verify on each vLLM
+# in load_safetensors_weights will silently skip all tensors. Verify on each vLLM
 # version bump that the function still exists at this path and returns the expected structure.
 from vllm.transformers_utils.utils import parse_safetensors_file_metadata
 
@@ -44,8 +44,7 @@ def _locate_index(directory: "Path") -> "Path | None":
     fallback = directory / SAFETENSORS_INDEX_FILE
     if fallback.exists():
         return fallback
-    # Some sharded repos use a non-standard index filename. Mirror what vLLM's
-    # vllm/utils/weights_loader.py does: scan for any *.safetensors.index.json in the dir.
+    # Fall back to a glob scan for any *.safetensors.index.json to cover non-standard index filenames.
     candidates = sorted(directory.glob("*.safetensors.index.json"))
     return candidates[0] if candidates else None
 
@@ -1008,7 +1007,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         nvfp4_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, nvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("F8_E4M3", "U8", "I32", "F32"))
+            _upload_non_quant(header, nvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("F8_E4M3", "U8", "I32"))
 
             for base in nvfp4_bases:
                 try:
@@ -1048,7 +1047,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         dnvfp4_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, dnvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("F8_E4M3", "U8", "I32", "F32"))
+            _upload_non_quant(header, dnvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("F8_E4M3", "U8", "I32"))
 
             for base in dnvfp4_bases:
                 try:
@@ -1115,9 +1114,10 @@ def load_safetensors_weights(
                 except Exception as exc:
                     logger.warning("Failed to process FP8 %s: %s", base, exc)
 
-        elif fmt in ("mxfp4", "mxfp8"):
-            # Shared: collect all tensor bases where both *.weight and *.weight_scale are U8.
-            # Used by both the mxfp4 and mxfp8 branches (exclusive elif arms; only one runs).
+        elif fmt == "mxfp4":
+            # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
+            # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
+            # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
             _u8_u8_bases = sorted(
                 base
                 for k in header
@@ -1125,15 +1125,10 @@ def load_safetensors_weights(
                 and header[k].get("dtype") == "U8"
                 and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
             )
-
-        if fmt == "mxfp4":
-            # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
-            # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
-            # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
             mxfp4_bases = _u8_u8_bases
             mx4_set: set = {f"{b}.weight" for b in mxfp4_bases} | {f"{b}.weight_scale" for b in mxfp4_bases}
 
-            _upload_non_quant(header, mx4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))
+            _upload_non_quant(header, mx4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))
 
             if _decompress_mx_scale is None:
                 raise ImportError(
@@ -1162,10 +1157,17 @@ def load_safetensors_weights(
             # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
             # CPU dequant: avoids shader changes for per-block FP8.
             # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
+            _u8_u8_bases = sorted(
+                base
+                for k in header
+                if k.endswith(".weight")
+                and header[k].get("dtype") == "U8"
+                and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
+            )
             mxfp8_bases = _u8_u8_bases
             mx8_set: set = {f"{b}.weight" for b in mxfp8_bases} | {f"{b}.weight_scale" for b in mxfp8_bases}
 
-            _upload_non_quant(header, mx8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))
+            _upload_non_quant(header, mx8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))
 
             try:
                 from vllm.model_executor.layers.quantization.utils.mxfp8_utils import dequant_mxfp8_to_bf16

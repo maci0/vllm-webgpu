@@ -79,7 +79,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # canvas_length is the max batch size during diffusion inference (default 256).
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
-            max_canvas_len = self._canvas_length
+            max_canvas_len = self._scratch_token_count()
             # Pre-allocated row-index array for vectorized MoE scatter; avoids
             # allocating a new array on every _decoder_layer call.
             self._token_arange = np.arange(max_canvas_len, dtype=np.intp)
@@ -123,7 +123,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         actually uses.
         """
         T = self._scratch_token_count()
-        self._canvas_length = T
         H = self.hidden_size
         I = self._max_inter
         NQ = self.num_q_heads
@@ -265,7 +264,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                            (num_tokens, 1, 1))
 
             _lm_key, lm_head_w, uq_lm, _lm_base = self._lm_head_parts()
-            sc_lm = self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf)
+            sc_lm = self._scales_buf(_lm_key, uq_lm, self._dummy_buf)
             if num_tokens > 1:
                 if uq_lm not in (0, 3):
                     raise RuntimeError(
@@ -322,7 +321,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._batch_gemm(src, wk, out_b, K, N, num_tokens)
         else:
             uq = self._uq_for_key(wk)
-            sc_buf = self._scales_buf(wk, uq, self._dummy_scales_buf)
+            sc_buf = self._scales_buf(wk, uq, self._dummy_buf)
             self._dispatch("matmul_quant",
                            [src, self.weights[wk], sc_buf, out_b],
                            {"K": K, "N": N, "USE_QUANT": uq, **self._quant_extra(wk.removesuffix(".weight"), uq)},
@@ -616,7 +615,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = self._uq_for_key(rw_)
-                _rw_sc = self._scales_buf(rw_, uq_rw, self._dummy_scales_buf)
+                _rw_sc = self._scales_buf(rw_, uq_rw, self._dummy_buf)
                 # Router matmul writes f16 into the scratch buffer; we upcast to f32
                 # before top-K so that logits differing by less than one f16 ULP are
                 # not collapsed to the same value (matches vLLM's GateLinear f32 path).
@@ -740,7 +739,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                             (sc["gate_buf"], f"{ep}.gate_proj.weight", uq_g),
                             (sc["up_buf"],   f"{ep}.up_proj.weight",   uq_u),
                         ]:
-                            _sc_e = self._scales_buf(ew_key, uq, self._dummy_scales_buf)
+                            _sc_e = self._scales_buf(ew_key, uq, self._dummy_buf)
                             self._dispatch("matmul_quant_mr4",
                                            [moe_in, self.weights[ew_key], _sc_e, ob],
                                            {"K": hidden, "N": inter_moe, "M": num_tokens,
@@ -753,7 +752,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        _vec4_wg(gelu_n_moe),
                                        shader_subdir="gemma")
                         # down: [T, inter_moe] x [hidden, inter_moe]^T -> [T, hidden]
-                        _sc_dk = self._scales_buf(dk, uq_dk, self._dummy_scales_buf)
+                        _sc_dk = self._scales_buf(dk, uq_dk, self._dummy_buf)
                         self._dispatch("matmul_quant_mr4",
                                        [sc["ffn_act"], self.weights[dk], _sc_dk, sc["ffn_out"]],
                                        {"K": inter_moe, "N": hidden, "M": num_tokens,
@@ -775,7 +774,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                (sc["up_buf"],   f"{ep}.up_proj.weight",   uq_u)]:
                             self._dispatch("matmul_quant",
                                            [moe_in, self.weights[ew_key],
-                                            self._scales_buf(ew_key, uq, self._dummy_scales_buf), ob],
+                                            self._scales_buf(ew_key, uq, self._dummy_buf), ob],
                                            {"K": hidden, "N": inter_moe,
                                             "USE_QUANT": uq,
                                             **self._quant_extra(ew_key.removesuffix(".weight"), uq)},
@@ -787,7 +786,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                        shader_subdir="gemma")
                         self._dispatch("matmul_quant",
                                        [sc["ffn_act"], self.weights[dk],
-                                        self._scales_buf(dk, uq_dk, self._dummy_scales_buf),
+                                        self._scales_buf(dk, uq_dk, self._dummy_buf),
                                         sc["ffn_out"]],
                                        {"K": inter_moe, "N": hidden,
                                         "USE_QUANT": uq_dk,

@@ -17,7 +17,7 @@ from vllm.model_executor.layers.rotary_embedding.common import (
     yarn_get_mscale,
     yarn_linear_ramp_mask,
 )
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _DTYPE_MAP, _WGPU_DTYPE_TO_NP
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 
@@ -187,8 +187,7 @@ class BaseWebGPUModel(ABC):
         # Used for the matmul_quant bias slot (HAS_BIAS=0) and the scales slot
         # (USE_QUANT=0). WebGPU permits the same buffer at multiple read-only
         # STORAGE slots in one bind group, so a single allocation suffices.
-        self._dummy_bias_buf   = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
-        self._dummy_scales_buf = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
+        self._dummy_buf = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
         # Precomputed RoPE inverse frequencies for USE_FREQ_BUF=1 (YaRN and similar).
         # All rope/fused-rope shaders declare an inv_freq_buf binding unconditionally
         # (wgpu-native does not eliminate dead bindings even at USE_FREQ_BUF=0), so
@@ -215,7 +214,7 @@ class BaseWebGPUModel(ABC):
 
         The 4-byte floor matches the WebGPU STORAGE buffer minimum and is
         consistent with the direct WebGPUBuffer.empty(device, 4) calls elsewhere
-        in this file (e.g. _dummy_bias_buf, _dummy_scales_buf, _rope_freq_buf).
+        in this file (e.g. _dummy_buf, _rope_freq_buf).
         Zero-byte buffers are forbidden by the spec.
         """
         return WebGPUBuffer.empty(self.wgpu_device.wgpu_device, max(n, 4))
@@ -589,7 +588,7 @@ class BaseWebGPUModel(ABC):
                 f"matmul_quant expects 4 or 5 bindings, got {len(bindings)}"
             )
             if len(bindings) == 4:
-                bindings = list(bindings) + [self._dummy_bias_buf]
+                bindings = list(bindings) + [self._dummy_buf]
 
         key = PipelineKey(
             shader_name=f"{shader_subdir}/{shader_name}",

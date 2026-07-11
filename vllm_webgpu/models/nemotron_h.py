@@ -965,7 +965,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [pre["norm_out"], lm_head_w,
-             self._scales_buf(lm_key, uq, self._dummy_scales_buf),
+             self._scales_buf(lm_key, uq, self._dummy_buf),
              pre["logits"]],
             {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0,
              **self._quant_extra(lm_key.removesuffix(".weight"), uq)},
@@ -1146,7 +1146,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[in_w],
-             self._scales_buf(in_w, uq, self._dummy_scales_buf), sc["mamba_inproj"]],
+             self._scales_buf(in_w, uq, self._dummy_buf), sc["mamba_inproj"]],
             {"K": H, "N": self.in_proj_dim, "USE_QUANT": uq,
              **self._quant_extra(f"{p}.in_proj", uq)},
             _gemv_wg(self.in_proj_dim),
@@ -1177,7 +1177,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         conv_w = f"{p}.conv1d.weight"
         conv_b = f"{p}.conv1d.bias"
         has_bias = int(conv_b in self.weights)
-        bias_buf = self.weights.get(conv_b, self._dummy_bias_buf)  # dummy when absent
+        bias_buf = self.weights.get(conv_b, self._dummy_buf)  # dummy when absent
         self._dispatch(
             "mamba2_causal_conv",
             [sc["mamba_conv_in"], self.weights[conv_w], bias_buf,
@@ -1215,7 +1215,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [sc["mamba_norm_out"], self.weights[out_w],
-             self._scales_buf(out_w, uq2, self._dummy_scales_buf), sc["mixer_out"]],
+             self._scales_buf(out_w, uq2, self._dummy_buf), sc["mixer_out"]],
             {"K": MI, "N": H, "USE_QUANT": uq2,
              **self._quant_extra(f"{p}.out_proj", uq2)},
             _gemv_wg(H),
@@ -1248,7 +1248,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[qkv_w],
-             self._scales_buf(qkv_w, uq, self._dummy_scales_buf), sc["qkv_buf"]],
+             self._scales_buf(qkv_w, uq, self._dummy_buf), sc["qkv_buf"]],
             {"K": H, "N": total_qkv, "USE_QUANT": uq,
              **self._quant_extra(f"{p}.qkv_proj", uq)},
             _gemv_wg(total_qkv),
@@ -1294,7 +1294,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [sc["attn_out"], self.weights[ow],
-             self._scales_buf(ow, uq2, self._dummy_scales_buf), sc["mixer_out"]],
+             self._scales_buf(ow, uq2, self._dummy_buf), sc["mixer_out"]],
             {"K": q_dim, "N": H, "USE_QUANT": uq2,
              **self._quant_extra(f"{p}.o_proj", uq2)},
             _gemv_wg(H),
@@ -1322,7 +1322,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [normed_x, self.weights[uw],
-             self._scales_buf(uw, uq, self._dummy_scales_buf), sc["up_buf"]],
+             self._scales_buf(uw, uq, self._dummy_buf), sc["up_buf"]],
             {"K": H, "N": I, "USE_QUANT": uq,
              **self._quant_extra(f"{p}.up_proj", uq)},
             _gemv_wg(I),
@@ -1343,7 +1343,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._dispatch(
             "matmul_quant",
             [sc["ffn_act"], self.weights[dw],
-             self._scales_buf(dw, uq2, self._dummy_scales_buf), sc["mixer_out"]],
+             self._scales_buf(dw, uq2, self._dummy_buf), sc["mixer_out"]],
             {"K": I, "N": H, "USE_QUANT": uq2,
              **self._quant_extra(f"{p}.down_proj", uq2)},
             _gemv_wg(H),

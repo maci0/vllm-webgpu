@@ -197,7 +197,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # _uq_for_key returns 0 (f16) or 3 (GPTQ int4) for formats supported by
         # matmul_quant_mr4 batch-prefill path. Any other value (AWQ=4, FP8=5,
         # NVFP4=6, INT8=7, NF4=8) falls back to the sequential decode path.
-        # bool(proj_keys) guards against the vacuous all() case (empty weight set → True).
+        # bool(proj_uqs) guards against the vacuous all() case (empty weight set → True).
         proj_uqs = {self._uq_for_key(k) for k in self.weights if k.endswith('.weight') and 'model.layers.' in k and '_proj' in k}
         self._batch_matmul_supported = bool(proj_uqs) and proj_uqs <= {0, 3}
 
@@ -272,7 +272,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             "matmul_quant",
             [norm_out,
              self.weights[lm_key],
-             self._scales_buf(lm_key, uq, self._dummy_scales_buf),
+             self._scales_buf(lm_key, uq, self._dummy_buf),
              logits_buf],
             {"K": hidden, "N": vocab, "USE_QUANT": uq, "SPLIT_K": 0, **self._quant_extra(lm_key.removesuffix(".weight"), uq)},
             _rows_wg(vocab),
@@ -472,7 +472,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             Supports USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4).
             """
             uq = self._uq_for_key(w_key)
-            sc_buf = self._scales_buf(w_key, uq, self._dummy_scales_buf)
+            sc_buf = self._scales_buf(w_key, uq, self._dummy_buf)
             self._dispatch("matmul_quant_mr4",
                            [x_buf, self.weights[w_key], sc_buf, out_buf],
                            {"K": K_in, "N": N_out, "M": T,
@@ -723,7 +723,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
             self._dispatch(
                 "matmul_quant",
-                [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, self._dummy_scales_buf), out_buf],
+                [normed_x, self.weights[w_key], self._scales_buf(w_key, uq, self._dummy_buf), out_buf],
                 {"K": hidden, "N": dim, "USE_QUANT": uq, **qi},
                 _gemv_wg(dim),
             )
@@ -841,7 +841,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         uq = self._uq_for_key(w_key)
         qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
         self._dispatch("matmul_quant", [sc["attn_out"], self.weights[w_key],
-                                        self._scales_buf(w_key, uq, self._dummy_scales_buf), sc["o_proj_out"]],
+                                        self._scales_buf(w_key, uq, self._dummy_buf), sc["o_proj_out"]],
                        {"K": q_dim, "N": hidden, "USE_QUANT": uq, **qi},
                        _gemv_wg(hidden))
 
@@ -946,7 +946,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 qi2 = self._quant_extra(f"{p}.mlp.{mlp_proj}", uq2)
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[w_k],
-                                self._scales_buf(w_k, uq2, self._dummy_scales_buf), out_b],
+                                self._scales_buf(w_k, uq2, self._dummy_buf), out_b],
                                {"K": hidden, "N": inter, "USE_QUANT": uq2, **qi2},
                                _gemv_wg(inter))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
@@ -958,7 +958,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         qi3 = self._quant_extra(f"{p}.mlp.down_proj", uq)
         self._dispatch("matmul_quant",
                        [sc["ffn_act"], self.weights[w_k],
-                        self._scales_buf(w_k, uq, self._dummy_scales_buf), sc["ffn_out"]],
+                        self._scales_buf(w_k, uq, self._dummy_buf), sc["ffn_out"]],
                        {"K": inter, "N": hidden, "USE_QUANT": uq, **qi3},
                        _gemv_wg(hidden))
         return sc["ffn_out"]

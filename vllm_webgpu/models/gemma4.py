@@ -144,7 +144,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     Every 6th layer (indices 5, 11, 17, ...) is a global attention layer.
     Scratch buffers are allocated at maximum dimensions to handle both types.
     """
-    _GEMMA_NORM: int = 1  # overridden per instance; see __init__
+    _GEMMA_NORM: int  # set per instance in __init__; 1 for gemma3, 0 for gemma4
 
     # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
     logit_returns_token_id: bool = True
@@ -465,12 +465,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # path is unusable. Force SPLIT_K=0 (row-per-thread) with ceil(vocab/256) WGs.
             self._dispatch("matmul_quant",
                            [norm_out, lm_head_w,
-                            self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), logits_buf],
+                            self._scales_buf(_lm_key, uq_lm, self._dummy_buf), logits_buf],
                            {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
                             **self._quant_extra(_lm_base, uq_lm)},
                            _rows_wg(vocab))
 
-            self._dispatch_softcap_and_sample(vocab, logits_buf, pre.get("capped", self._dummy_scales_buf))
+            self._dispatch_softcap_and_sample(vocab, logits_buf, pre.get("capped", self._dummy_buf))
 
         return self._finish_forward(self._greedy_decode)
 
@@ -553,7 +553,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """
         uq = self._uq_for_key(wk)
         if uq == 3:
-            sc_b = self._scales_buf(wk, uq, self._dummy_scales_buf)
+            sc_b = self._scales_buf(wk, uq, self._dummy_buf)
             self._dispatch("matmul_quant_mr4",
                            [src, self.weights[wk], sc_b, out_b],
                            {"K": K, "N": N, "M": T, "USE_QUANT": 3,
@@ -561,7 +561,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            (N, T, 1))
         elif uq == 0:
             self._dispatch("matmul_quant_mr4",
-                           [src, self.weights[wk], self._dummy_scales_buf, out_b],
+                           [src, self.weights[wk], self._dummy_buf, out_b],
                            {"K": K, "N": N, "M": T, "USE_QUANT": 0},
                            (N, T, 1))
         else:
@@ -934,12 +934,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [b["last_norm"], lm_head_w,
-                 self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), b["logits"]],
+                 self._scales_buf(_lm_key, uq_lm, self._dummy_buf), b["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
                  **self._quant_extra(_lm_base, uq_lm)},
                 _rows_wg(vocab))
 
-            self._dispatch_softcap_and_sample(vocab, b["logits"], b.get("capped", self._dummy_scales_buf))
+            self._dispatch_softcap_and_sample(vocab, b["logits"], b.get("capped", self._dummy_buf))
 
         return self._finish_forward(self._greedy_decode)
 
@@ -1013,12 +1013,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "matmul_quant",
                 [pre["norm_out"], lm_head_w,
-                 self._scales_buf(_lm_key, uq_lm, self._dummy_scales_buf), pre["logits"]],
+                 self._scales_buf(_lm_key, uq_lm, self._dummy_buf), pre["logits"]],
                 {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,
                  **self._quant_extra(_lm_base, uq_lm)},
                 _rows_wg(vocab))
 
-            self._dispatch_softcap_and_sample(vocab, pre["logits"], pre.get("capped", self._dummy_scales_buf))
+            self._dispatch_softcap_and_sample(vocab, pre["logits"], pre.get("capped", self._dummy_buf))
 
         return self._finish_forward(self._greedy_decode)
 
@@ -1095,7 +1095,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 uq = uq_q
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[qw],
-                                self._scales_buf(qw, uq, self._dummy_scales_buf), sc["q_buf"]],
+                                self._scales_buf(qw, uq, self._dummy_buf), sc["q_buf"]],
                                {"K": hidden, "N": q_dim, "USE_QUANT": uq,
                                 **self._quant_extra(f"{p}.self_attn.q_proj", uq)},
                                _gemv_wg(q_dim))
@@ -1103,7 +1103,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     uq = uq_k
                     self._dispatch("matmul_quant",
                                    [normed_x, self.weights[kw],
-                                    self._scales_buf(kw, uq, self._dummy_scales_buf), sc["k_buf"]],
+                                    self._scales_buf(kw, uq, self._dummy_buf), sc["k_buf"]],
                                    {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
                                     **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
                                    _gemv_wg(kv_dim))
@@ -1111,7 +1111,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         uq = uq_v
                         self._dispatch("matmul_quant",
                                        [normed_x, self.weights[vw],
-                                        self._scales_buf(vw, uq, self._dummy_scales_buf), sc["v_buf"]],
+                                        self._scales_buf(vw, uq, self._dummy_buf), sc["v_buf"]],
                                        {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
                                         **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
                                        _gemv_wg(kv_dim))
@@ -1238,7 +1238,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             uq = self._uq_for_key(ow)
             self._dispatch("matmul_quant",
                            [sc["attn_out"], self.weights[ow],
-                            self._scales_buf(ow, uq, self._dummy_scales_buf), sc["o_proj_out"]],
+                            self._scales_buf(ow, uq, self._dummy_buf), sc["o_proj_out"]],
                            {"K": q_dim, "N": hidden, "USE_QUANT": uq,
                             **self._quant_extra(f"{p}.self_attn.o_proj", uq)},
                            _gemv_wg(hidden))
@@ -1300,7 +1300,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         (sc["up_buf"],   "up_proj",   uw_k, uq_u)]:
                     self._dispatch("matmul_quant",
                                    [ffn_normed, self.weights[w_k],
-                                    self._scales_buf(w_k, uq2, self._dummy_scales_buf), out_b],
+                                    self._scales_buf(w_k, uq2, self._dummy_buf), out_b],
                                    {"K": hidden, "N": inter, "USE_QUANT": uq2,
                                     **self._quant_extra(f"{p}.mlp.{proj}", uq2)},
                                    _gemv_wg(inter))
@@ -1313,7 +1313,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             uq = self._uq_for_key(w_k)
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[w_k],
-                            self._scales_buf(w_k, uq, self._dummy_scales_buf), sc["ffn_out"]],
+                            self._scales_buf(w_k, uq, self._dummy_buf), sc["ffn_out"]],
                            {"K": inter, "N": hidden, "USE_QUANT": uq,
                             **self._quant_extra(f"{p}.mlp.down_proj", uq)},
                            _gemv_wg(hidden))
