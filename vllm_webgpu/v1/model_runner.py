@@ -614,7 +614,7 @@ class WebGPUModelRunner:
                     use_fp64_gumbel=self.vllm_config.model_config.use_fp64_gumbel,
                 )
             else:
-                first_decode_tok = int(last_logits[0, 0])
+                first_decode_tok = int(last_logits[-1, 0])
 
             # Compute logprobs for this prefill token if the request asked for them.
             lp_data = self._extract_logprob_data(last_logits, -1, first_decode_tok, num_logprobs, rid)
