@@ -151,6 +151,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "up_buf":     self._make_buf(T * I * 2),
             "ffn_act":    self._make_buf(T * I * 2),
             "ffn_out":    self._make_buf(T * H * 2),
+            # Dedicated buffer for pre_feedforward_layernorm_2 output (MoE input).
+            # Using sc["normed"] for this aliased it with three other semantic roles
+            # in _decoder_layer, creating an implicit GPU ordering dependency that
+            # would silently break if a future read of sc["normed"] were inserted
+            # between the L{i}R and L{i}P command encoders.
+            "moe_ffn_in": self._make_buf(T * H * 2),
             "h0":         self._make_buf(T * H * 4),
             "h1":         self._make_buf(T * H * 4),
             "h2":         self._make_buf(T * H * 4),
@@ -592,9 +598,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             with self._batched_dispatch(label=f"L{layer_idx:02d}R"):
                 if pfn2_w is not None:
-                    self._dispatch("rms_norm_f32in", [residual, pfn2_w, sc["normed"]],
+                    self._dispatch("rms_norm_f32in", [residual, pfn2_w, sc["moe_ffn_in"]],
                                    _rms, (num_tokens, 1, 1))
-                    moe_in = sc["normed"]
+                    moe_in = sc["moe_ffn_in"]
                 else:
                     raise ValueError(
                         f"Layer {layer_idx} missing pre_feedforward_layernorm_2.weight. "
