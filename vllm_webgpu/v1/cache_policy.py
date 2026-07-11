@@ -218,13 +218,12 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     if explicit := worker.cache_config.kv_cache_memory_bytes:
         return explicit
 
-    config = worker.webgpu_config
     model_mem = _get_weight_memory_usage(worker)
 
     total: int = get_cpu_memory()
 
     base = total - model_mem - OVERHEAD_BYTES
-    fraction = config.memory_fraction if config.memory_fraction is not None else 1.0
+    fraction = worker.cache_config.gpu_memory_utilization
     available = max(int(base * fraction), 0)
     logger.info(
         "WebGPU memory: total=%dMiB model=%dMiB available=%dMiB",

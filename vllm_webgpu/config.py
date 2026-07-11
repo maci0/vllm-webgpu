@@ -10,15 +10,9 @@ VALID_POWER_PREFERENCES: frozenset[str] = frozenset({"low-power", "high-performa
 
 @dataclass(frozen=True)
 class WebGPUConfig:
-    memory_fraction: float | None
     power_preference: str
 
     def __post_init__(self) -> None:
-        if self.memory_fraction is not None and not (0 < self.memory_fraction <= 1):
-            raise ValueError(
-                f"VLLM_WEBGPU_MEMORY_FRACTION={self.memory_fraction!r} must be "
-                "'auto' or a value in (0, 1]."
-            )
         if self.power_preference not in VALID_POWER_PREFERENCES:
             raise ValueError(
                 f"VLLM_WEBGPU_POWER_PREFERENCE={self.power_preference!r}. "
@@ -28,7 +22,6 @@ class WebGPUConfig:
     @classmethod
     def from_env(cls) -> "WebGPUConfig":
         return cls(
-            memory_fraction=envs.VLLM_WEBGPU_MEMORY_FRACTION,
             power_preference=envs.VLLM_WEBGPU_POWER_PREFERENCE,
         )
 

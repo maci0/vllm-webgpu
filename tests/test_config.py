@@ -1,5 +1,4 @@
 import os
-import pytest
 from vllm_webgpu.config import WebGPUConfig, get_config
 
 
@@ -9,30 +8,13 @@ def setup_function():
 
 def teardown_function():
     get_config.cache_clear()
-    for key in ["VLLM_WEBGPU_MEMORY_FRACTION", "VLLM_WEBGPU_POWER_PREFERENCE",
-                "VLLM_WEBGPU_QUANTIZATION"]:
+    for key in ["VLLM_WEBGPU_POWER_PREFERENCE", "VLLM_WEBGPU_QUANTIZATION"]:
         os.environ.pop(key, None)
 
 
 def test_defaults():
     cfg = WebGPUConfig.from_env()
-    assert cfg.memory_fraction is None
     assert cfg.power_preference == "high-performance"
-
-
-def test_memory_fraction_float(monkeypatch):
-    monkeypatch.setenv("VLLM_WEBGPU_MEMORY_FRACTION", "0.8")
-    get_config.cache_clear()
-    cfg = WebGPUConfig.from_env()
-    assert cfg.memory_fraction == pytest.approx(0.8)
-    assert cfg.memory_fraction is not None
-
-
-def test_invalid_memory_fraction(monkeypatch):
-    monkeypatch.setenv("VLLM_WEBGPU_MEMORY_FRACTION", "bad")
-    get_config.cache_clear()
-    with pytest.raises(ValueError, match="VLLM_WEBGPU_MEMORY_FRACTION"):
-        WebGPUConfig.from_env()
 
 
 def test_get_config_singleton():
