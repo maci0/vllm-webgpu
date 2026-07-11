@@ -40,6 +40,11 @@ override NUM_KV_HEADS: u32 = 8u;
 override HEAD_DIM:     u32 = 128u;
 override CTX_LEN:      u32 = 512u;
 override SCALE:        f32 = 1.0;
+// START_BLOCK: index into block_table where the attention window begins.
+// For full-attention layers this is 0 (read from the first block).
+// For sliding-window attention, set to max(0, (full_ctx_len - window) / BLOCK_SIZE)
+// so the shader reads the most-recent window blocks, not the oldest ones.
+override START_BLOCK:  u32 = 0u;
 // WG_SIZE is always 128 (matches attn_score.wgsl). Handles HEAD_DIM > 128 by
 // having each thread accumulate multiple dimensions (acc0/acc1/acc2/acc3).
 
@@ -95,7 +100,9 @@ fn main(
         if (ctx >= CTX_LEN) { break; }
 
         // Locate this KV token in the paged cache.
-        let block_idx = block_table[ctx / BLOCK_SIZE];
+        // START_BLOCK offsets into the block table so SWA reads the newest
+        // window blocks rather than block 0 (oldest).
+        let block_idx = block_table[ctx / BLOCK_SIZE + START_BLOCK];
         let block_off = ctx % BLOCK_SIZE;
         let kv_base   = ((block_idx * BLOCK_SIZE + block_off) * NUM_KV_HEADS + kv_head) * HEAD_DIM;
 

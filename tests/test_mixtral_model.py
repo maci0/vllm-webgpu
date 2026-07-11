@@ -228,3 +228,15 @@ def test_mistral_swa_window(wgpu_device):
     assert model._effective_ctx_len(8) == 8
     # ctx_len == window: no clip
     assert model._effective_ctx_len(16) == 16
+
+    # _start_block: skip old blocks so flash_attn_decode reads the newest window.
+    # block_size defaults to 16.
+    bs = model.block_size
+    # ctx_len within window: no offset
+    assert model._start_block(8) == 0
+    assert model._start_block(16) == 0
+    # ctx_len > window: skip leading blocks
+    # 32 tokens, window=16, block_size=16 → start_block = (32-16)//16 = 1
+    assert model._start_block(32) == (32 - 16) // bs
+    # 48 tokens → start_block = (48-16)//16 = 2
+    assert model._start_block(48) == (48 - 16) // bs

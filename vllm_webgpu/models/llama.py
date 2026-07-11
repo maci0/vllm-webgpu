@@ -840,7 +840,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                         "NUM_Q_HEADS": self.num_q_heads,
                         "NUM_KV_HEADS": self.num_kv_heads,
                         "HEAD_DIM": self.head_dim,
-                        "CTX_LEN": self._effective_ctx_len(ctx_len)},
+                        "CTX_LEN": self._effective_ctx_len(ctx_len),
+                        "START_BLOCK": self._start_block(ctx_len)},
                        (self.num_q_heads, 1, 1))
 
         # Output projection.
@@ -919,6 +920,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
     def _effective_ctx_len(self, ctx_len: int) -> int:
         """Effective context length for flash_attn_decode. Subclasses may cap (e.g. SWA)."""
         return ctx_len
+
+    def _start_block(self, ctx_len: int) -> int:
+        """Block table offset for flash_attn_decode. Default is 0 (full attention).
+
+        Subclasses with sliding-window attention override this to skip old blocks
+        so the shader reads the most-recent window blocks instead of block 0.
+        """
+        return 0
 
     def _ffn_dispatch(
         self,

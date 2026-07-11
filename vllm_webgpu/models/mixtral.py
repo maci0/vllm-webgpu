@@ -112,6 +112,18 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """Cap ctx_len at the sliding window size when SWA is configured."""
         return min(ctx_len, self._sw) if self._sw is not None else ctx_len
 
+    def _start_block(self, ctx_len: int) -> int:
+        """First block in the block table that falls inside the SWA window.
+
+        When the sequence exceeds the sliding window, the block table holds all
+        blocks ever allocated (oldest first). flash_attn_decode must skip the
+        leading blocks so it reads tokens (ctx_len - sw)..(ctx_len - 1) instead
+        of 0..(sw - 1).
+        """
+        if self._sw is None or ctx_len <= self._sw:
+            return 0
+        return (ctx_len - self._sw) // self.block_size
+
     def _ffn_dispatch(
         self,
         normed_x: "WebGPUBuffer",
