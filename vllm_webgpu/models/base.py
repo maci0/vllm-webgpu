@@ -74,10 +74,10 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via a duck-typed
-    SimpleNamespace to keep the frequency arithmetic in one place (the vLLM source).
-    Using an unbound call on a SimpleNamespace avoids the cos/sin cache allocation
-    that constructing the full object via __init__ would trigger.
+    Inlines the frequency formula from the YaRN paper (Peng et al.,
+    github.com/jquesnelle/yarn) using only the three pure helper functions that
+    vLLM exposes as public API. Avoids calling a private method on a duck-typed
+    object, which would break silently if vLLM adds new attribute accesses there.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -96,10 +96,9 @@ def compute_yarn_freqs(
     """
     import torch
     from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
         yarn_get_mscale,
-    )
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+        yarn_linear_ramp_mask,
     )
     if rotary_dim is None:
         rotary_dim = head_dim
@@ -113,26 +112,31 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    # Delegate to the private method via a duck-typed SimpleNamespace so the
-    # frequency arithmetic stays in one place (the vLLM source) instead of being
-    # duplicated here. Using __new__ + an unbound call avoids triggering the
-    # cos/sin cache allocation that YaRNScalingRotaryEmbedding.__init__ performs.
-    _mock = SimpleNamespace(
-        base=rope_theta,
-        rotary_dim=rotary_dim,
-        beta_fast=beta_fast,
-        beta_slow=beta_slow,
-        max_position_embeddings=orig_ctx,
-        truncate=truncate,
-        extrapolation_factor=extrapolation_factor,
+    # YaRN frequency formula (paper §3.2): blend interpolated and extrapolated
+    # inv_freq via a ramp mask computed from the correction range.
+    pos_freqs = rope_theta ** (
+        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
-    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(_mock, factor).numpy()
+    inv_freq_extrapolation = 1.0 / pos_freqs
+    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
+
+    low, high = yarn_find_correction_range(
+        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
+    )
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
+    ) * extrapolation_factor
+    inv_freq = (
+        inv_freq_interpolation * (1 - inv_freq_mask)
+        + inv_freq_extrapolation * inv_freq_mask
+    )
+
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
         else float(attn_factor)
     )
-    return inv_freq, mscale
+    return inv_freq.numpy(), mscale
 
 
 
