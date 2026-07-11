@@ -123,6 +123,13 @@ class WebGPUPlatform(_Platform):
             )
         parallel_config.distributed_executor_backend = "uni"
         vllm_config.scheduler_config.enable_chunked_prefill = False
+        # WebGPU compute shaders complete synchronously before execute_model
+        # returns, so there is no GPU/CPU overlap to pipeline. The batch queue
+        # introduced by async_scheduling adds one extra engine-loop iteration of
+        # latency per request with zero throughput benefit. Disable it here,
+        # after vLLM's auto-detection (VllmConfig.__post_init__) runs, so the
+        # detection result is overridden. Mirrors the CPU platform's approach.
+        vllm_config.scheduler_config.async_scheduling = False
 
     @classmethod
     def get_attn_backend_cls(
