@@ -476,9 +476,12 @@ class WebGPUModelRunner:
         # ── Prefill: new requests ──────────────────────────────────────────────
         for req in new_reqs:
             rid = req.req_id
-            tok_ids = req.prompt_token_ids or []
+            tok_ids = req.prompt_token_ids
             if not tok_ids:
-                continue
+                raise NotImplementedError(
+                    f"req {rid}: prompt_embeds (no token IDs) are not supported "
+                    f"on the WebGPU backend"
+                )
 
             # Multi-modal inputs (images, audio, video) are not implemented.
             # Conditional-generation architectures (Gemma3ForConditionalGeneration,
