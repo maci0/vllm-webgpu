@@ -36,8 +36,9 @@ def main() -> None:
     model_path = args.model if Path(args.model).is_dir() else snapshot_download(args.model)
     print(f"Model: {model_path}")
 
-    from transformers import AutoConfig, AutoTokenizer
-    hf_cfg = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
+    from transformers import AutoTokenizer
+    from vllm.transformers_utils.config import get_config as _vllm_get_config
+    hf_cfg = _vllm_get_config(model_path, trust_remote_code=True)
     arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
     num_layers = hf_cfg.num_hidden_layers
     print(f"Architecture: {arch}")

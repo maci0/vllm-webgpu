@@ -20,9 +20,10 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             "Use the vllm-gguf plugin instead."
         )
 
-    # AutoConfig handles text_config merging for multimodal models automatically.
-    from transformers import AutoConfig, AutoTokenizer
-    cfg = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
+    # Use vLLM's config loader so Mistral-format repos (params.json) are handled correctly.
+    from transformers import AutoTokenizer
+    from vllm.transformers_utils.config import get_config as _vllm_get_config
+    cfg = _vllm_get_config(model_dir, trust_remote_code=True)
 
     arch = (cfg.architectures or ["LlamaForCausalLM"])[0]
     print(f"Architecture: {arch}")
