@@ -420,7 +420,7 @@ class WebGPUModelRunner:
             req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
             sampled_token_ids=[[t] for t in sampled],
             logprobs=built_logprobs,
-            prompt_logprobs_dict=prompt_logprobs_dict,
+            prompt_logprobs_dict=prompt_logprobs_dict or {},
         )
         return out
 
