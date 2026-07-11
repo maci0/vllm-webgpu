@@ -876,32 +876,28 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     # Post-FFN norm + residual add (+ pre-norm for next layer if not last)
                     post_ffw_w = self.weights.get(
                         f"{p}.post_feedforward_layernorm.weight")
+                    if post_ffw_w is None:
+                        raise ValueError(
+                            f"Layer {i} missing post_feedforward_layernorm.weight "
+                            "— vLLM applies this norm unconditionally; a missing weight "
+                            "indicates a corrupt or incomplete checkpoint."
+                        )
                     if i < self.num_layers - 1:
                         next_w = self.weights[
                             f"{self._layer_key_prefix(i + 1)}.input_layernorm.weight"]
-                        if post_ffw_w is not None:
-                            self._dispatch(
-                                "rms_norm_add_f32_rms_norm",
-                                [b["ffn_out"], post_ffw_w,
-                                 residual, next_w,
-                                 out_h, b["normed"]],
-                                _rms, (T, 1, 1))
-                        else:
-                            self._dispatch(
-                                "add_f32_rms_norm",
-                                [residual, b["ffn_out"], next_w, out_h, b["normed"]],
-                                _rms, (T, 1, 1))
+                        self._dispatch(
+                            "rms_norm_add_f32_rms_norm",
+                            [b["ffn_out"], post_ffw_w,
+                             residual, next_w,
+                             out_h, b["normed"]],
+                            _rms, (T, 1, 1))
                     else:
                         # Last layer: no next pre-norm, just update residual.
-                        if post_ffw_w is not None:
-                            self._dispatch(
-                                "rms_norm", [b["ffn_out"], post_ffw_w, b["o_proj"]],
-                                _rms, (T, 1, 1))
-                            ffn_delta = b["o_proj"]
-                        else:
-                            ffn_delta = b["ffn_out"]
                         self._dispatch(
-                            "add_f32", [residual, ffn_delta, out_h],
+                            "rms_norm", [b["ffn_out"], post_ffw_w, b["o_proj"]],
+                            _rms, (T, 1, 1))
+                        self._dispatch(
+                            "add_f32", [residual, b["o_proj"], out_h],
                             {"N": add_n}, _vec4_wg(add_n))
 
                     # Apply layer_scalar to the full f32 residual (matches vLLM).
