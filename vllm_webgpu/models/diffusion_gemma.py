@@ -691,6 +691,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # _active_encoder (re-entrant inside the L{i}R block above) are not
             # yet submitted; to_numpy() creates its own copy encoder and would
             # read stale pre-topk_sort data without this explicit flush.
+            #
+            # Invariant: moe_acc zero-init MUST happen after this submit (in the
+            # fresh encoder below) so the zero-init is scoped to this layer's
+            # expert pass and does not race with accumulations from prior layers.
             dev.queue.submit([self._active_encoder.finish()])
             dev.queue.on_submitted_work_done_sync()
 
@@ -736,11 +740,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             # Pre-pack all unique experts' per-token weights into the GPU buffer as a
             # [num_unique_experts, T] f32 array. A single write_buffer here is correct:
-            # within one command encoder all write_buffer calls are processed before any
-            # recorded compute commands execute, so per-iteration writes inside the loop
-            # would leave only the last expert's weights visible to every dispatch. The
-            # expert_slot index passed as an override constant lets each shader read its
-            # own row without a re-entrant write.
+            # all write_buffer calls before a given submit() are visible to that
+            # submit's encoded commands (WebGPU submission-ordering guarantee), so
+            # the zero-init and weight upload here (after the explicit L{i}R flush
+            # above and before the expert dispatches below) are guaranteed to arrive
+            # before any expert compute shader reads either buffer. Per-iteration
+            # writes inside the loop would leave only the last expert's weights
+            # visible to every dispatch. The expert_slot index passed as an override
+            # constant lets each shader read its own row without a re-entrant write.
             packed_w = self._dense_w[unique_eids, :num_tokens]  # [num_unique, T]
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
