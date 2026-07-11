@@ -97,79 +97,78 @@ def allocate_kv_from_tensors(
             raise NotImplementedError(
                 "KVCacheTensor with empty shared_by is not supported by the WebGPU backend"
             )
-        if len(tensor.shared_by) > 1:
-            raise NotImplementedError(
-                f"Shared-block-table KV cache (shared_by={tensor.shared_by}) is not supported by the WebGPU backend"
-            )
+        # Multi-group models (e.g. two kv_cache_groups with equal page sizes)
+        # produce tensors where shared_by contains one layer name per group.
+        # Each name is a distinct layer that needs its own wgpu buffers.
         # Prefer spec fields over tensor.size // 2. The latter includes
         # per-token-head scale bytes that inflate the allocation beyond what
         # the K or V data actually occupies, and also averages head_size and
         # head_size_v instead of allocating each buffer at its correct size.
-        first_name = tensor.shared_by[0]
-        spec = layer_spec_map.get(first_name)
-        if spec is None:
-            raise RuntimeError(
-                f"Layer {first_name!r} appears in kv_cache_tensors.shared_by but is absent "
-                "from every kv_cache_group.layer_names. This is a vLLM integration bug."
-            )
-        if isinstance(spec, MLAAttentionSpec):
-            raise NotImplementedError(
-                f"MLA KV cache ({type(spec).__name__}) is not supported by the WebGPU backend. "
-                "MLAAttentionSpec uses a compressed latent layout that differs from the standard "
-                "per-head K/V formula and cannot be sized with storage_block_size * head_size * dtype_bytes."
-            )
-        elif isinstance(spec, TQFullAttentionSpec):
-            raise NotImplementedError(
-                f"TQFullAttentionSpec KV cache is not supported by the WebGPU backend. "
-                "TQFullAttentionSpec overrides real_page_size_bytes with a tq_slot_size-based formula "
-                "that differs from the standard block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes. "
-                "Allocating with head_size/head_size_v would produce wrong buffer sizes."
-            )
-        elif isinstance(spec, FullAttentionSpec):
-            if spec.kv_quant_mode != KVQuantMode.NONE:
-                raise NotImplementedError(
-                    f"Quantized KV cache (kv_quant_mode={spec.kv_quant_mode!r}) is not supported by the WebGPU backend; KV shaders expect float16 data."
+        for layer_name in tensor.shared_by:
+            spec = layer_spec_map.get(layer_name)
+            if spec is None:
+                raise RuntimeError(
+                    f"Layer {layer_name!r} appears in kv_cache_tensors.shared_by but is absent "
+                    "from every kv_cache_group.layer_names. This is a vLLM integration bug."
                 )
-            # Compute K and V sizes independently so that asymmetric head
-            # dimensions (e.g. MLA-style models where head_size != head_size_v)
-            # get correctly sized buffers instead of an averaged size.
-            dtype_bytes = get_dtype_size(spec.dtype)
-            storage_bs = spec.storage_block_size
-            k_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size * dtype_bytes
-            v_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size_v * dtype_bytes
-            # k_bytes + v_bytes == real_page_size_bytes * num_blocks by construction:
-            # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes,
-            # and storage_bs == block_size for FullAttentionSpec (storage_block_size returns self.block_size).
-        elif isinstance(spec, SlidingWindowMLASpec):
-            raise NotImplementedError(
-                f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
-                "SlidingWindowMLASpec stores a single MLA latent per position, so "
-                "real_page_size_bytes is the full per-position size, not a K+V pair. "
-                "Halving it would silently corrupt both cache buffers."
-            )
-        elif isinstance(spec, SlidingWindowSpec):
-            raise NotImplementedError(
-                "SlidingWindowSpec KV cache is not supported by the WebGPU backend."
-            )
-        else:
-            raise NotImplementedError(
-                f"Unsupported KV cache spec type {type(spec).__name__} for {first_name!r}; "
-                "add an explicit branch to handle it."
-            )
-        try:
-            idx = extract_layer_index(first_name)
-            layer_kv_bytes[idx] = (k_bytes, v_bytes)
-        except AssertionError as exc:
-            logger.error(
-                "Cannot parse layer index from KVCacheTensor.shared_by entry %r "
-                "(spec=%s, k=%d, v=%d bytes lost): %s",
-                first_name,
-                type(spec).__name__,
-                k_bytes,
-                v_bytes,
-                exc,
-            )
-            raise
+            if isinstance(spec, MLAAttentionSpec):
+                raise NotImplementedError(
+                    f"MLA KV cache ({type(spec).__name__}) is not supported by the WebGPU backend. "
+                    "MLAAttentionSpec uses a compressed latent layout that differs from the standard "
+                    "per-head K/V formula and cannot be sized with storage_block_size * head_size * dtype_bytes."
+                )
+            elif isinstance(spec, TQFullAttentionSpec):
+                raise NotImplementedError(
+                    f"TQFullAttentionSpec KV cache is not supported by the WebGPU backend. "
+                    "TQFullAttentionSpec overrides real_page_size_bytes with a tq_slot_size-based formula "
+                    "that differs from the standard block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes. "
+                    "Allocating with head_size/head_size_v would produce wrong buffer sizes."
+                )
+            elif isinstance(spec, FullAttentionSpec):
+                if spec.kv_quant_mode != KVQuantMode.NONE:
+                    raise NotImplementedError(
+                        f"Quantized KV cache (kv_quant_mode={spec.kv_quant_mode!r}) is not supported by the WebGPU backend; KV shaders expect float16 data."
+                    )
+                # Compute K and V sizes independently so that asymmetric head
+                # dimensions (e.g. MLA-style models where head_size != head_size_v)
+                # get correctly sized buffers instead of an averaged size.
+                dtype_bytes = get_dtype_size(spec.dtype)
+                storage_bs = spec.storage_block_size
+                k_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size * dtype_bytes
+                v_bytes = num_blocks * storage_bs * spec.num_kv_heads * spec.head_size_v * dtype_bytes
+                # k_bytes + v_bytes == real_page_size_bytes * num_blocks by construction:
+                # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes,
+                # and storage_bs == block_size for FullAttentionSpec (storage_block_size returns self.block_size).
+            elif isinstance(spec, SlidingWindowMLASpec):
+                raise NotImplementedError(
+                    f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
+                    "SlidingWindowMLASpec stores a single MLA latent per position, so "
+                    "real_page_size_bytes is the full per-position size, not a K+V pair. "
+                    "Halving it would silently corrupt both cache buffers."
+                )
+            elif isinstance(spec, SlidingWindowSpec):
+                raise NotImplementedError(
+                    "SlidingWindowSpec KV cache is not supported by the WebGPU backend."
+                )
+            else:
+                raise NotImplementedError(
+                    f"Unsupported KV cache spec type {type(spec).__name__} for {layer_name!r}; "
+                    "add an explicit branch to handle it."
+                )
+            try:
+                idx = extract_layer_index(layer_name)
+                layer_kv_bytes[idx] = (k_bytes, v_bytes)
+            except AssertionError as exc:
+                logger.error(
+                    "Cannot parse layer index from KVCacheTensor.shared_by entry %r "
+                    "(spec=%s, k=%d, v=%d bytes lost): %s",
+                    layer_name,
+                    type(spec).__name__,
+                    k_bytes,
+                    v_bytes,
+                    exc,
+                )
+                raise
 
     # Verify that every attention layer in hybrid models got a real KV buffer.
     # Models with _layer_types (e.g. NemotronH) index kv_pool unconditionally in
