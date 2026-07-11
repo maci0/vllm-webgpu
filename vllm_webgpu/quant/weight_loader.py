@@ -14,6 +14,7 @@ from vllm.logger import init_logger
 # in _load_safetensors_shard will silently skip all tensors. Verify on each vLLM
 # version bump that the function still exists at this path and returns the expected structure.
 from vllm.transformers_utils.utils import parse_safetensors_file_metadata
+from vllm.model_executor.models.utils import WeightsMapper
 
 # AWQ nibble unpack table. AWQ packs channels with interleaved order [0,4,1,5,2,6,3,7],
 # so to extract channel c from a packed int32 the bit offset is inverse_pack[c]*4 where
@@ -216,21 +217,24 @@ def _apply_multimodal_remap(weights: dict) -> int:
     return n_remapped
 
 
+# Prefix mapper for multimodal checkpoints. Handles two conventions:
+#   - Gemma3 MM:   'language_model.X'       -> 'X'
+#   - Qwen3.5 MM:  'model.language_model.X' -> 'model.X'
+_MM_PREFIX_MAPPER = WeightsMapper(
+    orig_to_new_prefix={
+        "model.language_model.": "model.",
+        "language_model.": "",
+    }
+)
+
+
 def _remap_prefixes(d: dict) -> None:
     """Remap multimodal weight-key prefixes in-place.
 
-    Handles two prefix conventions used by multimodal checkpoints:
-      - Gemma3 MM: 'language_model.X' → 'X'
-      - Qwen3.5 MM: 'model.language_model.X' → 'model.X'
-    Adds remapped keys without removing originals.
+    Adds remapped keys without removing originals (freeing non-LM GPU buffers
+    causes Metal memory corruption on adjacent embeddings).
     """
-    remapped = {}
-    for k, v in d.items():
-        if k.startswith("model.language_model."):
-            remapped[k.replace("model.language_model.", "model.", 1)] = v
-        elif k.startswith("language_model."):
-            remapped[k.removeprefix("language_model.")] = v
-    d.update(remapped)
+    d.update(_MM_PREFIX_MAPPER.apply_dict(d))
 
 
 def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("F8_E4M3", "U8", "I32")):
