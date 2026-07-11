@@ -537,6 +537,40 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 return False
         return True
 
+    def _batch_gemm(
+        self,
+        src: "WebGPUBuffer",
+        wk: str,
+        out_b: "WebGPUBuffer",
+        K: int,
+        N: int,
+        T: int,
+    ) -> None:
+        """Dispatch matmul_quant_mr4: out[T, N] = src[T, K] @ w[N, K].T.
+
+        Only USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ int4) are supported.
+        Other quant types must use the sequential (GEMV) path.
+        """
+        uq = self._uq_for_key(wk)
+        if uq == 3:
+            sc_b = self._scales_buf(wk, uq, self._dummy_scales_buf)
+            self._dispatch("matmul_quant_mr4",
+                           [src, self.weights[wk], sc_b, out_b],
+                           {"K": K, "N": N, "M": T, "USE_QUANT": 3,
+                            **self._quant_extra(wk.removesuffix(".weight"), uq)},
+                           (N, T, 1))
+        elif uq == 0:
+            self._dispatch("matmul_quant_mr4",
+                           [src, self.weights[wk], self._dummy_scales_buf, out_b],
+                           {"K": K, "N": N, "M": T, "USE_QUANT": 0},
+                           (N, T, 1))
+        else:
+            raise RuntimeError(
+                f"Batch prefill does not support USE_QUANT={uq} for weight {wk}. "
+                f"Only f16 (USE_QUANT=0) and GPTQ int4 (USE_QUANT=3) are handled by "
+                f"matmul_quant_mr4. Other quant types must use the sequential path."
+            )
+
     def _prefill_batch_forward(  # noqa: C901
         self,
         input_ids: "np.ndarray",
@@ -598,28 +632,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _rms = self._rms_consts
 
-        def gemm_batch(x_b: WebGPUBuffer, w_key: str,
-                       out_b: WebGPUBuffer, K_in: int, N_out: int) -> None:
-            """Dispatch matmul_quant_mr4: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T."""
-            uq = self._uq_for_key(w_key)
-            if uq == 3:
-                sc_b = self._scales_buf(w_key, uq, self._dummy_scales_buf)
-                self._dispatch("matmul_quant_mr4",
-                               [x_b, self.weights[w_key], sc_b, out_b],
-                               {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 3,
-                                **self._quant_extra(w_key.removesuffix(".weight"), uq)},
-                               (N_out, T, 1))
-            elif uq == 0:
-                self._dispatch("matmul_quant_mr4",
-                               [x_b, self.weights[w_key], self._dummy_scales_buf, out_b],
-                               {"K": K_in, "N": N_out, "M": T, "USE_QUANT": 0},
-                               (N_out, T, 1))
-            else:
-                raise RuntimeError(
-                    f"Batch prefill does not support USE_QUANT={uq} for weight {w_key}. "
-                    f"Only f16 (USE_QUANT=0) and GPTQ int4 (USE_QUANT=3) are handled by "
-                    f"matmul_quant_mr4. Other quant types must use the sequential path."
-                )
+        def gemm_batch(x_b: "WebGPUBuffer", w_key: str,
+                       out_b: "WebGPUBuffer", K_in: int, N_out: int) -> None:
+            self._batch_gemm(x_b, w_key, out_b, K_in, N_out, T)
 
         _CHUNK   = 4
         _hstate  = 0

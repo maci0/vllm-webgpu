@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
-from torch.nn.functional import pad as _pad
+from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
 from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
@@ -151,8 +151,11 @@ class WebGPUModelRunner:
         return lp if lp is not None else getattr(mc, "_layer_attention_params", None)
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
-        if self._kv_cache_spec_cache is not None:
-            return self._kv_cache_spec_cache
+        if self._kv_cache_spec_cache is None:
+            self._kv_cache_spec_cache = self._build_kv_cache_spec()
+        return self._kv_cache_spec_cache
+
+    def _build_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         mc = self.vllm_config.model_config.hf_config
         num_hidden_layers = self.vllm_config.model_config.get_total_num_hidden_layers()
         block_size = self._block_size
@@ -203,7 +206,6 @@ class WebGPUModelRunner:
                         spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd)
                     else:
                         spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
-                self._kv_cache_spec_cache = spec
                 return spec
 
         if lp_list and len(lp_list) == num_hidden_layers:
@@ -228,7 +230,6 @@ class WebGPUModelRunner:
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     num_kv_heads, head_size)
-        self._kv_cache_spec_cache = spec
         return spec
 
     def get_cache_block_size_bytes(self) -> int:
@@ -398,8 +399,8 @@ class WebGPUModelRunner:
                     if d is not None:
                         n_pad = max_k - d.logprob_token_ids.shape[1]
                         pieces.append(LogprobsTensors(
-                            _pad(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
-                            _pad(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
+                            pad(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
+                            pad(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
                             d.selected_token_ranks,
                         ))
                     else:

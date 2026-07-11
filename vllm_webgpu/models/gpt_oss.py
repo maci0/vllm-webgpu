@@ -227,23 +227,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             )
         return super()._ffn_dispatch(normed_x, layer_idx, num_tokens)
 
-    def _ensure_moe_expert_bufs(self) -> None:
-        """Extend parent with two extra scratch buffers for per-expert bias injection.
-
-        expert_gate_biased: intermediate-sized staging buffer used to hold the
-          bias-injected gate projection before gelu_mul. Sized at moe_act_sz
-          (same as expert_gate/expert_up) so it is large enough for any expert
-          intermediate dimension.
-        expert_down_tmp: hidden-sized staging buffer used to hold the
-          bias-injected down projection before the weighted accumulate. Sized at
-          hidden_size, matching the down projection output dimension.
-        """
-        super()._ensure_moe_expert_bufs()
-        msc = self._moe_sc
-        if "expert_gate_biased" not in msc:
-            msc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
-            msc["expert_down_tmp"]    = self._make_buf(self.hidden_size * 2)
-
     def _dispatch_expert_gate_up(
         self,
         normed_x: "WebGPUBuffer",
@@ -284,6 +267,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
         self._ensure_moe_expert_bufs()
         msc = self._moe_sc
+        if "expert_gate_biased" not in msc:
+            msc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
         hidden = self.hidden_size
         uq_g = self._uq_for_key(gw_key)
         uq_u = self._uq_for_key(uw_key)
@@ -356,6 +341,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
         self._ensure_moe_expert_bufs()
         msc = self._moe_sc
+        if "expert_down_tmp" not in msc:
+            msc["expert_down_tmp"] = self._make_buf(self.hidden_size * 2)
         hidden = self.hidden_size
         uq_d = self._uq_for_key(w2_key)
         qi_d = self._quant_extra(f"{ep}.{down_key_name}", uq_d)

@@ -9,6 +9,10 @@ _DTYPE_MAP = {
     np.uint32: "u32",
 }
 
+# Inverse of _DTYPE_MAP: wgpu dtype string -> numpy scalar type.
+# Kept here so adding a new dtype only requires updating _DTYPE_MAP.
+_WGPU_DTYPE_TO_NP: dict[str, type] = {v: k for k, v in _DTYPE_MAP.items()}
+
 # Byte size for each dtype string. Kept in sync with _DTYPE_MAP.
 _ELEM_BYTES: dict[str, int] = {"f16": 2, "f32": 4, "u8": 1, "i32": 4, "u32": 4}
 

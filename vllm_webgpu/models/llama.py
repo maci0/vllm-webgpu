@@ -62,8 +62,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             raise ValueError(f"head_dim={self.head_dim} must be even for f16 GEMV")
         max_ctx = getattr(model_config, "max_position_embeddings", 8192)
         # Precompute constants that are used every forward pass.
-        _vpt = _vals_per_thread(self.hidden_size)
-        self._rms_consts: dict = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt}
+        self._rms_consts: dict = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vals_per_thread(self.hidden_size)}
         self._init_scratch_buffers(max_ctx)
         self._init_rope_freq_buf()
         self._rope_consts: dict = {
@@ -173,10 +172,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return
 
         dev = self.wgpu_device.wgpu_device
-        rotary_dim = rope_scaling.get("rope_dim") or rope_scaling.get("rotary_dim")
-        if rotary_dim is None:
+        if rotary_dim := rope_scaling.get("rope_dim", None):
+            rotary_dim = int(rotary_dim)
+        else:
             rotary_dim = int(self.head_dim * float(rope_scaling.get("partial_rotary_factor", 1.0)))
-        rotary_dim = int(rotary_dim)
         freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling, rotary_dim)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale

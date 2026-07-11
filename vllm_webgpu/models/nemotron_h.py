@@ -297,16 +297,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             """Resolve a possibly-list intermediate_size to a scalar, matching vLLM.
 
             Mirrors NemotronHMLPDecoderLayer.__init__ lines 286-292 (vLLM 0.24).
-            No public API exposes this logic; keep in sync with the import-time
-            guard at the top of this file, which detects changes to the upstream
-            resolution pattern.
+            No public API exposes this logic, so this is a deliberate copy.
+
+            IMPORTANT: on every vLLM version bump, update BOTH this function AND
+            the _MLP_INTERMEDIATE_SIZE_ANCHOR anchor string at the top of this file.
+            The anchor detects structural changes to the upstream block but cannot
+            auto-fix this copy. If the anchor fires, review the new upstream logic
+            first, then update _resolve to match, then update the anchor string.
             """
-            # TODO: Mirrors NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24,
-            # commit to verify: run `pip show vllm | grep Version` and cross-check
-            # NemotronHMLPDecoderLayer.__init__ on each vLLM version bump before release).
-            # Update together with the guard at module top if upstream adds a new
-            # branch (e.g. per-head lists). The guard detects structural changes
-            # but cannot autofix this copy.
             if isinstance(v, list):
                 return v[0] if len(v) == 1 else v[idx]
             return v

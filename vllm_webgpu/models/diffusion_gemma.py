@@ -318,22 +318,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         num_tokens: int,
     ) -> None:
         """Choose matmul_quant_mr4 for batch or matmul_quant (GEMV) for single token."""
-        uq = self._uq_for_key(wk)
-        sc_buf = self._scales_buf(wk, uq, self._dummy_scales_buf)
-        base = wk.removesuffix(".weight")
         if num_tokens > 1:
-            if uq not in (0, 3):
-                raise RuntimeError(
-                    f"_gemm_adaptive: multi-token requires uq in (0,3), got uq={uq} for {wk}"
-                )
-            self._dispatch("matmul_quant_mr4",
-                           [src, self.weights[wk], sc_buf, out_b],
-                           {"K": K, "N": N, "M": num_tokens, "USE_QUANT": uq, **self._quant_extra(base, uq)},
-                           (N, num_tokens, 1))
+            self._batch_gemm(src, wk, out_b, K, N, num_tokens)
         else:
+            uq = self._uq_for_key(wk)
+            sc_buf = self._scales_buf(wk, uq, self._dummy_scales_buf)
             self._dispatch("matmul_quant",
                            [src, self.weights[wk], sc_buf, out_b],
-                           {"K": K, "N": N, "USE_QUANT": uq, **self._quant_extra(base, uq)},
+                           {"K": K, "N": N, "USE_QUANT": uq, **self._quant_extra(wk.removesuffix(".weight"), uq)},
                            _gemv_wg(N))
 
     # ── Decoder layer (intentionally different signature from parent _transformer_layer) ──

@@ -17,7 +17,7 @@ from vllm.model_executor.layers.rotary_embedding.common import (
     yarn_get_mscale,
     yarn_linear_ramp_mask,
 )
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _DTYPE_MAP
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _DTYPE_MAP, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 
@@ -70,11 +70,9 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
-# Mapping from WebGPU buffer dtype strings to numpy scalar types.
-# Covers all five dtypes in active use by the weight loader and shaders:
-# Inverse of _DTYPE_MAP from buffer.py: wgpu dtype string -> numpy dtype.
-# Derived rather than duplicated so adding a new dtype only requires updating buffer.py.
-_WGPU_DTYPE_TO_NP: dict[str, type] = {v: k for k, v in _DTYPE_MAP.items()}
+# _WGPU_DTYPE_TO_NP is now defined in webgpu/buffer.py and imported above.
+# Inverse of _DTYPE_MAP: wgpu dtype string -> numpy dtype.
+# Defined alongside _DTYPE_MAP so that adding a new dtype only requires updating buffer.py.
 
 
 # Import-time guard: verify that YaRNScalingRotaryEmbedding._compute_inv_freq still
@@ -189,7 +187,8 @@ class BaseWebGPUModel(ABC):
         # Used for the matmul_quant bias slot (HAS_BIAS=0) and the scales slot
         # (USE_QUANT=0). WebGPU permits the same buffer at multiple read-only
         # STORAGE slots in one bind group, so a single allocation suffices.
-        self._dummy_bias_buf = self._dummy_scales_buf = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
+        self._dummy_bias_buf   = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
+        self._dummy_scales_buf = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
         # Precomputed RoPE inverse frequencies for USE_FREQ_BUF=1 (YaRN and similar).
         # All rope/fused-rope shaders declare an inv_freq_buf binding unconditionally
         # (wgpu-native does not eliminate dead bindings even at USE_FREQ_BUF=0), so
@@ -212,12 +211,14 @@ class BaseWebGPUModel(ABC):
         self._weight_transforms: dict = {}
 
     def _make_buf(self, n: int) -> "WebGPUBuffer":
-        """Allocate an empty WebGPU buffer of at least 8 bytes.
+        """Allocate an empty WebGPU buffer of at least 4 bytes.
 
-        The 8-byte floor keeps all buffers above WebGPU's minimum-size requirement
-        (0-byte buffers are forbidden by the spec) when n is very small.
+        The 4-byte floor matches the WebGPU STORAGE buffer minimum and is
+        consistent with the direct WebGPUBuffer.empty(device, 4) calls elsewhere
+        in this file (e.g. _dummy_bias_buf, _dummy_scales_buf, _rope_freq_buf).
+        Zero-byte buffers are forbidden by the spec.
         """
-        return WebGPUBuffer.empty(self.wgpu_device.wgpu_device, max(n, 8))
+        return WebGPUBuffer.empty(self.wgpu_device.wgpu_device, max(n, 4))
 
     @staticmethod
     def _buf_np_dtype(buf) -> "type":
@@ -534,6 +535,9 @@ class BaseWebGPUModel(ABC):
                     f"(expected None for per-tensor or 1 for per-channel)"
                 )
             return d
+        if uq == 7:
+            # int8_gpu: per-channel scales; no extra shader constants needed.
+            return {}
         if uq == 8:
             # NF4: GROUP_K = absmax block size (BnB default 64).
             return {"GROUP_K": self._quant_info(base_key).get("group_size", 64)}

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from vllm.logger import init_logger
 from vllm.utils.mem_utils import get_cpu_memory
 
-from vllm.platforms.interface import Platform as _Platform, PlatformEnum as _PlatformEnum
+from vllm.platforms import Platform as _Platform, PlatformEnum as _PlatformEnum
 
 from vllm.v1.attention.backends.registry import AttentionBackendEnum as _ABE
 

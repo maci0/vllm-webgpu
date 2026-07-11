@@ -86,6 +86,9 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_table[:n_blks] = np.arange(n_blks, dtype=np.uint32)
     slots = list(range(T))
 
+    model._greedy_decode = (temperature == 0.0)
+    has_gpu_argmax = model.logit_returns_token_id
+
     batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)
     logits = model.forward(
         np.array(input_ids_list, dtype=np.uint32),
@@ -93,32 +96,14 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         batch_meta,
     )
 
-    has_gpu_argmax = model.logit_returns_token_id
-    if has_gpu_argmax:
-        if temperature > 0.0:
-            _real = model.logit_readback()
-            last_token = sample_token(_real[0], temperature=temperature, top_p=top_p)
-            print(f"  Last prefill logit: argmax={int(logits[0, 0])}, value={float(_real[0][int(logits[0, 0])]):.2f}, "
-                  f"std={float(_real[0].std()):.2f}")
-        else:
-            last_token = int(logits[0, 0])
-            print(f"  Last prefill logit: argmax={last_token}")
+    if temperature == 0.0:
+        last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[-1]))
+        print(f"  Last prefill logit: argmax={last_token}")
     else:
-        _logits_last = logits[-1]
-        _best = int(np.argmax(_logits_last))
-        last_token = (
-            sample_token(_logits_last, temperature=temperature, top_p=top_p)
-            if temperature > 0.0
-            else _best
-        )
-        print(f"  Last prefill logit: argmax={_best}, value={float(_logits_last[_best]):.2f}, "
-              f"std={float(_logits_last.std()):.2f}")
-
-    # When sampling, disable the GPU argmax path so model.forward() returns full
-    # (1, vocab) logits directly. The prefill above ran with _greedy_decode=True
-    # (the default), so last_token was obtained correctly from logits[0, 0].
-    if temperature > 0.0:
-        model._greedy_decode = False
+        _best = int(np.argmax(logits[-1]))
+        last_token = sample_token(logits[-1], temperature=temperature, top_p=top_p)
+        print(f"  Last prefill logit: argmax={_best}, value={float(logits[-1][_best]):.2f}, "
+              f"std={float(logits[-1].std()):.2f}")
 
     # Decode
     print(f"\nDecoding (max {max_tokens} tokens)...")
