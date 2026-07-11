@@ -170,6 +170,9 @@ def _check_unsupported_quant(model_dir: Path, quant_cfg: "dict | None" = None) -
     with a clear message rather than silently loading wrong data.
 
     Pass quant_cfg to skip the config.json read when the caller already has it.
+    The quant_cfg=None fallback path (config.json read below) is currently dead
+    code: the only caller (base.py) always supplies quant_cfg. It is kept for
+    any hypothetical future caller that does not have quant_cfg pre-loaded.
     """
     if quant_cfg is None:
         config_json = model_dir / "config.json"
@@ -300,10 +303,12 @@ def load_safetensors_weights_sharded(
         index = json.load(f)
     weight_map = index.get("weight_map", {})
 
-    # Single pass over weight_map keys: detect MLX format, multimodal prefix style.
-    # MLX affine int4 has .biases keys; Gemma3 MM uses "language_model." prefix;
-    # Qwen3.5 MM uses "model.language_model." prefix. Computing all three flags
-    # in one loop avoids three separate O(n) walks over a potentially large map.
+    # Two-phase detection over weight_map keys.
+    # Phase 1: check for MLX affine int4 (.biases keys). Break early because
+    # has_biases=True immediately delegates to load_mlx_weights, which has its
+    # own prefix logic — is_gemma_mm and is_qwen35_mm are irrelevant on that path.
+    # Phase 2: scan for multimodal prefix style only when the MLX path is skipped.
+    # Gemma3 MM uses "language_model." prefix; Qwen3.5 MM uses "model.language_model.".
     has_biases = is_gemma_mm = is_qwen35_mm = False
     for k in weight_map:
         if k.endswith(".biases"):
@@ -889,7 +894,10 @@ def load_safetensors_weights(
                 # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
                 # logical_shape=arr.shape tags the buffer with the original f16 element
                 # shape even though the underlying storage is u32 (packed u16 pairs).
-                u16 = t_bf16.view(torch.uint16).numpy()
+                # Re-fetch the tensor here so t_raw is scoped to this block and linters
+                # do not flag a possible-unbound reference to t_bf16 from the sibling elif.
+                t_raw = sf.get_tensor(name)
+                u16 = t_raw.view(torch.uint16).numpy()
                 if u16.shape != arr.shape:
                     u16 = u16.reshape(arr.shape)
                 u16_flat = np.ascontiguousarray(u16.ravel())

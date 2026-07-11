@@ -49,8 +49,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         self._is_moe: bool = self._num_experts > 0 and self._top_k > 0
 
         if self._is_moe:
-            import wgpu
-
             dev = self.wgpu_device.wgpu_device
 
             # Use the larger of intermediate_size and moe_intermediate_size so
@@ -68,19 +66,28 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             # Pre-allocated MAP_READ staging buffer for topk idx readback.
             # Copies are recorded into the Phase A encoder so no extra GPU submit
             # is needed after on_submitted_work_done_sync().
-            _staging_sz = max(self._top_k * 4, 8)
-            self._wgpu_map_read = wgpu.MapMode.READ
-            self._wgpu_staging_usage = wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ
-            self._topk_idx_staging = dev.create_buffer(
-                size=_staging_sz,
-                usage=self._wgpu_staging_usage)
-            # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
-            # debug-only path, None on production log levels.
-            self._topk_w_staging = None
-            # Pre-allocated zero buffer for expert_out initialization. Avoids a
-            # fresh bytes() allocation per decode token (32 layers × 8 KB each on
-            # 8x7B). Reused across both zero-init sites in _moe_ffn_layer.
-            self._expert_out_zeros = bytearray(self.hidden_size * 2)
+            self._init_moe_staging(dev)
+
+    def _init_moe_staging(self, dev) -> None:
+        """Allocate MAP_READ staging buffers and the expert_out zero buffer.
+
+        Extracted from MixtralWebGPUModel.__init__ so Qwen35WebGPUModel can call
+        it when Mixtral's __init__ skips staging allocation (num_local_experts=0
+        for Qwen35, which uses a different config key for its expert count).
+        """
+        import wgpu as _wgpu_lib
+        _staging_sz = max(self._top_k * 4, 8)
+        self._wgpu_map_read = _wgpu_lib.MapMode.READ
+        self._wgpu_staging_usage = _wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ
+        self._topk_idx_staging = dev.create_buffer(
+            size=_staging_sz,
+            usage=self._wgpu_staging_usage)
+        # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
+        self._topk_w_staging = None
+        # Pre-allocated zero buffer for expert_out initialization. Avoids a
+        # fresh bytes() allocation per decode token (32 layers x 8 KB each on
+        # 8x7B). Reused across both zero-init sites in _moe_ffn_layer.
+        self._expert_out_zeros = bytearray(self.hidden_size * 2)
 
     def _alloc_moe_sc(
         self,
@@ -280,7 +287,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 [msc["expert_act"], self.weights[w2_key],
                  msc["expert_out"], msc["topk_w"]],
                 {"K": inter, "N": hidden, "K_IDX": k_idx},
-                (hidden, 1, 1),
+                _gemv_wg(hidden),
             )
         else:
             self._ensure_moe_expert_bufs()

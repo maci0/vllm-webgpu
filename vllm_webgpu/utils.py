@@ -32,9 +32,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-# Guard against vLLM refactors that rename or remove the private function.
-# If this assertion fires, check whether vLLM has fixed the allow_cpu_sync gap
-# in apply_top_k_top_p (see comment above) and replace the import accordingly.
+# Guard against the unlikely case where vLLM replaces apply_top_k_top_p_pytorch
+# with a non-callable object (e.g. None or a descriptor). Rename or removal is
+# already caught by the ImportError above. If this assertion fires, check whether
+# vLLM has fixed the allow_cpu_sync gap in apply_top_k_top_p (see comment above)
+# and replace the import accordingly.
 assert callable(apply_top_k_top_p_pytorch), (
     "apply_top_k_top_p_pytorch is no longer callable in this vLLM version. "
     "See the comment above for the migration path."

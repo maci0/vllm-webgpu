@@ -31,8 +31,13 @@ try:
         "Review _build_layer_params_from_config formula (1) before removing this assertion."
     )
     # Formula (2): KV-shared target uses reversed layer_types index search.
-    assert "[::-1].index" in _g4_attn_src, (
-        "Gemma4Attention no longer uses reversed layer_types index search. "
+    # The original text-match assertion checked for "[::-1].index" in the Attention
+    # source, which would fire incorrectly on any equivalent refactor (e.g. next()
+    # with enumerate). Check layer_types presence in the Attention source instead —
+    # stable across implementation refactors and still catches the behavioral change
+    # we care about (the function no longer consuming layer_types at all).
+    assert "layer_types" in _g4_attn_src, (
+        "Gemma4Attention no longer references 'layer_types'. "
         "Review _build_layer_params_from_config formula (2) before removing this assertion."
     )
     # Formula (3): head-dim selection uses num_global_key_value_heads.

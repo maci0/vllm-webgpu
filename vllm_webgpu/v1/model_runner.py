@@ -505,7 +505,9 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            num_logprobs = sp.num_logprobs if sp is not None else None
+            # logprob_token_ids is already guarded above; the property's only
+            # remaining branch is sp.logprobs. Access it directly.
+            num_logprobs = sp.logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "

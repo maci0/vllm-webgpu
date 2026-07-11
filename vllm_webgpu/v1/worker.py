@@ -170,8 +170,14 @@ class WebGPUWorker(WorkerBase):
         pass
 
     def shutdown(self) -> None:
-        ensure_kv_transfer_shutdown()
-        ensure_ec_transfer_shutdown()
+        # Guard against interpreter teardown: module-level globals are set to
+        # None before __del__ / atexit callbacks run. gpu_worker.py uses the
+        # same guards (lines 1173-1176) with the comment 'has_kv_transfer_group
+        # can be None during interpreter shutdown'.
+        if ensure_kv_transfer_shutdown is not None:
+            ensure_kv_transfer_shutdown()
+        if ensure_ec_transfer_shutdown is not None:
+            ensure_ec_transfer_shutdown()
         # Release the GPU device. Both the worker and model_runner hold a
         # reference to wgpu_device; clearing only one leaves the object alive.
         # Do not null model_runner itself: any post-shutdown delegate call (e.g.

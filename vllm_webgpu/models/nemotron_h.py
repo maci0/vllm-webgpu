@@ -296,8 +296,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         def _resolve(v, idx):
             """Resolve a possibly-list intermediate_size to a scalar, matching vLLM.
 
-            Mirrors NemotronHMLPDecoderLayer.__init__ lines 286-292 (vLLM 0.24).
-            No public API exposes this logic, so this is a deliberate copy.
+            Uses the same single-expression form as vLLM's NemotronHMLPDecoderLayer
+            (vLLM 0.24, lines 286-292). A parallel copy is unavoidable because vLLM
+            does not expose this as a public API; the running-counter caller avoids
+            the O(n^2) slice+count that the upstream code uses per layer.
 
             IMPORTANT: on every vLLM version bump, update BOTH this function AND
             the _MLP_INTERMEDIATE_SIZE_ANCHOR anchor string at the top of this file.
@@ -305,17 +307,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             auto-fix this copy. If the anchor fires, review the new upstream logic
             first, then update _resolve to match, then update the anchor string.
             """
-            if isinstance(v, list):
-                return v[0] if len(v) == 1 else v[idx]
-            return v
+            return v[0] if isinstance(v, list) and len(v) == 1 else v[idx] if isinstance(v, list) else v
 
         _layer_int_sizes: list[int] = []
-        _mlp_count = -1
+        _mlp_count = 0  # 0-indexed MLP position; matches vLLM's mlp_index = count("-") - 1
         for _li, _lt in enumerate(self._layer_types):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_count += 1
             if _get_layer_cfg is not None:
                 _lcfg = _get_layer_cfg(_li)
                 # Per-layer bias check for puzzle (heterogeneous) models.
@@ -352,6 +351,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _layer_int_sizes.append(_isize)
             else:
                 _layer_int_sizes.append(_resolve(model_config.intermediate_size, _mlp_count))
+            _mlp_count += 1  # post-increment: index for the next MLP layer
         self._layer_int_size: list[int] = _layer_int_sizes
         # Cache the maximum intermediate size once so _init_scratch_buffers does
         # not re-derive it (and re-read model_config.intermediate_size) on every call.
