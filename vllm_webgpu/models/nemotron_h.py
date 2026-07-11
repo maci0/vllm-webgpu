@@ -215,6 +215,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.num_kv_heads: int = model_config.num_key_value_heads
         hd = getattr(model_config, "head_dim", None)
         self.head_dim: int = hd if hd is not None else self.hidden_size // self.num_q_heads
+        self._attn_scale: float = self.head_dim ** -0.5
         # Mamba-2 parameters
         self.mamba_num_heads: int = model_config.mamba_num_heads
         self.mamba_head_dim: int = model_config.mamba_head_dim
@@ -1368,7 +1369,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             [sc["q_buf"], k_cache, v_cache, bt_buf, sc["attn_out"]],
             {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
              "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-             "CTX_LEN": ctx_len},
+             "CTX_LEN": ctx_len, "SCALE": self._attn_scale},
             (self.num_q_heads, 1, 1),
         )
 
