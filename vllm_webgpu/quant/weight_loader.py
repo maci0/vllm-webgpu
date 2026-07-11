@@ -36,11 +36,6 @@ def _locate_index(directory: "Path") -> "Path | None":
     (Requires-Dist), so _ct_find_index is always non-None at runtime.
     Returns None when no index is found.
     """
-    if _ct_find_index is None:
-        raise ImportError(
-            "compressed_tensors is required but could not be imported. "
-            "Install it with: pip install compressed_tensors"
-        )
     found = _ct_find_index(directory)
     return Path(found) if found else None
 
@@ -139,8 +134,6 @@ def _load_quant_cfg(config_path: Path) -> dict:
     compressed_tensors is a hard dependency of vllm (Requires-Dist), so
     _ct_get_quant_cfg is always non-None. Returns {} on any failure.
     """
-    if _ct_get_quant_cfg is None:
-        return {}
     try:
         return _ct_get_quant_cfg(str(config_path)) or {}
     except Exception:
@@ -528,8 +521,6 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
         quant_cfg = _load_quant_cfg(p)
     if not quant_cfg.get("config_groups"):
         return {}
-    if _QuantizationConfig is None:
-        return {}
     try:
         cfg = _QuantizationConfig.model_validate(quant_cfg)
         w_args = next((s.weights for s in cfg.config_groups.values() if s.weights), None)
@@ -665,28 +656,35 @@ def load_safetensors_weights(
         has_ct_pack_int4 = _ct_gptq_gpu and _ct_has_i32_weight
 
         if has_qweight:
-            # Distinguish AWQ from GPTQ by qweight shape, not qzeros presence.
-            # Both formats may have qzeros. The packing axis differs:
-            #   GPTQ: qweight = (K//8, N), scales = (G, N)  → scales.shape[-1] == qweight.shape[-1]
-            #   AWQ:  qweight = (K, N//8), scales = (G, N)  → scales.shape[-1] == qweight.shape[-1] * 8
-            # Cross-referencing scales is definitive. If scales are absent, fall back
-            # to the shape ratio: AWQ has shape[0] > shape[1]; GPTQ has shape[0] < shape[1].
-            fmt = "gptq"
-            for _qw_key in header:
-                if not _qw_key.endswith(".qweight"):
-                    continue
-                _qw_shape = tuple(header[_qw_key]["shape"])
-                _base = _qw_key.removesuffix(".qweight")
-                _sc_key = f"{_base}.scales"
-                if _sc_key in header:
-                    _sc_shape = tuple(header[_sc_key]["shape"])
-                    if _sc_shape and _qw_shape and _sc_shape[-1] == _qw_shape[-1] * 8:
-                        fmt = "awq"
-                else:
-                    # AWQ: shape[0] > shape[1] (K > N//8); GPTQ: shape[0] < shape[1] (K//8 < N).
-                    if len(_qw_shape) == 2 and _qw_shape[0] > _qw_shape[1]:
-                        fmt = "awq"
-                break
+            # Discriminate AWQ from GPTQ using the quant_method field in config.json,
+            # which is the canonical source used by vLLM's auto_awq.py and auto_gptq.py.
+            # Fall back to the shape heuristic when quant_method is absent (e.g. no
+            # config.json, or a model that stores qweight without a quantization_config).
+            # The shape heuristic: scales.shape[-1] == qweight.shape[-1] * 8 implies AWQ
+            # packing (K, N//8); equals implies GPTQ packing (K//8, N). If scales are
+            # absent, the shape ratio (shape[0] > shape[1]) approximates AWQ.
+            _qm = _raw_quant_cfg.get("quant_method", "").lower()
+            if _qm in ("awq", "auto_awq", "awq_marlin"):
+                fmt = "awq"
+            elif _qm in ("gptq", "gptq_marlin"):
+                fmt = "gptq"
+            else:
+                # quant_method absent or unrecognized; fall back to shape cross-reference.
+                fmt = "gptq"
+                for _qw_key in header:
+                    if not _qw_key.endswith(".qweight"):
+                        continue
+                    _qw_shape = tuple(header[_qw_key]["shape"])
+                    _base = _qw_key.removesuffix(".qweight")
+                    _sc_key = f"{_base}.scales"
+                    if _sc_key in header:
+                        _sc_shape = tuple(header[_sc_key]["shape"])
+                        if _sc_shape and _qw_shape and _sc_shape[-1] == _qw_shape[-1] * 8:
+                            fmt = "awq"
+                    else:
+                        if len(_qw_shape) == 2 and _qw_shape[0] > _qw_shape[1]:
+                            fmt = "awq"
+                    break
         elif has_wp:
             fmt = "nvfp4"
         elif has_diffusion_nvfp4:

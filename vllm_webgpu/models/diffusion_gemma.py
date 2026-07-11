@@ -378,7 +378,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._gemm_adaptive(sc["normed"], f"{p}.self_attn.k_proj.weight", sc["k_buf"], hidden, kv_dim, num_tokens)
                 # v_proj: global attention layers (no separate V; V=K) have no v_proj weight.
                 # Use the precomputed flag from _build_layer_params_from_config as source of truth.
-                has_v_proj = lp.get("has_v_proj", True)
+                has_v_proj = lp["has_v_proj"]
                 if has_v_proj:
                     self._gemm_adaptive(sc["normed"], f"{p}.self_attn.v_proj.weight", sc["v_buf"], hidden, kv_dim, num_tokens)
                     v_src = sc["v_buf"]

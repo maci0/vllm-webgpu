@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _gemv_wg, _rows_wg, _vals_per_thread, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -111,7 +112,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
-        max_bt_blocks = max(4096, (max_ctx + self.block_size - 1) // self.block_size)
+        max_bt_blocks = max(4096, cdiv(max_ctx, self.block_size))
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      self._make_buf(T * 4),              # [1] uint32 token id
             "pos":      self._make_buf(T * 4),              # [1] uint32 position

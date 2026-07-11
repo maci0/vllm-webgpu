@@ -183,11 +183,8 @@ def get_layer_types(model, hf_config) -> list | None:
         v = getattr(model, "_layer_types", None)
         if v is not None:
             return v
-    for obj, attr in [
-        (hf_config, "layers_block_type"),
-        (hf_config, "layer_types"),
-    ]:
-        v = getattr(obj, attr, None)
+    for attr in ("layers_block_type", "layer_types"):
+        v = getattr(hf_config, attr, None)
         if v is not None:
             return v
     return None
@@ -212,7 +209,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     memory and clamps to 0 KV blocks.
 
     """
-    if explicit := worker.cache_config.kv_cache_memory_bytes:
+    if (explicit := worker.cache_config.kv_cache_memory_bytes) is not None:
         return explicit
 
     config = worker.webgpu_config

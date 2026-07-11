@@ -269,6 +269,12 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             super()._dispatch_expert_gate_up(normed_x, gw_key, uw_key, inter, extra_gate_consts)
             return
 
+        if "K" in extra_gate_consts or "N" in extra_gate_consts:
+            raise ValueError(
+                f"extra_gate_consts must not contain 'K' or 'N'; "
+                f"got {list(extra_gate_consts.keys())}"
+            )
+
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
         self._ensure_moe_expert_bufs()
         msc = self._moe_sc

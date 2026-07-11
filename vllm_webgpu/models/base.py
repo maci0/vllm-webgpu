@@ -38,7 +38,7 @@ def _vec4_wg(N: int) -> tuple:
     Each thread handles 4 elements packed as vec4<f16>. The formula rounds the
     thread count up to fill complete workgroups of 256.
     """
-    return ((N + 1023) // 1024, 1, 1)
+    return (cdiv(N, 1024), 1, 1)
 
 
 def _rows_wg(N: int) -> tuple:
@@ -47,7 +47,7 @@ def _rows_wg(N: int) -> tuple:
     Each workgroup covers 256 output rows. Used for lm_head and other matmuls
     where SPLIT_K=0 assigns one workgroup per output tile of 256 rows.
     """
-    return ((N + 255) // 256, 1, 1)
+    return (cdiv(N, 256), 1, 1)
 
 
 def _vals_per_thread(hidden_size: int) -> int:

@@ -161,11 +161,12 @@ class WebGPUModelRunner:
         block_size = self._block_size
         spec: dict[str, Any] = {}
 
-        def _make_spec(num_kv_heads: int, head_size: int) -> Any:
+        def _make_spec(num_kv_heads: int, head_size: int, head_size_v: int = 0) -> Any:
             return FullAttentionSpec(
                 block_size=block_size,
                 num_kv_heads=num_kv_heads,
                 head_size=head_size,
+                head_size_v=head_size_v or head_size,
                 dtype=_KV_DTYPE,
             )
 
@@ -197,7 +198,8 @@ class WebGPUModelRunner:
                     # avoid emitting a zero-page-size FullAttentionSpec.
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
-                    lp["num_kv_heads"], lp["head_dim"])
+                    lp["num_kv_heads"], lp["head_dim"],
+                    head_size_v=lp.get("head_dim_v", lp["head_dim"]))
         elif _layer_types and len(_layer_types) == num_hidden_layers:
             default_hd = self.vllm_config.model_config.get_head_size()
             default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
@@ -212,7 +214,8 @@ class WebGPUModelRunner:
                     continue
                 if lt == "full_attention":
                     full_kv = global_kv if k_eq_v else default_kv
-                    spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd)
+                    _hd_v = getattr(tc, "head_size_v", None) or global_hd
+                    spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd, head_size_v=_hd_v)
                 else:
                     spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
         else:

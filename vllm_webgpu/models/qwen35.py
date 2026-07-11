@@ -9,6 +9,7 @@ from vllm.logger import init_logger
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateShapeCalculator,
 )
+from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -516,7 +517,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             self._dispatch("causal_conv_step",
                            [sc["qkv_buf"], conv_w, self._conv_gpu[layer_idx], sc["qkv_conv"]],
                            {"CONV_DIM": cd, "KERNEL": self._lin_conv_kernel, "WG_SIZE": 256},
-                           ((cd + 255) // 256, 1, 1))
+                           (cdiv(cd, 256), 1, 1))
 
             # 4. a projection: normed → [V_HEADS] (dt for decay, one per V-head)
             self._gdn_proj(p, "in_proj_a", normed_x, sc["a_buf"], hidden, vh)
