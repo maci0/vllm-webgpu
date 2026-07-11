@@ -46,7 +46,7 @@ def _locate_index(directory: "Path") -> "Path | None":
     if fallback.exists():
         return fallback
     # Some sharded repos use a non-standard index filename. Mirror what vLLM's
-    # weight_utils.py does: scan for any *.safetensors.index.json in the dir.
+    # vllm/utils/weights_loader.py does: scan for any *.safetensors.index.json in the dir.
     candidates = sorted(directory.glob("*.safetensors.index.json"))
     return candidates[0] if candidates else None
 
@@ -226,8 +226,16 @@ def _remap_prefixes(d: dict) -> None:
 
     Adds remapped keys without removing originals (freeing non-LM GPU buffers
     causes Metal memory corruption on adjacent embeddings).
+
+    Only inserts the keys that actually changed — apply_dict() returns all keys
+    (remapped and unchanged), causing O(n) redundant re-insertions for a large
+    weights dict. _map_name() is used internally by apply_dict/apply.
     """
-    d.update(_MM_PREFIX_MAPPER.apply_dict(d))
+    d.update({
+        new_k: v
+        for k, v in d.items()
+        if (new_k := _MM_PREFIX_MAPPER._map_name(k)) != k
+    })
 
 
 def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("F8_E4M3", "U8", "I32")):
@@ -632,7 +640,7 @@ def load_safetensors_weights(
         has_qweight = has_wp = has_diffusion_nvfp4 = has_fp8_weight = has_mx_u8_pair = False
         has_bnb_nf4 = False
         _ct_has_i32_weight = False
-        _ct_gptq_gpu = bool(ct_meta and ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu")
+        _ct_gptq_gpu = ct_meta.get("__global__", {}).get("fmt") == "gptq_gpu"
         for k in header:
             dtype = header[k].get("dtype")
             if k.endswith(".qweight"):
@@ -1114,17 +1122,22 @@ def load_safetensors_weights(
                 except Exception as exc:
                     logger.warning("Failed to process FP8 %s: %s", base, exc)
 
-        elif fmt == "mxfp4":
-            # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
-            # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
-            # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-            mxfp4_bases = sorted(
+        elif fmt in ("mxfp4", "mxfp8"):
+            # Shared: collect all tensor bases where both *.weight and *.weight_scale are U8.
+            # Used by both the mxfp4 and mxfp8 branches (exclusive elif arms; only one runs).
+            _u8_u8_bases = sorted(
                 base
                 for k in header
                 if k.endswith(".weight")
                 and header[k].get("dtype") == "U8"
                 and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
             )
+
+        if fmt == "mxfp4":
+            # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
+            # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
+            # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
+            mxfp4_bases = _u8_u8_bases
             mx4_set: set = {f"{b}.weight" for b in mxfp4_bases} | {f"{b}.weight_scale" for b in mxfp4_bases}
 
             _upload_non_quant(header, mx4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))
@@ -1157,13 +1170,7 @@ def load_safetensors_weights(
             # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
             # CPU dequant: avoids shader changes for per-block FP8.
             # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
-            mxfp8_bases = sorted(
-                base
-                for k in header
-                if k.endswith(".weight")
-                and header[k].get("dtype") == "U8"
-                and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
-            )
+            mxfp8_bases = _u8_u8_bases
             mx8_set: set = {f"{b}.weight" for b in mxfp8_bases} | {f"{b}.weight_scale" for b in mxfp8_bases}
 
             _upload_non_quant(header, mx8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))

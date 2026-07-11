@@ -180,16 +180,15 @@ def get_layer_types(model, hf_config) -> list | None:
     this function with model=None (before weight loading), so the first probe is
     a permanent no-op in the engine code path.
     """
-    return next(
-        (v
-         for obj, attr in [
-             (model, "_layer_types"),
-             (hf_config, "layers_block_type"),
-             (hf_config, "layer_types"),
-         ]
-         if (v := getattr(obj, attr, None)) is not None),
-        None,
-    )
+    for obj, attr in [
+        (model, "_layer_types"),
+        (hf_config, "layers_block_type"),
+        (hf_config, "layer_types"),
+    ]:
+        v = getattr(obj, attr, None)
+        if v is not None:
+            return v
+    return None
 
 
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:

@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME, CONFIG_NAME
 from vllm.logger import init_logger
@@ -115,6 +114,7 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
+    import torch
     if rotary_dim is None:
         rotary_dim = head_dim
 

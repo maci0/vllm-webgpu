@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING
 
 from vllm_webgpu.models.base import _gemv_wg, _rows_wg, _vec4_wg
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 

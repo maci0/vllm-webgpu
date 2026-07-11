@@ -199,9 +199,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         keys (ending in '.weight'); the quant-extra prefix is derived by
         stripping the suffix.
         """
-        assert "K" not in extra_gate_consts and "N" not in extra_gate_consts, (
-            f"extra_gate_consts must not contain 'K' or 'N'; got {set(extra_gate_consts)}"
-        )
+        if "K" in extra_gate_consts or "N" in extra_gate_consts:
+            raise ValueError(
+                f"extra_gate_consts must not contain 'K' or 'N'; "
+                f"got {list(extra_gate_consts.keys())}"
+            )
         msc = self._moe_sc
         hidden = self.hidden_size
         uq_g = self._uq_for_key(gw_key)

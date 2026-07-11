@@ -170,11 +170,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return
 
         dev = self.wgpu_device.wgpu_device
-        rotary_dim = int(
-            rope_scaling.get("rope_dim")
-            or rope_scaling.get("rotary_dim")
-            or int(self.head_dim * float(rope_scaling.get("partial_rotary_factor", 1.0)))
-        )
+        rotary_dim = rope_scaling.get("rope_dim") or rope_scaling.get("rotary_dim")
+        if rotary_dim is None:
+            rotary_dim = int(self.head_dim * float(rope_scaling.get("partial_rotary_factor", 1.0)))
+        rotary_dim = int(rotary_dim)
         freqs, mscale = compute_yarn_freqs(self.head_dim, self.rope_theta, rope_scaling, rotary_dim)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale
@@ -645,6 +644,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         bt_arr = self._bt_arr(attn_metadata)
         bt_bytes = bt_arr.tobytes()
         slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
+
+        # x_buf is updated inside the loop; initialize here so the final-norm
+        # dispatch at line 685 is always bound even if T were ever 0.
+        # In practice T >= 1 (enforced by _prefill_batch_forward callers), but
+        # Python would raise UnboundLocalError without this pre-assignment.
+        x_buf = self._pre["x"]
 
         for t in range(T):
             self._hstate = 0

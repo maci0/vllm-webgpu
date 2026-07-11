@@ -49,12 +49,12 @@ try:
     # The trailing portion of output_sizes is unique to this branch; the
     # ColumnParallelLinear branch uses the one-liner
     # "intermediate_size + self.conv_dim + self.num_heads" instead.
-    _MERGED_IN_PROJ_ANCHOR = (
-        "self.groups_ssm_state_size,\n"
-        "                    self.groups_ssm_state_size,\n"
-        "                    self.num_heads,"
-    )
-    assert _MERGED_IN_PROJ_ANCHOR in _mm2_src, (
+    # Anchor on attribute names rather than exact indentation — black/ruff may
+    # reflow the output_sizes list while preserving the semantics. The invariant
+    # is that groups_ssm_state_size appears twice (once for B, once for C) and
+    # num_heads appears once in this in_proj block.
+    _MERGED_IN_PROJ_ANCHOR = "self.groups_ssm_state_size,"
+    assert _mm2_src.count(_MERGED_IN_PROJ_ANCHOR) >= 2, (
         "MambaMixer2.__init__ in_proj output_sizes layout may have changed "
         "upstream. The MergedColumnParallelLinear branch (mamba_mixer2.py "
         "L328-340) no longer contains the expected 5-entry output_sizes list "
@@ -286,10 +286,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # to return per-layer overrides, including a different intermediate_size.
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
 
-        # Build per-layer intermediate sizes in a single O(num_layers) pass.
-        # At each MLP layer _li, the MLP index matches the vLLM canonical expression:
+        # Build per-layer intermediate sizes in O(num_layers) using a running MLP counter.
+        # The vLLM canonical expression is:
         #   mlp_index = hybrid_override_pattern[: layer_idx + 1].count("-") - 1
         # (NemotronHMLPDecoderLayer.__init__, vLLM 0.24, lines 280-292)
+        # A slice + count() per layer is O(n^2). The running counter below is O(n).
         # VERSION SYNC: verify on each vLLM version bump that this resolution
         # logic has not changed.
         def _resolve(v, idx):
@@ -300,7 +301,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             guard at the top of this file, which detects changes to the upstream
             resolution pattern.
             """
-            # TODO: Mirrors NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24).
+            # TODO: Mirrors NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24,
+            # commit to verify: run `pip show vllm | grep Version` and cross-check
+            # NemotronHMLPDecoderLayer.__init__ on each vLLM version bump before release).
             # Update together with the guard at module top if upstream adds a new
             # branch (e.g. per-head lists). The guard detects structural changes
             # but cannot autofix this copy.
@@ -309,11 +312,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             return v
 
         _layer_int_sizes: list[int] = []
+        _mlp_count = -1
         for _li, _lt in enumerate(self._layer_types):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_count = self._layer_types[:_li + 1].count("mlp") - 1
+            _mlp_count += 1
             if _get_layer_cfg is not None:
                 _lcfg = _get_layer_cfg(_li)
                 # Per-layer bias check for puzzle (heterogeneous) models.
