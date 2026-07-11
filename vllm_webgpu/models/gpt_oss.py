@@ -280,13 +280,14 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             )
 
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
-        # Allocate only expert_gate and expert_up here; expert_tmp is allocated by the
-        # 'if "expert_tmp" not in msc:' guard in _dispatch_expert_down, not by _ensure_moe_expert_bufs.
+        # Allocate expert_gate, expert_up, and expert_tmp together to maintain the three-buffer
+        # invariant expected by _ensure_moe_expert_bufs and the quantized _dispatch_expert_down path.
         msc = self._moe_sc
         if "expert_gate" not in msc:
             _act_sz = self._moe_act_sz
             msc["expert_gate"] = self._make_buf(_act_sz * 2)
             msc["expert_up"]   = self._make_buf(_act_sz * 2)
+            msc["expert_tmp"]  = self._make_buf(self.hidden_size * 2)
         if "expert_gate_biased" not in msc:
             msc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
         hidden = self.hidden_size
