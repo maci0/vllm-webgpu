@@ -145,14 +145,27 @@ except ImportError:
 def _load_quant_cfg(config_path: Path) -> dict:
     """Return the quantization config dict for a model.
 
-    Uses compressed_tensors.get_quantization_config, which handles nested
-    locations (text_config, compression_config) and multimodal variants.
+    Uses compressed_tensors.get_quantization_config when available, which
+    handles nested locations (text_config, compression_config) and multimodal
+    variants. When compressed_tensors is not installed, falls back to reading
+    config.json directly and applying the same three-key cascade, so the
+    unsupported-quantization guard is always active.
     Returns {} on any failure.
     """
-    if _ct_get_quant_cfg is None:
-        return {}
+    if _ct_get_quant_cfg is not None:
+        try:
+            return _ct_get_quant_cfg(str(config_path)) or {}
+        except Exception:
+            return {}
     try:
-        return _ct_get_quant_cfg(str(config_path)) or {}
+        with open(config_path) as f:
+            cfg = json.load(f)
+        return (
+            cfg.get("quantization_config")
+            or cfg.get("text_config", {}).get("quantization_config")
+            or cfg.get("compression_config")
+            or {}
+        )
     except Exception:
         return {}
 
