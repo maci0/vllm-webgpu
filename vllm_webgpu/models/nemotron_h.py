@@ -122,6 +122,11 @@ except (ImportError, OSError):
 
 
 
+def _neg_exp(arr):
+    """Element-wise -exp(arr). Used to transform A_log weights for Mamba layers."""
+    return -np.exp(arr)
+
+
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
 # 0 = F16 (no quantization), 3 = GPTQ int4, 4 = AWQ sym int4,
 # 5 = fp8_gpu, 6 = nvfp4_gpu, 7 = int8_gpu, 8 = nf4_gpu.
@@ -205,10 +210,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Applied during load_weights before GPU upload, eliminating a per-layer
         # GPU readback+re-upload that _validate_mamba_weights would otherwise
         # require. The transform uses the HF checkpoint key name (backbone. prefix).
-        _a_log_transform = lambda arr: -np.exp(arr)  # noqa: E731
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "mamba":
-                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _a_log_transform
+                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _neg_exp
 
         # Per-layer CPU-side scale accumulator for attention layers.
         # For GPTQ (and AWQ) checkpoints the weight loader fires these callbacks

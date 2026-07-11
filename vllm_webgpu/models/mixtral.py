@@ -441,6 +441,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # Zero-initialize expert_out before Phase B whenever no shared expert
         # will seed it. Check weight availability here so the write_buffer
         # always precedes Phase B encoder creation (consistent ordering).
+        _shared_weights_present = False
         if shared_expert_prefix is None:
             dev.queue.write_buffer(msc["expert_out"].buf, 0, self._expert_out_zeros)
         else:

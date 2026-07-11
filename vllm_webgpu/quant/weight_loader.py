@@ -41,7 +41,7 @@ def _locate_index(directory: "Path") -> "Path | None":
             "compressed_tensors is required but could not be imported. "
             "Install it with: pip install compressed_tensors"
         )
-    found = _ct_find_index(str(directory))
+    found = _ct_find_index(directory)
     return Path(found) if found else None
 
 
@@ -120,18 +120,11 @@ def _upload_tensor(
     )
     return len(data)
 
-try:
-    from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
-    from compressed_tensors import QuantizationConfig as _QuantizationConfig
-    from compressed_tensors.quantization import QuantizationType as _QuantizationType
-    from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
-    from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
-except ImportError:
-    _ct_get_quant_cfg = None
-    _QuantizationConfig = None
-    _QuantizationType = None
-    _QuantizationStrategy = None
-    _ct_find_index = None
+from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
+from compressed_tensors import QuantizationConfig as _QuantizationConfig
+from compressed_tensors.quantization import QuantizationType as _QuantizationType
+from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
+from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
 
 try:
     from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
@@ -881,9 +874,9 @@ def load_safetensors_weights(
                 # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
                 # logical_shape=arr.shape tags the buffer with the original f16 element
                 # shape even though the underlying storage is u32 (packed u16 pairs).
-                # Re-fetch the tensor here so t_raw is scoped to this block and linters
-                # do not flag a possible-unbound reference to t_bf16 from the sibling elif.
-                t_raw = sf.get_tensor(name)
+                # t_bf16 is always bound here: this branch is only entered when
+                # dtype_str == 'BF16', which is the same condition that bound t_bf16 above.
+                t_raw = t_bf16
                 u16 = t_raw.view(torch.uint16).numpy()
                 if u16.shape != arr.shape:
                     u16 = u16.reshape(arr.shape)

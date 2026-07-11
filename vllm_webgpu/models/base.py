@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.utils.math_utils import cdiv
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
@@ -59,7 +60,7 @@ def _vals_per_thread(hidden_size: int) -> int:
     VALS_PER_THREAD > 0u internally (rms_norm.wgsl, add_rms_norm.wgsl).
     """
     if hidden_size <= 256 * 16:
-        return (hidden_size + 255) // 256
+        return cdiv(hidden_size, 256)
     return 0
 
 logger = init_logger(__name__)
@@ -110,8 +111,9 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    # Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq (yarn_scaling_rope.py:49).
-    # Verify against a freshly instantiated YaRNScalingRotaryEmbedding on each vLLM bump.
+    # Matches YaRNScalingRotaryEmbedding._compute_inv_freq (yarn_scaling_rope.py:49).
+    # tests/test_yarn_freqs.py compares this output against the vLLM reference on
+    # every run, so any formula drift is caught automatically on each vLLM bump.
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )

@@ -110,7 +110,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         return getattr(self.model_config, "canvas_length", 256)
 
     def _scratch_inter_size(self) -> int:
-        return max(max(lp["intermediate_size"] for lp in self._lp), self.moe_intermediate_size)
+        return max(super()._scratch_inter_size(), self.moe_intermediate_size)
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Allocate scratch buffers without qkv_buf, which _decoder_layer never uses.
@@ -126,19 +126,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         H = self.hidden_size
         I = self._max_inter
         NQ = self.num_q_heads
-        V = self.vocab_size
 
-        self._pre: dict[str, "WebGPUBuffer"] = {
-            "ids":      self._make_buf(T * 4),
-            "pos":      self._make_buf(T * 4),
-            "slot_map": self._make_buf(T * 4),
-            "bt":       self._make_buf(max(4096, (max_ctx + self.block_size - 1) // self.block_size) * 4),
-            "x":        self._make_buf(T * H * 4),
-            "norm_out": self._make_buf(T * H * 2),
-            "logits":   self._make_buf(T * V * 2),
-        }
-        if self.softcap is not None and self.softcap > 0:
-            self._pre["capped"] = self._make_buf(T * V * 2)
+        self._init_pre_buffers(max_ctx)
 
         # qkv_buf omitted: _decoder_layer projects Q, K, V separately into q_buf,
         # k_buf, v_buf; the fused [Q|K|V] buffer used by _transformer_layer is

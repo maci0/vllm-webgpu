@@ -322,13 +322,15 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """Intermediate size for FFN scratch buffers. Override in subclasses."""
         return max(lp["intermediate_size"] for lp in self._lp)
 
-    def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
-        """Pre-allocate scratch buffers at maximum layer dimensions."""
+    def _init_pre_buffers(self, max_ctx: int) -> None:
+        """Allocate the _pre dict of per-step reuse buffers.
+
+        Extracted so DiffusionGemmaWebGPUModel can call this without duplicating
+        the allocation. Any new entry added here is automatically present for all
+        subclasses that delegate via super().
+        """
         T = self._scratch_token_count()
         H = self.hidden_size
-        I = self._max_inter
-
-        # Pre-allocated per-step buffers (reused every decode via write_buffer).
         V = self.vocab_size
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      self._make_buf(T * 4),         # [1] uint32 token id
@@ -341,6 +343,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         }
         if self.softcap is not None and self.softcap > 0:
             self._pre["capped"] = self._make_buf(T * V * 2)  # [1, V] f16 softcapped logits (Gemma4)
+
+    def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
+        """Pre-allocate scratch buffers at maximum layer dimensions."""
+        T = self._scratch_token_count()
+        H = self.hidden_size
+        I = self._max_inter
+
+        self._init_pre_buffers(max_ctx)
 
         self._sc: dict[str, "WebGPUBuffer"] = {
             "normed":     self._make_buf(T * H * 2),                              # f16
