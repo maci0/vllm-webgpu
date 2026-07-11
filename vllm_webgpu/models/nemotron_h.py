@@ -31,28 +31,40 @@ del _mapper
 
 # Import-time sentinel: confirm MambaMixer2's in_proj layout still matches the
 # formula used by in_proj_dim (mamba_int + conv_dim + mamba_num_heads).
-# The ColumnParallelLinear branch at mamba_mixer2.py L355 is the canonical
-# expression of this sum: intermediate_size + self.conv_dim + self.num_heads,
-# where conv_dim = intermediate_size + 2*groups_ssm_state_size (L313).
+# WebGPU always uses tp=1, so the active branch is always MergedColumnParallelLinear
+# (mamba_mixer2.py L328-340), with output_sizes=[intermediate_size, intermediate_size,
+# groups_ssm_state_size, groups_ssm_state_size, num_heads] (5 entries summing to
+# 2*intermediate_size + 2*groups_ssm_state_size + num_heads).
 # Fires at import time so a vLLM upgrade that restructures in_proj (e.g.
 # separating dt_rank into its own group) is caught before any model is loaded.
 # Silently skipped on .pyc-only installs where inspect.getsource is unavailable.
-# NOTE: _validate_mamba_weights is the authoritative runtime guard — it checks
+# NOTE: _validate_mamba_weights is the authoritative runtime guard. It checks
 # the actual in_proj.weight shape from the loaded checkpoint against in_proj_dim.
 # This import-time check catches upstream changes before any model is loaded.
 try:
     import inspect as _inspect
     from vllm.model_executor.layers.mamba import mamba_mixer2 as _mm2_mod
     _mm2_src = _inspect.getsource(_mm2_mod.MambaMixer2.__init__)
-    assert "self.conv_dim + self.num_heads" in _mm2_src, (
-        "MambaMixer2.__init__ in_proj layout may have changed upstream. "
-        "The ColumnParallelLinear branch (mamba_mixer2.py L355) no longer "
-        "contains 'self.conv_dim + self.num_heads'. Review the in_proj_dim "
-        "formula in NemotronHWebGPUModel.__init__ "
+    # Anchor to the MergedColumnParallelLinear in_proj branch (tp=1 path).
+    # The trailing portion of output_sizes is unique to this branch; the
+    # ColumnParallelLinear branch uses the one-liner
+    # "intermediate_size + self.conv_dim + self.num_heads" instead.
+    _MERGED_IN_PROJ_ANCHOR = (
+        "self.groups_ssm_state_size,\n"
+        "                    self.groups_ssm_state_size,\n"
+        "                    self.num_heads,"
+    )
+    assert _MERGED_IN_PROJ_ANCHOR in _mm2_src, (
+        "MambaMixer2.__init__ in_proj output_sizes layout may have changed "
+        "upstream. The MergedColumnParallelLinear branch (mamba_mixer2.py "
+        "L328-340) no longer contains the expected 5-entry output_sizes list "
+        "[intermediate_size, intermediate_size, groups_ssm_state_size, "
+        "groups_ssm_state_size, num_heads]. Review the in_proj_dim formula "
+        "in NemotronHWebGPUModel.__init__ "
         "(mamba_int + conv_dim + mamba_num_heads) and update "
         "_validate_mamba_weights before removing this assertion."
     )
-    del _inspect, _mm2_mod, _mm2_src
+    del _inspect, _mm2_mod, _mm2_src, _MERGED_IN_PROJ_ANCHOR
 except (ImportError, OSError):
     # ImportError: mamba_mixer2 moved upstream; OSError: .pyc-only install.
     # _validate_mamba_weights checks the actual weight shape at load time.
