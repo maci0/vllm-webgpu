@@ -9,53 +9,18 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME, CONFIG_NAME
 from vllm.logger import init_logger
-from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import YaRNScalingRotaryEmbedding
+from vllm.model_executor.layers.rotary_embedding.common import (
+    yarn_find_correction_range,
+    yarn_get_mscale,
+    yarn_linear_ramp_mask,
+)
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
-# Import-time guard: verify that _compute_inv_freq reads only the self attributes
-# we populate in the object.__new__ stub inside compute_yarn_freqs(). If vLLM
-# refactors the method to read additional attributes (e.g. self.scaling_factor),
-# the AttributeError that would otherwise surface at model-load time is promoted
-# to an ImportError here, caught immediately on install/startup.
-#
-# Also guard the mscale formula: compute_yarn_freqs() mirrors
-# YaRNScalingRotaryEmbedding.__init__'s mscale computation using yarn_get_mscale
-# directly. If the class drops yarn_get_mscale, our local formula drifts silently.
-try:
-    import inspect as _inspect
-    import re as _re
-
-    _yarn_inv_src = _inspect.getsource(YaRNScalingRotaryEmbedding._compute_inv_freq)
-    _yarn_init_src = _inspect.getsource(YaRNScalingRotaryEmbedding.__init__)
-
-    _YARN_STUB_ATTRS = {
-        "base", "rotary_dim", "max_position_embeddings",
-        "beta_fast", "beta_slow", "truncate", "extrapolation_factor",
-        "scaling_factor", "attn_factor",
-    }
-    _yarn_self_reads = set(_re.findall(r"self\.(\w+)", _yarn_inv_src))
-    _yarn_unexpected = _yarn_self_reads - _YARN_STUB_ATTRS
-    assert not _yarn_unexpected, (
-        f"YaRNScalingRotaryEmbedding._compute_inv_freq now reads self attributes "
-        f"not set by the object.__new__ stub in compute_yarn_freqs(): "
-        f"{_yarn_unexpected}. Update the stub or switch to full instantiation."
-    )
-
-    assert "yarn_get_mscale" in _yarn_init_src, (
-        "YaRNScalingRotaryEmbedding.__init__ no longer uses yarn_get_mscale for "
-        "mscale. The local mscale formula in compute_yarn_freqs() will drift. "
-        "Update compute_yarn_freqs() to match the new formula."
-    )
-
-    del _inspect, _re, _yarn_inv_src, _yarn_init_src, _YARN_STUB_ATTRS
-    del _yarn_self_reads, _yarn_unexpected
-except (ImportError, OSError):
-    pass  # .pyc-only installs: skip source inspection
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -130,18 +95,10 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    inv_freq is computed by calling YaRNScalingRotaryEmbedding._compute_inv_freq
-    directly via object.__new__ (bypassing __init__ to avoid the cos/sin cache
-    build and ApplyRotaryEmb instantiation that require a live vLLM config).
-
-    The attributes set on the stub match exactly what _compute_inv_freq reads.
-    An import-time assertion below (_YARN_COMPUTE_INV_FREQ_GUARD) inspects the
-    method source to verify no new self.X accesses have been added. If the
-    guard fires, audit this function and update the stub attributes accordingly.
-
-    mscale is computed locally using yarn_get_mscale (the same formula the
-    class uses). A separate guard asserts the class's mscale formula still
-    uses yarn_get_mscale so drift is caught at import time.
+    inv_freq is computed directly using yarn_find_correction_range and
+    yarn_linear_ramp_mask from vllm.model_executor.layers.rotary_embedding.common,
+    which are the same public functions that YaRNScalingRotaryEmbedding uses
+    internally. mscale uses yarn_get_mscale from the same module.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -170,24 +127,19 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    obj = object.__new__(YaRNScalingRotaryEmbedding)
-    obj.base                      = rope_theta
-    obj.rotary_dim                = rotary_dim
-    obj.max_position_embeddings   = orig_ctx
-    obj.beta_fast                 = beta_fast
-    obj.beta_slow                 = beta_slow
-    obj.truncate                  = truncate
-    obj.extrapolation_factor      = extrapolation_factor
-    obj.scaling_factor            = factor
-    obj.attn_factor               = attn_factor
-    inv_freq = obj._compute_inv_freq(factor)
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    inv_freq_extrap = 1.0 / pos_freqs
+    inv_freq_interp = 1.0 / (factor * pos_freqs)
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    inv_freq = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).numpy().astype(np.float32)
 
     mscale = (
-        float(yarn_get_mscale(obj.scaling_factor) * obj.attn_factor)
+        float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
-        else float(obj.attn_factor)
+        else float(attn_factor)
     )
-    return inv_freq.numpy().astype(np.float32), mscale
+    return inv_freq, mscale
 
 
 
