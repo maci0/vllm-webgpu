@@ -188,9 +188,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Hoisted per-model constants for the attention SCALE computation.
         # Both attributes are fixed at construction time; evaluating them per layer
         # (48 layers x N chunks per prefill) is unnecessary work.
-        self._is_gemma4_model: bool = self._apply_v_norm
         self._query_pre_attn_scalar: "float | None" = (
-            None if self._is_gemma4_model
+            None if self._apply_v_norm
             else getattr(model_config, "query_pre_attn_scalar", None)
         )
         if raw_lp and len(raw_lp) == self.num_layers:
@@ -318,49 +317,45 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Pre-allocate scratch buffers at maximum layer dimensions."""
-        dev = self.wgpu_device.wgpu_device
         T = self._scratch_token_count()
         H = self.hidden_size
         I = self._max_inter
 
-        def mk(n: int) -> "WebGPUBuffer":
-            return WebGPUBuffer.empty(dev, n)
-
         # Pre-allocated per-step buffers (reused every decode via write_buffer).
         V = self.vocab_size
         self._pre: dict[str, "WebGPUBuffer"] = {
-            "ids":      mk(T * 4),         # [1] uint32 token id
-            "pos":      mk(T * 4),         # [1] uint32 position
-            "slot_map": mk(T * 4),         # [1] uint32 physical slot
-            "bt":       mk(max(4096, (max_ctx + self.block_size - 1) // self.block_size) * 4),  # block table
-            "x":        mk(T * H * 4),     # [1, H] f32 residual
-            "norm_out": mk(T * H * 2),     # [1, H] f16 final norm
-            "logits":   mk(T * V * 2),     # [1, V] f16 logits
+            "ids":      self._make_buf(T * 4),         # [1] uint32 token id
+            "pos":      self._make_buf(T * 4),         # [1] uint32 position
+            "slot_map": self._make_buf(T * 4),         # [1] uint32 physical slot
+            "bt":       self._make_buf(max(4096, (max_ctx + self.block_size - 1) // self.block_size) * 4),  # block table
+            "x":        self._make_buf(T * H * 4),     # [1, H] f32 residual
+            "norm_out": self._make_buf(T * H * 2),     # [1, H] f16 final norm
+            "logits":   self._make_buf(T * V * 2),     # [1, V] f16 logits
         }
         if self.softcap is not None and self.softcap > 0:
-            self._pre["capped"] = mk(T * V * 2)  # [1, V] f16 softcapped logits (Gemma4)
+            self._pre["capped"] = self._make_buf(T * V * 2)  # [1, V] f16 softcapped logits (Gemma4)
 
         self._sc: dict[str, "WebGPUBuffer"] = {
-            "normed":     mk(T * H * 2),                              # f16
-            "qkv_buf":    mk(T * (max_q_dim + 2 * max_kv_dim) * 2),  # f16 [Q|K|V]
-            "q_buf":      mk(T * max_q_dim * 2),                      # f16
-            "k_buf":      mk(T * max_kv_dim * 2),                     # f16
-            "v_buf":      mk(T * max_kv_dim * 2),                     # f16
-            "v_normed":   mk(T * max_kv_dim * 2),                     # f16
-            "q_rope":     mk(T * max_q_dim * 2),  # f16
-            "k_rope":     mk(T * max_kv_dim * 2), # f16
-            "attn_out":   mk(T * max_q_dim * 2),  # f16
-            "o_proj_out": mk(T * H * 2),           # f16
-            "gate_buf":   mk(T * I * 2),           # f16
-            "up_buf":     mk(T * I * 2),           # f16
-            "ffn_act":    mk(T * I * 2),
-            "ffn_out":    mk(T * H * 2),
+            "normed":     self._make_buf(T * H * 2),                              # f16
+            "qkv_buf":    self._make_buf(T * (max_q_dim + 2 * max_kv_dim) * 2),  # f16 [Q|K|V]
+            "q_buf":      self._make_buf(T * max_q_dim * 2),                      # f16
+            "k_buf":      self._make_buf(T * max_kv_dim * 2),                     # f16
+            "v_buf":      self._make_buf(T * max_kv_dim * 2),                     # f16
+            "v_normed":   self._make_buf(T * max_kv_dim * 2),                     # f16
+            "q_rope":     self._make_buf(T * max_q_dim * 2),  # f16
+            "k_rope":     self._make_buf(T * max_kv_dim * 2), # f16
+            "attn_out":   self._make_buf(T * max_q_dim * 2),  # f16
+            "o_proj_out": self._make_buf(T * H * 2),           # f16
+            "gate_buf":   self._make_buf(T * I * 2),           # f16
+            "up_buf":     self._make_buf(T * I * 2),           # f16
+            "ffn_act":    self._make_buf(T * I * 2),
+            "ffn_out":    self._make_buf(T * H * 2),
             # Residual buffers stored in f32 for precision.
             # Gemma4 has output_norm weights up to 600 which cause f16 saturation
             # when accumulated across 48 layers — f32 residuals prevent this.
-            "h0":         mk(T * H * 4),           # f32 (4 bytes)
-            "h1":         mk(T * H * 4),           # f32
-            "h2":         mk(T * H * 4),           # f32
+            "h0":         self._make_buf(T * H * 4),           # f32 (4 bytes)
+            "h1":         self._make_buf(T * H * 4),           # f32
+            "h2":         self._make_buf(T * H * 4),           # f32
         }
         self._hstate: int = 0
 
@@ -563,37 +558,34 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         max_q_dim  = self._max_q_dim
         max_kv_dim = self._max_kv_dim
 
-        def alloc(n_bytes: int) -> WebGPUBuffer:
-            return WebGPUBuffer.empty(dev, max(n_bytes, 8))
-
         # T-token batch buffers. Allocated once per prefill call;
         # allocation cost is negligible vs the GEMM savings.
         b: dict = {
-            "x":        alloc(T * hidden * 4),       # f32 embedding residual
-            "normed":   alloc(T * hidden * 2),        # f16 normed (pre-attn and pre-FFN)
-            "q_buf":    alloc(T * max_q_dim * 2),     # f16 Q projection output
-            "k_buf":    alloc(T * max_kv_dim * 2),    # f16 K projection output
-            "v_buf":    alloc(T * max_kv_dim * 2),    # f16 V projection output
-            "q_rope":   alloc(T * max_q_dim * 2),     # f16 Q after norm+rope
-            "k_rope":   alloc(T * max_kv_dim * 2),    # f16 K after norm+rope
-            "v_normed": alloc(T * max_kv_dim * 2),    # f16 V after per-head RMS norm
-            "attn_out": alloc(T * max_q_dim * 2),     # f16 attention output
-            "o_proj":   alloc(T * hidden * 2),         # f16 output projection
-            "ffn_n":    alloc(T * hidden * 2),         # f16 FFN normed (intermediate)
-            "gate_buf": alloc(T * max_inter * 2),          # f16 FFN gate
-            "up_buf":   alloc(T * max_inter * 2),          # f16 FFN up
-            "ffn_act":  alloc(T * max_inter * 2),          # f16 activated gate*up
-            "ffn_out":  alloc(T * hidden * 2),         # f16 FFN output
-            "h0":       alloc(T * hidden * 4),         # f32 residual (rotation slot 0)
-            "h1":       alloc(T * hidden * 4),         # f32 residual (rotation slot 1)
-            "h2":       alloc(T * hidden * 4),         # f32 residual (rotation slot 2)
+            "x":        self._make_buf(T * hidden * 4),       # f32 embedding residual
+            "normed":   self._make_buf(T * hidden * 2),        # f16 normed (pre-attn and pre-FFN)
+            "q_buf":    self._make_buf(T * max_q_dim * 2),     # f16 Q projection output
+            "k_buf":    self._make_buf(T * max_kv_dim * 2),    # f16 K projection output
+            "v_buf":    self._make_buf(T * max_kv_dim * 2),    # f16 V projection output
+            "q_rope":   self._make_buf(T * max_q_dim * 2),     # f16 Q after norm+rope
+            "k_rope":   self._make_buf(T * max_kv_dim * 2),    # f16 K after norm+rope
+            "v_normed": self._make_buf(T * max_kv_dim * 2),    # f16 V after per-head RMS norm
+            "attn_out": self._make_buf(T * max_q_dim * 2),     # f16 attention output
+            "o_proj":   self._make_buf(T * hidden * 2),         # f16 output projection
+            "ffn_n":    self._make_buf(T * hidden * 2),         # f16 FFN normed (intermediate)
+            "gate_buf": self._make_buf(T * max_inter * 2),          # f16 FFN gate
+            "up_buf":   self._make_buf(T * max_inter * 2),          # f16 FFN up
+            "ffn_act":  self._make_buf(T * max_inter * 2),          # f16 activated gate*up
+            "ffn_out":  self._make_buf(T * hidden * 2),         # f16 FFN output
+            "h0":       self._make_buf(T * hidden * 4),         # f32 residual (rotation slot 0)
+            "h1":       self._make_buf(T * hidden * 4),         # f32 residual (rotation slot 1)
+            "h2":       self._make_buf(T * hidden * 4),         # f32 residual (rotation slot 2)
             # Single-token scratch for final norm + LM head
-            "last_f32":  alloc(hidden * 4),            # f32 last-token residual copy
-            "last_norm": alloc(hidden * 2),            # f16 last-token after final norm
-            "logits":    alloc(vocab * 2),             # f16 LM head output
+            "last_f32":  self._make_buf(hidden * 4),            # f32 last-token residual copy
+            "last_norm": self._make_buf(hidden * 2),            # f16 last-token after final norm
+            "logits":    self._make_buf(vocab * 2),             # f16 LM head output
         }
         if self.softcap is not None and self.softcap > 0:
-            b["capped"] = alloc(vocab * 2)             # f16 softcapped logits (Gemma4)
+            b["capped"] = self._make_buf(vocab * 2)             # f16 softcapped logits (Gemma4)
         slot_map_buf = WebGPUBuffer.from_numpy(
             dev, np.asarray(attn_metadata.slot_mapping, dtype=np.uint32))
         pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
@@ -798,7 +790,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                          "NUM_KV_HEADS": num_kv_heads,
                          "HEAD_DIM":     head_dim,
                          "NUM_T":        T,
-                         "SCALE":        1.0 if self._is_gemma4_model else ((self._query_pre_attn_scalar or head_dim) ** -0.5)},
+                         "SCALE":        1.0 if self._apply_v_norm else ((self._query_pre_attn_scalar or head_dim) ** -0.5)},
                         (self.num_q_heads, T, 1))
 
                     # Output projection (batch GEMM)
@@ -1219,7 +1211,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
                             "CTX_LEN": ctx_len,
-                            "SCALE": 1.0 if self._is_gemma4_model else ((self._query_pre_attn_scalar or head_dim) ** -0.5)},
+                            "SCALE": 1.0 if self._apply_v_norm else ((self._query_pre_attn_scalar or head_dim) ** -0.5)},
                            (self.num_q_heads, 1, 1))
 
             # Output projection → sc["o_proj_out"]

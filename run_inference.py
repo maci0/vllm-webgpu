@@ -3,7 +3,6 @@
 The run() function requires transformers and wgpu. When invoked from __main__,
 huggingface_hub.snapshot_download is used to resolve a repo ID to a local path.
 """
-import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -183,6 +182,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.gdn_bf16:
+        import os
         os.environ["GDN_BF16"] = "1"
 
     from huggingface_hub import snapshot_download

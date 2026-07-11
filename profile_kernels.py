@@ -151,11 +151,11 @@ def main() -> None:
         # Sum actual compressed buffer sizes from loaded weights. This is correct for
         # all quantization formats (F16, GPTQ INT4, FP8, NF4) because WebGPUBuffer.nbytes
         # returns buf.size, which reflects the real on-device allocation.
-        # Exclude metadata keys (__*) and scale tensors (.scales) that are not weight
-        # data streamed through the shader per step.
+        # Exclude metadata keys (__*) only; scale tensors are bound and read by the
+        # shader on every quantized GEMV and must be counted for an accurate bandwidth figure.
         total_w_bytes = sum(
             v.nbytes for k, v in model.weights.items()
-            if not k.startswith('__') and not k.endswith('.scales')
+            if not k.startswith('__')
         )
         total_w_mb = total_w_bytes / 1e6
         bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s

@@ -100,13 +100,13 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # matches the vLLM formula regardless of future changes to mamba_utils.py.
         # The shape calculator returns a 2-tuple; extract conv_dim from the axis that
         # holds it (axis order depends on VLLM_SSM_CONV_STATE_LAYOUT).
-        _conv_shape_init, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+        self._gdn_conv_shape, self._gdn_ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
             tp_world_size=1,
             num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
             head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
         )
-        self._lin_conv_dim: int = _conv_shape_init[0] if is_conv_state_dim_first() else _conv_shape_init[1]
+        self._lin_conv_dim: int = self._gdn_conv_shape[0] if is_conv_state_dim_first() else self._gdn_conv_shape[1]
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
@@ -292,12 +292,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         """
         dev = self.wgpu_device.wgpu_device
 
-        conv_shape, ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            tp_world_size=1,
-            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
-            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
-            conv_kernel_size=self._lin_conv_kernel,
-        )
         # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, V_DIM, K_DIM] f32,
         # matching vLLM's gated_delta_net_state_shape convention.
         #
@@ -309,8 +303,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # _lin_conv_dim is derived from gated_delta_net_state_shape in __init__ rather
         # than re-computed from the config formula, so it is always consistent with the
         # conv_shape returned here. No extra assertion is needed.
-        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
-        ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
+        conv_bytes = math.prod(self._gdn_conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(self._gdn_ssm_shape)  * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = [None] * self.num_layers
         self._conv_gpu = [None] * self.num_layers

@@ -241,9 +241,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         super()._ensure_moe_expert_bufs()
         msc = self._moe_sc
         if "expert_gate_biased" not in msc:
-            dev = self.wgpu_device.wgpu_device
-            msc["expert_gate_biased"] = WebGPUBuffer.empty(dev, max(self._moe_act_sz * 2, 8))
-            msc["expert_down_tmp"]    = WebGPUBuffer.empty(dev, max(self.hidden_size * 2, 8))
+            msc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
+            msc["expert_down_tmp"]    = self._make_buf(self.hidden_size * 2)
 
     def _dispatch_expert_gate_up(
         self,

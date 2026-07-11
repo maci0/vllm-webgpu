@@ -298,7 +298,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _lt != "mlp":
                 _layer_int_sizes.append(0)
                 continue
-            _mlp_count = model_config.hybrid_override_pattern[:_li + 1].count("-") - 1
+            _mlp_count = self._layer_types[:_li + 1].count("mlp") - 1
             if _get_layer_cfg is not None:
                 _lcfg = _get_layer_cfg(_li)
                 # Per-layer bias check for puzzle (heterogeneous) models.

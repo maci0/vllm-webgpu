@@ -83,10 +83,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         def _tile_norm(a, n_heads):
             return np.tile(a, n_heads) if a.shape == (head_dim,) else a
 
+        _q_xform = lambda a: _tile_norm(a, num_q)
+        _k_xform = lambda a: _tile_norm(a, num_kv)
         for _i in range(self.num_layers):
             _p = f"model.layers.{_i}"
-            self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = lambda a, n=num_q: _tile_norm(a, n)
-            self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = lambda a, n=num_kv: _tile_norm(a, n)
+            self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = _q_xform
+            self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = _k_xform
         # Cached after load_weights: True iff all *_proj weights are USE_QUANT=0 or 3.
         # None means not yet computed (weights not yet loaded).
         self._batch_matmul_supported: bool | None = None

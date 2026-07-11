@@ -76,6 +76,11 @@ def allocate_kv_from_tensors(
         # head_size_v instead of allocating each buffer at its correct size.
         first_name = tensor.shared_by[0]
         spec = layer_spec_map.get(first_name)
+        if spec is None:
+            raise RuntimeError(
+                f"Layer {first_name!r} appears in kv_cache_tensors.shared_by but is absent "
+                "from every kv_cache_group.layer_names. This is a vLLM integration bug."
+            )
         if isinstance(spec, MLAAttentionSpec):
             raise NotImplementedError(
                 f"MLA KV cache ({type(spec).__name__}) is not supported by the WebGPU backend. "
@@ -175,15 +180,16 @@ def get_layer_types(model, hf_config) -> list | None:
     this function with model=None (before weight loading), so the first probe is
     a permanent no-op in the engine code path.
     """
-    for obj, attr in [
-        (model, "_layer_types"),
-        (hf_config, "layers_block_type"),
-        (hf_config, "layer_types"),
-    ]:
-        val = getattr(obj, attr, None)
-        if val is not None:
-            return val
-    return None
+    return next(
+        (v
+         for obj, attr in [
+             (model, "_layer_types"),
+             (hf_config, "layers_block_type"),
+             (hf_config, "layer_types"),
+         ]
+         if (v := getattr(obj, attr, None)) is not None),
+        None,
+    )
 
 
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:

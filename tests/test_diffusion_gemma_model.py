@@ -28,6 +28,7 @@ def make_diffusion_gemma_config():
     # moe_intermediate_size must be <= intermediate_size so sc["gate_buf"]/["up_buf"]
     # (sized at intermediate_size) can safely hold expert projections too.
     cfg.moe_intermediate_size = 128
+    cfg.canvas_length = 1
     return cfg
 
 

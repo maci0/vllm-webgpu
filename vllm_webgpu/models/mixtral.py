@@ -7,11 +7,11 @@ import numpy as np
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import _gemv_wg, _rows_wg, _vec4_wg
 from vllm_webgpu.models.llama import LlamaWebGPUModel
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
