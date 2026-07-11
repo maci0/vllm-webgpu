@@ -116,6 +116,11 @@ class WebGPUWorker(WorkerBase):
             "model_runner.model directly."
         )
 
+    def get_model_inspection(self) -> str:
+        raise NotImplementedError(
+            "WebGPU models are not nn.Module instances; model inspection is not supported."
+        )
+
     def update_max_model_len(self, max_model_len: int) -> None:
         self.model_config.max_model_len = max_model_len
         # WebGPUModelRunner reads max_model_len via the shared vllm_config.model_config
