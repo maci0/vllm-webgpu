@@ -199,16 +199,24 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     # ── Weight loading ───────────────────────────────────────────────────────
 
-    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
-                     skip_prefixes: "frozenset[str] | None" = None) -> None:
-        """Load weights and cache per_expert_scale arrays to avoid per-step GPU readbacks."""
-        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
-        # Cache per_expert_scale for each MoE layer. Each to_numpy() is a blocking
-        # GPU-CPU sync (~100 µs); caching once at load time avoids N syncs per step.
-        if self.is_moe:
-            for i in range(self.num_layers):
-                p = self._layer_key_prefix(i)
-                pes_w = self.weights.get(f"{p}.router.per_expert_scale") or self.weights.get(f"{p}.moe.per_expert_scale")
+    def _load_layer_scales(self) -> None:
+        """Override to cache layer_scalar and per_expert_scale in one O(num_layers) pass.
+
+        Gemma4WebGPUModel._load_layer_scales iterates over all layers for layer_scalar.
+        DiffusionGemma also needs to cache per_expert_scale. Combining both into a single
+        loop here avoids the redundant traversal that would result from a separate pass
+        in load_weights when is_moe=True.
+        """
+        self._layer_scales = []
+        for i in range(self.num_layers):
+            p = self._layer_key_prefix(i)
+            ls_buf = self.weights.get(f"{p}.layer_scalar")
+            self._layer_scales.append(
+                self._buf_to_numpy(ls_buf).item() if ls_buf is not None else 1.0
+            )
+            if self.is_moe:
+                pes_w = (self.weights.get(f"{p}.router.per_expert_scale")
+                         or self.weights.get(f"{p}.moe.per_expert_scale"))
                 if pes_w is not None:
                     self._pes_cache[i] = self._buf_to_numpy(pes_w).astype(np.float32)
 
@@ -437,8 +445,23 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 )
             _has_norms = _q_nw is not None and (is_kv_shared or _k_nw is not None)
             attn_scale = 1.0 if _has_norms else head_dim ** -0.5
-            if _q_nw is not None:
-                # Binding 4 (inv_freq_buf): always provided.
+            if _q_nw is not None and not is_kv_shared:
+                # Common non-KV-shared path: both Q and K have per-head norm weights and
+                # each lives in its own separate buffer. Use one fused_qk_norm_rope instead
+                # of two separate fused_per_head_norm_rope dispatches (K_SEPARATE=1,
+                # INPUT_OFFSET_K=0), saving one GPU dispatch per attention layer.
+                self._dispatch("fused_qk_norm_rope",
+                               [sc["q_buf"], _q_nw, _k_nw, pos_buf,
+                                sc["q_rope"], sc["k_rope"], sc["k_buf"], _freq_buf],
+                               {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
+                                "USE_FREQ_BUF": rc.use_freq_buf, "ROTARY_DIM": rc.rotary_dim,
+                                "FREQ_DIM": rc.freq_dim, "HEAD_DIM": head_dim,
+                                "NUM_Q_HEADS": self.num_q_heads, "NUM_KV_HEADS": num_kv_heads,
+                                "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
+                                "INPUT_OFFSET_K": 0, "K_SEPARATE": 1},
+                               (self.num_q_heads + num_kv_heads, num_tokens, 1))
+            elif _q_nw is not None:
+                # KV-shared path: only Q needs norm+RoPE; K comes from the target layer cache.
                 self._dispatch("fused_per_head_norm_rope",
                                [sc["q_buf"], _q_nw, pos_buf, sc["q_rope"], _freq_buf],
                                {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
@@ -449,31 +472,20 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 "INPUT_OFFSET": 0},
                                (self.num_q_heads, num_tokens, 1))
             else:
-                # Binding 3 (inv_freq_buf): always provided.
+                # No norm weights: plain RoPE for Q.
                 self._dispatch("rope", [sc["q_buf"], pos_buf, sc["q_rope"], _freq_buf],
                                {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
                                 "USE_FREQ_BUF": rc.use_freq_buf,
                                 "HEAD_DIM": head_dim, "NUM_HEADS": self.num_q_heads},
                                (num_tokens, self.num_q_heads, 1))
-            if not is_kv_shared:
-                if _k_nw is not None:
-                    # Binding 4 (inv_freq_buf): always provided.
-                    self._dispatch("fused_per_head_norm_rope",
-                                   [sc["k_buf"], _k_nw, pos_buf, sc["k_rope"], _freq_buf],
-                                   {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
-                                    "USE_FREQ_BUF": rc.use_freq_buf, "ROTARY_DIM": rc.rotary_dim,
-                                    "FREQ_DIM": rc.freq_dim, "HEAD_DIM": head_dim,
-                                    "NUM_HEADS": num_kv_heads,
-                                    "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
-                                    "INPUT_OFFSET": 0},
-                                   (num_kv_heads, num_tokens, 1))
-                else:
-                    # Binding 3 (inv_freq_buf): always provided.
-                    self._dispatch("rope", [sc["k_buf"], pos_buf, sc["k_rope"], _freq_buf],
-                                   {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
-                                    "USE_FREQ_BUF": rc.use_freq_buf,
-                                    "HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads},
-                                   (num_tokens, num_kv_heads, 1))
+            if not is_kv_shared and _q_nw is None:
+                # Both Q and K lack norm weights (invariant: non-KV-shared always pairs them).
+                # K was not processed in the combined dispatch above.
+                self._dispatch("rope", [sc["k_buf"], pos_buf, sc["k_rope"], _freq_buf],
+                               {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
+                                "USE_FREQ_BUF": rc.use_freq_buf,
+                                "HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads},
+                               (num_tokens, num_kv_heads, 1))
 
             # Per-head RMSNorm (no weight) on V before caching — required for DiffusionGemma.
             # Matches DiffusionGemmaTextAttention.forward which calls self.v_norm(value_states)

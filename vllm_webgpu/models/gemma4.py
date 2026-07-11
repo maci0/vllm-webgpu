@@ -15,56 +15,11 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
-# Verify that the three formulas transcribed in _build_layer_params_from_config
-# are still present in the upstream vLLM Gemma4 implementation. Any vLLM upgrade
-# that changes attention-type dispatch, KV-shared layer boundaries, or head-dim
-# selection will fail loudly here instead of silently mis-sizing buffers.
-try:
-    from vllm.model_executor.models.gemma4 import (
-        Gemma4Attention as _Gemma4Attention,
-        Gemma4DecoderLayer as _Gemma4DecoderLayer,
-    )
-    import inspect
-    try:
-        _g4_decoder_src = inspect.getsource(_Gemma4DecoderLayer)
-        _g4_attn_src = inspect.getsource(_Gemma4Attention)
-        # Formula (1): KV-shared boundary uses num_kv_shared_layers.
-        if "num_kv_shared_layers" not in _g4_decoder_src:
-            raise ValueError(
-                "Gemma4DecoderLayer no longer references 'num_kv_shared_layers'. "
-                "Review _build_layer_params_from_config formula (1) before removing this check."
-            )
-        # Formula (2): KV-shared target uses reversed layer_types index search.
-        # The original text-match assertion checked for "[::-1].index" in the Attention
-        # source, which would fire incorrectly on any equivalent refactor (e.g. next()
-        # with enumerate). Check layer_types presence in the Attention source instead —
-        # stable across implementation refactors and still catches the behavioral change
-        # we care about (the function no longer consuming layer_types at all).
-        if "layer_types" not in _g4_attn_src:
-            raise ValueError(
-                "Gemma4Attention no longer references 'layer_types'. "
-                "Review _build_layer_params_from_config formula (2) before removing this check."
-            )
-        # Formula (3): head-dim selection uses num_global_key_value_heads.
-        if "num_global_key_value_heads" not in _g4_decoder_src:
-            raise ValueError(
-                "Gemma4DecoderLayer no longer references 'num_global_key_value_heads'. "
-                "Review _build_layer_params_from_config formula (3) before removing this check."
-            )
-        # Formula (3b): k_eq_v branch controls whether V=K (laptop variant).
-        if "attention_k_eq_v" not in _g4_decoder_src:
-            raise ValueError(
-                "Gemma4DecoderLayer no longer references 'attention_k_eq_v'. "
-                "Review _build_layer_params_from_config formula (3) k_eq_v branch before removing this check."
-            )
-    finally:
-        del inspect, _Gemma4Attention, _Gemma4DecoderLayer
-        try:
-            del _g4_decoder_src, _g4_attn_src
-        except NameError:
-            pass
-except (ImportError, OSError):
-    pass  # vLLM not importable in this environment; skip assertion
+# vLLM source-compatibility assertions for _build_layer_params_from_config are in
+# tests/test_gemma4_layer_params.py. When upgrading vLLM, run that test suite to
+# verify that Gemma4DecoderLayer still references num_kv_shared_layers,
+# num_global_key_value_heads, and attention_k_eq_v, and that Gemma4Attention still
+# references layer_types with the expected reversed-index KV-sharing logic.
 
 
 @dataclass(frozen=True)

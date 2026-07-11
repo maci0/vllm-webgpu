@@ -1,5 +1,5 @@
 from __future__ import annotations
-import functools
+from functools import cached_property
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -217,7 +217,7 @@ class WebGPUModelRunner:
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         return self.kv_cache_spec
 
-    @functools.cached_property
+    @cached_property
     def kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         num_hidden_layers = self.vllm_config.model_config.get_total_num_hidden_layers()
         block_size = self._block_size

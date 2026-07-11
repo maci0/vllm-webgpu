@@ -69,6 +69,11 @@ def compute_yarn_freqs(
     Inlines the formula from YaRNScalingRotaryEmbedding._compute_inv_freq using
     the two public helpers it depends on. No private method calls, no stub instances.
 
+    YaRNScalingRotaryEmbedding is a CustomOp subclass that requires a vLLM global
+    config context to instantiate (get_current_vllm_config() is called in __init__),
+    so it cannot be used here at model-load time outside the engine. The inline
+    approach uses only the public helper functions from the common module.
+
     Args:
         head_dim:    Full attention head dimension.
         rope_theta:  RoPE base frequency (e.g. 10000.0).
