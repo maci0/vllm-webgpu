@@ -148,14 +148,14 @@ def main() -> None:
         print(f"Each layer avg: {total/num_layers:.3f} ms")
 
         print(f"\nBottleneck analysis:")
-        # Sum actual compressed buffer sizes from loaded weights. This is correct for
-        # all quantization formats (F16, GPTQ INT4, FP8, NF4) because WebGPUBuffer.nbytes
-        # returns buf.size, which reflects the real on-device allocation.
-        # Exclude metadata keys (__*) only; scale tensors are bound and read by the
-        # shader on every quantized GEMV and must be counted for an accurate bandwidth figure.
+        # Sum weights for transformer layers only. Embedding, final norm, and LM-head
+        # weights are dispatched inside unlabeled blocks whose time is not captured in
+        # _prof_stats, so including them in the numerator would overstate effective BW.
+        # Scale tensors for quantized layers are included because they are read by the
+        # shader on every quantized GEMV and '.layers.' appears in their key.
         total_w_bytes = sum(
             v.nbytes for k, v in model.weights.items()
-            if not k.startswith('__')
+            if not k.startswith('__') and '.layers.' in k
         )
         total_w_mb = total_w_bytes / 1e6
         bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
