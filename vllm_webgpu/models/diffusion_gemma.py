@@ -404,7 +404,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     f"on a non-KV-shared layer. DiffusionGemma requires both norms "
                     f"to be loaded together. Check the checkpoint."
                 )
-            attn_scale = 1.0 if (_q_nw is not None and (is_kv_shared or _k_nw is not None)) else (self._query_pre_attn_scalar if self._query_pre_attn_scalar is not None else head_dim) ** -0.5
+            if _q_nw is None and not is_kv_shared and _k_nw is not None:
+                raise RuntimeError(
+                    f"Layer {layer_idx}: K-norm weight present but Q-norm absent "
+                    f"on a non-KV-shared layer. DiffusionGemma requires both norms "
+                    f"to be loaded together. Check the checkpoint."
+                )
+            _has_norms = _q_nw is not None and (is_kv_shared or _k_nw is not None)
+            attn_scale = 1.0 if _has_norms else head_dim ** -0.5
             if _q_nw is not None:
                 # Binding 4 (inv_freq_buf): always provided.
                 self._dispatch("fused_per_head_norm_rope",
