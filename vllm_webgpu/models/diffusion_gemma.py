@@ -807,7 +807,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    (num_tokens, 1, 1))
                     hidden_states_2 = sc["o_proj_out"]
                 else:
-                    hidden_states_2 = moe_acc
+                    raise ValueError(
+                        f"MoE layer {layer_idx} missing post_feedforward_layernorm_2.weight. "
+                        "The unnormed moe_acc cannot be passed directly to the combine dispatch: "
+                        "vLLM's Gemma4DecoderLayer applies post_feedforward_layernorm_2 "
+                        "unconditionally when enable_moe_block=True, so skipping it produces "
+                        "wrong MoE outputs. A correctly loaded DiffusionGemma checkpoint always "
+                        "has this weight."
+                    )
 
                 # Combine shared-MLP and MoE streams (f16 + f16 -> f16)
                 self._dispatch("add", [hidden_states_1, hidden_states_2, sc["normed"]],
