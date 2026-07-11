@@ -502,8 +502,8 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            # logprob_token_ids rejected above; use sp.num_logprobs for the topk count.
-            num_logprobs = sp.num_logprobs if sp is not None else None
+            # Use sp.logprobs directly so the count is independent of logprob_token_ids.
+            num_logprobs = sp.logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
