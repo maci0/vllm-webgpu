@@ -217,7 +217,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             "populate layer_types from full_attention_interval at init time."
         )
 
-    def _init_scratch_buffers(self, max_ctx: int) -> None:
+    def _init_scratch_buffers(self, max_ctx: int, qkv_size: "int | None" = None) -> None:
         # Inherit standard _pre (7 keys), _sc (17 keys), and _hstate from parent.
         # Pass qkv_size so the parent allocates qkv_buf at the correct GDN size
         # directly, avoiding an allocate-then-discard cycle on every instantiation.
@@ -242,9 +242,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         })
 
         if self._is_moe:
-            _moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
-            self._moe_act_sz = _moe_act_sz
-            self._moe_sc = self._alloc_moe_sc(self._moe_num_experts, self._moe_k, _moe_act_sz)
+            self._moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
+            self._moe_sc = self._alloc_moe_sc(self._moe_num_experts, self._moe_k, self._moe_act_sz)
 
     def _postprocess_weights(self) -> None:
         """Post-load weight fixups for full-attn layers.
@@ -505,8 +504,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}.linear_attn"
         pp = f"model.layers.{layer_idx}"
-        add_n = hidden
-
         residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
         out = sc[_H_NAMES[(self._hstate + 2) % 3]]
 
@@ -579,7 +576,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 normed_out = sc["normed"]
             else:
                 self._dispatch("add", [residual, ffn_out, out],
-                               {"N": add_n}, _vec4_wg(add_n))
+                               {"N": hidden}, _vec4_wg(hidden))
                 normed_out = out  # safe placeholder; callers discard first return on last layer
 
         self._hstate = (self._hstate + 2) % 3

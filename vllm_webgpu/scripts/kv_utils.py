@@ -255,7 +255,7 @@ def allocate_kv_from_hf_config(
     # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
     layer_types = get_layer_types(model, hf_config)
     # Treat uniform full-attention lists the same as None (avoids tiny buffers).
-    if layer_types and KV_ATTN_TYPES.issuperset(layer_types):
+    if layer_types and all(is_attn_layer(lt) for lt in layer_types):
         layer_types = None
 
     _allocate_kv_pool_hybrid(

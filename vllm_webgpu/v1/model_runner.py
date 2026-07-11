@@ -398,7 +398,7 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
             if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
-                built_logprobs = _stack([d for d in logprobs_data if d is not None])
+                built_logprobs = _stack(list(logprobs_data))
             else:
                 # Derive the dtype of selected_token_ranks from the first real
                 # entry. batched_count_greater_than returns (bool).sum(-1),
@@ -725,7 +725,6 @@ class WebGPUModelRunner:
 
                 _sm = SimpleNamespace(slot_mapping=[slot], block_tables=[np.array(blk_ids, dtype=np.uint32)], max_decode_seq_len=pos + 1)
 
-                sp = state.get("sampling_params")
                 self.model._greedy_decode = (sp is None or sp.sampling_type == SamplingType.GREEDY) and num_logprobs is None
 
                 # Restore this request's recurrent (Mamba/SSM) state before the
@@ -786,7 +785,7 @@ class WebGPUModelRunner:
                 # Use the persisted per-request generator so the RNG state
                 # advances between steps (not reset to the same seed each step).
                 rng = state.get("rng")
-                if logits.shape[-1] == 1 or sp is None:
+                if logits.shape[-1] == 1:
                     stok = int(logits[0, 0])
                 else:
                     stok = _sample_token(

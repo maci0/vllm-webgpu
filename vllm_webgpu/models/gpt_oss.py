@@ -67,7 +67,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # would have no observable effect. Restore it alongside a forward() override if
         # batch-prefill support is added for GptOss.
 
-    def _init_scratch_buffers(self, max_ctx: int) -> None:
+    def _init_scratch_buffers(self, max_ctx: int, qkv_size: "int | None" = None) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
 
         Allocates dedicated Q/K/V/O bias temporaries sized at q_dim and kv_dim.

@@ -447,15 +447,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # invariant violation: DiffusionGemma always loads both norms together.
             # Neither 1/sqrt(head_dim) nor 1.0 is clearly correct in this state,
             # so surface it immediately rather than silently producing wrong output.
-            if _q_nw is not None and not is_kv_shared and _k_nw is None:
+            if not is_kv_shared and (_q_nw is None) != (_k_nw is None):
+                missing, present = ('Q-norm', 'K-norm') if _q_nw is None else ('K-norm', 'Q-norm')
                 raise RuntimeError(
-                    f"Layer {layer_idx}: Q-norm weight present but K-norm absent "
-                    f"on a non-KV-shared layer. DiffusionGemma requires both norms "
-                    f"to be loaded together. Check the checkpoint."
-                )
-            if _q_nw is None and not is_kv_shared and _k_nw is not None:
-                raise RuntimeError(
-                    f"Layer {layer_idx}: K-norm weight present but Q-norm absent "
+                    f"Layer {layer_idx}: {missing} weight absent but {present} present "
                     f"on a non-KV-shared layer. DiffusionGemma requires both norms "
                     f"to be loaded together. Check the checkpoint."
                 )

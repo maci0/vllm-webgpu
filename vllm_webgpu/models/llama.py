@@ -75,9 +75,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # weights at upload time, avoiding a GPU roundtrip (to_numpy → tile → re-upload).
         # Qwen3 checkpoints store shared norm as (head_dim,); the shader expects
         # (num_heads * head_dim,) with each head using the same values.
-        _hd = self.head_dim
-        _q_xform = lambda a: np.tile(a, self.num_q_heads) if a.shape == (_hd,) else a
-        _k_xform = lambda a: np.tile(a, self.num_kv_heads) if a.shape == (_hd,) else a
+        _q_xform = lambda a: np.tile(a, self.num_q_heads) if a.shape == (self.head_dim,) else a
+        _k_xform = lambda a: np.tile(a, self.num_kv_heads) if a.shape == (self.head_dim,) else a
         self._weight_transforms.update({
             f"model.layers.{i}.self_attn.{k}.weight": xf
             for i in range(self.num_layers)

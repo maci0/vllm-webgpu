@@ -1096,7 +1096,7 @@ def load_safetensors_weights(
                     ws = _load_raw(f"{base}.weight_scale", as_float=True)  # (N, K//group_size) f32
                     wgs_key = f"{base}.weight_scale_2"
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
-                    N_, K2_ = wp.shape
+                    _, K2_ = wp.shape
                     K_ = K2_ * 2
                     ws_f32 = np.ascontiguousarray(ws)
                     _upload_u8(wp, f"{base}.weight", weights)
@@ -1233,10 +1233,10 @@ def load_safetensors_weights(
                 for base in mx_bases:
                     try:
                         w_t = sf.get_tensor(f"{base}.weight")
-                        ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
+                        ws_u8_t = sf.get_tensor(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                         N_, K_ = w_t.shape
-                        n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
-                        w_bf16 = dequant_mxfp8_to_bf16(w_t.view(torch.float8_e4m3fn), torch.from_numpy(ws_u8))
+                        n_blocks = ws_u8_t.shape[1] if ws_u8_t.ndim == 2 else 1
+                        w_bf16 = dequant_mxfp8_to_bf16(w_t.view(torch.float8_e4m3fn), ws_u8_t)
                         w_f16 = np.ascontiguousarray(_torch_to_f16_numpy(w_bf16))
                         _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
                         logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
