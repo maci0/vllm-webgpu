@@ -43,18 +43,27 @@ del _mapper
 # This import-time check catches upstream changes before any model is loaded.
 try:
     import inspect as _inspect
+    import re as _re
     from vllm.model_executor.layers.mamba import mamba_mixer2 as _mm2_mod
     _mm2_src = _inspect.getsource(_mm2_mod.MambaMixer2.__init__)
-    # Anchor to the MergedColumnParallelLinear in_proj branch (tp=1 path).
-    # The trailing portion of output_sizes is unique to this branch; the
-    # ColumnParallelLinear branch uses the one-liner
-    # "intermediate_size + self.conv_dim + self.num_heads" instead.
-    # Anchor on attribute names rather than exact indentation — black/ruff may
-    # reflow the output_sizes list while preserving the semantics. The invariant
-    # is that groups_ssm_state_size appears twice (once for B, once for C) and
-    # num_heads appears once in this in_proj block.
-    _MERGED_IN_PROJ_ANCHOR = "self.groups_ssm_state_size,"
-    assert _mm2_src.count(_MERGED_IN_PROJ_ANCHOR) >= 2, (
+    # Scope the check to the output_sizes list of the in_proj =
+    # MergedColumnParallelLinear assignment only.  The full __init__ source
+    # also contains self.groups_ssm_state_size in the conv1d block (lines
+    # 320-321) and in group_shard_settings (line 368), so counting across the
+    # whole source gives false confidence: conv1d alone satisfies count >= 2.
+    # Instead, extract the bracket content of the output_sizes=[...] list
+    # that immediately follows "self.in_proj = MergedColumnParallelLinear(",
+    # then count occurrences there.  Entries are simple attribute references
+    # with no nested brackets, so [^]]* captures them cleanly.
+    _in_proj_m = _re.search(
+        r'self\.in_proj\s*=\s*MergedColumnParallelLinear\b.*?'
+        r'output_sizes\s*=\s*\[([^\]]*)\]',
+        _mm2_src, _re.DOTALL,
+    )
+    assert (
+        _in_proj_m is not None
+        and _in_proj_m.group(1).count("self.groups_ssm_state_size") == 2
+    ), (
         "MambaMixer2.__init__ in_proj output_sizes layout may have changed "
         "upstream. The MergedColumnParallelLinear branch (mamba_mixer2.py "
         "L328-340) no longer contains the expected 5-entry output_sizes list "
@@ -64,7 +73,7 @@ try:
         "(mamba_int + conv_dim + mamba_num_heads) and update "
         "_validate_mamba_weights before removing this assertion."
     )
-    del _inspect, _mm2_mod, _mm2_src, _MERGED_IN_PROJ_ANCHOR
+    del _inspect, _re, _mm2_mod, _mm2_src, _in_proj_m
 except (ImportError, OSError):
     # ImportError: mamba_mixer2 moved upstream; OSError: .pyc-only install.
     # _validate_mamba_weights checks the actual weight shape at load time.
