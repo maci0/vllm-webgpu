@@ -1005,25 +1005,28 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
             dev.queue.write_buffer(pre["bt"].buf,       0, _bt_bytes)
 
-            with self._batched_dispatch():
-                self._dispatch(
-                    "embedding_lookup_f32",
-                    [self.weights[self._embed_key()], pre["ids"], pre["x"]],
-                    {"HIDDEN_DIM": hidden}, (1, 1, 1))
-                self._dispatch(
-                    "rms_norm_f32in",
-                    [pre["x"],
-                     self.weights[f"{self._layer_key_prefix(0)}.input_layernorm.weight"],
-                     sc["normed"]],
-                    _rms, (1, 1, 1))
+            normed_x = sc["normed"]
+            x_buf    = pre["x"]
+            _CHUNK   = 4
+            for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), _CHUNK)):
+                with self._batched_dispatch():
+                    if chunk_idx == 0:
+                        self._dispatch(
+                            "embedding_lookup_f32",
+                            [self.weights[self._embed_key()], pre["ids"], pre["x"]],
+                            {"HIDDEN_DIM": hidden}, (1, 1, 1))
+                        self._dispatch(
+                            "rms_norm_f32in",
+                            [pre["x"],
+                             self.weights[f"{self._layer_key_prefix(0)}.input_layernorm.weight"],
+                             sc["normed"]],
+                            _rms, (1, 1, 1))
 
-                normed_x = sc["normed"]
-                x_buf    = pre["x"]
-                for layer_idx in range(self.num_layers):
-                    normed_x, x_buf = self._transformer_layer(
-                        layer_idx, normed_x, x_buf,
-                        pre["pos"], pre["slot_map"], pre["bt"], tok_ctx, 1,
-                    )
+                    for layer_idx in chunk_layers:
+                        normed_x, x_buf = self._transformer_layer(
+                            layer_idx, normed_x, x_buf,
+                            pre["pos"], pre["slot_map"], pre["bt"], tok_ctx, 1,
+                        )
 
         # Final norm and LM head on the last token's hidden state.
         _lm_key, lm_head_w, uq_lm, _lm_base = self._lm_head_parts()
