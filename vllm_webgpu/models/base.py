@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm.utils.math_utils import cdiv
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
@@ -38,7 +37,7 @@ def _vec4_wg(N: int) -> tuple:
     Each thread handles 4 elements packed as vec4<f16>. The formula rounds the
     thread count up to fill complete workgroups of 256.
     """
-    return (cdiv(N, 1024), 1, 1)
+    return (-(N // -1024), 1, 1)
 
 
 def _rows_wg(N: int) -> tuple:
@@ -47,7 +46,7 @@ def _rows_wg(N: int) -> tuple:
     Each workgroup covers 256 output rows. Used for lm_head and other matmuls
     where SPLIT_K=0 assigns one workgroup per output tile of 256 rows.
     """
-    return (cdiv(N, 256), 1, 1)
+    return (-(N // -256), 1, 1)
 
 
 def _vals_per_thread(hidden_size: int) -> int:
@@ -60,7 +59,7 @@ def _vals_per_thread(hidden_size: int) -> int:
     VALS_PER_THREAD > 0u internally (rms_norm.wgsl, add_rms_norm.wgsl).
     """
     if hidden_size <= 256 * 16:
-        return cdiv(hidden_size, 256)
+        return -(hidden_size // -256)
     return 0
 
 logger = init_logger(__name__)

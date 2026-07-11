@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched, chain
+from itertools import batched
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -91,11 +91,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        _lin_key_dim: int       = self._lin_k_heads * self._lin_k_dim   # total key dim (= Q dim)
+        self._lin_key_dim: int  = self._lin_k_heads * self._lin_k_dim  # total key dim (= Q dim)
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0 (leading element in packed QKV buffer).
-        self._gdn_k_base: int = _lin_key_dim
-        self._gdn_v_base: int = 2 * _lin_key_dim
+        self._gdn_k_base: int = self._lin_key_dim
+        self._gdn_v_base: int = 2 * self._lin_key_dim
         # Derive conv_dim directly from MambaStateShapeCalculator so CONV_DIM always
         # matches the vLLM formula regardless of future changes to mamba_utils.py.
         # The shape calculator returns a 2-tuple; extract conv_dim from the axis that
@@ -147,8 +147,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Persistent GPU buffers for recurrent state (allocated after load_weights).
         # SSM state:  [NUM_V_HEADS, V_DIM, K_DIM] f32 = 2MB per linear-attn layer
         # Conv state: [CONV_KERNEL-1, CONV_DIM] f16 = 49KB per linear-attn layer
-        self._ssm_gpu: list = []   # one WebGPUBuffer per layer (or None for full-attn)
-        self._conv_gpu: list = []  # one WebGPUBuffer per layer
+        self._ssm_gpu: dict[int, WebGPUBuffer] = {}   # layer_idx -> buffer (GDN layers only)
+        self._conv_gpu: dict[int, WebGPUBuffer] = {}  # layer_idx -> buffer (GDN layers only)
 
         # LlamaWebGPUModel.__init__() sets: num_layers, num_q_heads, num_kv_heads,
         # hidden_size, intermediate_size, vocab_size, head_dim, rope_theta, block_size,
@@ -312,8 +312,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         conv_bytes = math.prod(self._gdn_conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(self._gdn_ssm_shape)  * _ELEM_BYTES["f32"]
 
-        self._ssm_gpu  = [None] * self.num_layers
-        self._conv_gpu = [None] * self.num_layers
+        self._ssm_gpu  = {}
+        self._conv_gpu = {}
 
         for i in range(self.num_layers):
             if self._is_full_attn(i):
@@ -388,13 +388,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def reset_recurrent_states(self) -> None:
         """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
         dev = self.wgpu_device.wgpu_device
-        for buf in chain(self._ssm_gpu, self._conv_gpu):
-            if buf is not None:
-                zeros = self._zero_buf_cache.get(buf.nbytes)
-                if zeros is None:
-                    zeros = bytes(buf.nbytes)
-                    self._zero_buf_cache[buf.nbytes] = zeros
-                dev.queue.write_buffer(buf.buf, 0, zeros)
+        for buf in (*self._ssm_gpu.values(), *self._conv_gpu.values()):
+            zeros = self._zero_buf_cache.get(buf.nbytes)
+            if zeros is None:
+                zeros = bytes(buf.nbytes)
+                self._zero_buf_cache[buf.nbytes] = zeros
+            dev.queue.write_buffer(buf.buf, 0, zeros)
 
     def save_recurrent_states(self) -> dict:
         """Snapshot all GDN conv/SSM state buffers to CPU in one GPU readback.
@@ -406,12 +405,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         layout, so no transposition is needed on readback.
         """
         bufs: list[tuple[str, int, object]] = []
-        for i, buf in enumerate(self._conv_gpu):
-            if buf is not None:
-                bufs.append(("conv", i, buf))
-        for i, buf in enumerate(self._ssm_gpu):
-            if buf is not None:
-                bufs.append(("ssm", i, buf))
+        for i, buf in self._conv_gpu.items():
+            bufs.append(("conv", i, buf))
+        for i, buf in self._ssm_gpu.items():
+            bufs.append(("ssm", i, buf))
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:

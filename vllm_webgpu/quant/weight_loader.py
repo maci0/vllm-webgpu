@@ -789,7 +789,6 @@ def load_safetensors_weights(
             if meta is None:
                 return False
             dtype_str = meta["dtype"]
-            shape = tuple(meta["shape"])
 
             # Keep native F32 precision for explicitly requested keys (e.g. Mamba D
             # and dt_bias). The default path casts every F32/BF16 checkpoint value to

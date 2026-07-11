@@ -47,7 +47,10 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # invoked during that call (including _init_scratch_buffers) references it.
         # Moving it here consolidates config reads and lets us use self.intermediate_size
         # (set by the parent) as the natural fallback instead of reaching back to model_config.
-        self._moe_inter: int = getattr(model_config, "moe_intermediate_size", None) or self.intermediate_size
+        # Use walrus-operator None-check so an explicit moe_intermediate_size=0 is not
+        # silently treated as absent (the `or` form would fall back to intermediate_size
+        # for zero, which is wrong).
+        self._moe_inter: int = v if (v := getattr(model_config, "moe_intermediate_size", None)) is not None else self.intermediate_size
         # Batch prefill bypasses _attn_block and cannot honour per-layer context
         # overrides or inject attention biases. Force sequential prefill whenever
         # either condition is present. The dangerous case for layer_types is
@@ -357,6 +360,9 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             return
 
         msc = self._moe_sc
+        # expert_tmp is allocated by _ensure_moe_expert_bufs() when the biased
+        # gate/up path runs. This guard only fires on the f16 non-bias gate/up +
+        # biased-down combination, where _ensure_moe_expert_bufs() was not called.
         if "expert_tmp" not in msc:
             msc["expert_tmp"] = self._make_buf(self.hidden_size * 2)
         if "expert_down_tmp" not in msc:

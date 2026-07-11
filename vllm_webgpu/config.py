@@ -3,9 +3,10 @@ from __future__ import annotations
 from functools import cache
 from dataclasses import dataclass
 
+from wgpu.enums import PowerPreference as _PowerPreference
 import vllm_webgpu.envs as envs
 
-VALID_POWER_PREFERENCES: frozenset[str] = frozenset({"low-power", "high-performance"})
+VALID_POWER_PREFERENCES: frozenset[str] = frozenset(_PowerPreference)
 
 
 @dataclass(frozen=True)

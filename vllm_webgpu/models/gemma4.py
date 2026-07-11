@@ -1284,7 +1284,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     self._dispatch("rms_norm",
                                    [sc["o_proj_out"], post_attn_norm_w, sc["normed"]],
                                    _rms, (num_tokens, 1, 1))
-                    attn_delta = sc["normed"]
                 else:
                     raise ValueError(
                         f"Layer {layer_idx} missing post_attention_layernorm.weight "

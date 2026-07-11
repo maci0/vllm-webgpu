@@ -1,5 +1,4 @@
 from __future__ import annotations
-import itertools
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -78,6 +77,15 @@ def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache:
         f"Architecture {arch!r} is not supported. "
         f"Supported: {sorted(ARCH_MAP)}"
     )
+
+
+def _stack(items: "list[LogprobsTensors]") -> "Any":
+    """Cat a list of LogprobsTensors along the batch dimension and convert to lists."""
+    return LogprobsTensors(
+        torch.cat([x.logprob_token_ids for x in items]),
+        torch.cat([x.logprobs for x in items]),
+        torch.cat([x.selected_token_ranks for x in items]),
+    ).tolists()
 
 
 def _compute_request_logprobs(
@@ -386,12 +394,7 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
             if all(d is not None for d in logprobs_data) and len(set(widths)) == 1:
-                stacked = LogprobsTensors(
-                    torch.cat([d.logprob_token_ids for d in logprobs_data]),
-                    torch.cat([d.logprobs for d in logprobs_data]),
-                    torch.cat([d.selected_token_ranks for d in logprobs_data]),
-                )
-                built_logprobs = stacked.tolists()
+                built_logprobs = _stack(logprobs_data)
             else:
                 # Derive the dtype of selected_token_ranks from the first real
                 # entry. batched_count_greater_than returns (bool).sum(-1),
@@ -418,12 +421,7 @@ class WebGPUModelRunner:
                             torch.full((1, max_k), -float("inf")),
                             torch.zeros(1, dtype=rank_dtype),
                         ))
-                stacked = LogprobsTensors(
-                    torch.cat([p.logprob_token_ids for p in pieces]),
-                    torch.cat([p.logprobs for p in pieces]),
-                    torch.cat([p.selected_token_ranks for p in pieces]),
-                )
-                built_logprobs = stacked.tolists()
+                built_logprobs = _stack(pieces)
 
         out = ModelRunnerOutput(
             req_ids=req_ids,
@@ -515,15 +513,9 @@ class WebGPUModelRunner:
                     f"of the model (e.g. Gemma3ForCausalLM) or wait for multi-modal support."
                 )
 
-            # Extract per-request logprob counts from SamplingParams.
+            # Extract per-request logprob counts via the stable SamplingParams property.
             sp = req.sampling_params
-            if sp is not None and sp.logprob_token_ids:
-                raise NotImplementedError(
-                    f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
-                    "use logprobs=N instead"
-                )
-            # Use sp.logprobs directly so the count is independent of logprob_token_ids.
-            num_logprobs = sp.logprobs if sp is not None else None
+            num_logprobs = sp.num_logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(
                     f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -548,7 +540,7 @@ class WebGPUModelRunner:
             raw_bids = req.block_ids
             if not raw_bids:
                 raise RuntimeError(f"req {rid}: scheduler produced NewRequestData with empty block_ids")
-            blk_ids = list(itertools.chain.from_iterable(raw_bids))
+            blk_ids = [bid for group in raw_bids for bid in group]
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -692,7 +684,7 @@ class WebGPUModelRunner:
                 # block table entirely; others append newly allocated blocks.
                 cur_new_bids = new_block_ids[i]
                 if cur_new_bids is not None:
-                    flat_new = list(itertools.chain.from_iterable(cur_new_bids))
+                    flat_new = [bid for group in cur_new_bids for bid in group]
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.

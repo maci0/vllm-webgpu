@@ -195,9 +195,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # _uq_for_key returns 0 (f16) or 3 (GPTQ int4) for formats supported by
         # matmul_quant_mr4 batch-prefill path. Any other value (AWQ=4, FP8=5,
         # NVFP4=6, INT8=7, NF4=8) falls back to the sequential decode path.
-        # bool(proj_uqs) guards against the vacuous all() case (empty weight set → True).
-        proj_uqs = {self._uq_for_key(k) for k in self.weights if k.endswith('.weight') and 'model.layers.' in k and '_proj' in k}
-        self._batch_matmul_supported = bool(proj_uqs) and proj_uqs <= {0, 3}
+        # MoE models never reach _prefill_batch_forward, so skip the scan entirely.
+        if getattr(self, "_is_moe", False):
+            self._batch_matmul_supported = False
+        else:
+            proj_keys = [k for k in self.weights if k.endswith('.weight') and 'model.layers.' in k and '_proj' in k]
+            self._batch_matmul_supported = bool(proj_keys) and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
 
     def _decode_setup(
         self,

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections.abc import Callable
 from functools import partial
 import math
 from typing import TYPE_CHECKING
@@ -246,8 +247,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # packed [G, N_total] array once, eliminating the create_buffer /
         # submit / map_sync / unmap cycle that re-read each layer's scales from GPU.
         # Keys are HF-format scale key names (backbone. prefix, before mapper).
-        self._scale_acc: dict = {}    # {layer_idx: {'q': arr, 'k': arr, 'v': arr}}
-        self._scale_transforms: dict = {}  # HF scale key -> (arr) -> None
+        self._scale_acc: dict[int, dict[str, np.ndarray]] = {}
+        self._scale_transforms: dict[str, Callable[[np.ndarray], None]] = {}
 
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "attention":

@@ -723,7 +723,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # affects expert_slot numbering in packed_w, which is indexed consistently
             # by the same order, so the output is correct regardless of sort order.
             # At K=8, T<=256 (E<=2048 elements) the O(E log E) cost is sub-microsecond.
-            unique_eids = np.unique(top_k_idx).tolist()
+            unique_eids = np.unique(top_k_idx)
             self._dense_w[unique_eids, :num_tokens] = 0.0
             self._dense_w[top_k_idx, self._token_arange[:num_tokens, None]] = rw_vals
 

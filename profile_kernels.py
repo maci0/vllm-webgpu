@@ -9,7 +9,6 @@ import argparse
 from pathlib import Path
 import time
 from types import SimpleNamespace
-import math
 import numpy as np
 
 
@@ -67,7 +66,7 @@ def main() -> None:
     # ── Setup fake KV pool ────────────────────────────────────────────────────────
     # Compute block count before allocating so the pool covers every block ID in bt.
     total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
-    bt_blocks = math.ceil(total_toks / block_size)
+    bt_blocks = -(total_toks // -block_size)
     num_blocks = max(512, bt_blocks)
 
     allocate_kv_from_hf_config(wgpu_dev.wgpu_device, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
