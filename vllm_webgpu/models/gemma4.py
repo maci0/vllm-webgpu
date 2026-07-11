@@ -297,6 +297,19 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             for rc in self._rope_consts
         ]
 
+        # Precompute per-layer flash attention scale so both _prefill_batch_forward
+        # and _transformer_layer read a constant rather than recomputing it each call.
+        # Gemma4 (apply_v_norm=True): scale=1.0 (V-norm takes the place of QK scaling).
+        # Gemma3 / uniform configs: scale = (query_pre_attn_scalar or head_dim) ** -0.5.
+        # head_dim differs between local and global layers for Gemma4, so it must come
+        # from the per-layer entry rather than a model-level attribute.
+        for _lp_e in self._lp:
+            if self._apply_v_norm:
+                _lp_e["scale"] = 1.0
+            else:
+                _scalar = self._query_pre_attn_scalar
+                _lp_e["scale"] = (_scalar if _scalar is not None else _lp_e["head_dim"]) ** -0.5
+
         # Register q_norm/k_norm tiling transforms so load_weights tiles at upload time,
         # avoiding a GPU roundtrip (to_numpy → tile → re-upload) per weight per layer.
         # Gemma4 checkpoints store shared norm as (head_dim,); the shader expects
@@ -821,7 +834,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                          "NUM_KV_HEADS": num_kv_heads,
                          "HEAD_DIM":     head_dim,
                          "NUM_T":        T,
-                         "SCALE":        1.0 if self._apply_v_norm else ((self._query_pre_attn_scalar if self._query_pre_attn_scalar is not None else head_dim) ** -0.5)},
+                         "SCALE":        lp["scale"]},
                         (self.num_q_heads, T, 1))
 
                     # Output projection (batch GEMM)
@@ -1229,7 +1242,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
                             "CTX_LEN": ctx_len,
-                            "SCALE": 1.0 if self._apply_v_norm else ((self._query_pre_attn_scalar if self._query_pre_attn_scalar is not None else head_dim) ** -0.5)},
+                            "SCALE": lp["scale"]},
                            (self.num_q_heads, 1, 1))
 
             # Output projection → sc["o_proj_out"]
