@@ -1102,7 +1102,11 @@ def load_safetensors_weights(
                 k.removesuffix(".weight") + ".weight_scale"
                 for k in fp8_names
             }
-            fp8_set = fp8_names | fp8_scale_names
+            fp8_scale_inv_names = {
+                k.removesuffix(".weight") + ".weight_scale_inv"
+                for k in fp8_names
+            }
+            fp8_set = fp8_names | fp8_scale_names | fp8_scale_inv_names
 
             _upload_non_quant(header, fp8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 
@@ -1133,9 +1137,37 @@ def load_safetensors_weights(
                             logger.debug("GPU FP8 (per-channel): %s n_scales=%d",
                                          base, scale_f32.size)
                     else:
-                        weights["__quant_meta__"][base] = {
-                            "fmt": "fp8_gpu", "global_scale": 1.0}
-                        logger.debug("GPU FP8: %s (no scale key)", base)
+                        # DeepSeekV3-style checkpoints store the reciprocal scale
+                        # under weight_scale_inv. Per vLLM fp8.py line 379:
+                        # "The weight_scale_inv name is intentional for deepseekv3".
+                        scale_inv_key = f"{base}.weight_scale_inv"
+                        if scale_inv_key in header:
+                            scale_inv_arr = _load_raw(scale_inv_key)
+                            if scale_inv_arr.ndim == 0 or scale_inv_arr.size == 1:
+                                scale_inv_val = float(scale_inv_arr.ravel()[0])
+                                # weight_scale_inv is 1/scale, so invert to get scale.
+                                scale_val = 1.0 / scale_inv_val if scale_inv_val != 0.0 else 1.0
+                                weights["__quant_meta__"][base] = {
+                                    "fmt": "fp8_gpu", "global_scale": scale_val}
+                                logger.debug("GPU FP8 (per-tensor, inv): %s scale_inv=%.6f scale=%.6f",
+                                             base, scale_inv_val, scale_val)
+                            else:
+                                # Per-channel inverse scales: invert element-wise.
+                                scale_inv_f32 = scale_inv_arr.ravel().astype(np.float32)
+                                scale_f32 = np.where(
+                                    scale_inv_f32 != 0.0,
+                                    1.0 / scale_inv_f32,
+                                    np.float32(1.0))
+                                scale_f32 = np.ascontiguousarray(scale_f32)
+                                _upload(scale_f32, np.float32, 'f32', wname + ".scales", weights)
+                                weights["__quant_meta__"][base] = {
+                                    "fmt": "fp8_gpu", "global_scale": 1.0, "group_size": 1}
+                                logger.debug("GPU FP8 (per-channel, inv): %s n_scales=%d",
+                                             base, scale_f32.size)
+                        else:
+                            weights["__quant_meta__"][base] = {
+                                "fmt": "fp8_gpu", "global_scale": 1.0}
+                            logger.debug("GPU FP8: %s (no scale key)", base)
                 except Exception as exc:
                     logger.warning("Failed to process FP8 %s: %s", base, exc)
 
