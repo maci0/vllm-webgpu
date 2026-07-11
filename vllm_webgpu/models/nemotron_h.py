@@ -150,6 +150,16 @@ try:
         "before removing this assertion."
     )
     del _MLP_INTERMEDIATE_SIZE_ANCHOR
+    # Presence check: if vLLM ever adds _resolve_intermediate_size to the upstream
+    # module, the local copy becomes dead weight. This assertion fires at import time
+    # so the redundancy is caught before it silently drifts out of sync.
+    import vllm.model_executor.models.nemotron_h as _nem_mod
+    assert not hasattr(_nem_mod, "_resolve_intermediate_size"), (
+        "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'. "
+        "Remove the local copy in this file and import it from there instead. "
+        "See vllm/model_executor/models/nemotron_h.py for the authoritative implementation."
+    )
+    del _nem_mod
     del _inspect, _NemotronHMLPDecoder, _mlp_init_src
 except (ImportError, OSError):
     pass
@@ -165,15 +175,20 @@ except (ImportError, OSError):
 def _resolve_intermediate_size(v, idx: int) -> int:
     """Resolve a possibly-list intermediate_size to a scalar for layer `idx`.
 
-    Mirrors NemotronHMLPDecoderLayer.__init__ lines 286-292 (vLLM 0.24). No
-    public vLLM API exposes this logic, so the copy is forced. Defined here at
-    module scope so it is created once rather than inside every __init__ call.
+    Mirrors the 7-line block in NemotronHMLPDecoderLayer.__init__ at:
+      vllm/model_executor/models/nemotron_h.py L286-292 (vLLM 0.24)
 
-    IMPORTANT: on every vLLM version bump, update this function AND the
-    _MLP_INTERMEDIATE_SIZE_ANCHOR string above. The anchor detects structural
-    changes to the upstream block; this function must then be updated to match.
+    No public vLLM API exposes this logic, so the copy is forced. Defined here
+    at module scope so it is created once rather than inside every __init__ call.
 
-    # vLLM 0.24 NemotronHMLPDecoderLayer L286-292
+    On every vLLM version bump:
+      1. Diff vllm/model_executor/models/nemotron_h.py L286-292 against this body.
+      2. If the upstream block changed, update this function to match.
+      3. Update the _MLP_INTERMEDIATE_SIZE_ANCHOR string in the import-time guard
+         above so the anchor tracks the new source text.
+      4. If vLLM ever exports _resolve_intermediate_size from that module, remove
+         this function and import it directly. The import-time guard below will
+         fire an assertion before that goes unnoticed.
     """
     if isinstance(v, list):
         return v[0] if len(v) == 1 else v[idx]
