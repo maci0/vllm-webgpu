@@ -51,10 +51,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                    getattr(model_config, "expert_intermediate_size",
                                                            model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-        # _transformer_layer and _prefill_batch_forward are overridden to raise
-        # NotImplementedError in this class, so the per-layer "scale" values
-        # computed by the parent __init__ are never consumed. Clear them to avoid
-        # holding stale floats in every lp entry for the lifetime of the model.
+        # The per-layer "scale" values computed by the parent __init__ are never
+        # consumed here because forward() and _decoder_layer() are fully overridden.
+        # Clear them to avoid holding stale floats in every lp entry for the
+        # lifetime of the model.
         for _lp_e in self._lp:
             _lp_e.pop("scale", None)
         # Router scale: constant across all layers and tokens.
@@ -110,6 +110,22 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Sized to hidden_size elements so the binding covers the full scale
             # array the shader declares, avoiding reliance on OOB robustness.
             self._router_dummy_buf = WebGPUBuffer.empty(_dev, self.hidden_size * 2)  # hidden_size x f16
+
+    # ── Guarded parent methods ───────────────────────────────────────────────
+
+    def _transformer_layer(self, *args, **kwargs):
+        raise NotImplementedError(
+            "DiffusionGemma uses _decoder_layer; parent forward() is fully overridden "
+            "and _transformer_layer is never called on this model. "
+            "Note: _init_scratch_buffers intentionally omits qkv_buf, so calling "
+            "this method would crash with KeyError rather than computing anything useful."
+        )
+
+    def _prefill_batch_forward(self, *args, **kwargs):
+        raise NotImplementedError(
+            "DiffusionGemma does not use the prefill-batch path from the parent; "
+            "forward() is fully overridden in this class."
+        )
 
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
