@@ -13,6 +13,7 @@ from vllm.logger import init_logger
 # in load_safetensors_weights will silently skip all tensors. Verify on each vLLM
 # version bump that the function still exists at this path and returns the expected structure.
 from vllm.transformers_utils.utils import parse_safetensors_file_metadata
+from vllm.model_executor.layers.quantization.modelopt import ModelOptQuantConfigBase as _ModelOptQuantConfigBase
 
 from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
 from compressed_tensors import QuantizationConfig as _QuantizationConfig
@@ -462,12 +463,11 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
         try:
             with open(hf_quant) as f:
                 cfg = json.load(f)
-            if cfg.get("quant_method", "").lower().startswith("modelopt"):
-                algo = (cfg.get("quantization", {}).get("quant_algo", "") or cfg.get("quant_algo", "")).upper()
-                if "MXFP4" in algo:
-                    return "mxfp4"
-                if "MXFP8" in algo:
-                    return "mxfp8"
+            algo = _ModelOptQuantConfigBase._extract_modelopt_quant_algo(cfg) or ""
+            if "MXFP4" in algo:
+                return "mxfp4"
+            if "MXFP8" in algo:
+                return "mxfp8"
         except Exception:
             pass
     if quant_cfg is None:
