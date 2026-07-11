@@ -8,7 +8,7 @@ import numpy as np
 
 from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -453,7 +453,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             p = self._layer_key_prefix(i)
             ls_buf = self.weights.get(f"{p}.layer_scalar")
             if ls_buf is not None:
-                self._layer_scales.append(ls_buf.to_numpy().view(_WGPU_DTYPE_TO_NP.get(ls_buf.dtype, np.float16)).item())
+                self._layer_scales.append(self._buf_to_numpy(ls_buf).item())
             else:
                 self._layer_scales.append(1.0)
 
@@ -965,7 +965,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             {"N": add_n, "SCALE": _ls},
                             (cdiv(add_n, 256), 1, 1))
 
-                    normed_x = b["normed"]
+                    if i < self.num_layers - 1:
+                        normed_x = b["normed"]
                     x_res    = out_h
                     _hstate  = (_hstate + 2) % 3
 

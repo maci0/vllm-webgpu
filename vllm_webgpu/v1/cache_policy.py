@@ -200,16 +200,22 @@ def allocate_kv_from_tensors(
     )
 
 
-def get_layer_types(model, hf_config) -> list | None:
+def get_layer_types(model, hf_config, hf_outer_config=None) -> list | None:
     """Return the layer-type list for a model, using a canonical three-way fallback.
 
     Priority: model._layer_types (set at load time) > hf_config.layers_block_type
-    (NemotronH/Falcon) > hf_config.layer_types (Gemma4 and similar).
-    Returns None when none of the three attributes is present.
+    (NemotronH/Falcon) > hf_config.layer_types (Gemma4 and similar) >
+    hf_outer_config.attn_type_list (Minimax).
+
+    Returns None when none of the attributes is present.
 
     Uses explicit `is not None` guards (not `or`) so that an empty list, which
     is a valid value distinct from "attribute absent", is not silently skipped.
-    vLLM's ModelConfig.get_num_layers_by_block_type uses the same pattern.
+
+    hf_outer_config: optional outer ModelConfig.hf_config, used only for the
+    attn_type_list probe. For multimodal models (e.g. Minimax) where
+    hf_text_config != hf_config, attn_type_list lives on the outer config.
+    Defaults to hf_config when not provided (single-config models).
 
     Note: the model._layer_types probe is only exercised by scripts/kv_utils.py,
     which passes a fully loaded model object. The vLLM engine path always calls
@@ -227,7 +233,10 @@ def get_layer_types(model, hf_config) -> list | None:
         return v
     # Minimax-style: integer list where 1 = attention, 0 = non-attention.
     # model_runner.py filters these with `lt != 1` rather than `lt not in KV_ATTN_TYPES`.
-    return getattr(hf_config, "attn_type_list", None)
+    # attn_type_list lives on the outer hf_config for multimodal models where
+    # hf_text_config (passed as hf_config here) differs from the outer config.
+    _outer = hf_outer_config if hf_outer_config is not None else hf_config
+    return getattr(_outer, "attn_type_list", None)
 
 
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:

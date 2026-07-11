@@ -214,6 +214,12 @@ class WebGPUModelRunner:
         not when it is explicitly set to [] — an empty list means the model
         has confirmed there are no heterogeneous layers, and that signal must
         not be overridden by a stale HF config attribute.
+
+        Note: the _layer_attention_params fallback branch is only reachable
+        by out-of-lifecycle callers (tests, scripts) that invoke
+        get_kv_cache_spec() before load_model(). The worker.py lifecycle
+        guarantees load_model() runs first, so self.model is always set
+        when kv_cache_spec is evaluated in production.
         """
         lp = getattr(self.model, "_lp", None) if self.model is not None else None
         return lp if lp is not None else getattr(self.vllm_config.model_config.hf_config, "_layer_attention_params", None)
@@ -253,7 +259,11 @@ class WebGPUModelRunner:
         # NemotronH attention layers live under .mixer, not .self_attn.
         _archs = getattr(self.vllm_config.model_config.hf_config, "architectures", None) or []
         _attn_suffix = ".mixer" if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" else ".self_attn"
-        _layer_types = get_layer_types(None, self.vllm_config.model_config.hf_text_config)
+        _layer_types = get_layer_types(
+            None,
+            self.vllm_config.model_config.hf_text_config,
+            hf_outer_config=self.vllm_config.model_config.hf_config,
+        )
 
         if lp_list and len(lp_list) == num_hidden_layers:
             for i, lp in enumerate(lp_list):
@@ -383,7 +393,7 @@ class WebGPUModelRunner:
             widths = [d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None]
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
-            if all(d is not None for d in logprobs_data) and len(set(widths)) == 1:
+            if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
                 built_logprobs = _stack(logprobs_data)
             else:
                 # Derive the dtype of selected_token_ranks from the first real

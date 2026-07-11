@@ -12,7 +12,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 
@@ -208,6 +208,15 @@ class BaseWebGPUModel(ABC):
         Zero-byte buffers are forbidden by the spec.
         """
         return WebGPUBuffer.empty(self.wgpu_device.wgpu_device, max(n, 4))
+
+    def _buf_to_numpy(self, buf: "WebGPUBuffer") -> "np.ndarray":
+        """Read a GPU buffer as a numpy array with the correct element dtype.
+
+        Reinterprets the raw bytes from buf.to_numpy() using the numpy dtype
+        that corresponds to the buffer's wgpu dtype. Falls back to float16
+        when the dtype is not in _WGPU_DTYPE_TO_NP.
+        """
+        return buf.to_numpy().view(_WGPU_DTYPE_TO_NP.get(buf.dtype, np.float16))
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):

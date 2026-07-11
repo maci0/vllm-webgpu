@@ -161,6 +161,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                         "replacement inside _moe_ffn_layer. Disable profiling "
                         "before calling forward() with T > 1 on a Mixtral MoE model."
                     )
+                self._check_single_sequence(attn_metadata)
                 return self._prefill_sequential_fallback(
                     input_ids, positions, attn_metadata, len(input_ids)
                 )
@@ -269,6 +270,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                  msc["expert_up"]],
                 {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
                 _gemv_wg(inter),
+            )
+            assert inter % 4 == 0, (
+                f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
             )
             self._dispatch(
                 "gelu_mul",

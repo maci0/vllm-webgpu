@@ -20,10 +20,6 @@ from compressed_tensors.quantization import QuantizationType as _QuantizationTyp
 from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
 from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
 
-try:
-    from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
-except ImportError:
-    _decompress_mx_scale = None
 
 # AWQ nibble unpack table. AWQ packs channels with interleaved order [0,4,1,5,2,6,3,7],
 # so to extract channel c from a packed int32 the bit offset is inverse_pack[c]*4 where
@@ -1159,18 +1155,11 @@ def load_safetensors_weights(
                 # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
                 # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
                 # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-                if _decompress_mx_scale is None:
-                    raise ImportError(
-                        "MXFP4 dequant requires compressed_tensors "
-                        "(compressed_tensors.compressors.mx_utils.decompress_mx_scale); "
-                        "install compressed_tensors to load MXFP4 models"
-                    )
-
                 for base in mx_bases:
                     try:
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                         ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                        ws_f32 = np.ascontiguousarray(_decompress_mx_scale(torch.from_numpy(ws_u8)).to(torch.float32).numpy())  # E8M0: 2^(u8-127)
+                        ws_f32 = np.ascontiguousarray(np.exp2(ws_u8.astype(np.float32) - 127.0))  # E8M0: 2^(u8-127)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2
                         _upload_u8(wp, f"{base}.weight", weights)
@@ -1297,10 +1286,11 @@ def load_safetensors_weights(
                             absmax_arr.size, expected_blocks, N, K, base)
                         continue
 
-                    # Reshape: [N//2, K] → [N//2, 2, K//2] → [N, K//2]
+                    # Reshape: [N//2, K] → [N, K//2].
                     # BnB row r: first K//2 bytes → shader row 2r, last K//2 bytes → shader row 2r+1.
+                    # C-order (row-major) reshape merges the N//2 and K//2 dimensions correctly.
                     shader_codes = np.ascontiguousarray(
-                        bnb_codes.reshape(N_half, 2, K_half).reshape(N, K_half))
+                        bnb_codes.reshape(N, K_half))
 
                     # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
                     absmax_2d = np.ascontiguousarray(

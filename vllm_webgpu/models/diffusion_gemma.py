@@ -7,7 +7,7 @@ from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -212,7 +212,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 p = self._layer_key_prefix(i)
                 pes_w = self.weights.get(f"{p}.router.per_expert_scale")
                 if pes_w is not None:
-                    self._pes_cache[i] = pes_w.to_numpy().view(_WGPU_DTYPE_TO_NP.get(pes_w.dtype, np.float16)).astype(np.float32)
+                    self._pes_cache[i] = self._buf_to_numpy(pes_w).astype(np.float32)
 
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 

@@ -366,28 +366,25 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # biased-down combination, where _ensure_moe_expert_bufs() was not called.
         if "expert_tmp" not in msc:
             msc["expert_tmp"] = self._make_buf(self.hidden_size * 2)
-        if "expert_down_tmp" not in msc:
-            msc["expert_down_tmp"] = self._make_buf(self.hidden_size * 2)
         hidden = self.hidden_size
         uq_d = self._uq_for_key(w2_key)
         qi_d = self._quant_extra(f"{ep}.{down_key_name}", uq_d)
 
-        # Down GEMV → expert_tmp (sized at hidden_size).
+        # Down GEMV with fused bias (HAS_BIAS=1) → expert_tmp.
+        # Mirrors the router bias pattern used in _moe_ffn_layer; avoids a
+        # separate add dispatch and removes the expert_down_tmp staging buffer.
         self._dispatch(
             "matmul_quant",
             [msc["expert_act"], self.weights[w2_key],
              self._scales_buf(w2_key, uq_d, self._dummy_buf),
-             msc["expert_tmp"]],
-            {"K": inter, "N": hidden, "USE_QUANT": uq_d, **qi_d},
+             msc["expert_tmp"], w2_bias],
+            {"K": inter, "N": hidden, "USE_QUANT": uq_d, "HAS_BIAS": 1, **qi_d},
             _gemv_wg(hidden),
         )
-        # Add down bias: expert_tmp → expert_down_tmp (aliasing-safe: different src/dst).
-        self._dispatch("add", [msc["expert_tmp"], w2_bias, msc["expert_down_tmp"]],
-                       {"N": hidden}, _vec4_wg(hidden))
-        # Weighted accumulate into expert_out using the biased down output.
+        # Weighted accumulate into expert_out from the biased down output.
         self._dispatch(
             "moe_accumulate",
-            [msc["expert_out"], msc["expert_down_tmp"], msc["topk_w"]],
+            [msc["expert_out"], msc["expert_tmp"], msc["topk_w"]],
             {"N": hidden, "K_IDX": k_idx},
             _rows_wg(hidden),
         )
