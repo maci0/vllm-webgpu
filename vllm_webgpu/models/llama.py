@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math
+from functools import partial
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -83,8 +84,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         def _tile_norm(a, n_heads):
             return np.tile(a, n_heads) if a.shape == (head_dim,) else a
 
-        _q_xform = lambda a: _tile_norm(a, num_q)
-        _k_xform = lambda a: _tile_norm(a, num_kv)
+        _q_xform = partial(_tile_norm, n_heads=num_q)
+        _k_xform = partial(_tile_norm, n_heads=num_kv)
         for _i in range(self.num_layers):
             _p = f"model.layers.{_i}"
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = _q_xform
@@ -648,7 +649,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
 
         # x_buf is updated inside the loop; initialize here so the final-norm
-        # dispatch at line 685 is always bound even if T were ever 0.
+        # dispatch is always bound even if T were ever 0.
         # In practice T >= 1 (enforced by _prefill_batch_forward callers), but
         # Python would raise UnboundLocalError without this pre-assignment.
         x_buf = self._pre["x"]

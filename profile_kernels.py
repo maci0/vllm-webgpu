@@ -134,7 +134,8 @@ def main() -> None:
     if not decode_times:
         print("\nNo profiled decode steps measured")
     else:
-        print(f"\nAverage decode step: {avg_step_ms:.1f} ms  ({1000/avg_step_ms:.1f} tok/s)")
+        tok_s = f"  ({1000/avg_step_ms:.1f} tok/s)" if avg_step_ms > 0 else ""
+        print(f"\nAverage decode step: {avg_step_ms:.1f} ms{tok_s}")
     print()
     print(model.profile_report())
     print()
@@ -159,10 +160,11 @@ def main() -> None:
             if not k.startswith('__') and '.layers.' in k
         )
         total_w_mb = total_w_bytes / 1e6
-        bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
         print(f"  Weight data moved: {total_w_mb:.0f} MB  ({total_w_mb/num_layers:.1f} MB/layer avg)")
-        print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (M3 Peak: ~200-400 GB/s)")
-        print(f"  BW utilization: {bw_util_gb_s/300*100:.1f}%")
+        if total > 0:
+            bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
+            print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (M3 Peak: ~200-400 GB/s)")
+            print(f"  BW utilization: {bw_util_gb_s/300*100:.1f}%")
 
 
 if __name__ == '__main__':

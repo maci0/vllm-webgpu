@@ -17,7 +17,7 @@ from vllm.model_executor.layers.rotary_embedding.common import (
     yarn_get_mscale,
     yarn_linear_ramp_mask,
 )
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _DTYPE_MAP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 
@@ -72,18 +72,9 @@ logger = init_logger(__name__)
 
 # Mapping from WebGPU buffer dtype strings to numpy scalar types.
 # Covers all five dtypes in active use by the weight loader and shaders:
-#   f32  -> np.float32
-#   f16  -> np.float16
-#   i32  -> np.int32   (GPTQ quantized weights)
-#   u8   -> np.uint8   (FP8 / NF4 / INT8 quantized weights)
-#   u32  -> np.uint32  (BF16 companion / packed formats)
-_WGPU_DTYPE_TO_NP: dict[str, type] = {
-    "f32": np.float32,
-    "f16": np.float16,
-    "i32": np.int32,
-    "u8":  np.uint8,
-    "u32": np.uint32,
-}
+# Inverse of _DTYPE_MAP from buffer.py: wgpu dtype string -> numpy dtype.
+# Derived rather than duplicated so adding a new dtype only requires updating buffer.py.
+_WGPU_DTYPE_TO_NP: dict[str, type] = {v: k for k, v in _DTYPE_MAP.items()}
 
 
 def compute_yarn_freqs(

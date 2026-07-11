@@ -768,15 +768,11 @@ class WebGPUModelRunner:
                 # Extend token_history with the newly generated token so that
                 # replay_prefix_for_ssm has the full sequence if this request is
                 # later preempted and resumed with prefix-cached KV.
-                prev_history = state.get("token_history", [])
-                self._req_state[rid] = {
-                    "pos": pos + 1, "block_ids": blk_ids,
-                    "last_tok": stok, "num_logprobs": num_logprobs,
-                    "sampling_params": sp,
-                    "recurrent_states": decode_recurrent_states,
-                    "rng": rng,
-                    "token_history": prev_history + [stok],
-                }
+                state["pos"] = pos + 1
+                state["block_ids"] = blk_ids
+                state["last_tok"] = stok
+                state["recurrent_states"] = decode_recurrent_states
+                state.setdefault("token_history", []).append(stok)
                 all_req_ids.append(rid)
                 all_sampled.append(stok)
                 all_logprobs_data.append(lp_data)

@@ -1153,8 +1153,7 @@ def load_safetensors_weights(
                 try:
                     wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                     ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                    import torch as _torch
-                    ws_f32 = np.ascontiguousarray(_decompress_mx_scale(_torch.from_numpy(ws_u8)).to(_torch.float32).numpy())  # E8M0: 2^(u8-127)
+                    ws_f32 = np.ascontiguousarray(_decompress_mx_scale(torch.from_numpy(ws_u8)).to(torch.float32).numpy())  # E8M0: 2^(u8-127)
                     N_, K2_ = wp.shape
                     K_ = K2_ * 2
                     _upload_u8(wp, f"{base}.weight", weights)

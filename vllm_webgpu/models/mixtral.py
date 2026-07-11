@@ -431,38 +431,41 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 f"moe_intermediate_size) elements."
             )
 
-        # Without a shared expert, zero-initialize the accumulation buffer so
-        # the first expert's weighted output accumulates from zero.
+        # Zero-initialize expert_out before Phase B whenever no shared expert
+        # will seed it. Check weight availability here so the write_buffer
+        # always precedes Phase B encoder creation (consistent ordering).
         if shared_expert_prefix is None:
             dev.queue.write_buffer(msc["expert_out"].buf, 0, self._expert_out_zeros)
+            _shared_weights_present = False
+        else:
+            _sinter = shared_expert_inter if shared_expert_inter is not None else inter
+            sp = f"{p}.{shared_expert_prefix}"
+            sgw_k = f"{sp}.{gate_key}.weight"
+            suw_k = f"{sp}.{up_key}.weight"
+            sdw_k = f"{sp}.{down_key}.weight"
+            _shared_weights_present = all(k in self.weights for k in (sgw_k, suw_k, sdw_k))
+            if not _shared_weights_present:
+                # Shared expert weights not loaded; zero-init before Phase B encoder.
+                dev.queue.write_buffer(msc["expert_out"].buf, 0, self._expert_out_zeros)
 
         # ── Phase B: expert dispatches (new encoder) ──────────────────────────
         # Subsequent _dispatch() calls (including the residual add in the calling
         # _transformer_layer) will land in this new encoder.
         self._active_encoder = dev.create_command_encoder()
 
-        if shared_expert_prefix is not None:
+        if shared_expert_prefix is not None and _shared_weights_present:
             # Shared expert is always active with coefficient 1.0. Dispatch it
             # first so its output seeds expert_out before the weighted expert loop.
-            _sinter = shared_expert_inter if shared_expert_inter is not None else inter
-            sp = f"{p}.{shared_expert_prefix}"
-            sgw_k = f"{sp}.{gate_key}.weight"
-            suw_k = f"{sp}.{up_key}.weight"
-            sdw_k = f"{sp}.{down_key}.weight"
-            if all(k in self.weights for k in (sgw_k, suw_k, sdw_k)):
-                self._dispatch_expert_gate_up(normed_x, sgw_k, suw_k, _sinter, extra_gate_consts)
-                uq_sd = self._uq_for_key(sdw_k)
-                qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)
-                self._dispatch(
-                    "matmul_quant",
-                    [msc["expert_act"], self.weights[sdw_k],
-                     self._scales_buf(sdw_k, uq_sd, self._dummy_scales_buf), msc["expert_out"]],
-                    {"K": _sinter, "N": hidden, "USE_QUANT": uq_sd, **qi_sd},
-                    _gemv_wg(hidden),
-                )
-            else:
-                # Shared expert weights not loaded; fall back to zero-init.
-                dev.queue.write_buffer(msc["expert_out"].buf, 0, self._expert_out_zeros)
+            self._dispatch_expert_gate_up(normed_x, sgw_k, suw_k, _sinter, extra_gate_consts)
+            uq_sd = self._uq_for_key(sdw_k)
+            qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)
+            self._dispatch(
+                "matmul_quant",
+                [msc["expert_act"], self.weights[sdw_k],
+                 self._scales_buf(sdw_k, uq_sd, self._dummy_scales_buf), msc["expert_out"]],
+                {"K": _sinter, "N": hidden, "USE_QUANT": uq_sd, **qi_sd},
+                _gemv_wg(hidden),
+            )
 
         for k_idx, exp_idx in enumerate(expert_indices):
             ep = f"{p}.experts.{exp_idx}"

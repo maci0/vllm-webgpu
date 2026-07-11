@@ -219,7 +219,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         wrong outputs with no error.
         """
         if not self._is_moe:
-            raise AssertionError(
+            raise RuntimeError(
                 "GptOssWebGPUModel._ffn_dispatch: _is_moe is False. "
                 "GPT-OSS is always MoE; a non-MoE path would produce wrong "
                 "outputs (standard SiLU instead of SwigluOAI). Check the "

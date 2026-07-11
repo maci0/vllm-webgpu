@@ -79,7 +79,7 @@ def _build_layer_params_from_config(
     num_q_heads       = model_config.num_attention_heads
     intermediate_size = model_config.intermediate_size
     layer_types       = model_config.layer_types
-    default_hd        = getattr(model_config, "head_dim", (getattr(model_config, "hidden_size", 0) // num_q_heads) or 256)
+    default_hd        = getattr(model_config, "head_dim", getattr(model_config, "hidden_size", 0) // num_q_heads or 256)
     default_kv        = getattr(model_config, "num_key_value_heads", 1)
     global_hd        = getattr(model_config, "global_head_dim", default_hd)
     global_kv        = getattr(model_config, "num_global_key_value_heads", default_kv)
@@ -790,7 +790,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                          "NUM_KV_HEADS": num_kv_heads,
                          "HEAD_DIM":     head_dim,
                          "NUM_T":        T,
-                         "SCALE":        1.0 if self._apply_v_norm else ((self._query_pre_attn_scalar or head_dim) ** -0.5)},
+                         "SCALE":        1.0 if self._apply_v_norm else ((self._query_pre_attn_scalar if self._query_pre_attn_scalar is not None else head_dim) ** -0.5)},
                         (self.num_q_heads, T, 1))
 
                     # Output projection (batch GEMM)
@@ -1211,7 +1211,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
                             "CTX_LEN": ctx_len,
-                            "SCALE": 1.0 if self._apply_v_norm else ((self._query_pre_attn_scalar or head_dim) ** -0.5)},
+                            "SCALE": 1.0 if self._apply_v_norm else ((self._query_pre_attn_scalar if self._query_pre_attn_scalar is not None else head_dim) ** -0.5)},
                            (self.num_q_heads, 1, 1))
 
             # Output projection → sc["o_proj_out"]

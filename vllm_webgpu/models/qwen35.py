@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched
+from itertools import batched, chain
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -80,7 +80,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # before the o_proj. The split is performed at load time by the _make_split weight
         # transform registered in load_weights; the gate half is stored under
         # self_attn.q_gate_proj.weight.
-        self._attn_output_gate: bool = bool(getattr(model_config, "attn_output_gate", True))
+        self._attn_output_gate: bool = getattr(model_config, "attn_output_gate", True)
 
         # GDN (linear-attention) architecture dimensions from config.
         # Fall back to Qwen3.5-9B defaults if not present.
@@ -385,7 +385,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def reset_recurrent_states(self) -> None:
         """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
         dev = self.wgpu_device.wgpu_device
-        for buf in self._ssm_gpu + self._conv_gpu:
+        for buf in chain(self._ssm_gpu, self._conv_gpu):
             if buf is not None:
                 zeros = self._zero_buf_cache.get(buf.nbytes)
                 if zeros is None:

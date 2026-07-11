@@ -438,8 +438,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def _init_mamba_states(self) -> None:
         """Allocate zero-initialized GPU buffers for each Mamba layer's state."""
-        dev = self.wgpu_device.wgpu_device
-
         conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
             tp_world_size=1,
             intermediate_size=self.mamba_int,
@@ -459,8 +457,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
                 continue
-            self._conv_states[i] = WebGPUBuffer.empty(dev, max(conv_bytes, 8))
-            self._ssm_states[i]  = WebGPUBuffer.empty(dev, max(ssm_bytes, 8))
+            self._conv_states[i] = self._make_buf(conv_bytes)
+            self._ssm_states[i]  = self._make_buf(ssm_bytes)
 
     def reset_recurrent_states(self) -> None:
         """Zero all Mamba conv and SSM states. Call before each new request."""
