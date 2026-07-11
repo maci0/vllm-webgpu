@@ -91,7 +91,11 @@ def _build_layer_params_from_config(
     num_q_heads       = model_config.num_attention_heads
     intermediate_size = model_config.intermediate_size
     layer_types       = model_config.layer_types
-    default_hd        = getattr(model_config, "head_dim", getattr(model_config, "hidden_size", 0) // num_q_heads)
+    default_hd = (
+        model_config.head_dim
+        if hasattr(model_config, "head_dim")
+        else model_config.hidden_size // num_q_heads
+    )
     default_kv        = model_config.num_key_value_heads
     global_hd        = getattr(model_config, "global_head_dim", default_hd)
     global_kv        = getattr(model_config, "num_global_key_value_heads", default_kv)
@@ -140,6 +144,32 @@ def _build_layer_params_from_config(
             "is_kv_shared":      is_kv_shared,
             "kv_shared_target":  kv_shared_target,
         })
+
+    # Cross-check: when the k_eq_v (laptop) variant is active, full_attention
+    # layers use global_kv heads. Verify that the stored kv_dim is consistent
+    # with the global_head_dim and num_global_key_value_heads attributes on
+    # model_config. A silent rename of either attribute in vLLM config causes
+    # the getattr calls above to fall back to wrong defaults, producing a kv_dim
+    # that no longer matches this independent recomputation.
+    # Only applicable for k_eq_v=True: k_eq_v=False full_attention layers use
+    # default_kv heads (not global_kv), so the check would spuriously fail there.
+    if "full_attention" in layer_types and k_eq_v:
+        expected_fa_kv_dim = (
+            getattr(model_config, "global_head_dim", default_hd)
+            * getattr(model_config, "num_global_key_value_heads", default_kv)
+        )
+        actual_fa_kv_dims = {
+            p["kv_dim"] for p, lt in zip(lp, layer_types) if lt == "full_attention"
+        }
+        assert expected_fa_kv_dim in actual_fa_kv_dims, (
+            f"full_attention kv_dim mismatch: expected {expected_fa_kv_dim} "
+            f"(global_head_dim={getattr(model_config, 'global_head_dim', default_hd)!r} "
+            f"* num_global_key_value_heads={getattr(model_config, 'num_global_key_value_heads', default_kv)!r}) "
+            f"but full_attention layers produced {actual_fa_kv_dims}. "
+            "Check whether vLLM renamed global attention config attributes, or "
+            "whether the k_eq_v branch in formula (3) is misapplied."
+        )
+
     return lp
 
 
