@@ -208,7 +208,12 @@ def get_layer_types(model, hf_config) -> list | None:
         v = getattr(model, "_layer_types", None)
         if v is not None:
             return v
-    return next((v for a in ("layers_block_type", "layer_types") if (v := getattr(hf_config, a, None)) is not None), None)
+    v = next((v for a in ("layers_block_type", "layer_types") if (v := getattr(hf_config, a, None)) is not None), None)
+    if v is not None:
+        return v
+    # Minimax-style: integer list where 1 = attention, 0 = non-attention.
+    # model_runner.py filters these with `lt != 1` rather than `lt not in KV_ATTN_TYPES`.
+    return getattr(hf_config, "attn_type_list", None)
 
 
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:

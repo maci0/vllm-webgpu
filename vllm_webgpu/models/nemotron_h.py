@@ -1,5 +1,4 @@
 from __future__ import annotations
-from collections.abc import Callable
 from functools import partial
 import math
 from typing import TYPE_CHECKING
@@ -14,6 +13,7 @@ from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread,
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 

@@ -118,6 +118,10 @@ class WebGPUWorker(WorkerBase):
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.model_config.max_model_len = max_model_len
+        # WebGPUModelRunner reads max_model_len from model_config at runtime rather than
+        # caching it, so the assignment above is sufficient and no runner-level update is
+        # needed. The hasattr guard matches gpu_worker.py's delegation pattern but is
+        # currently always False; it would silently no-op if the runner ever starts caching.
         if self.model_runner is not None and hasattr(self.model_runner, "update_max_model_len"):
             self.model_runner.update_max_model_len(max_model_len)
         logger.debug("Updated max_model_len to %d", max_model_len)

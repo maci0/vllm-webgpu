@@ -411,6 +411,9 @@ def test_qwen36_moe_forward(wgpu_device):
     model.weights[f"{p}.self_attn.k_proj.weight"] = f16((kv_dim, hidden))
     model.weights[f"{p}.self_attn.v_proj.weight"] = f16((kv_dim, hidden))
     model.weights[f"{p}.self_attn.o_proj.weight"] = f16((hidden, q_dim))
+    # Per-head RMSNorm weights (always present in Qwen3/3.5 checkpoints)
+    model.weights[f"{p}.self_attn.q_norm.weight"] = ones_f16((head_dim,))
+    model.weights[f"{p}.self_attn.k_norm.weight"] = ones_f16((head_dim,))
 
     # MoE router: gate.weight [num_experts, hidden]
     model.weights[f"{p}.mlp.gate.weight"] = f16((n_experts, hidden))

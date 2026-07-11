@@ -234,14 +234,12 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
     runner.vllm_config = vllm_config
     runner.webgpu_config = WebGPUConfig.from_env()
     runner._block_size = 16
-    runner._kv_cache_spec_cache = None  # simulate __init__
-    # _get_lp_list() is called inside get_kv_cache_spec; return None to trigger
+    # _get_lp_list() is called inside kv_cache_spec; return None to trigger
     # the layer_types fallback path (model not yet loaded, no _layer_attention_params).
     runner._get_lp_list.return_value = None
-    # _build_kv_cache_spec is now a separate method (called by get_kv_cache_spec).
-    # Route it through the real implementation so the mock's configured attributes
-    # are visible to the implementation.
-    runner._build_kv_cache_spec.side_effect = lambda: WebGPUModelRunner._build_kv_cache_spec(runner)
+    # kv_cache_spec is a cached_property. Evaluate it once here so the mock returns
+    # the real spec when get_kv_cache_spec() (which reads self.kv_cache_spec) is called.
+    runner.kv_cache_spec = WebGPUModelRunner.kv_cache_spec.func(runner)
     return runner
 
 
@@ -311,8 +309,7 @@ def test_get_kv_cache_spec_pre_load_gemma4_uniform_fallback():
     runner.vllm_config = vllm_config
     runner.webgpu_config = WebGPUConfig.from_env()
     runner._block_size = 16
-    runner._kv_cache_spec_cache = None  # simulate __init__
-    runner._build_kv_cache_spec.side_effect = lambda: WebGPUModelRunner._build_kv_cache_spec(runner)
+    runner.kv_cache_spec = WebGPUModelRunner.kv_cache_spec.func(runner)
 
     spec = WebGPUModelRunner.get_kv_cache_spec(runner)
 

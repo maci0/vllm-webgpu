@@ -824,11 +824,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Fused K+V cache store.
         # When using fused QKV, V lives in qkv_buf starting at element (q_dim+kv_dim).
-        _kv_consts: dict = {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                            "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset}
         self._dispatch("kv_cache_store_both",
                        [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
-                       _kv_consts,
+                       {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
+                        "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
                        (num_tokens, self.num_kv_heads, 1))
 
         # Always use flash_attn_decode for single-token decode.

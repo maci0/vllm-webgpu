@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from itertools import batched, chain
 from typing import TYPE_CHECKING
 
@@ -312,16 +311,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, V_DIM, K_DIM] f32,
         # matching vLLM's gated_delta_net_state_shape convention.
         #
-        # Only the total element count (math.prod) is used from conv_shape, not its
-        # axis layout. gated_delta_net_state_shape may return (conv_dim, kernel-1) or
-        # (kernel-1, conv_dim) depending on VLLM_SSM_CONV_STATE_LAYOUT, but both
-        # orderings produce the same product, so the buffer size is correct regardless.
-        #
         # _lin_conv_dim is derived from gated_delta_net_state_shape in __init__ rather
         # than re-computed from the config formula, so it is always consistent with the
-        # conv_shape returned here. No extra assertion is needed.
-        conv_bytes = math.prod(self._gdn_conv_shape) * _ELEM_BYTES["f16"]
-        ssm_bytes  = math.prod(self._gdn_ssm_shape)  * _ELEM_BYTES["f32"]
+        # conv shape. The conv buffer holds (CONV_DIM) * (KERNEL-1) elements; the SSM
+        # buffer holds (NUM_V_HEADS * V_DIM * K_DIM) elements.
+        conv_bytes = self._lin_conv_dim * (self._lin_conv_kernel - 1) * _ELEM_BYTES["f16"]
+        ssm_bytes  = self._lin_v_heads * self._lin_v_dim * self._lin_k_dim * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}
         self._conv_gpu = {}
@@ -808,37 +803,22 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                _gemv_wg(q_dim))
 
         # Per-head RMSNorm + RoPE with Qwen3.5-specific constants.
-        _q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
-        _k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
+        _q_norm_w = self.weights[f"{p}.self_attn.q_norm.weight"]
+        _k_norm_w = self.weights[f"{p}.self_attn.k_norm.weight"]
         _freq_buf = self._rope_freq_buf
         _rope_base = self._rope_base
-        if _q_norm_w is not None and _k_norm_w is not None:
-            # fused_qk_norm_rope with K_SEPARATE=1: Q in _q_src, K in _k_src (separate buffers).
-            self._dispatch("fused_qk_norm_rope",
-                           [_q_src, _q_norm_w, _k_norm_w, pos_buf,
-                            sc["q_rope"], sc["k_rope"], _k_src, _freq_buf],
-                           {**_rope_base,
-                            "NUM_Q_HEADS": self.num_q_heads,
-                            "NUM_KV_HEADS": self.num_kv_heads,
-                            "HAS_WEIGHT": 1,
-                            "INPUT_OFFSET_K": 0,
-                            "K_SEPARATE": 1},
-                           (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
-        else:
-            for src, dst, n_heads, norm_w in [
-                (_q_src, sc["q_rope"], self.num_q_heads, _q_norm_w),
-                (_k_src, sc["k_rope"], self.num_kv_heads, _k_norm_w),
-            ]:
-                if norm_w is not None:
-                    self._dispatch("fused_per_head_norm_rope",
-                                   [src, norm_w, pos_buf, dst, _freq_buf],
-                                   {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 1, "INPUT_OFFSET": 0},
-                                   (n_heads, num_tokens, 1))
-                else:
-                    self._dispatch("fused_per_head_norm_rope",
-                                   [src, self._dummy_buf, pos_buf, dst, _freq_buf],
-                                   {**_rope_base, "NUM_HEADS": n_heads, "HAS_WEIGHT": 0, "INPUT_OFFSET": 0},
-                                   (n_heads, num_tokens, 1))
+        # fused_qk_norm_rope with K_SEPARATE=1: Q in _q_src, K in _k_src (separate buffers).
+        # Qwen3/3.5 always provides q_norm and k_norm; direct weight access asserts this.
+        self._dispatch("fused_qk_norm_rope",
+                       [_q_src, _q_norm_w, _k_norm_w, pos_buf,
+                        sc["q_rope"], sc["k_rope"], _k_src, _freq_buf],
+                       {**_rope_base,
+                        "NUM_Q_HEADS": self.num_q_heads,
+                        "NUM_KV_HEADS": self.num_kv_heads,
+                        "HAS_WEIGHT": 1,
+                        "INPUT_OFFSET_K": 0,
+                        "K_SEPARATE": 1},
+                       (self.num_q_heads + self.num_kv_heads, num_tokens, 1))
 
         # Fused K+V cache store. V always lives in its own _v_src buffer (no offset needed).
         self._dispatch("kv_cache_store_both",

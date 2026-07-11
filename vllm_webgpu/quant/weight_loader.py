@@ -394,6 +394,11 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
                  g_idx: "np.ndarray | None" = None) -> np.ndarray:
     """Dequantize AWQ int4 weights to float16.
 
+    This is a CPU numpy fallback used only when the checkpoint cannot be uploaded
+    in GPU-quantized form (asymmetric zero-points, desc-act g_idx). vLLM provides
+    no public CPU-side numpy dequant path. A future simplification: if auto-awq is
+    installed as a vLLM transitive dep, prefer auto_awq.utils.packing.unpack_awq.
+
     AWQ packs 8 int4 weights per int32 along the output (N) dimension,
     using nibble order [0,4,1,5,2,6,3,7] within each int32. Output is
     the original weight matrix (N, K) = (out_features, in_features) in F16.
@@ -424,6 +429,12 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
                   g_idx: "np.ndarray | None" = None) -> np.ndarray:
     """Dequantize GPTQ int4 weights to float16.
+
+    This is a CPU numpy fallback used only when the checkpoint cannot be uploaded
+    in GPU-quantized form (asymmetric zero-points, desc-act g_idx). vLLM provides
+    no public CPU-side numpy dequant path. A future simplification: if auto-gptq is
+    installed as a vLLM transitive dep, prefer
+    auto_gptq.nn_modules.qlinear.qlinear_cuda._unpack_qzeros for zero-point unpacking.
 
     GPTQ packs 8 int4 weights per int32 along the input (K) dimension,
     using standard nibble order [0,1,2,3,4,5,6,7]. Output is (N, K) F16.
@@ -477,7 +488,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     return "mxfp4"
                 if "MXFP8" in algo:
                     return "mxfp8"
-        except (OSError, json.JSONDecodeError, KeyError) as exc:
+        except (OSError, json.JSONDecodeError, KeyError, AttributeError, TypeError) as exc:
             logger.warning("Failed to read hf_quant_config.json in %s: %s", model_dir, exc)
     if quant_cfg is None:
         config_json = model_dir / "config.json"

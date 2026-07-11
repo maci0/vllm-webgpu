@@ -167,10 +167,7 @@ def _build_layer_params_from_config(
     # Only applicable for k_eq_v=True: k_eq_v=False full_attention layers use
     # default_kv heads (not global_kv), so the check would spuriously fail there.
     if "full_attention" in layer_types and k_eq_v:
-        expected_fa_kv_dim = (
-            getattr(model_config, "global_head_dim", default_hd)
-            * getattr(model_config, "num_global_key_value_heads", default_kv)
-        )
+        expected_fa_kv_dim = global_hd * global_kv
         actual_fa_kv_dims = {
             p["kv_dim"] for p, lt in zip(lp, layer_types) if lt == "full_attention"
         }

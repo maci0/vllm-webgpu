@@ -768,20 +768,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     )
 
                 with self._batched_dispatch(label=f"L{layer_idx:02d}E{eid}"):
+                    # gate/up: [T, hidden] x [inter_moe, hidden]^T -> [T, inter_moe]
+                    # _gemm_adaptive branches internally on num_tokens > 1.
+                    self._gemm_adaptive(moe_in, f"{ep}.gate_proj.weight", sc["gate_buf"], hidden, inter_moe, num_tokens)
+                    self._gemm_adaptive(moe_in, f"{ep}.up_proj.weight", sc["up_buf"], hidden, inter_moe, num_tokens)
                     if use_mr4 and num_tokens > 1:
-                        # Batched GEMM path: process all T tokens through this expert.
-                        # gate/up: [T, hidden] x [inter_moe, hidden]^T -> [T, inter_moe]
-                        for ob, ew_key, uq in [
-                            (sc["gate_buf"], f"{ep}.gate_proj.weight", uq_g),
-                            (sc["up_buf"],   f"{ep}.up_proj.weight",   uq_u),
-                        ]:
-                            _sc_e = self._scales_buf(ew_key, uq, self._dummy_buf)
-                            self._dispatch("matmul_quant_mr4",
-                                           [moe_in, self.weights[ew_key], _sc_e, ob],
-                                           {"K": hidden, "N": inter_moe, "M": num_tokens,
-                                            "USE_QUANT": uq,
-                                            **self._quant_extra(ew_key.removesuffix(".weight"), uq)},
-                                           (inter_moe, num_tokens, 1))
+                        # Batched GEMM path: gelu, down, and accumulate.
                         self._dispatch("gelu_mul",
                                        [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                        {"N": gelu_n_moe},
@@ -804,17 +796,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                         "EXPERT_SLOT": expert_slot},
                                        (cdiv(add_n, 256), 1, 1))
                     else:
-                        # Single-token GEMV path (num_tokens==1).
-                        # uq_g and uq_u were computed at lines above; reuse to avoid redundant dict lookups.
-                        for ob, ew_key, uq in [(sc["gate_buf"], f"{ep}.gate_proj.weight", uq_g),
-                                               (sc["up_buf"],   f"{ep}.up_proj.weight",   uq_u)]:
-                            self._dispatch("matmul_quant",
-                                           [moe_in, self.weights[ew_key],
-                                            self._scales_buf(ew_key, uq, self._dummy_buf), ob],
-                                           {"K": hidden, "N": inter_moe,
-                                            "USE_QUANT": uq,
-                                            **self._quant_extra(ew_key.removesuffix(".weight"), uq)},
-                                           _gemv_wg(inter_moe))
+                        # Single-token GEMV path (num_tokens==1): gelu, down, and accumulate.
                         self._dispatch("gelu_mul",
                                        [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
                                        {"N": gelu_n_moe},

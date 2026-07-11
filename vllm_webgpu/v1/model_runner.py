@@ -1,4 +1,5 @@
 from __future__ import annotations
+import functools
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -158,10 +159,9 @@ class WebGPUModelRunner:
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
         self._zeros_cache: dict[int, bytes] = {}  # amortizes zero-byte alloc across scheduling steps; see also NemotronHWebGPUModel._zero_buf_cache for the analogous Mamba-state cache
         self._block_size: int = vllm_config.cache_config.block_size
-        self._kv_cache_spec_cache = None
 
     def load_model(self) -> None:
-        self._kv_cache_spec_cache = None
+        self.__dict__.pop('kv_cache_spec', None)
         mc = self.vllm_config.model_config
         arch = (mc.architectures or ["LlamaForCausalLM"])[0]
         hf_config = mc.hf_config
@@ -218,11 +218,10 @@ class WebGPUModelRunner:
         return lp if lp is not None else getattr(self.vllm_config.model_config.hf_config, "_layer_attention_params", None)
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
-        if self._kv_cache_spec_cache is None:
-            self._kv_cache_spec_cache = self._build_kv_cache_spec()
-        return self._kv_cache_spec_cache
+        return self.kv_cache_spec
 
-    def _build_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
+    @functools.cached_property
+    def kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         num_hidden_layers = self.vllm_config.model_config.get_total_num_hidden_layers()
         block_size = self._block_size
         spec: dict[str, Any] = {}
@@ -257,7 +256,7 @@ class WebGPUModelRunner:
 
         if lp_list and len(lp_list) == num_hidden_layers:
             for i, lp in enumerate(lp_list):
-                if _layer_types and len(_layer_types) == num_hidden_layers and _layer_types[i] not in KV_ATTN_TYPES:
+                if _layer_types and len(_layer_types) == num_hidden_layers and (_layer_types[i] not in KV_ATTN_TYPES and _layer_types[i] != 1):
                     continue
                 if lp["num_kv_heads"] == 0:
                     # Non-attention layer: skip regardless of _layer_types to
@@ -276,7 +275,7 @@ class WebGPUModelRunner:
                 global_kv = default_kv
             k_eq_v = getattr(tc, "attention_k_eq_v", False)
             for i, lt in enumerate(_layer_types):
-                if lt not in KV_ATTN_TYPES:
+                if lt not in KV_ATTN_TYPES and lt != 1:
                     continue
                 if lt == "full_attention":
                     full_kv = global_kv if k_eq_v else default_kv
@@ -509,7 +508,7 @@ class WebGPUModelRunner:
             sp = req.sampling_params
             if sp is not None and sp.logprob_token_ids:
                 raise NotImplementedError(
-                    f"req {rid}: logprob_token_ids without logprobs is not supported on the WebGPU backend; "
+                    f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
                     "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
                 )
             num_logprobs = sp.num_logprobs if sp is not None else None

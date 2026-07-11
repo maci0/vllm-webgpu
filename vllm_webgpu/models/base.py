@@ -12,7 +12,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 
@@ -64,6 +64,27 @@ def _vals_per_thread(hidden_size: int) -> int:
     return 0
 
 logger = init_logger(__name__)
+
+# VERSION-BUMP anchor: compute_yarn_freqs calls YaRNScalingRotaryEmbedding._compute_inv_freq
+# via object.__new__ (bypassing __init__). If the method's signature changes on a vLLM
+# upgrade, the call raises TypeError at runtime. This block catches it at import time.
+# On upgrade, diff yarn_scaling_rope.py lines 49-73 (_compute_inv_freq) and lines 40-43
+# (__init__ mscale) against the stub attributes set in compute_yarn_freqs below.
+try:
+    import inspect as _inspect
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding as _YARN,
+    )
+    _yarn_params = list(_inspect.signature(_YARN._compute_inv_freq).parameters)
+    assert len(_yarn_params) == 2 and _yarn_params[0] == "self", (
+        f"YaRNScalingRotaryEmbedding._compute_inv_freq signature changed: "
+        f"{_yarn_params!r}. Expected (self, <scaling_factor>). Review compute_yarn_freqs "
+        "and the stub attributes it sets (base, rotary_dim, beta_fast, beta_slow, "
+        "max_position_embeddings, truncate, extrapolation_factor)."
+    )
+    del _inspect, _YARN, _yarn_params
+except ImportError:
+    pass
 
 
 def compute_yarn_freqs(
