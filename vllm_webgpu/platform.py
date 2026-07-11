@@ -134,6 +134,9 @@ class WebGPUPlatform(Platform):
         # after vLLM's auto-detection (VllmConfig.__post_init__) runs, so the
         # detection result is overridden. Mirrors the CPU platform's approach.
         vllm_config.scheduler_config.async_scheduling = False
+        if not vllm_config.cache_config.user_specified_block_size:
+            from vllm_webgpu import envs as _envs
+            vllm_config.cache_config.block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
 
     @classmethod
     def get_attn_backend_cls(
