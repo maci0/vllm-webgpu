@@ -609,8 +609,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         """MoE FFN for Qwen35: delegates to MixtralWebGPUModel._moe_ffn_layer.
 
         Uses Qwen35 weight key conventions (gate_proj/up_proj/down_proj) and
-        dispatches the always-active shared expert. Result accumulates into
-        self._moe_sc["expert_out"].
+        dispatches the shared expert with its per-token sigmoid gate. The gate
+        weight (shared_expert_gate.weight, shape [1, hidden]) produces a scalar
+        that is passed through sigmoid and multiplies the shared expert output,
+        matching vLLM's Qwen2MoeMLP.forward:
+            out = F.sigmoid(self.expert_gate(x)[0]) * shared_expert_out
+        Result accumulates into self._moe_sc["expert_out"].
         """
         super()._moe_ffn_layer(
             normed_x, layer_idx,
@@ -622,6 +626,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             expert_inter=self._moe_inter,
             shared_expert_prefix="shared_expert",
             shared_expert_inter=self._moe_shared_inter,
+            shared_expert_gate_subkey="shared_expert_gate",
         )
 
     def _prefill_chunked_forward(

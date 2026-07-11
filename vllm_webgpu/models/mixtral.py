@@ -348,6 +348,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         expert_inter: int | None = None,
         shared_expert_prefix: str | None = None,
         shared_expert_inter: int | None = None,
+        shared_expert_gate_subkey: str | None = None,
     ) -> None:
         """MoE FFN, parameterised over weight-key prefix, router key, and expert key names.
 
@@ -382,6 +383,14 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                                   When None, expert_out is zero-initialized instead.
             shared_expert_inter: Intermediate size for the shared expert. Defaults
                                  to expert_inter when None.
+            shared_expert_gate_subkey: Sub-key under bsm_prefix for the shared
+                                       expert gate weight (e.g. 'shared_expert_gate'
+                                       for Qwen3.5-MoE). When set, the shared expert
+                                       output is scaled by sigmoid(gate(x)[0]) after
+                                       the down projection, matching vLLM's
+                                       Qwen2MoeMLP.forward behavior. The gate weight
+                                       key is '{p}.{subkey}.weight' (output dim = 1).
+                                       When None, no gate is applied (coefficient 1.0).
         """
         if extra_gate_consts is None:
             extra_gate_consts = {}
@@ -489,8 +498,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         self._active_encoder = dev.create_command_encoder()
 
         if shared_expert_prefix is not None and _shared_weights_present:
-            # Shared expert is always active with coefficient 1.0. Dispatch it
-            # first so its output seeds expert_out before the weighted expert loop.
+            # Shared expert. For most models the coefficient is 1.0, but
+            # Qwen3.5-MoE applies sigmoid(shared_expert_gate(x)[0]) as an
+            # additional per-token scalar gate on the shared expert output.
             self._dispatch_expert_gate_up(normed_x, sgw_k, suw_k, _sinter, extra_gate_consts)
             uq_sd = self._uq_for_key(sdw_k)
             qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)
@@ -501,6 +511,31 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 {"K": _sinter, "N": hidden, "USE_QUANT": uq_sd, **qi_sd},
                 _gemv_wg(hidden),
             )
+            # Apply sigmoid gate if provided (Qwen3.5-MoE shared_expert_gate).
+            # The gate weight maps hidden -> 1 scalar; sigmoid of that scalar
+            # multiplies the entire shared expert output in-place.
+            # router_out is free during Phase B (Phase A is complete), so we
+            # reuse it as a 1-element scratch buffer for the gate scalar.
+            if shared_expert_gate_subkey is not None:
+                segate_k = f"{p}.{shared_expert_gate_subkey}.weight"
+                if segate_k in self.weights:
+                    uq_sg = self._uq_for_key(segate_k)
+                    qi_sg = self._quant_extra(
+                        f"{p}.{shared_expert_gate_subkey}", uq_sg)
+                    self._dispatch(
+                        "matmul_quant",
+                        [normed_x, self.weights[segate_k],
+                         self._scales_buf(segate_k, uq_sg, self._dummy_buf),
+                         msc["router_out"]],
+                        {"K": hidden, "N": 1, "USE_QUANT": uq_sg, **qi_sg},
+                        _gemv_wg(1),
+                    )
+                    self._dispatch(
+                        "sigmoid_scalar_scale",
+                        [msc["router_out"], msc["expert_out"]],
+                        {"N": hidden},
+                        _vec4_wg(hidden),
+                    )
 
         for k_idx, exp_idx in enumerate(expert_indices):
             ep = f"{p}.experts.{exp_idx}"
