@@ -151,30 +151,10 @@ def _load_quant_cfg(config_path: Path) -> dict:
     Uses compressed_tensors.get_quantization_config to handle nested locations
     (text_config, compression_config) and multimodal variants.
     compressed_tensors is a hard dependency of vllm (Requires-Dist), so
-    _ct_get_quant_cfg is always non-None in practice. The defensive else branch
-    below is a portability fallback that mirrors the same three-key cascade
-    implemented by compressed_tensors.get_quantization_config — kept in sync
-    manually, not a live code path in normal operation.
-    Returns {} on any failure.
+    _ct_get_quant_cfg is always non-None. Returns {} on any failure.
     """
-    if _ct_get_quant_cfg is not None:
-        try:
-            return _ct_get_quant_cfg(str(config_path)) or {}
-        except Exception:
-            return {}
-    # Defensive fallback: mirrors compressed_tensors.get_quantization_config
-    # cascade (quantization_config -> text_config.quantization_config ->
-    # compression_config). Not a live code path when compressed_tensors is
-    # installed alongside vllm (which it always is per Requires-Dist).
     try:
-        with open(config_path) as f:
-            cfg = json.load(f)
-        return (
-            cfg.get("quantization_config")
-            or cfg.get("text_config", {}).get("quantization_config")
-            or cfg.get("compression_config")
-            or {}
-        )
+        return _ct_get_quant_cfg(str(config_path)) or {}
     except Exception:
         return {}
 
