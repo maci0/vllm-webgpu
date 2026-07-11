@@ -111,8 +111,16 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    # YaRN frequency formula (paper §3.2): blend interpolated and extrapolated
-    # inv_freq via a ramp mask computed from the correction range.
+    # Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq from
+    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py (vLLM
+    # 0.24.0). That method cannot be called directly without instantiating the
+    # class, which triggers _compute_cos_sin_cache and pre-allocates large
+    # position tables. No public vLLM API returns the raw frequencies as a
+    # numpy array, so the formula is reproduced here.
+    #
+    # VERSION-BUMP CHECKLIST: when upgrading vLLM, diff
+    # yarn_scaling_rope.YaRNScalingRotaryEmbedding._compute_inv_freq against
+    # the block below and update accordingly.
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
