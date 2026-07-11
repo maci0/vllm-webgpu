@@ -21,9 +21,11 @@ import torch
 # calls apply_top_k_only directly and is therefore the correct choice for
 # WebGPU's CPU-backed tensor workflow.
 # When vLLM fixes apply_top_k_top_p to pass allow_cpu_sync=True for OOT
-# platforms, replace with `from vllm.v1.sample.ops.topk_topp_sampler import
-# apply_top_k_top_p, random_sample` and call apply_top_k_top_p(logits_t, k_t,
-# p_t) — the dispatcher will handle allow_cpu_sync.
+# platforms, replace the two imports below with:
+#   from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
+# and change the call in sample_token from apply_top_k_top_p_pytorch(...) to:
+#   filtered = apply_top_k_top_p(logits_t, k_t, p_t)
+# No other changes needed; the dispatcher will select the fast path automatically.
 from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,

@@ -278,7 +278,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # VERSION SYNC: verify on each vLLM version bump that this resolution
         # logic has not changed.
         def _resolve(v, idx):
-            """Resolve a possibly-list intermediate_size to a scalar, matching vLLM."""
+            """Resolve a possibly-list intermediate_size to a scalar, matching vLLM.
+
+            Mirrors NemotronHMLPDecoderLayer.__init__ lines 286-292 (vLLM 0.24).
+            No public API exposes this logic; keep in sync with the import-time
+            guard at the top of this file, which detects changes to the upstream
+            resolution pattern.
+            """
             if isinstance(v, list):
                 return v[0] if len(v) == 1 else v[idx]
             return v
@@ -336,7 +342,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._ssm_states: dict[int, "WebGPUBuffer"] = {}
         # Reusable zero-byte buffers for reset_recurrent_states, keyed by size.
         # Avoids repeated allocation of the same zero buffer on every decode step.
-        self._zero_buf_cache: dict[int, bytearray] = {}  # amortizes zero-byte alloc for Mamba state zeroing; see also WebGPUModelRunner._zeros_cache for the analogous KV-block cache
+        self._zero_buf_cache: dict[int, bytes] = {}  # amortizes zero-byte alloc for Mamba state zeroing; see also WebGPUModelRunner._zeros_cache for the analogous KV-block cache
 
         self._rms_base: dict = {
             "HIDDEN_DIM": self.hidden_size,
@@ -437,7 +443,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         for buf in (*self._conv_states.values(), *self._ssm_states.values()):
             zeros = self._zero_buf_cache.get(buf.nbytes)
             if zeros is None:
-                zeros = bytearray(buf.nbytes)
+                zeros = bytes(buf.nbytes)
                 self._zero_buf_cache[buf.nbytes] = zeros
             dev.queue.write_buffer(buf.buf, 0, zeros)
 

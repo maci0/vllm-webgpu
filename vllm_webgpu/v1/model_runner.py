@@ -128,7 +128,6 @@ class WebGPUModelRunner:
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
         num_blocks = kv_cache_config.num_blocks
         self._num_kv_blocks = num_blocks
-        self._kv_cache_spec_cache = None
 
         allocate_kv_from_tensors(
             self.wgpu_device.wgpu_device,
@@ -262,18 +261,21 @@ class WebGPUModelRunner:
             return
         queue = self.wgpu_device.wgpu_device.queue
         _zeros_cache = self._zeros_cache
+
+        def _get_zeros(n: int) -> bytearray:
+            z = _zeros_cache.get(n)
+            if z is None:
+                _zeros_cache[n] = z = bytearray(n)
+            return z
+
         for k_buf, v_buf in self.model.kv_pool:
             if k_buf.nbytes <= 16:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
                 continue
             bytes_per_block = k_buf.nbytes // self._num_kv_blocks
-            zeros = _zeros_cache.get(bytes_per_block)
-            if zeros is None:
-                _zeros_cache[bytes_per_block] = zeros = bytearray(bytes_per_block)
+            zeros = _get_zeros(bytes_per_block)
             bytes_per_block_v = v_buf.nbytes // self._num_kv_blocks
-            zeros_v = _zeros_cache.get(bytes_per_block_v)
-            if zeros_v is None:
-                _zeros_cache[bytes_per_block_v] = zeros_v = bytearray(bytes_per_block_v)
+            zeros_v = _get_zeros(bytes_per_block_v)
             for block_id in block_ids:
                 offset = block_id * bytes_per_block
                 queue.write_buffer(k_buf.buf, offset, zeros)

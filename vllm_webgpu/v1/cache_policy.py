@@ -205,7 +205,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     memory and clamps to 0 KV blocks.
 
     """
-    if (explicit := worker.cache_config.kv_cache_memory_bytes) is not None:
+    if explicit := worker.cache_config.kv_cache_memory_bytes:
         return explicit
 
     config = worker.webgpu_config

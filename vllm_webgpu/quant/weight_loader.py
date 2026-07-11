@@ -468,24 +468,16 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
     sc = scales.astype(np.float32)  # (G, N)
 
-    # Unpack 8 nibbles per int32 using compressed_tensors.unpack_from_int32.
-    # qweight is packed along K (packed_dim=0): (K//8, N) → (K, N).
-    # qzeros are packed along N (packed_dim=1): (G, N//8) → (G, N).
-    if _unpack_int32 is None:
-        raise ImportError("compressed_tensors is required for GPTQ int4 dequantization")
-    import torch as _torch
-    w_int4 = _unpack_int32(
-        _torch.from_numpy(qweight.astype(np.int32)),
-        num_bits=4,
-        shape=_torch.Size([K, N]),
-        packed_dim=0,
-    ).numpy().astype(np.int8)
-    z_int4 = _unpack_int32(
-        _torch.from_numpy(qzeros.astype(np.int32)),
-        num_bits=4,
-        shape=_torch.Size([G, N]),
-        packed_dim=1,
-    ).numpy().astype(np.int8)
+    # Unpack 8 nibbles per int32 using the same broadcast+reshape pattern as
+    # _dequant_awq and the numpy fallback in _dequant_mlx_int4.
+    # qweight (K//8, N): packed along K axis → unpack to (K, N).
+    # qzeros  (G, N//8): packed along N axis → unpack to (G, N).
+    w_int4 = (
+        (qweight.T[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF
+    ).reshape(N, K).T.astype(np.int8)  # (K, N)
+    z_int4 = (
+        (qzeros[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF
+    ).reshape(G, N).astype(np.int8)   # (G, N)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
     return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
@@ -576,16 +568,6 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
         "no quant_meta applied", w_args.num_bits, w_args.type, w_args.strategy)
     return {}
 
-
-def _find_u8_u8_bases(header: dict) -> list[str]:
-    """Return sorted base names where both .weight and .weight_scale have dtype U8."""
-    return sorted(
-        k.removesuffix(".weight")
-        for k in header
-        if k.endswith(".weight")
-        and header[k].get("dtype") == "U8"
-        and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
-    )
 
 
 def load_safetensors_weights(
@@ -1143,7 +1125,7 @@ def load_safetensors_weights(
             # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
             # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
             # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-            mxfp4_bases = _find_u8_u8_bases(header)
+            mxfp4_bases = sorted(k.removesuffix(".weight") for k in header if k.endswith(".weight") and header[k].get("dtype") == "U8" and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8")
             mx4_set: set = {f"{b}.weight" for b in mxfp4_bases} | {f"{b}.weight_scale" for b in mxfp4_bases}
 
             _upload_non_quant(header, mx4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))
@@ -1169,7 +1151,7 @@ def load_safetensors_weights(
             # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
             # CPU dequant: avoids shader changes for per-block FP8.
             # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
-            mxfp8_bases = _find_u8_u8_bases(header)
+            mxfp8_bases = sorted(k.removesuffix(".weight") for k in header if k.endswith(".weight") and header[k].get("dtype") == "U8" and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8")
             mx8_set: set = {f"{b}.weight" for b in mxfp8_bases} | {f"{b}.weight_scale" for b in mxfp8_bases}
 
             _upload_non_quant(header, mx8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))

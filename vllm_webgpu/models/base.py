@@ -36,6 +36,7 @@ try:
     _YARN_STUB_ATTRS = {
         "base", "rotary_dim", "max_position_embeddings",
         "beta_fast", "beta_slow", "truncate", "extrapolation_factor",
+        "scaling_factor", "attn_factor",
     }
     _yarn_self_reads = set(_re.findall(r"self\.(\w+)", _yarn_inv_src))
     _yarn_unexpected = _yarn_self_reads - _YARN_STUB_ATTRS
@@ -95,8 +96,9 @@ def _vals_per_thread(hidden_size: int) -> int:
 
     Each workgroup covers 256 threads. When hidden_size fits within
     256*16 elements, each thread handles ceil(hidden/256) values.
-    Larger hidden sizes require a different shader path (0 signals
-    the caller to fall back).
+    Returning 0 activates the shader fallback path (two-pass global re-read)
+    for HIDDEN_DIM > 4096. No Python-side change is needed; the shader checks
+    VALS_PER_THREAD > 0u internally (rms_norm.wgsl, add_rms_norm.wgsl).
     """
     if hidden_size <= 256 * 16:
         return (hidden_size + 255) // 256

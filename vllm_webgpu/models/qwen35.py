@@ -96,11 +96,17 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Q is always at offset 0 (leading element in packed QKV buffer).
         self._gdn_k_base: int = _lin_key_dim
         self._gdn_v_base: int = 2 * _lin_key_dim
-        # conv_dim = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads, which
-        # mirrors gated_delta_net_state_shape's internal formula (mamba_utils.py line 223).
-        # A separate computation is needed here because the shader dispatch constant
-        # CONV_DIM is the raw integer; the shape calculator returns a 2-tuple.
-        self._lin_conv_dim: int = 2 * _lin_key_dim + self._lin_val_dim
+        # Derive conv_dim directly from MambaStateShapeCalculator so CONV_DIM always
+        # matches the vLLM formula regardless of future changes to mamba_utils.py.
+        # The shape calculator returns a 2-tuple; extract conv_dim from the axis that
+        # holds it (axis order depends on VLLM_SSM_CONV_STATE_LAYOUT).
+        _conv_shape_init, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel,
+        )
+        self._lin_conv_dim: int = _conv_shape_init[0] if is_conv_state_dim_first() else _conv_shape_init[1]
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
@@ -300,16 +306,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # (kernel-1, conv_dim) depending on VLLM_SSM_CONV_STATE_LAYOUT, but both
         # orderings produce the same product, so the buffer size is correct regardless.
         #
-        # Guard against vLLM changing the GDN conv_dim formula. The shader dispatch
-        # constant CONV_DIM is computed from the model config at init time; if vLLM's
-        # shape calculator diverges from that formula the buffer and the shader constant
-        # would silently disagree, corrupting every GDN layer. Catch it here at load
-        # time instead.
-        _derived_conv_dim = conv_shape[0] if is_conv_state_dim_first() else conv_shape[1]
-        assert _derived_conv_dim == self._lin_conv_dim, (
-            f"conv_dim mismatch: shape gave {_derived_conv_dim}, "
-            f"init computed {self._lin_conv_dim}"
-        )
+        # _lin_conv_dim is derived from gated_delta_net_state_shape in __init__ rather
+        # than re-computed from the config formula, so it is always consistent with the
+        # conv_shape returned here. No extra assertion is needed.
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 

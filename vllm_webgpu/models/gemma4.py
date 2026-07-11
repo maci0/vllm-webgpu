@@ -185,6 +185,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # layer_types of length num_hidden_layers even when absent from the JSON, so the old
         # len(layer_types)==num_layers check incorrectly matched Gemma3 configs too.
         self._apply_v_norm = (getattr(model_config, "model_type", "") == "gemma4")
+        # Hoisted per-model constants for the attention SCALE computation.
+        # Both attributes are fixed at construction time; evaluating them per layer
+        # (48 layers x N chunks per prefill) is unnecessary work.
+        self._is_gemma4_model: bool = self._apply_v_norm
+        self._query_pre_attn_scalar: "float | None" = (
+            None if self._is_gemma4_model
+            else getattr(model_config, "query_pre_attn_scalar", None)
+        )
         if raw_lp and len(raw_lp) == self.num_layers:
             for lp_entry in raw_lp:
                 lp_entry.setdefault("intermediate_size", self.intermediate_size)
@@ -790,7 +798,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                          "NUM_KV_HEADS": num_kv_heads,
                          "HEAD_DIM":     head_dim,
                          "NUM_T":        T,
-                         "SCALE":        1.0 if getattr(self.model_config, 'model_type', '') == 'gemma4' else (getattr(self.model_config, 'query_pre_attn_scalar', head_dim) ** -0.5)},
+                         "SCALE":        1.0 if self._is_gemma4_model else ((self._query_pre_attn_scalar or head_dim) ** -0.5)},
                         (self.num_q_heads, T, 1))
 
                     # Output projection (batch GEMM)
@@ -1211,7 +1219,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
                             "CTX_LEN": ctx_len,
-                            "SCALE": 1.0 if getattr(self.model_config, 'model_type', '') == 'gemma4' else (getattr(self.model_config, 'query_pre_attn_scalar', head_dim) ** -0.5)},
+                            "SCALE": 1.0 if self._is_gemma4_model else ((self._query_pre_attn_scalar or head_dim) ** -0.5)},
                            (self.num_q_heads, 1, 1))
 
             # Output projection → sc["o_proj_out"]

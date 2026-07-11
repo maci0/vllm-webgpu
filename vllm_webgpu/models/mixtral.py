@@ -244,11 +244,10 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """Lazily allocate expert_gate, expert_up, and expert_tmp scratch buffers on first quantized call."""
         msc = self._moe_sc
         if "expert_gate" not in msc:
-            dev = self.wgpu_device.wgpu_device
             _act_sz = self._moe_act_sz
-            msc["expert_gate"] = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
-            msc["expert_up"]   = WebGPUBuffer.empty(dev, max(_act_sz * 2, 8))
-            msc["expert_tmp"]  = WebGPUBuffer.empty(dev, max(self.hidden_size * 2, 8))
+            msc["expert_gate"] = self._make_buf(_act_sz * 2)
+            msc["expert_up"]   = self._make_buf(_act_sz * 2)
+            msc["expert_tmp"]  = self._make_buf(self.hidden_size * 2)
 
     def _dispatch_expert_down(
         self,
