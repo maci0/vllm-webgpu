@@ -669,9 +669,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = self._uq_for_key(rw_)
-                # Router matmul writes f16 into the scratch buffer; we upcast to f32
-                # before top-K so that logits differing by less than one f16 ULP are
-                # not collapsed to the same value (matches vLLM's GateLinear f32 path).
+                # Router matmul accumulates in f16 precision (~3.3 decimal digits).
+                # The upcast to f32 before top-K prevents further rounding, but does
+                # not recover precision lost during the matmul itself. vLLM's GateLinear
+                # uses native f32 multiply-accumulate throughout, so expert selections
+                # may differ from vLLM for expert pairs whose logits are within one
+                # f16 ULP (~0.001 at magnitude 1). For a 128-expert router this is a
+                # known divergence from the reference path.
                 rlogit_f16 = self._router_logit_f16_buf
                 if num_tokens > 1 and uq_rw not in (0, 3):
                     raise RuntimeError(
@@ -683,7 +687,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         f"experts 0..K-1), not uniform routing."
                     )
                 self._gemm_adaptive(router_proj_in, rw_, rlogit_f16, hidden, self.num_experts, num_tokens)
-                # Upcast f16 logits to f32 before top-K selection.
+                # Upcast to f32 so top-K comparisons don't compound f16 rounding.
                 n_logits = num_tokens * self.num_experts
                 self._dispatch("f16_to_f32",
                                [rlogit_f16, router_logits_buf],
