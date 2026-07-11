@@ -77,6 +77,33 @@ logger = init_logger(__name__)
 _WGPU_DTYPE_TO_NP: dict[str, type] = {v: k for k, v in _DTYPE_MAP.items()}
 
 
+# Import-time guard: verify that YaRNScalingRotaryEmbedding._compute_inv_freq still
+# uses the same interp/extrap blend formula that compute_yarn_freqs mirrors below.
+# A vLLM upgrade that changes the blend (e.g., adds a new rope_scaling key or
+# restructures the mask computation) will fail here rather than silently diverging.
+try:
+    import inspect as _inspect
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding as _YaRN,
+    )
+    _yarn_src = _inspect.getsource(_YaRN._compute_inv_freq)
+    # Anchor on the blending expression: interp weighted by (1 - mask), extrap weighted
+    # by mask. If vLLM renames the variables, adds a new blend mode, or changes the
+    # extrapolation_factor application, this fires before any model is loaded.
+    _YARN_BLEND_ANCHOR = "inv_freq_interpolation * (1 - inv_freq_mask)"
+    assert _YARN_BLEND_ANCHOR in _yarn_src, (
+        "YaRNScalingRotaryEmbedding._compute_inv_freq blend formula has changed "
+        "upstream. compute_yarn_freqs in base.py mirrors this formula and must be "
+        "updated to match. Look for changes in inv_freq_mask computation, interp/extrap "
+        "blend weights, or new rope_scaling keys. Update compute_yarn_freqs and this "
+        "anchor string before removing this assertion."
+    )
+    del _inspect, _YaRN, _yarn_src, _YARN_BLEND_ANCHOR
+except (ImportError, OSError):
+    # ImportError: yarn_scaling_rope moved upstream; OSError: .pyc-only install.
+    pass
+
+
 def compute_yarn_freqs(
     head_dim: int,
     rope_theta: float,
