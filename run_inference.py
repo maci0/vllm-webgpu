@@ -90,7 +90,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_table[:n_blks] = np.arange(n_blks, dtype=np.uint32)
     slots = list(range(T))
 
-    model._greedy_decode = (temperature == 0.0)
+    model._greedy_decode = (temperature < 1e-5)
     has_gpu_argmax = model.logit_returns_token_id
 
     batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)
@@ -100,7 +100,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         batch_meta,
     )
 
-    if temperature == 0.0:
+    if temperature < 1e-5:
         last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[-1]))
         print(f"  Last prefill logit: argmax={last_token}")
     else:
@@ -135,7 +135,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             meta,
         )
 
-        if temperature == 0.0:
+        if temperature < 1e-5:
             last_token = int(logits[0, 0]) if has_gpu_argmax else int(np.argmax(logits[0]))
         else:
             # _greedy_decode=False: forward() already returned full (1, vocab) logits.

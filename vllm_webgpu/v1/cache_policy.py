@@ -208,7 +208,9 @@ def get_layer_types(model, hf_config) -> list | None:
         v = getattr(model, "_layer_types", None)
         if v is not None:
             return v
-    v = next((v for a in ("layers_block_type", "layer_types") if (v := getattr(hf_config, a, None)) is not None), None)
+    v = getattr(hf_config, "layers_block_type", None)
+    if v is None:
+        v = getattr(hf_config, "layer_types", None)
     if v is not None:
         return v
     # Minimax-style: integer list where 1 = attention, 0 = non-attention.

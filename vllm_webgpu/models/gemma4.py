@@ -29,30 +29,34 @@ try:
         _g4_decoder_src = inspect.getsource(_Gemma4DecoderLayer)
         _g4_attn_src = inspect.getsource(_Gemma4Attention)
         # Formula (1): KV-shared boundary uses num_kv_shared_layers.
-        assert "num_kv_shared_layers" in _g4_decoder_src, (
-            "Gemma4DecoderLayer no longer references 'num_kv_shared_layers'. "
-            "Review _build_layer_params_from_config formula (1) before removing this assertion."
-        )
+        if "num_kv_shared_layers" not in _g4_decoder_src:
+            raise ValueError(
+                "Gemma4DecoderLayer no longer references 'num_kv_shared_layers'. "
+                "Review _build_layer_params_from_config formula (1) before removing this check."
+            )
         # Formula (2): KV-shared target uses reversed layer_types index search.
         # The original text-match assertion checked for "[::-1].index" in the Attention
         # source, which would fire incorrectly on any equivalent refactor (e.g. next()
         # with enumerate). Check layer_types presence in the Attention source instead —
         # stable across implementation refactors and still catches the behavioral change
         # we care about (the function no longer consuming layer_types at all).
-        assert "layer_types" in _g4_attn_src, (
-            "Gemma4Attention no longer references 'layer_types'. "
-            "Review _build_layer_params_from_config formula (2) before removing this assertion."
-        )
+        if "layer_types" not in _g4_attn_src:
+            raise ValueError(
+                "Gemma4Attention no longer references 'layer_types'. "
+                "Review _build_layer_params_from_config formula (2) before removing this check."
+            )
         # Formula (3): head-dim selection uses num_global_key_value_heads.
-        assert "num_global_key_value_heads" in _g4_decoder_src, (
-            "Gemma4DecoderLayer no longer references 'num_global_key_value_heads'. "
-            "Review _build_layer_params_from_config formula (3) before removing this assertion."
-        )
+        if "num_global_key_value_heads" not in _g4_decoder_src:
+            raise ValueError(
+                "Gemma4DecoderLayer no longer references 'num_global_key_value_heads'. "
+                "Review _build_layer_params_from_config formula (3) before removing this check."
+            )
         # Formula (3b): k_eq_v branch controls whether V=K (laptop variant).
-        assert "attention_k_eq_v" in _g4_decoder_src, (
-            "Gemma4DecoderLayer no longer references 'attention_k_eq_v'. "
-            "Review _build_layer_params_from_config formula (3) k_eq_v branch before removing this assertion."
-        )
+        if "attention_k_eq_v" not in _g4_decoder_src:
+            raise ValueError(
+                "Gemma4DecoderLayer no longer references 'attention_k_eq_v'. "
+                "Review _build_layer_params_from_config formula (3) k_eq_v branch before removing this check."
+            )
     finally:
         del inspect, _Gemma4Attention, _Gemma4DecoderLayer
         try:
@@ -171,14 +175,15 @@ def _build_layer_params_from_config(
         actual_fa_kv_dims = {
             p["kv_dim"] for p, lt in zip(lp, layer_types) if lt == "full_attention"
         }
-        assert expected_fa_kv_dim in actual_fa_kv_dims, (
-            f"full_attention kv_dim mismatch: expected {expected_fa_kv_dim} "
-            f"(global_head_dim={getattr(model_config, 'global_head_dim', default_hd)!r} "
-            f"* num_global_key_value_heads={getattr(model_config, 'num_global_key_value_heads', default_kv)!r}) "
-            f"but full_attention layers produced {actual_fa_kv_dims}. "
-            "Check whether vLLM renamed global attention config attributes, or "
-            "whether the k_eq_v branch in formula (3) is misapplied."
-        )
+        if expected_fa_kv_dim not in actual_fa_kv_dims:
+            raise ValueError(
+                f"full_attention kv_dim mismatch: expected {expected_fa_kv_dim} "
+                f"(global_head_dim={getattr(model_config, 'global_head_dim', default_hd)!r} "
+                f"* num_global_key_value_heads={getattr(model_config, 'num_global_key_value_heads', default_kv)!r}) "
+                f"but full_attention layers produced {actual_fa_kv_dims}. "
+                "Check whether vLLM renamed global attention config attributes, or "
+                "whether the k_eq_v branch in formula (3) is misapplied."
+            )
 
     return lp
 

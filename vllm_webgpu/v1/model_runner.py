@@ -1,7 +1,7 @@
 from __future__ import annotations
 import functools
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 import torch
@@ -365,7 +365,7 @@ class WebGPUModelRunner:
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "list[LogprobsTensors | None]" = (),
+        logprobs_data: "Sequence[LogprobsTensors | None]" = (),
         prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
     ) -> Any:
         if not req_ids:

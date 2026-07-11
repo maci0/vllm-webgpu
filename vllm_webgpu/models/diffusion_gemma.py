@@ -108,22 +108,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # array the shader declares, avoiding reliance on OOB robustness.
             self._router_dummy_buf = WebGPUBuffer.empty(_dev, self.hidden_size * 2)  # hidden_size x f16
 
-    # ── Guarded parent methods ───────────────────────────────────────────────
-
-    def _transformer_layer(self, *args, **kwargs):
-        raise NotImplementedError(
-            "DiffusionGemma uses _decoder_layer; parent forward() is fully overridden "
-            "and _transformer_layer is never called on this model. "
-            "Note: _init_scratch_buffers intentionally omits qkv_buf, so calling "
-            "this method would crash with KeyError rather than computing anything useful."
-        )
-
-    def _prefill_batch_forward(self, *args, **kwargs):
-        raise NotImplementedError(
-            "DiffusionGemma does not use the prefill-batch path from the parent; "
-            "forward() is fully overridden in this class."
-        )
-
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
     def _scratch_token_count(self) -> int:
@@ -356,8 +340,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     # ── Decoder layer (intentionally different signature from parent _transformer_layer) ──
     # Parent Gemma4WebGPUModel._transformer_layer takes normed_x and returns (WebGPUBuffer, WebGPUBuffer).
-    # This class uses a fully overridden forward(), so the parent forward() is never called here.
-    # Named _decoder_layer to avoid the implicit contract violation.
+    # This class fully overrides forward(), so the parent forward() is never called here and
+    # _transformer_layer is never invoked on DiffusionGemma instances. _init_scratch_buffers
+    # intentionally omits qkv_buf (the fused [Q|K|V] buffer that _transformer_layer reads),
+    # so a stray call to _transformer_layer would crash with KeyError rather than doing
+    # anything useful. Named _decoder_layer to make the contract difference explicit.
 
     def _decoder_layer(
         self,

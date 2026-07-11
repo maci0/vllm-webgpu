@@ -339,6 +339,10 @@ class BaseWebGPUModel(ABC):
             load_safetensors_weights_sharded,
         )
         fmt = detect_weight_format(path)
+        if fmt == "gguf":
+            raise ValueError(
+                f"GGUF format not supported by this plugin. Use the vllm-gguf plugin: {path}"
+            )
         transforms = self._weight_transforms
         # Shared config.json resolution: both safetensors branches use the same
         # directory (path itself when it is a directory, parent otherwise) and
@@ -364,10 +368,6 @@ class BaseWebGPUModel(ABC):
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,
                 quant_cfg=_quant_cfg, scale_transforms=scale_transforms)
-        elif fmt == "gguf":
-            raise ValueError(
-                f"GGUF format not supported by this plugin — use the vllm-gguf plugin: {path}"
-            )
         else:
             raise ValueError(f"Unknown weight format for {path}")
         logger.info("Loaded %d weight tensors (%s format)", len(self.weights), fmt)

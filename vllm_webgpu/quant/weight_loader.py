@@ -82,6 +82,18 @@ def _flush_pending(wgpu_device) -> None:
     queue exceeds ~1-2 GB; periodic flushing prevents that for large models.
     """
     wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+
+
+def _check_flush(wgpu_device, pending: int) -> int:
+    """Flush pending GPU writes if the threshold is reached; return the new pending count.
+
+    Both load_safetensors_weights and load_mlx_weights use the same threshold guard
+    and reset. Centralising here means threshold or error-handling changes apply once.
+    """
+    if pending >= _FLUSH_THRESHOLD:
+        _flush_pending(wgpu_device)
+        return 0
+    return pending
     wgpu_device.queue.on_submitted_work_done_sync()
 
 
@@ -198,7 +210,7 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = k.replace(old_pfx, new_pfx, 1)
+                new_k = new_pfx + k[len(old_pfx):]
                 if new_k not in d:
                     to_add[new_k] = v
                 break
@@ -755,9 +767,7 @@ def load_safetensors_weights(
 
         def _maybe_flush() -> None:
             nonlocal _pending_bytes
-            if _pending_bytes >= _FLUSH_THRESHOLD:
-                _flush_pending(wgpu_device)
-                _pending_bytes = 0
+            _pending_bytes = _check_flush(wgpu_device, _pending_bytes)
 
         def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
             """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
@@ -1462,9 +1472,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
 
     def _maybe_flush() -> None:
         nonlocal _pending_bytes
-        if _pending_bytes >= _FLUSH_THRESHOLD:
-            _flush_pending(wgpu_device)
-            _pending_bytes = 0
+        _pending_bytes = _check_flush(wgpu_device, _pending_bytes)
 
     def _upload_f16(arr: np.ndarray, name: str) -> None:
         """Upload a float16 array to GPU via write_buffer with periodic flushing."""
