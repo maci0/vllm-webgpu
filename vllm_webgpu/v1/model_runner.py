@@ -280,6 +280,16 @@ class WebGPUModelRunner:
         else:
             head_size = self.vllm_config.model_config.get_head_size()
             num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
+            # NemotronH must never fall through to the uniform path: every layer
+            # gets a .mixer suffix, so non-attention layers (Mamba, MLP) would
+            # receive spurious KV cache entries.  A mismatched layer_types list
+            # is a configuration error, not a safe fallback.
+            if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" and _layer_types is not None:
+                raise ValueError(
+                    f"layer_types length ({len(_layer_types)}) does not match "
+                    f"num_hidden_layers ({num_hidden_layers}) for NemotronH — "
+                    "KV spec cannot be determined safely"
+                )
             # Only trust layer_types when it covers every layer; a partial or
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
