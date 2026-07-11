@@ -119,6 +119,22 @@ class WebGPUModelRunner:
                     f"Update _init_mamba_states to pass num_spec to "
                     f"MambaStateShapeCalculator.mamba2_state_shape before enabling."
                 )
+        else:
+            # The decode path in execute_model forwards exactly 1 token per
+            # request regardless of scheduler_output.num_scheduled_tokens[rid].
+            # With speculative decoding the scheduler sets num_scheduled_tokens > 1
+            # for decode steps; the engine then expects N sampled tokens back and
+            # will either crash or silently corrupt output when it receives 1.
+            # Fail fast here rather than produce wrong results at runtime.
+            num_spec = self.vllm_config.num_speculative_tokens
+            if num_spec:
+                raise NotImplementedError(
+                    f"{arch} with speculative decoding "
+                    f"(num_speculative_tokens={num_spec}) is not supported on the "
+                    f"WebGPU backend. The decode path forwards exactly 1 token per "
+                    f"step; the engine expects num_speculative_tokens+1 tokens back. "
+                    f"Implement multi-token decode in execute_model before enabling."
+                )
 
         self.model = _build_model(arch, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
         self.model.load_weights(mc.model)
