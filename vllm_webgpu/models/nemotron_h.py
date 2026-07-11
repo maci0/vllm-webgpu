@@ -78,12 +78,27 @@ try:
     import inspect as _inspect
     from vllm.model_executor.models.nemotron_h import NemotronHMLPDecoderLayer as _NemotronHMLPDecoder
     _mlp_init_src = _inspect.getsource(_NemotronHMLPDecoder.__init__)
-    assert "isinstance" in _mlp_init_src and "len(" in _mlp_init_src, (
-        "NemotronHMLPDecoderLayer.__init__ no longer contains the expected "
-        "list/scalar intermediate_size resolution (isinstance + len check). "
-        "Review the _resolve() function in NemotronHWebGPUModel.__init__ and "
-        "update it to match the new upstream logic before removing this assertion."
+    # Anchor to the exact 7-line resolution block (vLLM 0.24, L286-292).
+    # Catches any new branch (e.g. per-head lists) or index-variable rename
+    # that the coarse isinstance+len check would have missed.
+    _MLP_INTERMEDIATE_SIZE_ANCHOR = (
+        "if isinstance(config.intermediate_size, list):\n"
+        "            if len(config.intermediate_size) == 1:\n"
+        "                intermediate_size = config.intermediate_size[0]\n"
+        "            else:\n"
+        "                intermediate_size = config.intermediate_size[mlp_index]\n"
+        "        else:\n"
+        "            intermediate_size = config.intermediate_size"
     )
+    assert _MLP_INTERMEDIATE_SIZE_ANCHOR in _mlp_init_src, (
+        "NemotronHMLPDecoderLayer.__init__ intermediate_size resolution block "
+        "no longer matches the snapshot used by _resolve() (vLLM 0.24 L286-292). "
+        "The upstream formula has changed (new branch, renamed index variable, or "
+        "restructured logic). Review _resolve() in NemotronHWebGPUModel.__init__, "
+        "update it to match the new upstream logic, then update this anchor string "
+        "before removing this assertion."
+    )
+    del _MLP_INTERMEDIATE_SIZE_ANCHOR
     del _inspect, _NemotronHMLPDecoder, _mlp_init_src
 except (ImportError, OSError):
     pass
