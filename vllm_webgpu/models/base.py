@@ -563,6 +563,7 @@ class BaseWebGPUModel(ABC):
                 if fmt == "int8_gpu":  return 7
                 if fmt == "fp8_gpu":   return 5
                 if fmt == "nf4_gpu":   return 8
+                raise ValueError(f"Unknown u8 fmt {fmt!r} for weight key {key!r}")
         return 0
 
     def _dispatch(
