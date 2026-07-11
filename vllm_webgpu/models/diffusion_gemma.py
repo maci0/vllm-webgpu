@@ -48,11 +48,22 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         # Set moe_intermediate_size before super().__init__ because Gemma4.__init__
         # calls _init_scratch_buffers which dispatches to _scratch_inter_size().
-        # Use model_config.intermediate_size as fallback (same value as self.intermediate_size
-        # after super().__init__; model_config always has this attribute for Gemma models).
-        self.moe_intermediate_size: int = getattr(model_config, "moe_intermediate_size",
-                                                   getattr(model_config, "expert_intermediate_size",
-                                                           model_config.intermediate_size))
+        _enable_moe = (
+            getattr(model_config, "enable_moe_block", False)
+            or getattr(model_config, "use_second_mlp_block", False)
+        )
+        _moe_inter = getattr(model_config, "moe_intermediate_size",
+                             getattr(model_config, "expert_intermediate_size", None))
+        if _moe_inter is None:
+            if _enable_moe:
+                raise ValueError(
+                    "DiffusionGemma: enable_moe_block=True but neither "
+                    "moe_intermediate_size nor expert_intermediate_size is present "
+                    "in model_config. Cannot infer expert projection size."
+                )
+            # No MoE block: falling back to shared-expert size is safe.
+            _moe_inter = model_config.intermediate_size
+        self.moe_intermediate_size: int = _moe_inter
         if self.moe_intermediate_size % 4 != 0:
             raise ValueError(
                 f"moe_intermediate_size={self.moe_intermediate_size} must be divisible by 4 "
