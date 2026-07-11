@@ -351,7 +351,7 @@ class BaseWebGPUModel(ABC):
         _path = Path(path)
         model_dir = _path if _path.is_dir() else _path.parent
         _cfg_json = model_dir / "config.json"
-        _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
+        _quant_cfg = _load_quant_cfg(_cfg_json)
         _check_unsupported_quant(quant_cfg=_quant_cfg)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.

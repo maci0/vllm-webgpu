@@ -1280,17 +1280,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                _rms, (num_tokens, 1, 1))
                 ffn_normed = sc["normed"]
             else:
-                if post_attn_norm_w is not None:
-                    self._dispatch("rms_norm",
-                                   [sc["o_proj_out"], post_attn_norm_w, sc["normed"]],
-                                   _rms, (num_tokens, 1, 1))
-                else:
+                if post_attn_norm_w is None:
                     raise ValueError(
                         f"Layer {layer_idx} missing post_attention_layernorm.weight "
                         "— vLLM creates this norm unconditionally; absence indicates "
                         "a corrupt checkpoint"
                     )
-
                 raise ValueError(
                     f"Layer {layer_idx} missing pre_feedforward_layernorm.weight "
                     "— f32 residual cannot be fed to f16 FFN projection"

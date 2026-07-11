@@ -511,11 +511,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
         """
-        bufs: list[tuple[str, int, object]] = []
-        for i, buf in self._conv_states.items():
-            bufs.append(("conv", i, buf))
-        for i, buf in self._ssm_states.items():
-            bufs.append(("ssm", i, buf))
+        bufs = [("conv", i, b) for i, b in self._conv_states.items()] + [("ssm", i, b) for i, b in self._ssm_states.items()]
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:

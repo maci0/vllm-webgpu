@@ -298,7 +298,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [norm_out, lm_head_w, sc_lm, logits_buf],
                                {"K": hidden, "N": vocab, "M": num_tokens, "USE_QUANT": uq_lm,
                                 **self._quant_extra(_lm_base, uq_lm)},
-                               ((vocab + 255) // 256, num_tokens, 1))
+                               (cdiv(vocab, 256), num_tokens, 1))
             else:
                 # Single-token decode path.
                 self._dispatch("matmul_quant",
@@ -314,7 +314,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 # limit even when num_tokens * vocab would exceed 65535 * 256.
                 self._dispatch("logit_softcap", [logits_buf, capped],
                                {"VOCAB": vocab, "CAP": float(self.softcap)},
-                               ((vocab + 255) // 256, num_tokens, 1),
+                               (cdiv(vocab, 256), num_tokens, 1),
                                shader_subdir="gemma")
                 result = capped
             else:
@@ -678,7 +678,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 self._dispatch("f16_to_f32",
                                [rlogit_f16, router_logits_buf],
                                {"N_ELEMS": n_logits},
-                               ((n_logits + 255) // 256, 1, 1))
+                               (cdiv(n_logits, 256), 1, 1))
                 # GPU top-K: per-token top-K selection from [T, N_EXPERTS] logits.
                 # Dispatch (num_tokens, 1, 1): each workgroup handles one token's logits.
                 self._dispatch("topk_sort",

@@ -207,8 +207,8 @@ def test_gdn_decode_shape_and_stability(wgpu_device):
     x_np = (rng.standard_normal(hidden) * 0.1).astype(np.float16)
     x_buf = WebGPUBuffer.from_numpy(dev, x_np, usage=rw)
 
-    # _gdn_layer_gpu(layer_idx, normed_x, x_buf, num_tokens) → (normed_out, raw_out)
-    _, raw_out = model._gdn_layer_gpu(0, x_buf, x_buf, 1)
+    # _gdn_layer_gpu(layer_idx, normed_x, x_buf) → (normed_out, raw_out)
+    _, raw_out = model._gdn_layer_gpu(0, x_buf, x_buf)
     out = raw_out.to_numpy().view(np.float16).reshape(hidden)
 
     assert out.shape == (hidden,), f"Expected ({hidden},), got {out.shape}"
@@ -227,7 +227,7 @@ def test_gdn_decode_conv_state_update(wgpu_device):
 
     x_np = np.ones(hidden, dtype=np.float16) * 0.1
     x_buf = WebGPUBuffer.from_numpy(dev, x_np, usage=rw)
-    model._gdn_layer_gpu(0, x_buf, x_buf, 1)
+    model._gdn_layer_gpu(0, x_buf, x_buf)
 
     # Conv state should be non-zero after update (causal_conv_step writes to it)
     conv_data = model._conv_gpu[0].to_numpy().view(np.float16)
@@ -251,8 +251,8 @@ def test_gdn_decode_sequential_tokens(wgpu_device):
     x1 = WebGPUBuffer.from_numpy(dev, (rng.standard_normal(hidden) * 0.1).astype(np.float16), usage=rw)
     x2 = WebGPUBuffer.from_numpy(dev, (rng.standard_normal(hidden) * 0.1).astype(np.float16), usage=rw)
 
-    _, raw1 = model._gdn_layer_gpu(0, x1, x1, 1)
-    _, raw2 = model._gdn_layer_gpu(0, x2, x2, 1)
+    _, raw1 = model._gdn_layer_gpu(0, x1, x1)
+    _, raw2 = model._gdn_layer_gpu(0, x2, x2)
     out1 = raw1.to_numpy().view(np.float16).copy()
     out2 = raw2.to_numpy().view(np.float16).copy()
 

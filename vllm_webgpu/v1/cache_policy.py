@@ -209,11 +209,7 @@ def get_layer_types(model, hf_config) -> list | None:
         v = getattr(model, "_layer_types", None)
         if v is not None:
             return v
-    for attr in ("layers_block_type", "layer_types"):
-        v = getattr(hf_config, attr, None)
-        if v is not None:
-            return v
-    return None
+    return next((getattr(hf_config, a, None) for a in ("layers_block_type", "layer_types") if getattr(hf_config, a, None) is not None), None)
 
 
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:

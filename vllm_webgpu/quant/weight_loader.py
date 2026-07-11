@@ -191,7 +191,7 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = new_pfx + k[len(old_pfx):]
+                new_k = new_pfx + k.removeprefix(old_pfx)
                 if new_k not in d:
                     to_add[new_k] = v
                 break
@@ -865,8 +865,7 @@ def load_safetensors_weights(
                 # shape even though the underlying storage is u32 (packed u16 pairs).
                 # t_bf16 is always bound here: this branch is only entered when
                 # dtype_str == 'BF16', which is the same condition that bound t_bf16 above.
-                t_raw = t_bf16
-                u16 = t_raw.view(torch.uint16).numpy()
+                u16 = t_bf16.view(torch.uint16).numpy()
                 if u16.shape != arr.shape:
                     u16 = u16.reshape(arr.shape)
                 u16_flat = np.ascontiguousarray(u16.ravel())

@@ -168,8 +168,9 @@ class WebGPUModelRunner:
 
         block_size = self._block_size
 
+        family = ARCH_MAP.get(arch)
         num_spec = self.vllm_config.num_speculative_tokens
-        if num_spec and ARCH_MAP.get(arch) != "nemotron_h":
+        if num_spec and family != "nemotron_h":
             # The decode path in execute_model forwards exactly 1 token per
             # request regardless of scheduler_output.num_scheduled_tokens[rid].
             # With speculative decoding the scheduler sets num_scheduled_tokens > 1
@@ -185,7 +186,7 @@ class WebGPUModelRunner:
             )
 
         self.model = _build_model(arch, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
-        if ARCH_MAP.get(arch) == "nemotron_h":
+        if family == "nemotron_h":
             self.model.load_weights(mc.model, num_spec=num_spec)
         else:
             self.model.load_weights(mc.model)
@@ -213,9 +214,8 @@ class WebGPUModelRunner:
         has confirmed there are no heterogeneous layers, and that signal must
         not be overridden by a stale HF config attribute.
         """
-        mc = self.vllm_config.model_config.hf_config
         lp = getattr(self.model, "_lp", None) if self.model is not None else None
-        return lp if lp is not None else getattr(mc, "_layer_attention_params", None)
+        return lp if lp is not None else getattr(self.vllm_config.model_config.hf_config, "_layer_attention_params", None)
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         if self._kv_cache_spec_cache is None:
@@ -223,17 +223,16 @@ class WebGPUModelRunner:
         return self._kv_cache_spec_cache
 
     def _build_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
-        mc = self.vllm_config.model_config.hf_config
         num_hidden_layers = self.vllm_config.model_config.get_total_num_hidden_layers()
         block_size = self._block_size
         spec: dict[str, Any] = {}
 
-        def _make_spec(num_kv_heads: int, head_size: int, head_size_v: int = 0) -> Any:
+        def _make_spec(num_kv_heads: int, head_size: int, head_size_v: int | None = None) -> Any:
             return FullAttentionSpec(
                 block_size=block_size,
                 num_kv_heads=num_kv_heads,
                 head_size=head_size,
-                head_size_v=head_size_v or head_size,
+                head_size_v=head_size_v,
                 dtype=_KV_DTYPE,
             )
 
@@ -252,7 +251,7 @@ class WebGPUModelRunner:
         # Mamba, MLP, and linear-attention layers carry no KV state and must be
         # excluded — emitting a FullAttentionSpec for them over-reports KV memory.
         # NemotronH attention layers live under .mixer, not .self_attn.
-        _archs = getattr(mc, "architectures", None) or []
+        _archs = getattr(self.vllm_config.model_config.hf_config, "architectures", None) or []
         _attn_suffix = ".mixer" if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" else ".self_attn"
         _layer_types = get_layer_types(None, self.vllm_config.model_config.hf_text_config)
 
@@ -377,9 +376,6 @@ class WebGPUModelRunner:
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
-        if logprobs_data is None:
-            logprobs_data = []
-
         # Build LogprobsLists for top-k sampled-token logprob entries.
         # One row per request in the batch (matching req_id_to_index), so that
         # LogprobsLists.slice_request(i, n) works with cu_num_generated_tokens=None
@@ -428,7 +424,7 @@ class WebGPUModelRunner:
             req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
             sampled_token_ids=[[t] for t in sampled],
             logprobs=built_logprobs,
-            prompt_logprobs_dict=prompt_logprobs_dict if prompt_logprobs_dict is not None else {},
+            prompt_logprobs_dict=prompt_logprobs_dict,
         )
         return out
 

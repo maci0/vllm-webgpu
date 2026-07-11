@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched
+from itertools import batched, chain
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -388,7 +388,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     def reset_recurrent_states(self) -> None:
         """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
         dev = self.wgpu_device.wgpu_device
-        for buf in (*self._ssm_gpu.values(), *self._conv_gpu.values()):
+        for buf in chain(self._ssm_gpu.values(), self._conv_gpu.values()):
             zeros = self._zero_buf_cache.get(buf.nbytes)
             if zeros is None:
                 zeros = bytes(buf.nbytes)
@@ -470,7 +470,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         layer_idx: int,
         normed_x: "WebGPUBuffer",
         x_buf: "WebGPUBuffer",
-        num_tokens: int,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Single-token GDN decode step using pure WebGPU kernels.
 
@@ -495,7 +494,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}.linear_attn"
         pp = f"model.layers.{layer_idx}"
-        add_n = num_tokens * hidden
+        add_n = hidden
 
         residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
         out = sc[_H_NAMES[(self._hstate + 2) % 3]]
@@ -556,16 +555,16 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                            [x_buf, sc["o_proj_out"],
                             self.weights[f"{pp}.post_attention_layernorm.weight"],
                             residual, sc["ffn_normed"]],
-                           _rms_h, (num_tokens, 1, 1))
+                           _rms_h, (1, 1, 1))
 
             # 10. FFN (MoE or dense)
-            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx, num_tokens)
+            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx, 1)
 
             if layer_idx < self.num_layers - 1:
                 next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
                 self._dispatch("add_rms_norm",
                                [residual, ffn_out, next_w, out, sc["normed"]],
-                               _rms_h, (num_tokens, 1, 1))
+                               _rms_h, (1, 1, 1))
                 normed_out = sc["normed"]
             else:
                 self._dispatch("add", [residual, ffn_out, out],
@@ -590,7 +589,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         if self._is_full_attn(layer_idx):
             return super()._transformer_layer(
                 layer_idx, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
-        return self._gdn_layer_gpu(layer_idx, normed_x, x_buf, num_tokens)
+        assert num_tokens == 1, (
+            f"GDN layer {layer_idx} received num_tokens={num_tokens}; "
+            "multi-token GDN dispatch is not supported"
+        )
+        return self._gdn_layer_gpu(layer_idx, normed_x, x_buf)
 
     def _moe_ffn_layer(
         self,
@@ -785,7 +788,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                [normed_x, gate_w,
                                 self._scales_buf(gate_wk, uq_gate, self._dummy_buf),
                                 sc["q_gate_buf"]],
-                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, **qi_gate},
+                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, "USE_BF16": 0, **qi_gate},
                                _gemv_wg(q_dim))
 
         # Per-head RMSNorm + RoPE with Qwen3.5-specific constants.
