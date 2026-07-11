@@ -631,20 +631,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    (self.num_experts, num_tokens, 1))
                 else:
                     if num_tokens > 1:
-                        logger.warning(
-                            "L%d: router uq=%d not supported for batched routing; "
-                            "token-0 routing applied to all tokens", layer_idx, uq_rw)
-                        # Zero the full [T, E] f16 scratch before the single-token GEMV.
-                        # matmul_quant writes only num_experts elements (token-0 row);
-                        # without this, positions [num_experts .. T*E-1] retain stale
-                        # values from a prior call, routing tokens 1..T-1 via garbage
-                        # logits. WebGPU guarantees write_buffer is ordered before the
-                        # subsequent queue.submit(), so the zero is visible when the GEMV
-                        # executes. Tokens 1..T-1 receive zero logits (uniform routing),
-                        # which is incorrect but safe and deterministic.
-                        dev.queue.write_buffer(
-                            rlogit_f16.buf, 0,
-                            b'\x00' * (num_tokens * self.num_experts * 2))
+                        raise RuntimeError(
+                            f"L{layer_idx}: router.proj.weight quant uq={uq_rw} is not "
+                            f"supported for batched routing (num_tokens={num_tokens}). "
+                            f"Only uq=0 (f16) and uq=3 (GPTQ) are handled by "
+                            f"matmul_quant_mr4. Routing tokens 1..T-1 via zero logits "
+                            f"produces deterministic wrong expert assignments (always "
+                            f"experts 0..K-1), not uniform routing."
+                        )
                     self._dispatch("matmul_quant",
                                    [router_proj_in, self.weights[rw_], _rw_sc, rlogit_f16],
                                    {"K": hidden, "N": self.num_experts,
