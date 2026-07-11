@@ -381,7 +381,8 @@ def _scale_dequant(
     return sc_exp * (w_int4.astype(np.float32) - z_exp)      # (K, N)
 
 
-def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) -> np.ndarray:
+def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
+                 g_idx: "np.ndarray | None" = None) -> np.ndarray:
     """Dequantize AWQ int4 weights to float16.
 
     AWQ packs 8 int4 weights per int32 along the output (N) dimension,
@@ -392,6 +393,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) ->
         qweight: (K, N//8) int32  — packed input dim × output dim
         scales:  (G, N)   float16 — per-group per-output-channel scales
         qzeros:  (G, N//8) int32  — packed zero-points (same nibble order)
+        g_idx:   (K,) int32 optional — group index per input dim (desc_act)
     """
     K, N8 = qweight.shape
     N = N8 * 8
@@ -406,7 +408,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray) ->
     w_int4 = ((qw[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(K, N).astype(np.uint8)
     z_int4 = ((qz[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(G, N).astype(np.uint8)
 
-    w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size)
+    w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
     return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
 
 
@@ -950,7 +952,7 @@ def load_safetensors_weights(
                     else:
                         # Fall back to CPU dequantization.
                         if fmt == "awq" and qz is not None:
-                            w_f16 = _dequant_awq(qw, sc, qz)
+                            w_f16 = _dequant_awq(qw, sc, qz, g_idx)
                         elif fmt == "awq":
                             # qz is None but g_idx is present (desc_act AWQ): unsupported.
                             # The GPU AWQ branch above already handles g_idx is None + qz is None,
