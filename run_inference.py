@@ -78,6 +78,10 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     allocate_kv_from_hf_config(device.wgpu_device, model, cfg, num_blocks=num_blocks, block_size=block_size)
 
+    model.warmup()
+    if hasattr(model, 'reset_recurrent_states'):
+        model.reset_recurrent_states()
+
     # Prefill
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
     T = len(input_ids_list)
