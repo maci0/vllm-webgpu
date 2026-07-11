@@ -146,10 +146,7 @@ except ImportError:
 try:
     from compressed_tensors.compressors.pack_quantized.helpers import unpack_from_int32 as _unpack_int32
 except ImportError:
-    try:
-        from compressed_tensors.compressors.quantized_compressors.pack_quantized import unpack_from_int32 as _unpack_int32
-    except ImportError:
-        _unpack_int32 = None
+    _unpack_int32 = None
 
 
 
