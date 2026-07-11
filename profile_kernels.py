@@ -144,7 +144,7 @@ def main() -> None:
         total = sum(np.mean(v) for v in stats.values())
 
         print(f"Total GPU time: {total:.2f} ms")
-        print(f"Python overhead: {avg_step_ms - total:.2f} ms")
+        print(f"Unlabeled overhead (LM head + embed + norms + Python): {avg_step_ms - total:.2f} ms")
         print(f"Each layer avg: {total/num_layers:.3f} ms")
 
         print(f"\nBottleneck analysis:")
