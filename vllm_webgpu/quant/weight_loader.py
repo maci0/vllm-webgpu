@@ -30,6 +30,16 @@ _F16_MAX: float = np.finfo(np.float16).max
 _SYM_ZEROS_INT32: int = -2004318072  # 0x88888888 as int32: all eight nibbles = 8, the AutoGPTQ symmetric zero-point sentinel
 
 
+def _unpack_nibbles_gptq(packed: "np.ndarray", out_rows: int, in_cols: int) -> "np.ndarray":
+    """Unpack 8 uint4 nibbles per int32 into a 2-D int32 array [out_rows, in_cols].
+
+    packed: shape (out_rows, in_cols // 8), dtype int32 or uint32.
+    Returns int32 array of shape (out_rows, in_cols) with values in [0, 15].
+    Used by _dequant_gptq and the numpy fallback in _dequant_mlx_int4.
+    """
+    return ((packed[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, in_cols)
+
+
 def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
     """Return True when qzeros is absent or every nibble equals 8 (symmetric zero-point).
 
@@ -37,8 +47,7 @@ def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
     """
     if qz is None:
         return True
-    sym = qz.view(np.int32)
-    return bool(sym.ravel()[0] == _SYM_ZEROS_INT32 and np.all(sym == _SYM_ZEROS_INT32))
+    return bool(np.all(qz.view(np.int32) == _SYM_ZEROS_INT32))
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -139,11 +148,12 @@ def _load_quant_cfg(config_path: Path) -> dict:
         # and are safe to treat as "no quantization config found".
         logger.warning("Failed to parse quantization config %s: %s", config_path, exc)
         return {}
-    except Exception as exc:
+    except (ValueError, RuntimeError) as exc:
         # Unexpected errors (e.g. import failures in upstream library) are surfaced
-        # at ERROR level so silent misconfiguration is not treated as "no quant".
+        # at ERROR level so programming errors in the library are not silently
+        # swallowed as "no quant config found".
         logger.error("Unexpected error reading quantization config %s: %s", config_path, exc)
-        return {}
+        raise
 
 
 def _check_unsupported_quant(quant_cfg: dict) -> None:
@@ -496,16 +506,11 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
     sc = scales.astype(np.float32)  # (G, N)
 
-    # Unpack 8 nibbles per int32 using the same broadcast+reshape pattern as
-    # _dequant_awq and the numpy fallback in _dequant_mlx_int4.
-    # qweight (K//8, N): packed along K axis → unpack to (K, N).
+    # Unpack 8 nibbles per int32.
+    # qweight (K//8, N): packed along K axis → transpose to (N, K//8) then unpack to (N, K) → T to (K, N).
     # qzeros  (G, N//8): packed along N axis → unpack to (G, N).
-    w_int4 = (
-        (qweight.T[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF
-    ).reshape(N, K).T.astype(np.int8)  # (K, N)
-    z_int4 = (
-        (qzeros[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF
-    ).reshape(G, N).astype(np.int8)   # (G, N)
+    w_int4 = _unpack_nibbles_gptq(qweight.T, N, K).T.astype(np.int8)  # (K, N)
+    z_int4 = _unpack_nibbles_gptq(qzeros, G, N).astype(np.int8)       # (G, N)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
     return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
@@ -525,13 +530,12 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
         try:
             with open(hf_quant) as f:
                 cfg = json.load(f)
-            if cfg.get("quant_method", "").lower().startswith("modelopt"):
-                quant_config = cfg.get("quantization", cfg)
-                algo = str(quant_config.get("quant_algo", "")).upper() if isinstance(quant_config, dict) else ""
-                if "MXFP4" in algo:
-                    return "mxfp4"
-                if "MXFP8" in algo:
-                    return "mxfp8"
+            from vllm.model_executor.layers.quantization.modelopt import ModelOptQuantConfigBase
+            algo = ModelOptQuantConfigBase._extract_modelopt_quant_algo(cfg) or ""
+            if "MXFP4" in algo:
+                return "mxfp4"
+            if "MXFP8" in algo:
+                return "mxfp8"
         except (OSError, json.JSONDecodeError, KeyError, AttributeError, TypeError) as exc:
             logger.warning("Failed to read hf_quant_config.json in %s: %s", model_dir, exc)
     if quant_cfg is None:
@@ -1486,8 +1490,7 @@ def _dequant_mlx_int4(
     except (ImportError, RuntimeError):
         out_rows, packed_cols = weight_u32.shape
         in_cols = packed_cols * 8
-        w = weight_u32.astype(np.uint32)
-        nibbles = ((w[:, :, np.newaxis] >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, in_cols).astype(np.float32)
+        nibbles = _unpack_nibbles_gptq(weight_u32, out_rows, in_cols).astype(np.float32)
         n_groups = in_cols // group_size
         scales_bc = np.repeat(scales_f32.reshape(out_rows, n_groups), group_size, axis=1)
         biases_bc = np.repeat(biases_f32.reshape(out_rows, n_groups), group_size, axis=1)
@@ -1591,19 +1594,17 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 wk = base + ".weight"
                 sk = base + ".scales"
                 bk = base + ".biases"
-                processed.update({wk, sk, bk})
-
                 t = sf_w.get_tensor(wk)
                 if t.dtype != _torch.uint32:
                     # Not actually an int4 weight; upload as plain float.
-                    processed.discard(sk)
-                    processed.discard(bk)
+                    processed.add(wk)
                     arr = _torch_to_f16_numpy(t)
                     if weight_transforms and wk in weight_transforms:
                         arr = weight_transforms[wk](arr)
                     _upload_f16(arr, wk)
                     continue
 
+                processed.update({wk, sk, bk})
                 s_t = preloaded_scales[base]
                 b_t = preloaded_biases[base]
                 w_u32 = t.numpy()

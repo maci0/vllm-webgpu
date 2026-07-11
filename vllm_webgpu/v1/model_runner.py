@@ -394,7 +394,8 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
             if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
-                built_logprobs = _stack(logprobs_data)  # type: ignore[arg-type]
+                assert all(d is not None for d in logprobs_data)
+                built_logprobs = _stack(logprobs_data)
             else:
                 # Derive the dtype of selected_token_ranks from the first real
                 # entry. batched_count_greater_than returns (bool).sum(-1),
@@ -692,6 +693,11 @@ class WebGPUModelRunner:
                 blk_ids = list(state["block_ids"])
                 sp = state.get("sampling_params")
                 num_logprobs = sp.num_logprobs if sp is not None else None
+                if num_logprobs == -1:
+                    raise NotImplementedError(
+                        f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
+                        "use a positive integer instead"
+                    )
 
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.

@@ -566,7 +566,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 keys.append(f"{p}.self_attn.k_proj.weight")
                 if lp["has_v_proj"]:
                     keys.append(f"{p}.self_attn.v_proj.weight")
-            if any(k in self.weights and self._uq_for_key(k) not in (0, 3) for k in keys):
+            if any(self._uq_for_key(k) not in (0, 3) for k in keys):
                 return False
         return True
 

@@ -194,11 +194,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             "INTERLEAVED": self._rope_interleaved,
         }
 
-        # Attention temperature: head_dim**-0.5, computed once so the hot decode
-        # path does no division at runtime. Mirrors Qwen3NextAttention.scaling in
-        # vllm/model_executor/models/qwen3_next.py.
-        self._attn_scale: float = self.head_dim ** -0.5
-
         # Mixtral.__init__ reads num_local_experts (0 for Qwen35) and overwrites _is_moe.
         # Re-assert the correct values from Qwen35-specific config fields.
         self._num_experts = self._moe_num_experts

@@ -93,9 +93,10 @@ def compute_yarn_freqs(
 
     if rotary_dim is None:
         # Mirrors vllm/model_executor/layers/rotary_embedding/__init__.py get_rope() L66-72.
-        # To catch upstream drift: grep -n "rope_dim\|partial_rotary_factor" in that file
-        # and verify the branch order matches this block. The vLLM function cannot be called
-        # directly here because it also constructs the full RoPE layer object.
+        # vLLM 0.24 — verify against this file on every vLLM version bump:
+        #   grep -n "rope_dim\|partial_rotary_factor" .venv/lib/*/site-packages/vllm/model_executor/layers/rotary_embedding/__init__.py
+        # The vLLM function cannot be called directly here because it also constructs
+        # the full RoPE layer object including an expensive cos/sin cache allocation.
         if rd := rope_scaling.get("rope_dim", None):
             rotary_dim = int(rd)
         else:
@@ -119,10 +120,18 @@ def compute_yarn_freqs(
     # Verify at model load time that the stub covers every self.xxx attribute read by
     # _compute_inv_freq. If vLLM adds a new attribute (e.g. self.scaling_factor), the
     # AttributeError fires here rather than silently at the first forward pass.
-    import inspect as _inspect, re as _re
+    import ast as _ast, inspect as _inspect, textwrap as _textwrap
     _stub_attrs = frozenset(("base", "rotary_dim", "beta_fast", "beta_slow",
                              "max_position_embeddings", "extrapolation_factor", "truncate"))
-    _used_attrs = set(_re.findall(r'self\.(\w+)', _inspect.getsource(YaRNScalingRotaryEmbedding._compute_inv_freq)))
+    _src = _textwrap.dedent(_inspect.getsource(YaRNScalingRotaryEmbedding._compute_inv_freq))
+    _tree = _ast.parse(_src)
+    _used_attrs = {
+        node.attr
+        for node in _ast.walk(_tree)
+        if isinstance(node, _ast.Attribute)
+        and isinstance(node.value, _ast.Name)
+        and node.value.id == "self"
+    }
     _uncovered = _used_attrs - _stub_attrs
     if _uncovered:
         raise AttributeError(
