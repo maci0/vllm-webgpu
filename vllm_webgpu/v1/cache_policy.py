@@ -253,16 +253,6 @@ def get_layer_types(model, hf_config, hf_outer_config=None) -> list | None:
     return getattr(_outer, "attn_type_list", None)
 
 
-def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:
-    """Sum of weight buffer sizes in bytes. The isinstance guard excludes the
-    "__quant_meta__" dict entry that the quantized weight loader stores in
-    model.weights alongside real buffers."""
-    model = getattr(worker.model_runner, "model", None)
-    if model is None:
-        return 0
-    return sum(buf.nbytes for buf in model.weights.values() if isinstance(buf, WebGPUBuffer))
-
-
 def determine_available_memory(worker: "WebGPUWorker") -> int:
     """
     Available memory for KV cache = device total - model weights - overhead.
@@ -277,7 +267,11 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     if explicit := worker.cache_config.kv_cache_memory_bytes:
         return explicit
 
-    model_mem = _get_weight_memory_usage(worker)
+    _model = getattr(worker.model_runner, "model", None)
+    model_mem = (
+        sum(buf.nbytes for buf in _model.weights.values() if isinstance(buf, WebGPUBuffer))
+        if _model is not None else 0
+    )
 
     total: int = get_cpu_memory()
 

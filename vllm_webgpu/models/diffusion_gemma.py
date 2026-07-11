@@ -183,12 +183,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def _embed_key(self) -> str:
         """Embedding weight key (DiffusionGemma uses model.decoder.embed_tokens)."""
         return self._first_weight_key(
-            "model.embed_tokens.weight", "model.decoder.embed_tokens.weight",
+            "model.decoder.embed_tokens.weight", "model.embed_tokens.weight",
         )
 
     def _norm_key(self) -> str:
         return self._first_weight_key(
-            "model.norm.weight", "model.decoder.norm.weight",
+            "model.decoder.norm.weight", "model.norm.weight",
         )
 
     def _lm_head_key(self) -> str:

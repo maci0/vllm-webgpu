@@ -118,6 +118,11 @@ class WebGPUWorker(WorkerBase):
 
     def update_max_model_len(self, max_model_len: int) -> None:
         self.model_config.max_model_len = max_model_len
+        # WebGPUModelRunner reads max_model_len via the shared vllm_config.model_config
+        # reference, so the update propagates automatically without a separate call.
+        # gpu_worker.py explicitly calls model_runner.update_max_model_len() because
+        # the GPU model runner may cache the value locally for block-table sizing;
+        # WebGPUModelRunner has no such local cache, so the call is intentionally omitted.
         logger.debug("Updated max_model_len to %d", max_model_len)
 
     def get_cache_block_size_bytes(self) -> int:

@@ -272,6 +272,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Direct formula: mamba2_state_shape returns conv_dim//tp_world_size at an
         # orientation-dependent index in the shape tuple; reverse-extraction is fragile.
         # The formula matches MambaMixer2 L313 for tp=1 (extra_groups_for_head_shards returns 0).
+        # Cross-reference: vllm/model_executor/models/mamba_utils.py
+        # MambaStateShapeCalculator.mamba2_state_shape — verify here on each vLLM bump.
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
@@ -563,7 +565,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
         """
-        bufs = [("conv", i, b) for i, b in self._conv_states.items()] + [("ssm", i, b) for i, b in self._ssm_states.items()]
+        conv_bufs = [("conv", i, b) for i, b in self._conv_states.items()]
+        ssm_bufs = [("ssm", i, b) for i, b in self._ssm_states.items()]
+        bufs = conv_bufs + ssm_bufs
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:

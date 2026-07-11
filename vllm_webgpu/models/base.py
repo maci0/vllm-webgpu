@@ -85,12 +85,8 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
-    )
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import YaRNScalingRotaryEmbedding
     if rotary_dim is None:
         if rd := rope_scaling.get("rope_dim", None):
             rotary_dim = int(rd)
@@ -111,26 +107,21 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    # Lines below mirror YaRNScalingRotaryEmbedding._compute_inv_freq exactly
-    # (vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py:49-73).
-    # No public standalone function exposes this computation, so inlining is forced.
-    # On every vLLM version bump, diff against that method to catch formula changes.
-    pos_freqs = rope_theta ** (
-        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
+    # Delegate to YaRNScalingRotaryEmbedding._compute_inv_freq via a duck-typed
+    # SimpleNamespace so that any future formula changes in vLLM propagate automatically.
+    # The namespace supplies the self.* attributes the method accesses; if vLLM adds
+    # new self accesses, this will raise AttributeError on the next version bump (loud
+    # failure) rather than silently diverging.
+    ns = SimpleNamespace(
+        base=rope_theta,
+        rotary_dim=rotary_dim,
+        max_position_embeddings=orig_ctx,
+        extrapolation_factor=extrapolation_factor,
+        beta_fast=beta_fast,
+        beta_slow=beta_slow,
+        truncate=truncate,
     )
-    inv_freq_extrapolation = 1.0 / pos_freqs
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
-
-    low, high = yarn_find_correction_range(
-        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
-    )
-    inv_freq_mask = (
-        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
-    ) * extrapolation_factor
-    inv_freq = (
-        inv_freq_interpolation * (1 - inv_freq_mask)
-        + inv_freq_extrapolation * inv_freq_mask
-    )
+    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(ns, factor)
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
@@ -264,9 +255,10 @@ class BaseWebGPUModel(ABC):
             # finish() is a CPU-only serialization step (can take tens–hundreds of µs);
             # completing it before capturing t0 keeps that overhead out of the GPU timing.
             cmd = self._active_encoder.finish()
-            t0 = time.perf_counter() if (self.profiling and label) else 0.0
+            doing_timing = self.profiling and bool(label)
+            t0 = time.perf_counter() if doing_timing else 0.0
             dev.queue.submit([cmd])
-            if self.profiling and label:
+            if doing_timing:
                 dev.queue.on_submitted_work_done_sync()
                 self._prof_stats[label].append((time.perf_counter() - t0) * 1000.0)
         finally:
@@ -339,7 +331,7 @@ class BaseWebGPUModel(ABC):
                               stacking, avoiding per-layer GPU map_sync stalls.
         """
         from vllm_webgpu.quant.weight_loader import (
-            _check_unsupported_quant, _load_quant_cfg,
+            _check_unsupported_quant,
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded,
         )

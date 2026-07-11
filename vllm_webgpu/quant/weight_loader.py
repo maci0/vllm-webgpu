@@ -269,6 +269,7 @@ def load_safetensors_weights_sharded(
     This avoids parsing the index twice (detect_weight_format returns 'safetensors_sharded'
     for both formats and lets this function distinguish them using the already-loaded index).
     """
+    _check_unsupported_quant(quant_cfg or {})
     index_path = _ct_find_index(Path(model_dir))
     if index_path is None:
         raise ValueError(f"No safetensors index file found in {model_dir}")
@@ -605,7 +606,7 @@ def load_safetensors_weights(
     import wgpu as wgpu_lib
 
     # Read the safetensors header before opening the file a second time.
-    # parse_safetensors_file_metadata does a single binary read of the header
+    # _ct_get_safetensors_header does a single binary read of the header
     # (one syscall) rather than O(n) per-tensor slice calls.
     _raw_hdr = _ct_get_safetensors_header(path)
     with sft.safe_open(path, framework="pt") as sf:
@@ -626,6 +627,7 @@ def load_safetensors_weights(
         _raw_quant_cfg = quant_cfg if quant_cfg is not None else (
             _load_quant_cfg(_config_json) if _config_json.exists() else {}
         )
+        _check_unsupported_quant(_raw_quant_cfg)
         if ct_meta is None:
             ct_meta = detect_compressed_tensors_fmt(_config_json, quant_cfg=_raw_quant_cfg)
 

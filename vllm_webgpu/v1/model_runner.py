@@ -14,7 +14,7 @@ from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
-from vllm_webgpu.v1.cache_policy import KV_ATTN_TYPES, MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types, is_attn_layer
+from vllm_webgpu.v1.cache_policy import MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types, is_attn_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
