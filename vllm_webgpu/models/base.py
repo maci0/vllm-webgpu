@@ -362,9 +362,13 @@ class BaseWebGPUModel(ABC):
         # the same config.json/quant_cfg loading logic. Computing once avoids
         # the duplication that previously existed in each branch.
         _path = Path(path)
-        model_dir = _path if _path.is_dir() else _path.parent
-        _cfg_json = model_dir / "config.json"
-        _quant_cfg = _load_quant_cfg(_cfg_json)
+        _hf_text = getattr(self.model_config, 'hf_text_config', None)
+        _hf_cfg = getattr(self.model_config, 'hf_config', None)
+        _quant_cfg = (
+            getattr(_hf_text, 'quantization_config', None)
+            or getattr(_hf_cfg, 'compression_config', None)
+            or {}
+        )
         _check_unsupported_quant(quant_cfg=_quant_cfg)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
