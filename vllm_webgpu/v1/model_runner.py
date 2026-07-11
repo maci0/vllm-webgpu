@@ -257,11 +257,9 @@ class WebGPUModelRunner:
 
         if lp_list and len(lp_list) == num_hidden_layers:
             for i, lp in enumerate(lp_list):
-                if _layer_types and len(_layer_types) == num_hidden_layers and (_layer_types[i] not in KV_ATTN_TYPES and _layer_types[i] != 1):
-                    continue
                 if lp["num_kv_heads"] == 0:
-                    # Non-attention layer: skip regardless of _layer_types to
-                    # avoid emitting a zero-page-size FullAttentionSpec.
+                    # Non-attention layer: skip to avoid emitting a
+                    # zero-page-size FullAttentionSpec.
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     lp["num_kv_heads"], lp["head_dim"],
