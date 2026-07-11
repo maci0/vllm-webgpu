@@ -182,7 +182,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
              "NUM_Q_HEADS": self.num_q_heads,
              "NUM_KV_HEADS": self.num_kv_heads,
              "HEAD_DIM": self.head_dim,
-             "CTX_LEN": eff},
+             "CTX_LEN": eff,
+             "START_BLOCK": self._start_block(ctx_len)},
             (self.num_q_heads, 1, 1),
         )
 
