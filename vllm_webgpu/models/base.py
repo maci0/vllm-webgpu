@@ -65,27 +65,6 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
-# VERSION-BUMP anchor: compute_yarn_freqs calls YaRNScalingRotaryEmbedding._compute_inv_freq
-# via object.__new__ (bypassing __init__). If the method's signature changes on a vLLM
-# upgrade, the call raises TypeError at runtime. This block catches it at import time.
-# On upgrade, diff yarn_scaling_rope.py lines 49-73 (_compute_inv_freq) and lines 40-43
-# (__init__ mscale) against the stub attributes set in compute_yarn_freqs below.
-try:
-    import inspect as _inspect
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding as _YARN,
-    )
-    _yarn_params = list(_inspect.signature(_YARN._compute_inv_freq).parameters)
-    assert len(_yarn_params) == 2 and _yarn_params[0] == "self", (
-        f"YaRNScalingRotaryEmbedding._compute_inv_freq signature changed: "
-        f"{_yarn_params!r}. Expected (self, <scaling_factor>). Review compute_yarn_freqs "
-        "and the stub attributes it sets (base, rotary_dim, beta_fast, beta_slow, "
-        "max_position_embeddings, truncate, extrapolation_factor)."
-    )
-    del _inspect, _YARN, _yarn_params
-except ImportError:
-    pass
-
 
 def compute_yarn_freqs(
     head_dim: int,
@@ -95,12 +74,8 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via
-    object.__new__, which bypasses __init__ (and therefore the expensive
-    _compute_cos_sin_cache call) while keeping the formula in sync with vLLM
-    automatically. Only the attributes read by _compute_inv_freq are set on
-    the stub instance; tests/test_yarn_freqs.py verifies the output matches
-    the vLLM reference on every test run.
+    Inlines the formula from YaRNScalingRotaryEmbedding._compute_inv_freq using
+    the two public helpers it depends on. No private method calls, no stub instances.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -119,9 +94,10 @@ def compute_yarn_freqs(
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
     )
     if rotary_dim is None:
         if rd := rope_scaling.get("rope_dim", None):
@@ -143,16 +119,22 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    inst = object.__new__(YaRNScalingRotaryEmbedding)
-    inst.base                    = rope_theta
-    inst.rotary_dim              = rotary_dim
-    inst.beta_fast               = beta_fast
-    inst.beta_slow               = beta_slow
-    inst.max_position_embeddings = orig_ctx
-    inst.truncate                = truncate
-    inst.extrapolation_factor    = extrapolation_factor
+    pos_freqs = rope_theta ** (
+        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
+    )
+    inv_freq_extrapolation = 1.0 / pos_freqs
+    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
 
-    inv_freq = inst._compute_inv_freq(factor)
+    low, high = yarn_find_correction_range(
+        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
+    )
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
+    ) * extrapolation_factor
+    inv_freq = (
+        inv_freq_interpolation * (1 - inv_freq_mask)
+        + inv_freq_extrapolation * inv_freq_mask
+    )
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
