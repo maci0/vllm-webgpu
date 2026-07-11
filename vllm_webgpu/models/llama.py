@@ -161,7 +161,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         rope_type = rope_scaling.get("rope_type", "")
 
         if rope_type != "yarn":
-            if rope_type not in ("", "default", "linear"):
+            if rope_type not in ("", "default"):
                 logger.warning(
                     "rope_type=%r not implemented; using standard RoPE "
                     "(long-context accuracy reduced beyond 8192 tokens)",
