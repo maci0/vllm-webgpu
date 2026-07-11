@@ -463,7 +463,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
             with open(hf_quant) as f:
                 cfg = json.load(f)
             if cfg.get("quant_method", "").lower().startswith("modelopt"):
-                algo = cfg.get("quantization", {}).get("quant_algo", "") or cfg.get("quant_algo", "")
+                algo = (cfg.get("quantization", {}).get("quant_algo", "") or cfg.get("quant_algo", "")).upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
