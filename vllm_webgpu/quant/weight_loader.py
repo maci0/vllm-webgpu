@@ -82,6 +82,7 @@ def _flush_pending(wgpu_device) -> None:
     queue exceeds ~1-2 GB; periodic flushing prevents that for large models.
     """
     wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
+    wgpu_device.queue.on_submitted_work_done_sync()
 
 
 def _check_flush(wgpu_device, pending: int) -> int:
@@ -94,7 +95,6 @@ def _check_flush(wgpu_device, pending: int) -> int:
         _flush_pending(wgpu_device)
         return 0
     return pending
-    wgpu_device.queue.on_submitted_work_done_sync()
 
 
 def _upload_tensor(
