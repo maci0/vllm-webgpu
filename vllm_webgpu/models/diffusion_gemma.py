@@ -604,6 +604,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             with self._batched_dispatch(label=f"L{layer_idx:02d}R"):
                 if pfn2_w is not None:
+                    # residual was last written by rms_norm_add_f32_rms_norm (lines 542-544,
+                    # inside the attention sublayer block above). This read is safe without an
+                    # explicit barrier because the WebGPU spec guarantees that commands within
+                    # a single compute pass encoder execute in recording order (WebGPU spec
+                    # section 25.3 "Compute passes", pass-level sequential execution). No
+                    # dispatch between that write and here touches residual as an output, so
+                    # the write-after-read dependency is satisfied by the encoder's own ordering.
                     self._dispatch("rms_norm_f32in", [residual, pfn2_w, sc["moe_ffn_in"]],
                                    _rms, (num_tokens, 1, 1))
                     moe_in = sc["moe_ffn_in"]
