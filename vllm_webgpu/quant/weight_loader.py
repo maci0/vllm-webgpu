@@ -133,13 +133,16 @@ try:
     from compressed_tensors.quantization import QuantizationType as _QuantizationType
     from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
     from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
-    from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
 except ImportError:
     _ct_get_quant_cfg = None
     _QuantizationConfig = None
     _QuantizationType = None
     _QuantizationStrategy = None
     _ct_find_index = None
+
+try:
+    from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
+except ImportError:
     _decompress_mx_scale = None
 
 def _load_quant_cfg(config_path: Path) -> dict:
