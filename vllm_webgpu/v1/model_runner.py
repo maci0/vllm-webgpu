@@ -605,14 +605,14 @@ class WebGPUModelRunner:
                 rng.manual_seed(sp.seed)
             else:
                 rng = None
-            if last_logits.shape[-1] > 1 and sp is not None:
+            if last_logits.shape[-1] == 1:
+                first_decode_tok = int(last_logits[-1, 0])
+            else:
                 first_decode_tok = _sample_token(
                     last_logits[-1], temperature=sp.temperature,
                     top_p=sp.top_p, top_k=sp.top_k, generator=rng,
                     use_fp64_gumbel=self.vllm_config.model_config.use_fp64_gumbel,
                 )
-            else:
-                first_decode_tok = int(last_logits[-1, 0])
 
             # Compute logprobs for this prefill token if the request asked for them.
             lp_data = self._extract_logprob_data(last_logits, -1, first_decode_tok, num_logprobs, rid)
