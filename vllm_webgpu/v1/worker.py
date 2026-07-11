@@ -35,7 +35,14 @@ logger = init_logger(__name__)
 
 
 class WebGPUWorker(WorkerBase):
-    model_runner: "WebGPUModelRunner | None"
+    # WorkerBase declares `self.model_runner: nn.Module | None = None` (worker_base.py:89).
+    # WebGPUModelRunner is not an nn.Module subclass, so this annotation intentionally
+    # narrows the slot type to the concrete runner used here. WorkerBase does not call
+    # any nn.Module methods (parameters(), state_dict(), eval()) on model_runner today,
+    # so this is runtime-safe. If vLLM ever exposes a ModelRunnerBase protocol for this
+    # slot, switch to that. Until then, keep this annotation so type checkers within this
+    # package see the correct concrete type.
+    model_runner: "WebGPUModelRunner | None"  # type: ignore[assignment]
 
     def __init__(
         self,
