@@ -342,7 +342,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             attn_metadata: carries slot_mapping and block_table
 
         Returns:
-            logits: [num_tokens, vocab_size]  float32
+            int32 [1, 1] token ID when greedy (default); float32 [1, vocab_size] logits for the
+            last token when non-greedy. Even during prefill only the last token is read back.
         """
         num_tokens = len(input_ids)
         self._hstate = 0
@@ -798,8 +799,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # Binding 6 (k_input): unused here (K_SEPARATE=0), bind qkv_buf as dummy.
             # Binding 7 (inv_freq_buf): always provided (wgpu requires all declared bindings).
             self._dispatch("fused_qk_norm_rope",
-                           [sc["qkv_buf"], q_norm_w, k_norm_w, pos_buf,
-                            sc["q_rope"], sc["k_rope"], sc["qkv_buf"], _freq_buf],
+                           [_q_src, q_norm_w, k_norm_w, pos_buf,
+                            sc["q_rope"], sc["k_rope"], _k_src, _freq_buf],
                            {**_rope_consts,
                             "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": self.num_kv_heads,

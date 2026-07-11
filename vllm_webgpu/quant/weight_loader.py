@@ -14,6 +14,17 @@ from vllm.logger import init_logger
 # version bump that the function still exists at this path and returns the expected structure.
 from vllm.transformers_utils.utils import parse_safetensors_file_metadata
 
+from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
+from compressed_tensors import QuantizationConfig as _QuantizationConfig
+from compressed_tensors.quantization import QuantizationType as _QuantizationType
+from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
+from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
+
+try:
+    from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
+except ImportError:
+    _decompress_mx_scale = None
+
 # AWQ nibble unpack table. AWQ packs channels with interleaved order [0,4,1,5,2,6,3,7],
 # so to extract channel c from a packed int32 the bit offset is inverse_pack[c]*4 where
 # inverse_pack = [0,2,4,6,1,3,5,7]. Using the pack order directly extracts in permuted
@@ -27,17 +38,6 @@ _F16_MAX: float = np.finfo(np.float16).max
 # bit pattern 0x88888888.
 _SYM_ZEROS_INT32: int = -2004318072  # 0x88888888 as int32: all eight nibbles = 8, the AutoGPTQ symmetric zero-point sentinel
 
-
-def _locate_index(directory: "Path") -> "Path | None":
-    """Return the safetensors index path for a directory, or None if absent.
-
-    Delegates to compressed_tensors' find_safetensors_index_path, which handles
-    non-standard index filenames. compressed_tensors is a hard vLLM dependency
-    (Requires-Dist), so _ct_find_index is always non-None at runtime.
-    Returns None when no index is found.
-    """
-    found = _ct_find_index(directory)
-    return Path(found) if found else None
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -114,17 +114,6 @@ def _upload_tensor(
         dtype=wgpu_dtype,
     )
     return len(data)
-
-from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
-from compressed_tensors import QuantizationConfig as _QuantizationConfig
-from compressed_tensors.quantization import QuantizationType as _QuantizationType
-from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
-from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
-
-try:
-    from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
-except ImportError:
-    _decompress_mx_scale = None
 
 def _load_quant_cfg(config_path: Path) -> dict:
     """Return the quantization config dict for a model.
@@ -227,7 +216,7 @@ def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("F8
 def detect_weight_format(path: str) -> str:
     p = Path(path)
     if p.is_dir():
-        if _locate_index(p) is not None:
+        if _ct_find_index(p) is not None:
             # MLX vs standard sharded detection is deferred to the loader,
             # which already reads the index and can check for .biases keys.
             return "safetensors_sharded"
@@ -269,7 +258,7 @@ def load_safetensors_weights_sharded(
     This avoids parsing the index twice (detect_weight_format returns 'safetensors_sharded'
     for both formats and lets this function distinguish them using the already-loaded index).
     """
-    index_path = _locate_index(Path(model_dir))
+    index_path = _ct_find_index(Path(model_dir))
     if index_path is None:
         raise ValueError(f"No safetensors index file found in {model_dir}")
     with open(index_path) as f:
@@ -805,7 +794,7 @@ def load_safetensors_weights(
             # bindings as array<f32> need the full-precision values.
             if f32_keys and name in f32_keys and dtype_str in ("F32", "BF16", "F16"):
                 arr_raw = _load_raw(name)
-                arr_f32 = np.ascontiguousarray(arr_raw if arr_raw.dtype == np.float32 else arr_raw.astype(np.float32))
+                arr_f32 = np.ascontiguousarray(arr_raw.astype(np.float32, copy=False))
                 if weight_transforms and name in weight_transforms:
                     arr_f32 = weight_transforms[name](arr_f32)
                 _upload(arr_f32, np.float32, 'f32', name, weights)
@@ -1419,7 +1408,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     p = Path(model_dir)
 
     if weight_map is None:
-        index_path = _locate_index(p)
+        index_path = _ct_find_index(p)
         if index_path is None:
             raise ValueError(f"No safetensors index file found in {model_dir}")
         with open(index_path) as f:

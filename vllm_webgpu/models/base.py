@@ -111,6 +111,12 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
+    # Calls the same three public vLLM helpers (yarn_find_correction_range,
+    # yarn_linear_ramp_mask, yarn_get_mscale) that YaRNScalingRotaryEmbedding.
+    # _compute_inv_freq uses internally, avoiding the cos/sin cache allocation
+    # that constructing the full object triggers. If vLLM ever exposes a public
+    # get_yarn_inv_freq(config) factory, replace this block with that call.
+    # TODO: revisit on each vLLM bump — track YaRNScalingRotaryEmbedding._compute_inv_freq
     inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(
         SimpleNamespace(
             base=rope_theta,

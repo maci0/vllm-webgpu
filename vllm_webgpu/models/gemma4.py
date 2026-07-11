@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -349,7 +350,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "ids":      self._make_buf(T * 4),         # [1] uint32 token id
             "pos":      self._make_buf(T * 4),         # [1] uint32 position
             "slot_map": self._make_buf(T * 4),         # [1] uint32 physical slot
-            "bt":       self._make_buf(max(4096, (max_ctx + self.block_size - 1) // self.block_size) * 4),  # block table
+            "bt":       self._make_buf(max(4096, cdiv(max_ctx, self.block_size)) * 4),  # block table
             "x":        self._make_buf(T * H * 4),     # [1, H] f32 residual
             "norm_out": self._make_buf(T * H * 2),     # [1, H] f16 final norm
             "logits":   self._make_buf(T * V * 2),     # [1, V] f16 logits

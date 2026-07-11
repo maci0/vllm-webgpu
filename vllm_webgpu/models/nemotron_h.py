@@ -18,6 +18,14 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+# Shared transform for all Mamba A_log weights: -exp(A_log) converts the log-space
+# parameter to the negative-real value expected by the Mamba SSM kernel.
+# Defined once at module scope so the same function object is reused across all
+# Mamba layers rather than allocating a new lambda per layer during __init__.
+def _a_log_transform(arr: "np.ndarray") -> "np.ndarray":
+    return -np.exp(arr)
+
+
 # Verify that the upstream mapper fields match the snapshot this code was written
 # against (vLLM 0.24.0). Catches upstream changes at import time.
 _mapper = _NemotronHForCausalLM.hf_to_vllm_mapper
@@ -208,7 +216,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         for _i, _lt in enumerate(self._layer_types):
             if _lt == "mamba":
                 # -exp(A_log): transforms HF A_log checkpoint values before GPU upload.
-                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = lambda arr: -np.exp(arr)
+                self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _a_log_transform
 
         # Per-layer CPU-side scale accumulator for attention layers.
         # For GPTQ (and AWQ) checkpoints the weight loader fires these callbacks

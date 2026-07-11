@@ -50,6 +50,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                    getattr(model_config, "expert_intermediate_size",
                                                            model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
+        # _transformer_layer and _prefill_batch_forward are overridden to raise
+        # NotImplementedError in this class, so the per-layer "scale" values
+        # computed by the parent __init__ are never consumed. Clear them to avoid
+        # holding stale floats in every lp entry for the lifetime of the model.
+        for _lp_e in self._lp:
+            _lp_e.pop("scale", None)
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
@@ -82,7 +88,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             max_canvas_len = self._scratch_token_count()
             # Pre-allocated row-index array for vectorized MoE scatter; avoids
             # allocating a new array on every _decoder_layer call.
-            self._token_arange = np.arange(max_canvas_len, dtype=np.intp)
+            self._token_arange = np.arange(max_canvas_len, dtype=np.int32)
             self._shared_res_buf = WebGPUBuffer.empty(_dev, max_canvas_len * self.hidden_size * 2)  # F16
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
             self._topk_idx_buf     = WebGPUBuffer.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
@@ -707,6 +713,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # All (expert, token) index pairs are unique (top-K guarantees distinct
             # expert IDs per token; distinct t values make cross-token duplicates impossible),
             # so buffered fancy-index assignment is equivalent to np.add.at and faster.
+            # np.unique returns sorted deduplicated expert IDs. The sort order only
+            # affects expert_slot numbering in packed_w, which is indexed consistently
+            # by the same order, so the output is correct regardless of sort order.
+            # At K=8, T<=256 (E<=2048 elements) the O(E log E) cost is sub-microsecond.
             unique_eids = np.unique(top_k_idx).tolist()
             self._dense_w[unique_eids, :num_tokens] = 0.0
             self._dense_w[top_k_idx, self._token_arange[:num_tokens, None]] = rw_vals

@@ -7,6 +7,7 @@ from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (FullAttentionSpec,
+                                         KVCacheGroupSpec,
                                          KVQuantMode,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
@@ -37,7 +38,7 @@ def allocate_kv_from_tensors(
     kv_cache_tensors,
     num_blocks: int,
     num_total_layers: int,
-    kv_cache_groups: list,
+    kv_cache_groups: list[KVCacheGroupSpec],
 ) -> None:
     """Allocate KV cache buffers from vLLM's authoritative KVCacheTensor list.
 
