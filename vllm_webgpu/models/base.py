@@ -98,10 +98,11 @@ def compute_yarn_freqs(
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
     )
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
     if rotary_dim is None:
         rotary_dim = head_dim
 
@@ -114,20 +115,12 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    # YaRNScalingRotaryEmbedding is a CustomOp (nn.Module) and cannot be
-    # instantiated without a live vLLM config context. Call _compute_inv_freq
-    # as an unbound method with a duck-typed namespace so the blending logic
-    # stays upstream rather than being duplicated here.
-    ns = SimpleNamespace(
-        base=rope_theta,
-        rotary_dim=rotary_dim,
-        beta_fast=beta_fast,
-        beta_slow=beta_slow,
-        max_position_embeddings=orig_ctx,
-        truncate=truncate,
-        extrapolation_factor=extrapolation_factor,
-    )
-    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(ns, factor).numpy().astype(np.float32)
+    pos_freqs        = rope_theta ** (np.arange(0, rotary_dim, 2, dtype=np.float32) / rotary_dim)
+    inv_freq_extrap  = 1.0 / pos_freqs
+    inv_freq_interp  = 1.0 / (factor * pos_freqs)
+    low, high        = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    mask             = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float).numpy()) * extrapolation_factor
+    inv_freq         = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).astype(np.float32)
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
