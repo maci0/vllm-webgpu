@@ -1131,14 +1131,13 @@ def load_safetensors_weights(
             # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
             # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
             # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-            _u8_u8_bases = sorted(
+            mxfp4_bases = sorted(
                 base
                 for k in header
                 if k.endswith(".weight")
                 and header[k].get("dtype") == "U8"
                 and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
             )
-            mxfp4_bases = _u8_u8_bases
             mx4_set: set = {f"{b}.weight" for b in mxfp4_bases} | {f"{b}.weight_scale" for b in mxfp4_bases}
 
             _upload_non_quant(header, mx4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))
@@ -1170,14 +1169,13 @@ def load_safetensors_weights(
             # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
             # CPU dequant: avoids shader changes for per-block FP8.
             # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
-            _u8_u8_bases = sorted(
+            mxfp8_bases = sorted(
                 base
                 for k in header
                 if k.endswith(".weight")
                 and header[k].get("dtype") == "U8"
                 and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
             )
-            mxfp8_bases = _u8_u8_bases
             mx8_set: set = {f"{b}.weight" for b in mxfp8_bases} | {f"{b}.weight_scale" for b in mxfp8_bases}
 
             _upload_non_quant(header, mx8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))

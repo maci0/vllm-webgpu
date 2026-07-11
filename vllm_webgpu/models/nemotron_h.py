@@ -905,6 +905,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                                 f"mamba_mixer2.py L328-355 against this vLLM version."
                             )
                         _checked_inproj = True
+                else:
+                    raise ValueError(f"{inproj_key} missing from loaded weights")
 
             # conv1d.weight: validate element count.
             # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements

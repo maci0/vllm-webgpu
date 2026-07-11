@@ -628,13 +628,15 @@ class WebGPUModelRunner:
             # Store last sampled token; decode path needs it (new_token_ids is empty without PP).
             # token_history stores the full token sequence for this request so that
             # replay_prefix_for_ssm can reconstruct Mamba SSM state after preemption.
+            # Only allocated for models that implement replay_prefix_for_ssm; pure-attention
+            # models never read it, so skip the allocation and per-step append entirely.
             self._req_state[rid] = {
                 "pos": num_computed + T, "block_ids": blk_ids,
                 "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
-                "token_history": list(tok_ids),
+                **({"token_history": list(tok_ids)} if hasattr(self.model, "replay_prefix_for_ssm") else {}),
             }
 
         # ── Decode: cached requests ────────────────────────────────────────────
@@ -777,7 +779,8 @@ class WebGPUModelRunner:
                 state["block_ids"] = blk_ids
                 state["last_tok"] = stok
                 state["recurrent_states"] = decode_recurrent_states
-                state.setdefault("token_history", []).append(stok)
+                if hasattr(self.model, "replay_prefix_for_ssm"):
+                    state.setdefault("token_history", []).append(stok)
                 all_req_ids.append(rid)
                 all_sampled.append(stok)
                 all_logprobs_data.append(lp_data)

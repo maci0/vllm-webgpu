@@ -534,13 +534,10 @@ class BaseWebGPUModel(ABC):
                     f"(expected None for per-tensor or 1 for per-channel)"
                 )
             return d
-        if uq == 7:
-            # int8_gpu: per-channel scales; no extra shader constants needed.
-            return {}
         if uq == 8:
             # NF4: GROUP_K = absmax block size (BnB default 64).
             return {"GROUP_K": self._quant_info(base_key).get("group_size", 64)}
-        return {}
+        return {}  # int8_gpu (uq=7) and f16 (uq=0): no extra constants
 
     def _first_weight_key(self, *candidates: str) -> str:
         """Return the first candidate key present in self.weights, or the last as fallback."""
