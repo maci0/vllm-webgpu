@@ -1369,7 +1369,7 @@ def load_safetensors_weights(
                 except Exception as exc:
                     logger.warning("Failed to process CT pack-int4 %s: %s", base, exc)
 
-        else:
+        elif fmt == "plain":
             # Plain BF16/F16/F32
             for name, meta in header.items():
                 if name in _i8_companion_skip:
