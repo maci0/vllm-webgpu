@@ -90,14 +90,33 @@ except (ImportError, OSError):
     pass
 
 # Import-time guard: verify that NemotronHMLPDecoderLayer.__init__ still contains
-# the list/scalar intermediate_size resolution logic that _resolve() mirrors.
-# Any vLLM upgrade changing intermediate_size handling will fail here rather than
-# silently producing wrong per-layer sizes.
+# the list/scalar intermediate_size resolution logic that _resolve() mirrors,
+# AND that mlp_index is still computed as count("-") - 1, which is the semantic
+# equivalent of the running counter (_mlp_count) used in __init__.
+# Any vLLM upgrade changing either will fail here rather than silently producing
+# wrong per-layer sizes.
 try:
     import inspect as _inspect
     from vllm.model_executor.models.nemotron_h import NemotronHMLPDecoderLayer as _NemotronHMLPDecoder
     _mlp_init_src = _inspect.getsource(_NemotronHMLPDecoder.__init__)
-    # Anchor to the exact 7-line resolution block (vLLM 0.24, L286-292).
+    # Anchor 1: the mlp_index computation (vLLM 0.24, L280).
+    # _mlp_count in __init__ is the O(n) equivalent of this O(n^2) expression.
+    # If vLLM changes the character ("-"), the direction (count from end), or the
+    # variable name, the running counter would silently produce wrong indices for
+    # every MLP layer.
+    _MLP_INDEX_ANCHOR = 'mlp_index = hybrid_override_pattern[: layer_idx + 1].count("-") - 1'
+    assert _MLP_INDEX_ANCHOR in _mlp_init_src, (
+        "NemotronHMLPDecoderLayer.__init__ mlp_index computation has changed "
+        "upstream (vLLM 0.24 L280). The running counter (_mlp_count) in "
+        "NemotronHWebGPUModel.__init__ is the O(n) equivalent of "
+        "`hybrid_override_pattern[:layer_idx+1].count('-') - 1` and would "
+        "silently produce wrong intermediate sizes if the upstream formula "
+        "changes (different character, reverse count, or renamed variable). "
+        "Review the _mlp_count loop and update it to match the new upstream "
+        "logic, then update this anchor string before removing this assertion."
+    )
+    del _MLP_INDEX_ANCHOR
+    # Anchor 2: the 7-line list/scalar resolution block (vLLM 0.24, L286-292).
     # Catches any new branch (e.g. per-head lists) or index-variable rename
     # that the coarse isinstance+len check would have missed.
     _MLP_INTERMEDIATE_SIZE_ANCHOR = (
