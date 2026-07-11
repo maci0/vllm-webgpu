@@ -1,5 +1,6 @@
 from __future__ import annotations
 import itertools
+from copy import copy
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -287,7 +288,7 @@ class WebGPUModelRunner:
                 "grammar token masks. Use unconstrained sampling or a CPU/CUDA backend."
             )
         if self.model is None:
-            return EMPTY_MODEL_RUNNER_OUTPUT
+            return copy(EMPTY_MODEL_RUNNER_OUTPUT)
         return self._execute_model_v2(scheduler_output)
 
     @staticmethod
