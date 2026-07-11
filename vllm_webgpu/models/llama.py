@@ -35,6 +35,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
     # Sliding-window size (set by MixtralWebGPUModel); None means full attention.
     _sw: int | None = None
+    # MoE flag (set by subclasses such as MixtralWebGPUModel); False in base class.
+    _is_moe: bool = False
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
@@ -194,7 +196,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # matmul_quant_mr4 batch-prefill path. Any other value (AWQ=4, FP8=5,
         # NVFP4=6, INT8=7, NF4=8) falls back to the sequential decode path.
         # MoE models never reach _prefill_batch_forward, so skip the scan entirely.
-        if getattr(self, "_is_moe", False):
+        if self._is_moe:
             self._batch_matmul_supported = False
         else:
             proj_keys = [k for k in self.weights if k.endswith('.weight') and 'model.layers.' in k and '_proj' in k]

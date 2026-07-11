@@ -160,6 +160,8 @@ def _resolve_intermediate_size(v, idx: int) -> int:
     IMPORTANT: on every vLLM version bump, update this function AND the
     _MLP_INTERMEDIATE_SIZE_ANCHOR string above. The anchor detects structural
     changes to the upstream block; this function must then be updated to match.
+
+    # vLLM 0.24 NemotronHMLPDecoderLayer L286-292
     """
     if isinstance(v, list):
         return v[0] if len(v) == 1 else v[idx]
@@ -273,7 +275,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _hf_p = f"backbone.layers.{_i}.mixer"
                 for _proj in ("q", "k", "v"):
                     self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
-                        partial(dict.__setitem__, _acc, _proj)
+                        partial(_acc.__setitem__, _proj)
                     )
 
         # The WebGPU MLP path does not implement bias addition. All known

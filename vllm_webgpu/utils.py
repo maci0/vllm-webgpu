@@ -42,6 +42,7 @@ def sample_token(
     top_p: float = 1.0,
     top_k: int = 0,
     generator: torch.Generator | None = None,
+    use_fp64_gumbel: bool = False,
 ) -> int:
     """Sample one token from a 1-D float32 logit vector.
 
@@ -58,6 +59,8 @@ def sample_token(
             responsible for seeding it once and passing the same object on
             every decode step so the RNG state advances correctly between
             steps. When None, sampling is non-deterministic.
+        use_fp64_gumbel: When True, Gumbel noise is sampled in fp64 for
+            higher numerical precision. Mirrors ModelConfig.use_fp64_gumbel.
     """
     if temperature < 1e-5:
         return logits_1d.argmax().item()
@@ -73,4 +76,4 @@ def sample_token(
 
     generators = {0: generator} if generator is not None else {}
 
-    return random_sample(filtered.softmax(dim=-1), generators).item()
+    return random_sample(filtered.softmax(dim=-1), generators, use_fp64_gumbel=use_fp64_gumbel).item()

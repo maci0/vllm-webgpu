@@ -335,25 +335,21 @@ class WebGPUModelRunner:
         queue = self.wgpu_device.wgpu_device.queue
         _zeros_cache = self._zeros_cache
 
-        def _get_zeros(n: int) -> bytes:
-            z = _zeros_cache.get(n)
-            if z is None:
-                _zeros_cache[n] = z = bytes(n)
-            return z
-
         for k_buf, v_buf in self.model.kv_pool:
             if k_buf.nbytes <= MIN_WEBGPU_BUFFER_BYTES:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
                 continue
-            bytes_per_block = k_buf.nbytes // self._num_kv_blocks
-            zeros = _get_zeros(bytes_per_block)
-            bytes_per_block_v = v_buf.nbytes // self._num_kv_blocks
-            zeros_v = _get_zeros(bytes_per_block_v)
+            bpb = k_buf.nbytes // self._num_kv_blocks
+            if bpb not in _zeros_cache:
+                _zeros_cache[bpb] = bytes(bpb)
+            zeros = _zeros_cache[bpb]
+            bpb_v = v_buf.nbytes // self._num_kv_blocks
+            if bpb_v not in _zeros_cache:
+                _zeros_cache[bpb_v] = bytes(bpb_v)
+            zeros_v = _zeros_cache[bpb_v]
             for block_id in block_ids:
-                offset = block_id * bytes_per_block
-                queue.write_buffer(k_buf.buf, offset, zeros)
-                offset_v = block_id * bytes_per_block_v
-                queue.write_buffer(v_buf.buf, offset_v, zeros_v)
+                queue.write_buffer(k_buf.buf, block_id * bpb, zeros)
+                queue.write_buffer(v_buf.buf, block_id * bpb_v, zeros_v)
 
     def execute_model(self, scheduler_output: "SchedulerOutput") -> Any:
         if scheduler_output.has_structured_output_requests:
@@ -605,6 +601,7 @@ class WebGPUModelRunner:
                 first_decode_tok = _sample_token(
                     last_logits[-1], temperature=sp.temperature,
                     top_p=sp.top_p, top_k=sp.top_k, generator=rng,
+                    use_fp64_gumbel=self.vllm_config.model_config.use_fp64_gumbel,
                 )
             else:
                 first_decode_tok = int(last_logits[0, 0])
@@ -776,6 +773,7 @@ class WebGPUModelRunner:
                     stok = _sample_token(
                         logits[0], temperature=sp.temperature,
                         top_p=sp.top_p, top_k=sp.top_k, generator=rng,
+                        use_fp64_gumbel=self.vllm_config.model_config.use_fp64_gumbel,
                     )
 
                 # Compute logprobs if requested for this request.

@@ -122,11 +122,16 @@ def _load_quant_cfg(config_path: Path) -> dict:
     Uses compressed_tensors.get_quantization_config to handle nested locations
     (text_config, compression_config) and multimodal variants.
     compressed_tensors is a hard dependency of vllm (Requires-Dist), so
-    _ct_get_quant_cfg is always non-None. Returns {} on any failure.
+    _ct_get_quant_cfg is always non-None. Returns {} when config is absent;
+    propagates json.JSONDecodeError so malformed config.json is not silently
+    treated as an unquantized model.
     """
     try:
         return _ct_get_quant_cfg(str(config_path)) or {}
-    except Exception:
+    except (FileNotFoundError, KeyError):
+        return {}
+    except Exception as exc:
+        logger.warning("Failed to parse quantization config %s: %s", config_path, exc)
         return {}
 
 
@@ -1522,6 +1527,8 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
                 arr = np.clip(dequant, -_F16_MAX, _F16_MAX).astype(np.float16)
                 local_key = base.removeprefix("language_model.") + ".weight"
+                if weight_transforms and local_key in weight_transforms:
+                    arr = weight_transforms[local_key](arr.astype(np.float32)).astype(np.float16)
                 _upload_f16(arr, local_key)
 
     # Stream non-quantized tensors shard-by-shard.

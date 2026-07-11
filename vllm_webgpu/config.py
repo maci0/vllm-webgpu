@@ -6,18 +6,15 @@ from dataclasses import dataclass
 from wgpu.enums import PowerPreference as _PowerPreference
 import vllm_webgpu.envs as envs
 
-VALID_POWER_PREFERENCES: frozenset[str] = frozenset(_PowerPreference)
-
-
 @dataclass(frozen=True)
 class WebGPUConfig:
     power_preference: str
 
     def __post_init__(self) -> None:
-        if self.power_preference not in VALID_POWER_PREFERENCES:
+        if self.power_preference not in _PowerPreference:
             raise ValueError(
                 f"VLLM_WEBGPU_POWER_PREFERENCE={self.power_preference!r}. "
-                f"Valid: {sorted(VALID_POWER_PREFERENCES)}"
+                f"Valid: {sorted(_PowerPreference)}"
             )
 
     @classmethod

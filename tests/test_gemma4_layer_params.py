@@ -172,6 +172,7 @@ def _make_config(**overrides):
         # 12 layers: 5 sliding + 1 full repeated twice
         num_hidden_layers=12,
         layer_types=(["sliding_attention"] * 5 + ["full_attention"]) * 2,
+        hidden_size=2048,
         head_dim=256,
         global_head_dim=512,
         num_attention_heads=8,
