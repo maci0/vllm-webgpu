@@ -7,18 +7,13 @@ import numpy as np
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
-# parse_safetensors_file_metadata is sourced from vllm.transformers_utils.utils and
-# returns {key: {"dtype": str, "shape": list, "data_offsets": [start, end]}}. If vLLM
-# renames or moves this function, or changes its return shape, the header comprehension
-# in load_safetensors_weights will silently skip all tensors. Verify on each vLLM
-# version bump that the function still exists at this path and returns the expected structure.
-from vllm.transformers_utils.utils import parse_safetensors_file_metadata
 
 from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
 from compressed_tensors import QuantizationConfig as _QuantizationConfig
 from compressed_tensors.quantization import QuantizationType as _QuantizationType
 from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
 from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
+from compressed_tensors.utils.safetensors_load import get_safetensors_header as _ct_get_safetensors_header
 
 
 # AWQ nibble unpack table. AWQ packs channels with interleaved order [0,4,1,5,2,6,3,7],
@@ -612,7 +607,7 @@ def load_safetensors_weights(
     # Read the safetensors header before opening the file a second time.
     # parse_safetensors_file_metadata does a single binary read of the header
     # (one syscall) rather than O(n) per-tensor slice calls.
-    _raw_hdr = parse_safetensors_file_metadata(path)
+    _raw_hdr = _ct_get_safetensors_header(path)
     with sft.safe_open(path, framework="pt") as sf:
         header = {
             k: v for k, v in _raw_hdr.items()
