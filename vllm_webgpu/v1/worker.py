@@ -10,6 +10,7 @@ import torch
 # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
 # Update this comment and pyproject.toml when bumping the vLLM version.
 from vllm.distributed import ensure_model_parallel_initialized, init_distributed_environment
+from vllm.distributed.ec_transfer import ensure_ec_transfer_initialized, ensure_ec_transfer_shutdown
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized, ensure_kv_transfer_shutdown
 from vllm.distributed.utils import get_cpu_distributed_timeout_or_none
 from vllm.logger import init_logger
@@ -71,6 +72,7 @@ class WebGPUWorker(WorkerBase):
         set_random_seed(self.model_config.seed)
 
         self.model_runner = WebGPUModelRunner(self.vllm_config, self.wgpu_device)
+        ensure_ec_transfer_initialized(self.vllm_config)
 
     def load_model(self, *, load_dummy_weights: bool = False) -> None:
         if load_dummy_weights:
@@ -168,7 +170,10 @@ class WebGPUWorker(WorkerBase):
         pass
 
     def shutdown(self) -> None:
-        ensure_kv_transfer_shutdown()
+        if ensure_kv_transfer_shutdown is not None:
+            ensure_kv_transfer_shutdown()
+        if ensure_ec_transfer_shutdown is not None:
+            ensure_ec_transfer_shutdown()
         # Release the GPU device. Both the worker and model_runner hold a
         # reference to wgpu_device; clearing only one leaves the object alive.
         # Do not null model_runner itself: any post-shutdown delegate call (e.g.
