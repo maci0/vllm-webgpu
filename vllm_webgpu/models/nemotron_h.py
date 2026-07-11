@@ -180,6 +180,17 @@ def _resolve_intermediate_size(v, idx: int) -> int:
     return v
 
 
+# Verify the len==1 edge case at import time: a single-element list must return
+# v[0] for any idx, not v[mlp_index % len(v)] or a similar fallback that a future
+# refactor might introduce. A wrong formula here would silently produce the correct
+# result only when idx==0, making the bug invisible in tests that use layer 0.
+assert _resolve_intermediate_size([1024], 5) == 1024, (
+    "_resolve_intermediate_size: single-element list must return v[0] for any idx. "
+    "The len==1 branch of NemotronHMLPDecoderLayer.__init__ (L288) was refactored; "
+    "update _resolve_intermediate_size to match, then fix this assertion."
+)
+
+
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
 # 0 = F16 (no quantization), 3 = GPTQ int4, 4 = AWQ sym int4,
 # 5 = fp8_gpu, 6 = nvfp4_gpu, 7 = int8_gpu, 8 = nf4_gpu.
