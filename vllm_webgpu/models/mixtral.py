@@ -153,6 +153,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """Route MoE decode to explicit-encoder path; everything else to parent."""
         if self._is_moe:
             if len(input_ids) > 1:
+                if self._batch_matmul_supported is None:
+                    raise RuntimeError("load_weights() must be called before forward()")
                 if self.profiling:
                     raise RuntimeError(
                         "profiling=True is not supported for MoE prefill: "

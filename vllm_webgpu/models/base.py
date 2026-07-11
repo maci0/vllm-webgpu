@@ -66,14 +66,11 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Inlines the formula from YaRNScalingRotaryEmbedding._compute_inv_freq using
-    the three public helpers it depends on. No private method calls, no stub instances.
-
-    Direct instantiation of YaRNScalingRotaryEmbedding is impractical here because
-    _compute_inv_freq is an instance method whose full constructor requires
-    is_neox_style (model-specific, not derivable from rope_scaling at weight-load
-    time) and dtype (unused for a numpy computation). The inline approach uses only
-    the public helper functions from the common module.
+    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via a minimal
+    SimpleNamespace stub that carries only the seven instance attributes the
+    method reads. This avoids reimplementing the formula and sidesteps the
+    expensive _compute_cos_sin_cache call that the full constructor triggers
+    (it allocates a [max_position_embeddings * factor, rotary_dim] cache tensor).
 
     Args:
         head_dim:    Full attention head dimension.
@@ -91,12 +88,9 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
-    import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
-    )
+    from vllm.model_executor.layers.rotary_embedding import YaRNScalingRotaryEmbedding
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+
     if rotary_dim is None:
         if rd := rope_scaling.get("rope_dim", None):
             rotary_dim = int(rd)
@@ -117,26 +111,23 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    pos_freqs = rope_theta ** (
-        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
+    stub = SimpleNamespace(
+        base=rope_theta,
+        rotary_dim=rotary_dim,
+        max_position_embeddings=orig_ctx,
+        extrapolation_factor=extrapolation_factor,
+        beta_fast=beta_fast,
+        beta_slow=beta_slow,
+        truncate=truncate,
     )
-    inv_freq_extrapolation = 1.0 / pos_freqs
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
-
-    low, high = yarn_find_correction_range(
-        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
-    )
-    inv_freq_mask = (
-        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
-    ) * extrapolation_factor
-    inv_freq = inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
+    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(stub, factor)
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
         else float(attn_factor)
     )
-    return inv_freq.numpy().astype(np.float32), mscale
+    return inv_freq.numpy(), mscale
 
 
 

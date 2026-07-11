@@ -902,8 +902,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 else:
                     self._dispatch("rms_norm", [hidden_states_1, post_ffw_w, sc["normed"]], _rms,
                                    (num_tokens, 1, 1))
-                    hidden_states_1 = sc["normed"]
-                    self._dispatch("add_f32", [residual, hidden_states_1, out],
+                    self._dispatch("add_f32", [residual, sc["normed"], out],
                                    {"N": add_n}, _vec4_wg(add_n))
                     if abs(layer_scalar - 1.0) > 1e-6:
                         self._dispatch("f32_scale_inplace", [out],

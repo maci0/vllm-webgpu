@@ -353,7 +353,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         Derives the bias key as '{ep}.{down_key_name}.bias'. If absent, delegates
         to the parent. When present, switches to the separate matmul + add + accumulate
         sequence (bypassing the fused moe_expert_down_accum shader which has no bias
-        binding) and uses expert_down_tmp as the staging buffer for the biased output.
+        binding) and uses expert_tmp as the staging buffer for the biased output.
         """
         w2_bias = self.weights.get(f"{ep}.{down_key_name}.bias")
         if w2_bias is None:
@@ -372,7 +372,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
         # Down GEMV with fused bias (HAS_BIAS=1) → expert_tmp.
         # Mirrors the router bias pattern used in _moe_ffn_layer; avoids a
-        # separate add dispatch and removes the expert_down_tmp staging buffer.
+        # separate add dispatch and removes the expert_tmp staging buffer.
         self._dispatch(
             "matmul_quant",
             [msc["expert_act"], self.weights[w2_key],

@@ -1197,7 +1197,7 @@ def load_safetensors_weights(
                 and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
             )
             mx_set: set = {f"{b}.weight" for b in mx_bases} | {f"{b}.weight_scale" for b in mx_bases}
-            _upload_non_quant(header, mx_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))
+            _upload_non_quant(header, mx_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 
             if fmt == "mxfp4":
                 # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
@@ -1292,7 +1292,7 @@ def load_safetensors_weights(
                             bnb_set.add(absmax_k)
 
             # Upload all non-BnB tensors normally.
-            _upload_non_quant(header, bnb_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))
+            _upload_non_quant(header, bnb_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 
             for base in sorted(bnb_bases):
                 try:
