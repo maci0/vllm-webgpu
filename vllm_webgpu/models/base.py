@@ -12,11 +12,6 @@ import numpy as np
 
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME, CONFIG_NAME
 from vllm.logger import init_logger
-from vllm.model_executor.layers.rotary_embedding.common import (
-    yarn_find_correction_range,
-    yarn_get_mscale,
-    yarn_linear_ramp_mask,
-)
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
@@ -75,31 +70,6 @@ logger = init_logger(__name__)
 # Defined alongside _DTYPE_MAP so that adding a new dtype only requires updating buffer.py.
 
 
-# Import-time guard: verify that YaRNScalingRotaryEmbedding._compute_inv_freq still
-# uses the same interp/extrap blend formula that compute_yarn_freqs mirrors below.
-# A vLLM upgrade that changes the blend (e.g., adds a new rope_scaling key or
-# restructures the mask computation) will fail here rather than silently diverging.
-try:
-    import inspect as _inspect
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding as _YaRN,
-    )
-    _yarn_src = _inspect.getsource(_YaRN._compute_inv_freq)
-    # Anchor on the blending expression: interp weighted by (1 - mask), extrap weighted
-    # by mask. If vLLM renames the variables, adds a new blend mode, or changes the
-    # extrapolation_factor application, this fires before any model is loaded.
-    _YARN_BLEND_ANCHOR = "inv_freq_interpolation * (1 - inv_freq_mask)"
-    assert _YARN_BLEND_ANCHOR in _yarn_src, (
-        "YaRNScalingRotaryEmbedding._compute_inv_freq blend formula has changed "
-        "upstream. compute_yarn_freqs in base.py mirrors this formula and must be "
-        "updated to match. Look for changes in inv_freq_mask computation, interp/extrap "
-        "blend weights, or new rope_scaling keys. Update compute_yarn_freqs and this "
-        "anchor string before removing this assertion."
-    )
-    del _inspect, _YaRN, _yarn_src, _YARN_BLEND_ANCHOR
-except (ImportError, OSError):
-    # ImportError: yarn_scaling_rope moved upstream; OSError: .pyc-only install.
-    pass
 
 
 def compute_yarn_freqs(
@@ -110,10 +80,8 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    inv_freq is computed directly using yarn_find_correction_range and
-    yarn_linear_ramp_mask from vllm.model_executor.layers.rotary_embedding.common,
-    which are the same public functions that YaRNScalingRotaryEmbedding uses
-    internally. mscale uses yarn_get_mscale from the same module.
+    Delegates to YaRNScalingRotaryEmbedding so the blending logic, parameter
+    parsing, and mscale derivation stay in one place upstream.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -131,6 +99,10 @@ def compute_yarn_freqs(
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     import torch
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
+    )
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
     if rotary_dim is None:
         rotary_dim = head_dim
 
@@ -143,13 +115,20 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
-    inv_freq_extrap = 1.0 / pos_freqs
-    inv_freq_interp = 1.0 / (factor * pos_freqs)
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
-    inv_freq = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).numpy().astype(np.float32)
-
+    # YaRNScalingRotaryEmbedding is a CustomOp (nn.Module) and cannot be
+    # instantiated without a live vLLM config context. Call _compute_inv_freq
+    # as an unbound method with a duck-typed namespace so the blending logic
+    # stays upstream rather than being duplicated here.
+    ns = SimpleNamespace(
+        base=rope_theta,
+        rotary_dim=rotary_dim,
+        beta_fast=beta_fast,
+        beta_slow=beta_slow,
+        max_position_embeddings=orig_ctx,
+        truncate=truncate,
+        extrapolation_factor=extrapolation_factor,
+    )
+    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(ns, factor).numpy().astype(np.float32)
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
