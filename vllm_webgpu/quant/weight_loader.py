@@ -903,7 +903,15 @@ def load_safetensors_weights(
                     # qz.view(np.int32) reinterprets bytes as signed int32, making the
                     # comparison correct for both int32 and uint32 source arrays (U32 safetensors dtype).
                     if fmt == "gptq" and g_idx is None and (qz is None or np.all(qz.view(np.int32) == _SYM_ZEROS_INT32)):
-                        # GPU GPTQ: transpose qweight [K//8, N] → [N, K//8] for coalesced access.
+                        # GPU GPTQ: either qzeros absent (implicit zero_point=8, AutoGPTQ symmetric
+                        # convention) or qzeros verified all-8 (every nibble equals exactly 8).
+                        # The gptq_sym shader hardcodes nibble - 8, which only produces 0 when
+                        # nibble==8. Models that genuinely use zero_point=0 (all-zero qzeros) will
+                        # not reach this branch (the all-8 check above rejects them) and fall through
+                        # to the CPU dequant path. If qzeros are absent entirely the assumption is
+                        # zero_point=8; checkpoints intended to use zero_point=0 must include a
+                        # qzeros tensor so the ambiguity can be resolved.
+                        # Transpose qweight [K//8, N] → [N, K//8] for coalesced access.
                         K8, N_ = qw.shape
                         group_size = (K8 * 8) // sc.shape[0] if sc.ndim == 2 else (K8 * 8)
                         qw_t = np.ascontiguousarray(qw.T)  # [N, K//8]
