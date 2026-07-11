@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE as _SAFE_WEIGHTS_NAME, CONFIG_NAME
 from vllm.logger import init_logger
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -349,12 +348,12 @@ class BaseWebGPUModel(ABC):
         # the duplication that previously existed in each branch.
         _path = Path(path)
         model_dir = _path if _path.is_dir() else _path.parent
-        _cfg_json = model_dir / CONFIG_NAME
+        _cfg_json = model_dir / "config.json"
         _quant_cfg = _load_quant_cfg(_cfg_json) if _cfg_json.exists() else {}
         _check_unsupported_quant(model_dir, quant_cfg=_quant_cfg)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
-            actual = str(_path / _SAFE_WEIGHTS_NAME) if _path.is_dir() else path
+            actual = str(_path / "model.safetensors") if _path.is_dir() else path
             self.weights = load_safetensors_weights(
                 actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,

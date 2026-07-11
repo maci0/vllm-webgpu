@@ -120,7 +120,7 @@ def allocate_kv_from_tensors(
             )
         elif isinstance(spec, SlidingWindowSpec):
             raise NotImplementedError(
-                f"SlidingWindowSpec KV cache is not supported by the WebGPU backend."
+                "SlidingWindowSpec KV cache is not supported by the WebGPU backend."
             )
         else:
             raise NotImplementedError(

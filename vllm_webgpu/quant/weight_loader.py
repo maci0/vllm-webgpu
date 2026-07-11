@@ -145,11 +145,13 @@ except ImportError:
 def _load_quant_cfg(config_path: Path) -> dict:
     """Return the quantization config dict for a model.
 
-    Uses compressed_tensors.get_quantization_config when available, which
-    handles nested locations (text_config, compression_config) and multimodal
-    variants. When compressed_tensors is not installed, falls back to reading
-    config.json directly and applying the same three-key cascade, so the
-    unsupported-quantization guard is always active.
+    Uses compressed_tensors.get_quantization_config to handle nested locations
+    (text_config, compression_config) and multimodal variants.
+    compressed_tensors is a hard dependency of vllm (Requires-Dist), so
+    _ct_get_quant_cfg is always non-None in practice. The defensive else branch
+    below is a portability fallback that mirrors the same three-key cascade
+    implemented by compressed_tensors.get_quantization_config — kept in sync
+    manually, not a live code path in normal operation.
     Returns {} on any failure.
     """
     if _ct_get_quant_cfg is not None:
@@ -157,6 +159,10 @@ def _load_quant_cfg(config_path: Path) -> dict:
             return _ct_get_quant_cfg(str(config_path)) or {}
         except Exception:
             return {}
+    # Defensive fallback: mirrors compressed_tensors.get_quantization_config
+    # cascade (quantization_config -> text_config.quantization_config ->
+    # compression_config). Not a live code path when compressed_tensors is
+    # installed alongside vllm (which it always is per Requires-Dist).
     try:
         with open(config_path) as f:
             cfg = json.load(f)
@@ -1127,78 +1133,70 @@ def load_safetensors_weights(
                 except Exception as exc:
                     logger.warning("Failed to process FP8 %s: %s", base, exc)
 
-        elif fmt == "mxfp4":
-            # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
-            # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
-            # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-            mxfp4_bases = sorted(
+        elif fmt in ("mxfp4", "mxfp8"):
+            # Both formats identify bases by U8 weight + U8 weight_scale; collect once.
+            mx_bases = sorted(
                 base
                 for k in header
                 if k.endswith(".weight")
                 and header[k].get("dtype") == "U8"
                 and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
             )
-            mx4_set: set = {f"{b}.weight" for b in mxfp4_bases} | {f"{b}.weight_scale" for b in mxfp4_bases}
+            mx_set: set = {f"{b}.weight" for b in mx_bases} | {f"{b}.weight_scale" for b in mx_bases}
+            _upload_non_quant(header, mx_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))
 
-            _upload_non_quant(header, mx4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))
+            if fmt == "mxfp4":
+                # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
+                # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
+                # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
+                mxfp4_bases = mx_bases
+                if _decompress_mx_scale is None:
+                    raise ImportError(
+                        "MXFP4 dequant requires compressed_tensors "
+                        "(compressed_tensors.compressors.mx_utils.decompress_mx_scale); "
+                        "install compressed_tensors to load MXFP4 models"
+                    )
 
-            if _decompress_mx_scale is None:
-                raise ImportError(
-                    "MXFP4 dequant requires compressed_tensors "
-                    "(compressed_tensors.compressors.mx_utils.decompress_mx_scale); "
-                    "install compressed_tensors to load MXFP4 models"
-                )
+                for base in mxfp4_bases:
+                    try:
+                        wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
+                        ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
+                        ws_f32 = np.ascontiguousarray(_decompress_mx_scale(torch.from_numpy(ws_u8)).to(torch.float32).numpy())  # E8M0: 2^(u8-127)
+                        N_, K2_ = wp.shape
+                        K_ = K2_ * 2
+                        _upload_u8(wp, f"{base}.weight", weights)
+                        _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
+                        weights.setdefault("__quant_meta__", {})[base] = {
+                            "fmt": "nvfp4_gpu", "global_scale": 1.0, "group_size": 32}
+                        logger.debug("GPU MXFP4: %s (N=%d, K=%d)", base, N_, K_)
+                    except Exception as exc:
+                        logger.warning("Failed to process MXFP4 %s: %s", base, exc)
 
-            for base in mxfp4_bases:
+            else:
+                # MXFP8 (microscaling FP8): *.weight [N, K] U8 FP8-E4M3 + *.weight_scale [N, K//32] U8 exponents.
+                # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
+                # CPU dequant: avoids shader changes for per-block FP8.
+                # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
+                mxfp8_bases = mx_bases
                 try:
-                    wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
-                    ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                    ws_f32 = np.ascontiguousarray(_decompress_mx_scale(torch.from_numpy(ws_u8)).to(torch.float32).numpy())  # E8M0: 2^(u8-127)
-                    N_, K2_ = wp.shape
-                    K_ = K2_ * 2
-                    _upload_u8(wp, f"{base}.weight", weights)
-                    _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
-                    weights.setdefault("__quant_meta__", {})[base] = {
-                        "fmt": "nvfp4_gpu", "global_scale": 1.0, "group_size": 32}
-                    logger.debug("GPU MXFP4: %s (N=%d, K=%d)", base, N_, K_)
-                except Exception as exc:
-                    logger.warning("Failed to process MXFP4 %s: %s", base, exc)
-
-        elif fmt == "mxfp8":
-            # MXFP8 (microscaling FP8): *.weight [N, K] U8 FP8-E4M3 + *.weight_scale [N, K//32] U8 exponents.
-            # Scales are u8 exponents: scale = 2^(u8 - 127), one per block of 32 K-elements.
-            # CPU dequant: avoids shader changes for per-block FP8.
-            # TODO: USE_QUANT=9 for GPU MXFP8 per-block decode
-            mxfp8_bases = sorted(
-                base
-                for k in header
-                if k.endswith(".weight")
-                and header[k].get("dtype") == "U8"
-                and header.get((base := k.removesuffix(".weight")) + ".weight_scale", {}).get("dtype") == "U8"
-            )
-            mx8_set: set = {f"{b}.weight" for b in mxfp8_bases} | {f"{b}.weight_scale" for b in mxfp8_bases}
-
-            _upload_non_quant(header, mx8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))
-
-            try:
-                from vllm.model_executor.layers.quantization.utils.mxfp8_utils import dequant_mxfp8_to_bf16
-            except ImportError as exc:
-                raise ImportError(
-                    f"MXFP8 dequant requires vllm.model_executor.layers.quantization.utils.mxfp8_utils "
-                    f"(failed to import: {exc})"
-                ) from exc
-            for base in mxfp8_bases:
-                try:
-                    w_t = sf.get_tensor(f"{base}.weight")
-                    ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                    N_, K_ = w_t.shape
-                    n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
-                    w_bf16 = dequant_mxfp8_to_bf16(w_t.view(torch.float8_e4m3fn), torch.from_numpy(ws_u8))
-                    w_f16 = np.ascontiguousarray(_torch_to_f16_numpy(w_bf16))
-                    _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
-                    logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
-                except Exception as exc:
-                    logger.warning("Failed to process MXFP8 %s: %s", base, exc)
+                    from vllm.model_executor.layers.quantization.utils.mxfp8_utils import dequant_mxfp8_to_bf16
+                except ImportError as exc:
+                    raise ImportError(
+                        f"MXFP8 dequant requires vllm.model_executor.layers.quantization.utils.mxfp8_utils "
+                        f"(failed to import: {exc})"
+                    ) from exc
+                for base in mxfp8_bases:
+                    try:
+                        w_t = sf.get_tensor(f"{base}.weight")
+                        ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
+                        N_, K_ = w_t.shape
+                        n_blocks = ws_u8.shape[1] if ws_u8.ndim == 2 else 1
+                        w_bf16 = dequant_mxfp8_to_bf16(w_t.view(torch.float8_e4m3fn), torch.from_numpy(ws_u8))
+                        w_f16 = np.ascontiguousarray(_torch_to_f16_numpy(w_bf16))
+                        _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
+                        logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, n_blocks)
+                    except Exception as exc:
+                        logger.warning("Failed to process MXFP8 %s: %s", base, exc)
 
         elif fmt == "bnb_nf4":
             # BitsAndBytes NF4: weight [N//2, K] U8 (2 NF4 codes per byte, flattened row-pairs)
@@ -1249,7 +1247,7 @@ def load_safetensors_weights(
                             bnb_set.add(absmax_k)
 
             # Upload all non-BnB tensors normally.
-            _upload_non_quant(header, bnb_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32", "F32"))
+            _upload_non_quant(header, bnb_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("U8", "I32"))
 
             for base in sorted(bnb_bases):
                 try:

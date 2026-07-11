@@ -690,9 +690,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # All (expert, token) index pairs are unique (top-K guarantees distinct
             # expert IDs per token; distinct t values make cross-token duplicates impossible),
             # so buffered fancy-index assignment is equivalent to np.add.at and faster.
-            self._dense_w[:, :num_tokens] = 0.0
-            self._dense_w[top_k_idx, self._token_arange[:num_tokens, None]] = rw_vals
             unique_eids = np.unique(top_k_idx).tolist()
+            self._dense_w[unique_eids, :num_tokens] = 0.0
+            self._dense_w[top_k_idx, self._token_arange[:num_tokens, None]] = rw_vals
 
             # GPU: run selected expert FFNs
             gelu_n_moe = num_tokens * inter_moe

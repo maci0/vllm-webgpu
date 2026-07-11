@@ -524,14 +524,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             for t in range(pos):
                 self._hstate = 0
                 tok_ctx = t + 1
-                slot = int(block_ids[t // self.block_size]) * self.block_size + t % self.block_size
-
                 dev.queue.write_buffer(
                     pre["ids"].buf, 0,
                     token_ids[t:t+1].astype(np.uint32, copy=False).tobytes())
-                dev.queue.write_buffer(
-                    pre["slot_map"].buf, 0,
-                    np.array([slot], dtype=np.uint32).tobytes())
 
                 with self._batched_dispatch():
                     self._dispatch(

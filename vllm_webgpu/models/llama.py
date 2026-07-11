@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from functools import partial
 from itertools import batched
 from typing import TYPE_CHECKING
@@ -67,7 +68,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._rope_consts: dict = {
             "HEAD_DIM": self.head_dim,
             "ROPE_BASE": float(self.rope_theta),
-            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
+            "LN_ROPE_BASE": math.log(self.rope_theta),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             "ATTN_SCALE": self._yarn_mscale,
         }
@@ -84,10 +85,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         _q_xform = partial(_tile_norm, n_heads=num_q)
         _k_xform = partial(_tile_norm, n_heads=num_kv)
-        for _i in range(self.num_layers):
-            _p = f"model.layers.{_i}"
-            self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = _q_xform
-            self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = _k_xform
+        self._weight_transforms.update({
+            f"model.layers.{i}.self_attn.{k}.weight": xf
+            for i in range(self.num_layers)
+            for k, xf in (("q_norm", _q_xform), ("k_norm", _k_xform))
+        })
         # Cached after load_weights: True iff all *_proj weights are USE_QUANT=0 or 3.
         # None means not yet computed (weights not yet loaded).
         self._batch_matmul_supported: bool | None = None
