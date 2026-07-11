@@ -7,6 +7,7 @@ from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (FullAttentionSpec,
+                                         KVQuantMode,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
                                          SlidingWindowSpec,
@@ -95,11 +96,9 @@ def allocate_kv_from_tensors(
                 "Allocating with head_size/head_size_v would produce wrong buffer sizes."
             )
         elif isinstance(spec, FullAttentionSpec):
-            if spec.kv_quant_mode.is_nvfp4:
+            if spec.kv_quant_mode != KVQuantMode.NONE:
                 raise NotImplementedError(
-                    "NVFP4 KV cache quantization is not supported by the WebGPU backend. "
-                    "The packed NVFP4 layout (64 fp4 data + 8 fp8 scale per head position) "
-                    "cannot be expressed using the head_size * dtype_bytes formula."
+                    f"Quantized KV cache (kv_quant_mode={spec.kv_quant_mode!r}) is not supported by the WebGPU backend; KV shaders expect float16 data."
                 )
             # Compute K and V sizes independently so that asymmetric head
             # dimensions (e.g. MLA-style models where head_size != head_size_v)
