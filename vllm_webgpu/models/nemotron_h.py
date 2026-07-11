@@ -470,7 +470,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     # ── Mamba state management ────────────────────────────────────────────────
 
-    def _init_mamba_states(self) -> None:
+    def _init_mamba_states(self, num_spec: int = 0) -> None:
         """Allocate zero-initialized GPU buffers for each Mamba layer's state."""
         conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
             tp_world_size=1,
@@ -480,6 +480,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             head_dim=self.mamba_head_dim,
             state_size=self.ssm_state_size,
             conv_kernel=self.conv_kernel,
+            num_spec=num_spec,
         )
         # WebGPU WGSL shaders operate at fixed precision: f16 for the conv
         # state and f32 for the SSM state. These sizes are not configurable
@@ -600,7 +601,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     # silently producing wrong inference results.
     _hf_to_vllm_mapper = _NemotronHForCausalLM.hf_to_vllm_mapper
 
-    def load_weights(self, path: str) -> None:
+    def load_weights(self, path: str, *, num_spec: int = 0) -> None:
         """Load weights with key remapping and Mamba-specific postprocessing."""
         # D, dt_bias, and A_log are F32 in the checkpoint and are read as array<f32>
         # by the SSM shader. The base loader would downcast them to F16, losing 13
@@ -644,7 +645,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._scale_acc.clear()
         self._scale_transforms.clear()
         self._validate_mamba_weights()
-        self._init_mamba_states()
+        self._init_mamba_states(num_spec)
         logger.info(
             "NemotronH: loaded %d weight tensors (%d Mamba layers, %d attn layers)",
             len(self.weights),
