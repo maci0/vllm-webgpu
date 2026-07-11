@@ -161,7 +161,7 @@ class WebGPUModelRunner:
 
         family = ARCH_MAP.get(arch)
         num_spec = self.vllm_config.num_speculative_tokens
-        if num_spec and family != "nemotron_h":
+        if num_spec:
             # The decode path in execute_model forwards exactly 1 token per
             # request regardless of scheduler_output.num_scheduled_tokens[rid].
             # With speculative decoding the scheduler sets num_scheduled_tokens > 1
