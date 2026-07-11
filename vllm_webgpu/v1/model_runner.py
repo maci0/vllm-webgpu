@@ -699,6 +699,10 @@ class WebGPUModelRunner:
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.
                 cur_new_bids = new_block_ids[i]
+                if rid in resumed_req_ids and cur_new_bids is None:
+                    raise RuntimeError(
+                        f"resumed req {rid} has no new_block_ids from scheduler"
+                    )
                 if cur_new_bids is not None:
                     flat_new = list(chain.from_iterable(cur_new_bids))
                     if rid in resumed_req_ids:
