@@ -123,6 +123,10 @@ class WebGPUPlatform(_Platform):
             )
         parallel_config.distributed_executor_backend = "uni"
         vllm_config.scheduler_config.enable_chunked_prefill = False
+        if vllm_config.model_config is not None:
+            vllm_config.scheduler_config.verify_max_model_len(
+                vllm_config.model_config.max_model_len
+            )
         # WebGPU compute shaders complete synchronously before execute_model
         # returns, so there is no GPU/CPU overlap to pipeline. The batch queue
         # introduced by async_scheduling adds one extra engine-loop iteration of
