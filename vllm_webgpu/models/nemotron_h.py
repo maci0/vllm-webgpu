@@ -645,11 +645,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # Already packed or checkpoint uses a different layout.
                 continue
 
-            # Preserve the source weight dtype so _uq_for_key resolves the
-            # correct USE_QUANT for GPU-quantized formats (GPTQ i32, FP8/INT8
-            # u8 with fmt tag).
-            src_dtype = self.weights[q_key].dtype
-
             q_nb = self.weights[q_key].nbytes
             k_nb = self.weights[k_key].nbytes
             v_nb = self.weights[v_key].nbytes
@@ -775,6 +770,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             qkv_key = f"{p}.qkv_proj.weight"
             if not _is_awq:
+                # Preserve the source weight dtype so _uq_for_key resolves the
+                # correct USE_QUANT for GPU-quantized formats (GPTQ i32, FP8/INT8
+                # u8 with fmt tag).
+                src_dtype = self.weights[q_key].dtype
                 qkv_raw_buf.shape = (total_nb // _ELEM_BYTES[src_dtype],)
                 qkv_raw_buf.dtype = src_dtype
             packed_buf = qkv_raw_buf

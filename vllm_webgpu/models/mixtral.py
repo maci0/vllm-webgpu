@@ -443,7 +443,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # always precedes Phase B encoder creation (consistent ordering).
         if shared_expert_prefix is None:
             dev.queue.write_buffer(msc["expert_out"].buf, 0, self._expert_out_zeros)
-            _shared_weights_present = False
         else:
             _sinter = shared_expert_inter if shared_expert_inter is not None else inter
             sp = f"{p}.{shared_expert_prefix}"

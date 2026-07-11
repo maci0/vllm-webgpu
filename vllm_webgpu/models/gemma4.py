@@ -96,10 +96,8 @@ def _build_layer_params_from_config(
 
     lp: list[dict] = []
     for i, lt in enumerate(layer_types):
-        inter_l = intermediate_size * (
-            2 if use_dwm and first_kv_shared > 0 and i >= first_kv_shared else 1
-        )
         is_kv_shared = (first_kv_shared > 0) and (i >= first_kv_shared)
+        inter_l = intermediate_size * (2 if use_dwm and is_kv_shared else 1)
 
         # (2) vLLM gemma4.py L467-474: find last non-shared layer of the same type.
         if is_kv_shared:
@@ -614,7 +612,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "v_normed": self._make_buf(T * max_kv_dim * 2),    # f16 V after per-head RMS norm
             "attn_out": self._make_buf(T * max_q_dim * 2),     # f16 attention output
             "o_proj":   self._make_buf(T * hidden * 2),         # f16 output projection
-            "ffn_n":    self._make_buf(T * hidden * 2),         # f16 FFN normed (intermediate)
             "gate_buf": self._make_buf(T * max_inter * 2),          # f16 FFN gate
             "up_buf":   self._make_buf(T * max_inter * 2),          # f16 FFN up
             "ffn_act":  self._make_buf(T * max_inter * 2),          # f16 activated gate*up
@@ -842,29 +839,16 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             _rms, (T, 1, 1))
                         ffn_normed = b["normed"]
                     else:
-                        if post_attn_w is not None:
-                            self._dispatch(
-                                "rms_norm",
-                                [b["o_proj"], post_attn_w, b["ffn_n"]],
-                                _rms, (T, 1, 1))
-                            attn_delta = b["ffn_n"]
-                        else:
+                        if post_attn_w is None:
                             raise ValueError(
                                 f"Layer {i} missing post_attention_layernorm.weight "
                                 "— vLLM creates this norm unconditionally; absence "
                                 "indicates a corrupt checkpoint"
                             )
-                        if pre_ffn_w is not None:
-                            self._dispatch(
-                                "add_f32_rms_norm",
-                                [x_res, attn_delta, pre_ffn_w, residual, b["normed"]],
-                                _rms, (T, 1, 1))
-                            ffn_normed = b["normed"]
-                        else:
-                            raise ValueError(
-                                f"Layer {i} missing pre_feedforward_layernorm.weight "
-                                "— f32 residual cannot be fed to f16 FFN projection"
-                            )
+                        raise ValueError(
+                            f"Layer {i} missing pre_feedforward_layernorm.weight "
+                            "— f32 residual cannot be fed to f16 FFN projection"
+                        )
 
                     # FFN gate + up projections (batch GEMM) + tanh-GELU activation
                     gw_k = f"{p}.mlp.gate_proj.weight"

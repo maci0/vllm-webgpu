@@ -188,26 +188,6 @@ class WebGPUModelRunner:
         _attn_suffix = ".mixer" if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" else ".self_attn"
         _layer_types = get_layer_types(None, self.vllm_config.model_config.hf_text_config)
 
-        if not lp_list:
-            if _layer_types and len(_layer_types) == num_hidden_layers:
-                default_hd = self.vllm_config.model_config.get_head_size()
-                default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
-                tc = self.vllm_config.model_config.hf_text_config
-                global_hd = getattr(tc, "global_head_dim", default_hd)
-                global_kv = getattr(tc, "num_global_key_value_heads", None)
-                if global_kv is None:
-                    global_kv = default_kv
-                k_eq_v = getattr(tc, "attention_k_eq_v", False)
-                for i, lt in enumerate(_layer_types):
-                    if lt not in KV_ATTN_TYPES:
-                        continue
-                    if lt == "full_attention":
-                        full_kv = global_kv if k_eq_v else default_kv
-                        spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd)
-                    else:
-                        spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
-                return spec
-
         if lp_list and len(lp_list) == num_hidden_layers:
             for i, lp in enumerate(lp_list):
                 if _layer_types and len(_layer_types) == num_hidden_layers and _layer_types[i] not in KV_ATTN_TYPES:
@@ -218,16 +198,31 @@ class WebGPUModelRunner:
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     lp["num_kv_heads"], lp["head_dim"])
+        elif _layer_types and len(_layer_types) == num_hidden_layers:
+            default_hd = self.vllm_config.model_config.get_head_size()
+            default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
+            tc = self.vllm_config.model_config.hf_text_config
+            global_hd = getattr(tc, "global_head_dim", default_hd)
+            global_kv = getattr(tc, "num_global_key_value_heads", None)
+            if global_kv is None:
+                global_kv = default_kv
+            k_eq_v = getattr(tc, "attention_k_eq_v", False)
+            for i, lt in enumerate(_layer_types):
+                if lt not in KV_ATTN_TYPES:
+                    continue
+                if lt == "full_attention":
+                    full_kv = global_kv if k_eq_v else default_kv
+                    spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd)
+                else:
+                    spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
+            return spec
         else:
             head_size = self.vllm_config.model_config.get_head_size()
             num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
             # Only trust layer_types when it covers every layer; a partial or
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
-            lt_filtered = _layer_types if _layer_types and len(_layer_types) == num_hidden_layers else None
             for i in range(num_hidden_layers):
-                if lt_filtered is not None and lt_filtered[i] not in KV_ATTN_TYPES:
-                    continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     num_kv_heads, head_size)
         return spec
@@ -373,10 +368,15 @@ class WebGPUModelRunner:
         built_logprobs = None
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
-            _widths = {d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None}
+            _widths = set()
+            non_none = 0
+            for d in logprobs_data:
+                if d is not None:
+                    _widths.add(d.logprob_token_ids.shape[1])
+                    non_none += 1
             max_k = max(_widths)
             # Short-circuit when all real entries have the same width: skip padding.
-            if len(_widths) == 1 and all(d is not None for d in logprobs_data):
+            if len(_widths) == 1 and non_none == len(logprobs_data):
                 stacked = LogprobsTensors(
                     torch.cat([d.logprob_token_ids for d in logprobs_data]),
                     torch.cat([d.logprobs for d in logprobs_data]),
@@ -505,8 +505,7 @@ class WebGPUModelRunner:
                     f"req {rid}: logprob_token_ids is not supported on the WebGPU backend; "
                     "use logprobs=N instead"
                 )
-            # logprob_token_ids is already guarded above; the property's only
-            # remaining branch is sp.logprobs. Access it directly.
+            # logprob_token_ids rejected above; read sp.num_logprobs directly for the topk count.
             num_logprobs = sp.logprobs if sp is not None else None
             if num_logprobs == -1:
                 raise NotImplementedError(

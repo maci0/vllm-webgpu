@@ -153,13 +153,15 @@ def _load_quant_cfg(config_path: Path) -> dict:
     compressed_tensors is a hard dependency of vllm (Requires-Dist), so
     _ct_get_quant_cfg is always non-None. Returns {} on any failure.
     """
+    if _ct_get_quant_cfg is None:
+        return {}
     try:
         return _ct_get_quant_cfg(str(config_path)) or {}
     except Exception:
         return {}
 
 
-def _check_unsupported_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> None:
+def _check_unsupported_quant(model_dir: Path, quant_cfg: dict) -> None:
     """Raise ValueError if config.json names an unsupported quantization scheme.
 
     Detects AQLM, HQQ, and QuIP# by reading quant_type/quant_method from
@@ -169,16 +171,8 @@ def _check_unsupported_quant(model_dir: Path, quant_cfg: "dict | None" = None) -
     These formats cannot be loaded as safetensors by this plugin; raise early
     with a clear message rather than silently loading wrong data.
 
-    Pass quant_cfg to skip the config.json read when the caller already has it.
-    The quant_cfg=None fallback path (config.json read below) is currently dead
-    code: the only caller (base.py) always supplies quant_cfg. It is kept for
-    any hypothetical future caller that does not have quant_cfg pre-loaded.
+    Pass quant_cfg with the already-parsed quantization config dict.
     """
-    if quant_cfg is None:
-        config_json = model_dir / "config.json"
-        if not config_json.exists():
-            return
-        quant_cfg = _load_quant_cfg(config_json)
     qt = (quant_cfg.get("quant_type") or quant_cfg.get("quant_method") or "").lower().strip()
     if qt in _UNSUPPORTED_QUANT_TYPES:
         raise ValueError(

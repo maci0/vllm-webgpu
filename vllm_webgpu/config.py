@@ -31,18 +31,8 @@ class WebGPUConfig:
 
     @classmethod
     def from_env(cls) -> "WebGPUConfig":
-        raw = envs.VLLM_WEBGPU_MEMORY_FRACTION
-        if raw.lower() == "auto":
-            memory_fraction = None
-        else:
-            try:
-                memory_fraction = float(raw)
-            except ValueError as e:
-                raise ValueError(
-                    f"VLLM_WEBGPU_MEMORY_FRACTION={raw!r} must be 'auto' or a float."
-                ) from e
         return cls(
-            memory_fraction=memory_fraction,
+            memory_fraction=envs.VLLM_WEBGPU_MEMORY_FRACTION,
             power_preference=envs.VLLM_WEBGPU_POWER_PREFERENCE,
         )
 
