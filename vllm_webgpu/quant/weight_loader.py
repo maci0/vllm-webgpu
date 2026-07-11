@@ -844,6 +844,12 @@ def load_safetensors_weights(
                             logger.warning("Int8 scale load failed for %s: %s", base_key, exc)
                         _i8_companion_skip.add(sc_key)
                         break
+                else:
+                    logger.warning(
+                        "Int8 weight %s has no companion scale in checkpoint; "
+                        "USE_QUANT=7 dispatch will produce wrong results",
+                        name,
+                    )
                 return True
             else:
                 return False  # not a plain dtype
