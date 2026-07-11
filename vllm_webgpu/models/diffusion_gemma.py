@@ -405,6 +405,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Q projection: unconditional (KV-shared layers still need Q).
             # K and V projections: skip for KV-shared layers; they reuse the
             # target layer's already-populated cache and never consume these outputs.
+            v_src: "WebGPUBuffer | None" = None
             self._gemm_adaptive(sc["normed"], f"{p}.self_attn.q_proj.weight", sc["q_buf"], hidden, q_dim, num_tokens)
             if not is_kv_shared:
                 self._gemm_adaptive(sc["normed"], f"{p}.self_attn.k_proj.weight", sc["k_buf"], hidden, kv_dim, num_tokens)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import cached_property
+from itertools import chain
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
@@ -8,7 +9,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsLists, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
+    from vllm.v1.outputs import LogprobsLists
 
 logger = init_logger(__name__)
 
@@ -546,7 +548,7 @@ class WebGPUModelRunner:
             raw_bids = req.block_ids
             if not raw_bids:
                 raise RuntimeError(f"req {rid}: scheduler produced NewRequestData with empty block_ids")
-            blk_ids = [bid for group in raw_bids for bid in group]
+            blk_ids = list(chain.from_iterable(raw_bids))
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -691,7 +693,7 @@ class WebGPUModelRunner:
                 # block table entirely; others append newly allocated blocks.
                 cur_new_bids = new_block_ids[i]
                 if cur_new_bids is not None:
-                    flat_new = [bid for group in cur_new_bids for bid in group]
+                    flat_new = list(chain.from_iterable(cur_new_bids))
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.

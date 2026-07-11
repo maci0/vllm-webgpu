@@ -76,17 +76,6 @@ def _flush_pending(wgpu_device) -> None:
     wgpu_device.queue.on_submitted_work_done_sync()
 
 
-def _check_flush(wgpu_device, pending: int) -> int:
-    """Flush pending GPU writes if the threshold is reached; return the new pending count.
-
-    Both load_safetensors_weights and load_mlx_weights use the same threshold guard
-    and reset. Centralising here means threshold or error-handling changes apply once.
-    """
-    if pending >= _FLUSH_THRESHOLD:
-        _flush_pending(wgpu_device)
-        return 0
-    return pending
-
 
 def _upload_tensor(
     arr: "np.ndarray",
@@ -224,19 +213,26 @@ def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("F8
                 logger.warning("Skipping %s (dtype=%s)", name, dt)
 
 
-def detect_weight_format(path: str) -> str:
+def detect_weight_format(path: str) -> "tuple[str, Path | None]":
+    """Return (format_string, index_path) for the given model path.
+
+    index_path is the Path to the safetensors index JSON for sharded models,
+    or None for all other formats. Returning it avoids a second directory scan
+    in load_safetensors_weights_sharded.
+    """
     p = Path(path)
     if p.is_dir():
-        if _ct_find_index(p) is not None:
+        index_path = _ct_find_index(p)
+        if index_path is not None:
             # MLX vs standard sharded detection is deferred to the loader,
             # which already reads the index and can check for .biases keys.
-            return "safetensors_sharded"
+            return "safetensors_sharded", index_path
         # No known safetensors manifest found in directory; default.
-        return "safetensors"
+        return "safetensors", None
     if p.suffix == ".gguf":
-        return "gguf"
+        return "gguf", None
     if p.suffix == ".safetensors":
-        return "safetensors"
+        return "safetensors", None
     if p.suffix == ".bin":
         raise ValueError(
             f"Legacy .bin (PyTorch pickle) format not supported; convert to safetensors first: {path}"
@@ -246,7 +242,7 @@ def detect_weight_format(path: str) -> str:
     with open(p, "rb") as f:
         magic = f.read(4)
     if magic == b"GGUF":
-        return "gguf"
+        return "gguf", None
     raise ValueError(
         f"Unrecognized file format for '{path}' (magic bytes: {magic!r}); "
         f"expected a .safetensors or .gguf file."
@@ -261,6 +257,7 @@ def load_safetensors_weights_sharded(
     skip_prefixes: "frozenset[str] | None" = None,
     quant_cfg: "dict | None" = None,
     scale_transforms: "dict | None" = None,
+    index_path: "Path | None" = None,
 ) -> dict:
     """Load multi-shard safetensors from a directory with model.safetensors.index.json.
 
@@ -268,9 +265,13 @@ def load_safetensors_weights_sharded(
     delegates to load_mlx_weights rather than loading shards as plain safetensors.
     This avoids parsing the index twice (detect_weight_format returns 'safetensors_sharded'
     for both formats and lets this function distinguish them using the already-loaded index).
+
+    index_path: pre-found path to model.safetensors.index.json from detect_weight_format.
+    When None, the directory is scanned again via _ct_find_index (backwards compatibility).
     """
     _check_unsupported_quant(quant_cfg or {})
-    index_path = _ct_find_index(Path(model_dir))
+    if index_path is None:
+        index_path = _ct_find_index(Path(model_dir))
     if index_path is None:
         raise ValueError(f"No safetensors index file found in {model_dir}")
     with open(index_path) as f:
@@ -323,7 +324,7 @@ def load_safetensors_weights_sharded(
             shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys,
             skip_remap=True, weight_transforms=weight_transforms,
             skip_prefixes=skip_prefixes, quant_cfg=quant_cfg,
-            scale_transforms=scale_transforms)
+            scale_transforms=scale_transforms, _already_checked=True)
 
         # load_safetensors_weights guarantees a flush (submit + on_submitted_work_done_sync)
         # before it returns, so no extra flush is needed here.
@@ -449,9 +450,11 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
     auto_gptq embeds its weight/zero unpacking entirely inside each backend's
     forward() method and exposes no standalone CPU dequantization utility.
-    This numpy path is therefore always used. If a suitable public API is added
-    to auto_gptq, add a try-import guard here following the _dequant_mlx_int4
-    pattern.
+    This numpy path is used only for asymmetric GPTQ (non-symmetric zeros or
+    desc-act g_idx). Symmetric GPTQ (qzeros all-8 or absent, no g_idx) is
+    handled on-GPU via the gptq_sym shader path and never calls this function.
+    If a suitable public API is added to auto_gptq, add a try-import guard here
+    following the _dequant_mlx_int4 pattern.
 
     GPTQ packs 8 int4 weights per int32 along the input (K) dimension,
     using standard nibble order [0,1,2,3,4,5,6,7]. Output is (N, K) F16.
@@ -580,6 +583,7 @@ def load_safetensors_weights(
     skip_prefixes: "frozenset[str] | None" = None,
     quant_cfg: "dict | None" = None,
     scale_transforms: "dict | None" = None,
+    _already_checked: bool = False,
 ) -> dict:
     """Load safetensors weights and upload to GPU as F16.
 
@@ -627,7 +631,8 @@ def load_safetensors_weights(
         _raw_quant_cfg = quant_cfg if quant_cfg is not None else (
             _load_quant_cfg(_config_json) if _config_json.exists() else {}
         )
-        _check_unsupported_quant(_raw_quant_cfg)
+        if not _already_checked:
+            _check_unsupported_quant(_raw_quant_cfg)
         if ct_meta is None:
             ct_meta = detect_compressed_tensors_fmt(_config_json, quant_cfg=_raw_quant_cfg)
 
@@ -773,7 +778,9 @@ def load_safetensors_weights(
 
         def _maybe_flush() -> None:
             nonlocal _pending_bytes
-            _pending_bytes = _check_flush(wgpu_device, _pending_bytes)
+            if _pending_bytes >= _FLUSH_THRESHOLD:
+                _flush_pending(wgpu_device)
+                _pending_bytes = 0
 
         def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
             """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
@@ -1504,7 +1511,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
 
     def _maybe_flush() -> None:
         nonlocal _pending_bytes
-        _pending_bytes = _check_flush(wgpu_device, _pending_bytes)
+        if _pending_bytes >= _FLUSH_THRESHOLD:
+            _flush_pending(wgpu_device)
+            _pending_bytes = 0
 
     def _upload_f16(arr: np.ndarray, name: str) -> None:
         """Upload a float16 array to GPU via write_buffer with periodic flushing."""
@@ -1568,10 +1577,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                     processed.discard(sk)
                     processed.discard(bk)
                     arr = _torch_to_f16_numpy(t)
-                    local_key = wk.removeprefix("language_model.")
-                    if weight_transforms and local_key in weight_transforms:
-                        arr = weight_transforms[local_key](arr)
-                    _upload_f16(arr, local_key)
+                    if weight_transforms and wk in weight_transforms:
+                        arr = weight_transforms[wk](arr)
+                    _upload_f16(arr, wk)
                     continue
 
                 s_t = preloaded_scales[base]
@@ -1581,10 +1589,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 biases_f32 = b_t.to(_torch.float32).numpy()
                 dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
                 arr = np.clip(dequant, -_F16_MAX, _F16_MAX).astype(np.float16)
-                local_key = base.removeprefix("language_model.") + ".weight"
-                if weight_transforms and local_key in weight_transforms:
-                    arr = weight_transforms[local_key](arr.astype(np.float32)).astype(np.float16)
-                _upload_f16(arr, local_key)
+                if weight_transforms and wk in weight_transforms:
+                    arr = weight_transforms[wk](arr.astype(np.float32)).astype(np.float16)
+                _upload_f16(arr, wk)
 
     # Stream non-quantized tensors shard-by-shard.
     shard_files = sorted(set(weight_map.values()))
@@ -1602,10 +1609,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                     logger.warning("Unsupported dtype %s for tensor %s, skipping", t.dtype, key)
                     continue
                 arr = _torch_to_f16_numpy(t)
-                local_key = key.removeprefix("language_model.")
-                if weight_transforms and local_key in weight_transforms:
-                    arr = weight_transforms[local_key](arr)
-                _upload_f16(arr, local_key)
+                if weight_transforms and key in weight_transforms:
+                    arr = weight_transforms[key](arr)
+                _upload_f16(arr, key)
 
     # Commit any remaining write_buffer calls before returning.
     _flush_pending(wgpu_device)

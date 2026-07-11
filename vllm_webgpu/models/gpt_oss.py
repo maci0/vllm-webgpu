@@ -268,9 +268,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         The final gelu_mul always writes to msc["expert_act"] so callers are
         unaffected.
         """
-        _bias_key = lambda k: k.removesuffix(".weight") + ".bias"
-        gb_key = _bias_key(gw_key)
-        ub_key = _bias_key(uw_key)
+        gb_key = gw_key.removesuffix(".weight") + ".bias"
+        ub_key = uw_key.removesuffix(".weight") + ".bias"
         g_bias = self.weights.get(gb_key)
         u_bias = self.weights.get(ub_key)
 

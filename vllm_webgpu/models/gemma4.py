@@ -340,13 +340,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         H = self.hidden_size
         V = self.vocab_size
         self._pre: dict[str, "WebGPUBuffer"] = {
-            "ids":      self._make_buf(T * 4),         # [1] uint32 token id
-            "pos":      self._make_buf(T * 4),         # [1] uint32 position
-            "slot_map": self._make_buf(T * 4),         # [1] uint32 physical slot
+            "ids":      self._make_buf(T * 4),         # [T] uint32 token ids
+            "pos":      self._make_buf(T * 4),         # [T] uint32 positions
+            "slot_map": self._make_buf(T * 4),         # [T] uint32 physical slots
             "bt":       self._make_buf(max(4096, cdiv(max_ctx, self.block_size)) * 4),  # block table
-            "x":        self._make_buf(T * H * 4),     # [1, H] f32 residual
-            "norm_out": self._make_buf(T * H * 2),     # [1, H] f16 final norm
-            "logits":   self._make_buf(T * V * 2),     # [1, V] f16 logits
+            "x":        self._make_buf(T * H * 4),     # [T, H] f32 residual
+            "norm_out": self._make_buf(T * H * 2),     # [T, H] f16 final norm
+            "logits":   self._make_buf(T * V * 2),     # [T, V] f16 logits
         }
         if self.softcap is not None and self.softcap > 0:
             self._pre["capped"] = self._make_buf(T * V * 2)  # [1, V] f16 softcapped logits (Gemma4)

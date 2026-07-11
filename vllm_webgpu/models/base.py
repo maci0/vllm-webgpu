@@ -343,24 +343,14 @@ class BaseWebGPUModel(ABC):
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded,
         )
-        fmt = detect_weight_format(path)
+        fmt, _index_path = detect_weight_format(path)
         if fmt == "gguf":
             raise ValueError(
                 f"GGUF format not supported by this plugin. Use the vllm-gguf plugin: {path}"
             )
         transforms = self._weight_transforms
-        # Shared config.json resolution: both safetensors branches use the same
-        # directory (path itself when it is a directory, parent otherwise) and
-        # the same config.json/quant_cfg loading logic. Computing once avoids
-        # the duplication that previously existed in each branch.
         _path = Path(path)
-        _hf_text = getattr(self.model_config, 'hf_text_config', None)
-        _hf_cfg = getattr(self.model_config, 'hf_config', None)
-        _quant_cfg = (
-            getattr(_hf_text, 'quantization_config', None)
-            or getattr(_hf_cfg, 'compression_config', None)
-            or {}
-        )
+        _quant_cfg = getattr(getattr(self.model_config, 'model_arch_config', None), 'quantization_config', None) or {}
         _check_unsupported_quant(quant_cfg=_quant_cfg)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
@@ -376,7 +366,8 @@ class BaseWebGPUModel(ABC):
             self.weights = load_safetensors_weights_sharded(
                 path, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,
-                quant_cfg=_quant_cfg, scale_transforms=scale_transforms)
+                quant_cfg=_quant_cfg, scale_transforms=scale_transforms,
+                index_path=_index_path)
         else:
             raise ValueError(f"Unknown weight format for {path}")
         logger.info("Loaded %d weight tensors (%s format)", len(self.weights), fmt)
