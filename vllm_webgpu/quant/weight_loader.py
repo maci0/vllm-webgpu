@@ -14,7 +14,6 @@ from vllm.logger import init_logger
 # in _load_safetensors_shard will silently skip all tensors. Verify on each vLLM
 # version bump that the function still exists at this path and returns the expected structure.
 from vllm.transformers_utils.utils import parse_safetensors_file_metadata
-from vllm.model_executor.models.utils import WeightsMapper
 
 # AWQ nibble unpack table. AWQ packs channels with interleaved order [0,4,1,5,2,6,3,7],
 # so to extract channel c from a packed int32 the bit offset is inverse_pack[c]*4 where
@@ -210,32 +209,26 @@ def _apply_multimodal_remap(weights: dict) -> int:
     return n_remapped
 
 
-# Prefix mapper for multimodal checkpoints. Handles two conventions:
-#   - Gemma3 MM:   'language_model.X'       -> 'X'
-#   - Qwen3.5 MM:  'model.language_model.X' -> 'model.X'
-_MM_PREFIX_MAPPER = WeightsMapper(
-    orig_to_new_prefix={
-        "model.language_model.": "model.",
-        "language_model.": "",
-    }
-)
-
-
 def _remap_prefixes(d: dict) -> None:
     """Remap multimodal weight-key prefixes in-place.
 
-    Adds remapped keys without removing originals (freeing non-LM GPU buffers
-    causes Metal memory corruption on adjacent embeddings).
+    Handles two conventions:
+      - Gemma3 MM:   'language_model.X'       -> 'X'
+      - Qwen3.5 MM:  'model.language_model.X' -> 'model.X'
 
-    Only inserts the keys that actually changed — apply_dict() returns all keys
-    (remapped and unchanged), causing O(n) redundant re-insertions for a large
-    weights dict. _map_name() is used internally by apply_dict/apply.
+    Adds remapped keys without removing originals (freeing non-LM GPU buffers
+    causes Metal memory corruption on adjacent embeddings). Only inserts keys
+    that actually changed.
     """
-    d.update({
-        new_k: v
-        for k, v in d.items()
-        if (new_k := _MM_PREFIX_MAPPER._map_name(k)) is not None and new_k != k
-    })
+    to_add = {}
+    for k, v in d.items():
+        for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
+            if k.startswith(old_pfx):
+                new_k = new_pfx + k[len(old_pfx):]
+                if new_k not in d:
+                    to_add[new_k] = v
+                break
+    d.update(to_add)
 
 
 def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("F8_E4M3", "U8", "I32")):
