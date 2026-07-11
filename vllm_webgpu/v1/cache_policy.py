@@ -164,7 +164,7 @@ def allocate_kv_from_tensors(
     if _model_layer_types is not None and len(_model_layer_types) == num_total_layers:
         _missing_attn = [
             i for i, lt in enumerate(_model_layer_types)
-            if lt in KV_ATTN_TYPES and i not in layer_kv_bytes
+            if (lt in KV_ATTN_TYPES or lt == 1) and i not in layer_kv_bytes
         ]
         if _missing_attn:
             raise RuntimeError(
