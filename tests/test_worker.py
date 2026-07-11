@@ -21,16 +21,18 @@ def test_worker_instantiates():
 
 
 def test_compute_request_logprobs():
-    """_compute_request_logprobs returns a LogprobsTensors with top-N tokens sorted by log-prob."""
-    from vllm_webgpu.v1.model_runner import _compute_request_logprobs
+    """_extract_logprob_data returns a LogprobsTensors with top-N tokens sorted by log-prob."""
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
 
     vocab = 32
-    logits = np.zeros(vocab, dtype=np.float32)
-    logits[5] = 10.0   # highest logit — should be rank 1 (1-based, vLLM convention)
-    logits[3] = 5.0    # second highest
-    logits[7] = 2.0    # third
+    logits_1d = np.zeros(vocab, dtype=np.float32)
+    logits_1d[5] = 10.0   # highest logit -- should be rank 1 (1-based, vLLM convention)
+    logits_1d[3] = 5.0    # second highest
+    logits_1d[7] = 2.0    # third
+    # _extract_logprob_data expects a 2D array [batch, vocab]
+    logits = logits_1d[np.newaxis]
 
-    result = _compute_request_logprobs(logits, sampled_tok=5, num_logprobs=3)
+    result = WebGPUModelRunner._extract_logprob_data(logits, 0, 5, 3, "test-rid")
     assert result is not None, "should return LogprobsTensors, not None"
 
     # gather_logprobs returns num_logprobs+1 columns: slot 0 = sampled token,
@@ -51,7 +53,7 @@ def test_compute_request_logprobs():
 
 def test_make_model_output_with_logprobs():
     """_make_model_output builds a non-None LogprobsLists when logprob data is supplied."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, ModelRunnerOutput, _compute_request_logprobs
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, ModelRunnerOutput
     try:
         from vllm.v1.outputs import LogprobsLists
     except ImportError:
@@ -64,12 +66,13 @@ def test_make_model_output_with_logprobs():
     runner._last_model_output = None
 
     vocab = 16
-    logits = np.zeros(vocab, dtype=np.float32)
-    logits[2] = 8.0
-    logits[9] = 4.0
-    logits[1] = 1.0
+    logits_1d = np.zeros(vocab, dtype=np.float32)
+    logits_1d[2] = 8.0
+    logits_1d[9] = 4.0
+    logits_1d[1] = 1.0
+    logits = logits_1d[np.newaxis]
 
-    lp_data = _compute_request_logprobs(logits, sampled_tok=2, num_logprobs=2)
+    lp_data = WebGPUModelRunner._extract_logprob_data(logits, 0, 2, 2, "req-1")
 
     out = WebGPUModelRunner._make_model_output(runner, ["req-1"], [2], [lp_data])
     assert out is not None

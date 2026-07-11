@@ -124,7 +124,7 @@ def _build_layer_params_from_config(
 
     lp: list[dict] = []
     for i, lt in enumerate(layer_types):
-        is_kv_shared = (first_kv_shared > 0) and (i >= first_kv_shared)
+        is_kv_shared = i >= first_kv_shared
         inter_l = intermediate_size * (2 if use_dwm and is_kv_shared else 1)
 
         # (2) vLLM gemma4.py L467-474: find last non-shared layer of the same type.

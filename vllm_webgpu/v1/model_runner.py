@@ -96,22 +96,6 @@ def _stack(items: list[LogprobsTensors]) -> LogprobsLists:
     ).tolists()
 
 
-def _compute_request_logprobs(
-    logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
-) -> "LogprobsTensors":
-    """Compute top-N logprobs from a 1-D float32 logits vector.
-
-    Returns a LogprobsTensors of shape [1, num_logprobs+1] for top-k
-    requests (slot 0 is always the sampled token; slots 1..k are the
-    top-k tokens by log probability, matching the layout expected by
-    LogprobsLists). num_logprobs must not exceed vocab_size; SamplingParams
-    validation enforces this via max_logprobs.
-    """
-    lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
-    k = min(num_logprobs, logits_1d.shape[-1])
-    lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
-    return lp
-
 
 def _compute_prompt_logprobs(
     full_logits: "np.ndarray",
@@ -296,6 +280,10 @@ class WebGPUModelRunner:
                     full_kv = global_kv if k_eq_v else default_kv
                     _hd_v = getattr(tc, "head_size_v", None) or global_hd
                     spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd, head_size_v=_hd_v)
+                elif lt == "sliding_attention":
+                    # Treated as full-attention: SlidingWindowSpec is not supported by
+                    # allocate_kv_from_tensors, so we allocate for the full context window.
+                    spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
                 else:
                     spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
         else:
@@ -381,7 +369,7 @@ class WebGPUModelRunner:
         req_ids: list[str],
         sampled: list[int],
         logprobs_data: "Sequence[LogprobsTensors | None]" = (),
-        prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
+        prompt_logprobs_dict: "dict[str, LogprobsTensors | None]" = {},
     ) -> Any:
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
@@ -462,7 +450,9 @@ class WebGPUModelRunner:
         if logits.shape[-1] <= 1:
             logger.warning("req %s: logprobs requested but model returned argmax-only output", rid)
             return None
-        return _compute_request_logprobs(logits[row_idx], tok, num_logprobs)
+        lp_t = Sampler.compute_logprobs(torch.from_numpy(logits[row_idx]).unsqueeze(0))
+        k = min(num_logprobs, logits.shape[-1])
+        return Sampler.gather_logprobs(lp_t, k, torch.tensor([tok], dtype=torch.int64))
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> Any:
         """vLLM >= 0.24 SchedulerOutput format."""

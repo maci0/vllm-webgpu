@@ -199,7 +199,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             self._batch_matmul_supported = False
         else:
             proj_keys = [k for k in self.weights if k.endswith('.weight') and 'model.layers.' in k and '_proj' in k]
-            self._batch_matmul_supported = proj_keys and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
+            self._batch_matmul_supported = bool(proj_keys) and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
 
     def _decode_setup(
         self,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 from functools import partial
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -21,7 +20,7 @@ logger = init_logger(__name__)
 
 # Import-time sentinel: verify the f16 element byte count that _init_mamba_states
 # uses to size conv state buffers. The buffer sizing formula
-#   conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+#   conv_bytes = int(np.prod(conv_shape)) * _ELEM_BYTES["f16"]
 # is hard-coded to f16 because the WGSL shaders are compiled at a fixed precision
 # and cannot switch dtype at runtime. If _ELEM_BYTES is ever refactored, this
 # assertion fires immediately rather than silently under-allocating state buffers.
@@ -524,8 +523,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # state and f32 for the SSM state. These sizes are not configurable
         # via mamba_cache_dtype on the WebGPU path; the shaders are compiled
         # ahead-of-time and cannot switch dtype at runtime.
-        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
-        ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
+        conv_bytes = int(np.prod(conv_shape)) * _ELEM_BYTES["f16"]
+        ssm_bytes  = int(np.prod(ssm_shape))  * _ELEM_BYTES["f32"]
 
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
@@ -986,7 +985,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if cw_key not in self.weights:
                 raise ValueError(f"{cw_key} missing from loaded weights")
             expected = self.conv_dim * self.conv_kernel
-            actual = math.prod(self.weights[cw_key].shape)
+            actual = int(np.prod(self.weights[cw_key].shape))
             if actual != expected:
                 raise ValueError(
                     f"conv1d.weight layer {i}: got {actual} elements, expected {expected}"
