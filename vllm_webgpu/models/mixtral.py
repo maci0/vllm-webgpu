@@ -109,8 +109,16 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         }
 
     def _effective_ctx_len(self, ctx_len: int) -> int:
-        """Cap ctx_len at the sliding window size when SWA is configured."""
-        return min(ctx_len, self._sw) if self._sw is not None else ctx_len
+        """Number of KV pairs the shader reads, starting from START_BLOCK.
+
+        For SWA, ctx_len - START_BLOCK*block_size covers all stored tokens
+        from the first in-window block through the end of the context. The
+        first (ctx_len - sw) % block_size positions in that block fall outside
+        the window, but their attention scores are negligibly low.
+        """
+        if self._sw is not None and ctx_len > self._sw:
+            return ctx_len - self._start_block(ctx_len) * self.block_size
+        return ctx_len
 
     def _start_block(self, ctx_len: int) -> int:
         """First block in the block table that falls inside the SWA window.
