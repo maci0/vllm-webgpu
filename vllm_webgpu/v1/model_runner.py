@@ -511,7 +511,7 @@ class WebGPUModelRunner:
 
             # Extract per-request logprob counts via the stable SamplingParams property.
             sp = req.sampling_params
-            if sp is not None and sp.logprob_token_ids and sp.logprobs is None:
+            if sp is not None and sp.logprob_token_ids:
                 raise NotImplementedError(
                     f"req {rid}: logprob_token_ids without logprobs is not supported on the WebGPU backend; "
                     "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
