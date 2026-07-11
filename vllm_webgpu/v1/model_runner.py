@@ -348,9 +348,16 @@ class WebGPUModelRunner:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
                 continue
             bpb = k_buf.nbytes // self._num_kv_blocks
-            zeros = _zeros_cache.setdefault(bpb, bytes(bpb))
+            zeros = _zeros_cache.get(bpb)
+            if zeros is None:
+                zeros = _zeros_cache[bpb] = bytes(bpb)
             bpb_v = v_buf.nbytes // self._num_kv_blocks
-            zeros_v = zeros if bpb_v == bpb else _zeros_cache.setdefault(bpb_v, bytes(bpb_v))
+            if bpb_v == bpb:
+                zeros_v = zeros
+            else:
+                zeros_v = _zeros_cache.get(bpb_v)
+                if zeros_v is None:
+                    zeros_v = _zeros_cache[bpb_v] = bytes(bpb_v)
             for block_id in block_ids:
                 queue.write_buffer(k_buf.buf, block_id * bpb, zeros)
                 queue.write_buffer(v_buf.buf, block_id * bpb_v, zeros_v)
@@ -370,13 +377,9 @@ class WebGPUModelRunner:
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "list[LogprobsTensors | None] | None" = None,
-        prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
+        logprobs_data: "list[LogprobsTensors | None]" = (),
+        prompt_logprobs_dict: "dict[str, LogprobsTensors | None]" = {},
     ) -> Any:
-        if prompt_logprobs_dict is None:
-            prompt_logprobs_dict = {}
-        if logprobs_data is None:
-            logprobs_data = []
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
@@ -490,6 +493,11 @@ class WebGPUModelRunner:
         prompt_logprobs_dict: dict[str, LogprobsTensors | None] = {}  # req_id -> LogprobsTensors for prefill
 
         # ── Prefill: new requests ──────────────────────────────────────────────
+        # Hoist model capability checks: the model object is fixed after load_model()
+        # and these attributes do not change between requests in the same step.
+        _has_reset = hasattr(self.model, "reset_recurrent_states")
+        _has_save = hasattr(self.model, "save_recurrent_states")
+        _has_replay = hasattr(self.model, "replay_prefix_for_ssm")
         for req in new_reqs:
             rid = req.req_id
             tok_ids = req.prompt_token_ids
@@ -575,7 +583,7 @@ class WebGPUModelRunner:
             # (inside the loop) so that multiple new requests in the same step
             # each get a clean slate rather than inheriting the previous request's
             # post-prefill state.
-            if hasattr(self.model, "reset_recurrent_states"):
+            if _has_reset:
                 self.model.reset_recurrent_states()
 
             last_logits = self.model.forward(
@@ -587,7 +595,7 @@ class WebGPUModelRunner:
             # Save recurrent state so the decode path can restore it before this
             # request's first (and every subsequent) decode step.
             prefill_recurrent_states = None
-            if hasattr(self.model, "save_recurrent_states"):
+            if _has_save:
                 prefill_recurrent_states = self.model.save_recurrent_states()
 
             # Use the last position's logits for the first generated token.
@@ -652,7 +660,7 @@ class WebGPUModelRunner:
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
-                **({"token_history": list(tok_ids) + [first_decode_tok]} if hasattr(self.model, "replay_prefix_for_ssm") else {}),
+                **({"token_history": list(tok_ids) + [first_decode_tok]} if _has_replay else {}),
             }
 
         # ── Decode: cached requests ────────────────────────────────────────────

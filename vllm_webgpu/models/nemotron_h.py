@@ -1162,7 +1162,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         sc = self._sc
         lt = self._layer_types[layer_idx]
         out = sc[_H_NAMES[(self._hstate + 2) % 3]]
-        add_n = num_tokens * self.hidden_size
+        # num_tokens is always 1 at every call site (decode step and per-token
+        # prefill loop), so the multiplication is a no-op. Replace with the
+        # constant to make the invariant explicit. If multi-token dispatch is
+        # ever added, update slot_map buffer sizing and downstream shaders first.
+        add_n = self.hidden_size
 
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # _active_encoder is guaranteed non-None by the outer _batched_dispatch() context.

@@ -8,12 +8,14 @@ import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
 
-from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
 from compressed_tensors import QuantizationConfig as _QuantizationConfig
 from compressed_tensors.quantization import QuantizationType as _QuantizationType
 from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
-from compressed_tensors.utils.safetensors_load import find_safetensors_index_path as _ct_find_index
-from compressed_tensors.utils.safetensors_load import get_safetensors_header as _ct_get_safetensors_header
+from compressed_tensors.utils.safetensors_load import (
+    get_quantization_config as _ct_get_quant_cfg,
+    find_safetensors_index_path as _ct_find_index,
+    get_safetensors_header as _ct_get_safetensors_header,
+)
 
 
 # AWQ nibble unpack table. AWQ packs channels with interleaved order [0,4,1,5,2,6,3,7],

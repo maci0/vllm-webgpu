@@ -57,6 +57,14 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
+# Attributes that compute_yarn_freqs stubs out for YaRNScalingRotaryEmbedding._compute_inv_freq.
+# Defined at module level because this set is a pure constant; defining it inside
+# compute_yarn_freqs would construct a new frozenset on every call.
+_YARN_STUB_ATTRS = frozenset((
+    "base", "rotary_dim", "beta_fast", "beta_slow",
+    "max_position_embeddings", "extrapolation_factor", "truncate",
+))
+
 
 def compute_yarn_freqs(
     head_dim: int,
@@ -123,8 +131,6 @@ def compute_yarn_freqs(
     # _compute_inv_freq. If vLLM adds a new attribute (e.g. self.scaling_factor), the
     # AttributeError fires here rather than silently at the first forward pass.
     import ast as _ast, inspect as _inspect, textwrap as _textwrap
-    _stub_attrs = frozenset(("base", "rotary_dim", "beta_fast", "beta_slow",
-                             "max_position_embeddings", "extrapolation_factor", "truncate"))
     _src = _textwrap.dedent(_inspect.getsource(YaRNScalingRotaryEmbedding._compute_inv_freq))
     _tree = _ast.parse(_src)
     _used_attrs = {
@@ -134,10 +140,11 @@ def compute_yarn_freqs(
         and isinstance(node.value, _ast.Name)
         and node.value.id == "self"
     }
-    _uncovered = _used_attrs - _stub_attrs
+    _uncovered = _used_attrs - _YARN_STUB_ATTRS
     if _uncovered:
         raise AttributeError(
-            f"YaRNScalingRotaryEmbedding._compute_inv_freq now reads self.{_uncovered} "
+            f"YaRNScalingRotaryEmbedding._compute_inv_freq now reads "
+            f"{', '.join(f'self.{a}' for a in sorted(_uncovered))} "
             f"which are absent from the stub in compute_yarn_freqs — update base.py"
         )
     stub = SimpleNamespace(

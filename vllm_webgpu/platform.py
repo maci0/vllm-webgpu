@@ -11,6 +11,8 @@ from vllm.platforms import Platform, PlatformEnum
 
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
 
+import vllm_webgpu.envs as _envs
+
 if TYPE_CHECKING:
     import torch
     from vllm.config import VllmConfig
@@ -135,7 +137,6 @@ class WebGPUPlatform(Platform):
         # detection result is overridden. Mirrors the CPU platform's approach.
         vllm_config.scheduler_config.async_scheduling = False
         if not vllm_config.cache_config.user_specified_block_size:
-            from vllm_webgpu import envs as _envs
             vllm_config.cache_config.block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
 
     @classmethod

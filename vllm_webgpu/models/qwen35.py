@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from itertools import batched, chain
 from typing import TYPE_CHECKING
 
@@ -298,12 +299,16 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                             + hint
                         )
 
-    def _alloc_lin_states(self) -> None:
+    def _alloc_lin_states(self, num_spec: int = 0) -> None:
         """Allocate GPU buffers for persistent GDN recurrent state.
 
         Called after load_weights. Each linear-attention layer gets:
           - SSM state:  [NUM_V_HEADS * K_DIM * V_DIM] f32 (zero-initialized)
-          - Conv state: [(CONV_KERNEL-1) * CONV_DIM] f16 (zero-initialized)
+          - Conv state: [(CONV_KERNEL-1+num_spec) * CONV_DIM] f16 (zero-initialized)
+
+        num_spec: number of speculative tokens (0 = no speculative decoding).
+        When non-zero, the conv buffer grows by num_spec slots to accommodate
+        speculative prefill positions, matching vLLM's gated_delta_net_state_shape.
 
         HuggingFace checkpoints store conv1d weight as [CONV_DIM, 1, KERNEL]
         (standard PyTorch depthwise-conv layout). The GPU shader reads bytes
@@ -312,15 +317,17 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         """
         dev = self.wgpu_device.wgpu_device
 
-        # gdn_state_update.wgsl lays out SSM state as [NUM_V_HEADS, V_DIM, K_DIM] f32,
-        # matching vLLM's gated_delta_net_state_shape convention.
-        #
-        # _lin_conv_dim is derived from gated_delta_net_state_shape in __init__ rather
-        # than re-computed from the config formula, so it is always consistent with the
-        # conv shape. The conv buffer holds (CONV_DIM) * (KERNEL-1) elements; the SSM
-        # buffer holds (NUM_V_HEADS * V_DIM * K_DIM) elements.
-        conv_bytes = self._lin_conv_dim * (self._lin_conv_kernel - 1) * _ELEM_BYTES["f16"]
-        ssm_bytes  = self._lin_v_heads * self._lin_v_dim * self._lin_k_dim * _ELEM_BYTES["f32"]
+        # Use MambaStateShapeCalculator so the formula stays in one canonical place
+        # and any upstream change to the shape definition is automatically reflected here.
+        conv_shape, ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel,
+            num_spec=num_spec,
+        )
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(ssm_shape)  * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}
         self._conv_gpu = {}
@@ -331,7 +338,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, max(ssm_bytes, 8))
             self._conv_gpu[i] = WebGPUBuffer.empty(dev, max(conv_bytes, 8))
 
-    def load_weights(self, path: str) -> None:
+    def load_weights(self, path: str, *, num_spec: int = 0) -> None:
         # A_log and dt_bias are small per-head arrays originally in bf16 but stored
         # as f16. Keeping them as f32 avoids ~3-bit mantissa loss in the decay
         # computation. Pass their checkpoint key names so they are uploaded as f32
@@ -383,7 +390,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             for _gk, _gate_arr in _q_gate_pending.items():
                 self.weights[_gk] = WebGPUBuffer.from_numpy(_dev, _gate_arr)
         self._postprocess_weights()
-        self._alloc_lin_states()
+        self._alloc_lin_states(num_spec=num_spec)
         # Confirm MoE detection against actual weight keys.
         # Check any layer rather than pinning to layer 0.
         has_moe_gate = any(k.endswith(".mlp.gate.weight") for k in self.weights)
@@ -415,11 +422,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         matching gated_delta_net_state_shape. The shader stores state in the same
         layout, so no transposition is needed on readback.
         """
-        bufs: list[tuple[str, int, object]] = []
-        for i, buf in self._conv_gpu.items():
-            bufs.append(("conv", i, buf))
-        for i, buf in self._ssm_gpu.items():
-            bufs.append(("ssm", i, buf))
+        bufs = [("conv", i, b) for i, b in self._conv_gpu.items()] + [("ssm", i, b) for i, b in self._ssm_gpu.items()]
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:

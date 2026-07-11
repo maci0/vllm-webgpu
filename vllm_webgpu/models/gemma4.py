@@ -164,6 +164,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
     logit_returns_token_id: bool = True
 
+    # Number of transformer layers per GPU command-buffer chunk in prefill paths.
+    # Chunking prevents Metal from timing out on very long prefill sequences.
+    # Referenced by both _prefill_batch_forward and _prefill_sequential_fallback
+    # so a single change here applies to both.
+    _PREFILL_CHUNK: int = 4
+
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         if getattr(model_config, 'hidden_size_per_layer_input', 0) > 0:
             raise ValueError(
@@ -668,11 +674,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _rms = self._rms_consts
 
-        _CHUNK   = 4
         _hstate  = 0
         _freq_buf = self._rope_freq_buf
 
-        for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), _CHUNK)):
+        for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), self._PREFILL_CHUNK)):
             with self._batched_dispatch():
                 if chunk_idx == 0:
                     self._dispatch("embedding_lookup_f32",
@@ -1011,8 +1016,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             normed_x = sc["normed"]
             x_buf    = pre["x"]
-            _CHUNK   = 4
-            for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), _CHUNK)):
+            for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), self._PREFILL_CHUNK)):
                 with self._batched_dispatch():
                     if chunk_idx == 0:
                         self._dispatch(
@@ -1107,7 +1111,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 _use_fused_qkv = False
 
-            if _use_fused_qkv and not is_kv_shared:
+            # _use_fused_qkv is already False when is_kv_shared=True (see lines above
+            # that set _use_fused_qkv = False in the else branch covering both
+            # not has_v and is_kv_shared=True), so the second condition is redundant.
+            if _use_fused_qkv:
                 # All f16, non-shared: single fused_qkv dispatch → sc["qkv_buf"] laid out as [Q | K | V].
                 self._dispatch("fused_qkv",
                                [normed_x, self.weights[qw], self.weights[kw], self.weights[vw],
