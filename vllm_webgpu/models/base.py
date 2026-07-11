@@ -341,8 +341,8 @@ class BaseWebGPUModel(ABC):
             )
         transforms = self._weight_transforms
         _path = Path(path)
-        _quant_cfg = getattr(self.model_config, 'quantization_config', None) or {}
-        _check_unsupported_quant(quant_cfg=_quant_cfg)
+        _quant_cfg = getattr(self.model_config, 'quantization_config', None)
+        _check_unsupported_quant(quant_cfg=_quant_cfg or {})
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             actual = str(_path / "model.safetensors") if _path.is_dir() else path
