@@ -822,14 +822,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
                 # Combined post-FFN norm before residual add
                 post_ffw_w = self.weights.get(f"{p}.post_feedforward_layernorm.weight")
-                if post_ffw_w is not None:
-                    self._dispatch("rms_norm", [sc["normed"], post_ffw_w, sc["ffn_out"]], _rms,
-                                   (num_tokens, 1, 1))
-                    combined_normed = sc["ffn_out"]
-                else:
-                    combined_normed = sc["normed"]
-
-                _add_and_scale(combined_normed)
+                if post_ffw_w is None:
+                    raise ValueError(
+                        f"MoE layer {layer_idx} missing post_feedforward_layernorm.weight "
+                        "— vLLM applies this norm unconditionally in Gemma4DecoderLayer.forward; "
+                        "skipping it passes the unnormed combined tensor into the residual add "
+                        "and produces wrong outputs. A correctly loaded checkpoint always has "
+                        "this weight."
+                    )
+                self._dispatch("rms_norm", [sc["normed"], post_ffw_w, sc["ffn_out"]], _rms,
+                               (num_tokens, 1, 1))
+                _add_and_scale(sc["ffn_out"])
         else:
             # Apply post_feedforward_layernorm before residual add, matching vLLM's
             # unconditional application in Gemma4DecoderLayer.forward for all layers.
