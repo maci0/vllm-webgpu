@@ -168,7 +168,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # self._init_rope_freq_buf().
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
-        # Zero-buffer cache for reset_recurrent_states. Reuses the same bytearray
+        # Zero-buffer cache for reset_recurrent_states. Reuses the same bytes
         # objects across resets to avoid allocating ~58 MB of Python heap per reset
         # (27 GDN layers × 2 MB SSM + 49 KB conv each on Qwen3.5-9B).
         # Matches the NemotronHWebGPUModel pattern.

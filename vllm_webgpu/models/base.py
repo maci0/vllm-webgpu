@@ -128,9 +128,11 @@ def compute_yarn_freqs(
     # pre-allocates large position tables. No public vLLM API returns the raw
     # frequencies as a numpy array, so the formula is reproduced here.
     #
-    # VERSION-BUMP CHECKLIST: when upgrading vLLM, diff
-    # yarn_scaling_rope.YaRNScalingRotaryEmbedding._compute_inv_freq (lines
-    # 49-73) against the block below and update accordingly.
+    # VERSION-BUMP CHECKLIST: when upgrading vLLM, run:
+    #   diff <(git show old_tag:vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py) \
+    #        <(git show new_tag:vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py)
+    # and update the block below to match lines 49-73 of yarn_scaling_rope.py
+    # (YaRNScalingRotaryEmbedding._compute_inv_freq) in the new vLLM version.
     pos_freqs = rope_theta ** (
         torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
@@ -216,16 +218,6 @@ class BaseWebGPUModel(ABC):
         Zero-byte buffers are forbidden by the spec.
         """
         return WebGPUBuffer.empty(self.wgpu_device.wgpu_device, max(n, 4))
-
-    @staticmethod
-    def _buf_np_dtype(buf) -> "type":
-        """Return the numpy scalar type matching a WebGPUBuffer's dtype string.
-
-        Covers all five dtypes in active use by the weight loader and shaders
-        (see module-level _WGPU_DTYPE_TO_NP for the full mapping).
-        """
-        dtype = getattr(buf, "dtype", "f16")
-        return _WGPU_DTYPE_TO_NP.get(dtype, np.float16)
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):

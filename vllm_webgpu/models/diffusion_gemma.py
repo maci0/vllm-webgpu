@@ -7,7 +7,7 @@ from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _gemv_wg, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -40,6 +40,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     # forward() returns full float32 logits [num_tokens, vocab], not a (1,1) token ID.
     logit_returns_token_id: bool = False
+    # forward() and _decoder_layer() are fully overridden; lp["scale"] is never read.
+    # Suppresses the O(num_layers) scale computation in the parent __init__.
+    _skip_attn_scale: bool = True
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
@@ -51,12 +54,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                                    getattr(model_config, "expert_intermediate_size",
                                                            model_config.intermediate_size))
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-        # The per-layer "scale" values computed by the parent __init__ are never
-        # consumed here because forward() and _decoder_layer() are fully overridden.
-        # Clear them to avoid holding stale floats in every lp entry for the
-        # lifetime of the model.
-        for _lp_e in self._lp:
-            _lp_e.pop("scale", None)
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
@@ -229,7 +226,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 p = self._layer_key_prefix(i)
                 pes_w = self.weights.get(f"{p}.router.per_expert_scale")
                 if pes_w is not None:
-                    self._pes_cache[i] = pes_w.to_numpy().view(self._buf_np_dtype(pes_w)).astype(np.float32)
+                    self._pes_cache[i] = pes_w.to_numpy().view(_WGPU_DTYPE_TO_NP.get(pes_w.dtype, np.float16)).astype(np.float32)
 
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 

@@ -8,7 +8,7 @@ import numpy as np
 
 from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import BaseWebGPUModel, _gemv_wg, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -91,7 +91,7 @@ def _build_layer_params_from_config(
     vLLM:
 
     (1) first_kv_shared boundary:
-        vLLM vllm/model_executor/models/gemma4.py lines 463, 601
+        vLLM vllm/model_executor/models/gemma4.py line 601 (Gemma4DecoderLayer.__init__)
         ``self.num_layers - getattr(model_config, 'num_kv_shared_layers', 0)``
 
     (2) kv_shared_target reversed-search generator:
@@ -114,7 +114,7 @@ def _build_layer_params_from_config(
     global_kv        = getattr(model_config, "num_global_key_value_heads", default_kv)
     k_eq_v           = getattr(model_config, "attention_k_eq_v", False)
 
-    # (1) vLLM gemma4.py L463/601
+    # (1) vLLM gemma4.py L601 (Gemma4DecoderLayer)
     first_kv_shared = num_layers - getattr(model_config, "num_kv_shared_layers", 0)
     use_dwm = getattr(model_config, "use_double_wide_mlp", False)
 
@@ -198,6 +198,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     Scratch buffers are allocated at maximum dimensions to handle both types.
     """
     _GEMMA_NORM: int  # set per instance in __init__; 1 for gemma3, 0 for gemma4
+    # Subclasses that override forward() and never read lp["scale"] set this to True
+    # to skip the O(num_layers) scale computation in __init__.
+    _skip_attn_scale: bool = False
 
     # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
     logit_returns_token_id: bool = True
@@ -342,12 +345,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Gemma3 / uniform configs: scale = (query_pre_attn_scalar or head_dim) ** -0.5.
         # head_dim differs between local and global layers for Gemma4, so it must come
         # from the per-layer entry rather than a model-level attribute.
-        for _lp_e in self._lp:
-            if self._apply_v_norm:
-                _lp_e["scale"] = 1.0
-            else:
-                _scalar = _query_pre_attn_scalar
-                _lp_e["scale"] = (_scalar if _scalar is not None else _lp_e["head_dim"]) ** -0.5
+        # Skipped for subclasses (e.g. DiffusionGemmaWebGPUModel) that never read lp["scale"].
+        if not self._skip_attn_scale:
+            for _lp_e in self._lp:
+                if self._apply_v_norm:
+                    _lp_e["scale"] = 1.0
+                else:
+                    _scalar = _query_pre_attn_scalar
+                    _lp_e["scale"] = (_scalar if _scalar is not None else _lp_e["head_dim"]) ** -0.5
 
         # Register q_norm/k_norm tiling transforms so load_weights tiles at upload time,
         # avoiding a GPU roundtrip (to_numpy → tile → re-upload) per weight per layer.
@@ -452,7 +457,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             p = self._layer_key_prefix(i)
             ls_buf = self.weights.get(f"{p}.layer_scalar")
             if ls_buf is not None:
-                self._layer_scales.append(ls_buf.to_numpy().view(self._buf_np_dtype(ls_buf)).item())
+                self._layer_scales.append(ls_buf.to_numpy().view(_WGPU_DTYPE_TO_NP.get(ls_buf.dtype, np.float16)).item())
             else:
                 self._layer_scales.append(1.0)
 
@@ -696,10 +701,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _rms = self._rms_consts
 
-        def gemm_batch(x_b: "WebGPUBuffer", w_key: str,
-                       out_b: "WebGPUBuffer", K_in: int, N_out: int) -> None:
-            self._batch_gemm(x_b, w_key, out_b, K_in, N_out, T)
-
         _CHUNK   = 4
         _hstate  = 0
         _freq_buf = self._rope_freq_buf
@@ -744,13 +745,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
                     # QKV projections (always separate in batch path — no fused_qkv).
                     # For KV-shared layers only Q is used; K and V come from the target cache.
-                    gemm_batch(normed_x, qw, b["q_buf"], hidden, q_dim)
+                    self._batch_gemm(normed_x, qw, b["q_buf"], hidden, q_dim, T)
                     if not is_kv_shared:
                         kw = f"{p}.self_attn.k_proj.weight"
-                        gemm_batch(normed_x, kw, b["k_buf"], hidden, kv_dim)
+                        self._batch_gemm(normed_x, kw, b["k_buf"], hidden, kv_dim, T)
                         if has_v:
-                            gemm_batch(normed_x, f"{p}.self_attn.v_proj.weight",
-                                       b["v_buf"], hidden, kv_dim)
+                            self._batch_gemm(normed_x, f"{p}.self_attn.v_proj.weight",
+                                       b["v_buf"], hidden, kv_dim, T)
                             v_src = b["v_buf"]
                         else:
                             v_src = b["k_buf"]   # global attention: V = K (pre-RoPE)
@@ -883,8 +884,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         (self.num_q_heads, T, 1))
 
                     # Output projection (batch GEMM)
-                    gemm_batch(b["attn_out"], f"{p}.self_attn.o_proj.weight",
-                               b["o_proj"], q_dim, hidden)
+                    self._batch_gemm(b["attn_out"], f"{p}.self_attn.o_proj.weight",
+                               b["o_proj"], q_dim, hidden, T)
 
                     # Post-attention norm + residual add + pre-FFN norm.
                     # Gemma4 correct sublayer order:
@@ -921,8 +922,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     # FFN gate + up projections (batch GEMM) + tanh-GELU activation
                     gw_k = f"{p}.mlp.gate_proj.weight"
                     uw_k = f"{p}.mlp.up_proj.weight"
-                    gemm_batch(ffn_normed, gw_k, b["gate_buf"], hidden, inter)
-                    gemm_batch(ffn_normed, uw_k, b["up_buf"],   hidden, inter)
+                    self._batch_gemm(ffn_normed, gw_k, b["gate_buf"], hidden, inter, T)
+                    self._batch_gemm(ffn_normed, uw_k, b["up_buf"],   hidden, inter, T)
                     self._dispatch(
                         "gelu_mul",
                         [b["gate_buf"], b["up_buf"], b["ffn_act"]],
@@ -931,8 +932,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         shader_subdir="gemma")
 
                     # FFN down projection (batch GEMM)
-                    gemm_batch(b["ffn_act"], f"{p}.mlp.down_proj.weight",
-                               b["ffn_out"], inter, hidden)
+                    self._batch_gemm(b["ffn_act"], f"{p}.mlp.down_proj.weight",
+                               b["ffn_out"], inter, hidden, T)
 
                     # Post-FFN norm + residual add (+ pre-norm for next layer if not last)
                     post_ffw_w = self.weights.get(
