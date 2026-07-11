@@ -35,8 +35,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
     # Sliding-window size (set by MixtralWebGPUModel); None means full attention.
     _sw: int | None = None
-    # Force sequential prefill without changing _effective_ctx_len semantics (set by GptOssWebGPUModel).
-    _force_sequential_prefill: bool = False
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         super().__init__(model_config, wgpu_device, pipeline_cache)
@@ -419,10 +417,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # MixtralWebGPUModel). flash_attn_prefill applies standard causal masking
         # and has no WINDOW_SIZE constant, so batch prefill would attend across the
         # full context and produce wrong attention beyond the window.
-        # _force_sequential_prefill is a separate flag (set by GptOssWebGPUModel)
-        # that requests the sequential path without touching _sw, keeping
-        # _effective_ctx_len semantics correct.
-        if self._force_sequential_prefill or self._sw is not None:
+        if self._sw is not None:
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T,
             )
@@ -629,7 +624,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
     ) -> "np.ndarray":
         """Process T prefill tokens one at a time through the decode-path infrastructure.
 
-        Used in three cases:
+        Used in two cases:
         1. Unsupported quant type for matmul_quant_mr4: USE_QUANT=0 (f16) and USE_QUANT=3
            (GPTQ INT4) are supported in the batch path; all other types (AWQ, FP8, NF4,
            Q4_K, ...) fall through here so _transformer_layer can dispatch the correct
@@ -637,8 +632,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         2. Sliding-window attention (_sw is not None): flash_attn_prefill uses standard
            causal masking with no WINDOW_SIZE support, so batch prefill would attend across
            the full context past the window boundary.
-        3. Forced sequential mode (_force_sequential_prefill=True): set by GptOssWebGPUModel
-           to request the sequential path without altering _effective_ctx_len semantics.
 
         KV entries are stored token-by-token so causal attention is satisfied at each step.
         Only the last token's logits are returned (prefill next-token prediction).

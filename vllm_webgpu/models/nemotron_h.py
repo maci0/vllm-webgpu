@@ -1,5 +1,5 @@
 from __future__ import annotations
-import functools
+from functools import partial
 import math
 from typing import TYPE_CHECKING
 
@@ -256,7 +256,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _hf_p = f"backbone.layers.{_i}.mixer"
                 for _proj in ("q", "k", "v"):
                     self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
-                        functools.partial(dict.__setitem__, _acc, _proj)
+                        partial(dict.__setitem__, _acc, _proj)
                     )
 
         # The WebGPU MLP path does not implement bias addition. All known

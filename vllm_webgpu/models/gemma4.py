@@ -202,7 +202,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Hoisted per-model constants for the attention SCALE computation.
         # Both attributes are fixed at construction time; evaluating them per layer
         # (48 layers x N chunks per prefill) is unnecessary work.
-        self._query_pre_attn_scalar: "float | None" = (
+        _query_pre_attn_scalar: float | None = (
             None if self._apply_v_norm
             else getattr(model_config, "query_pre_attn_scalar", None)
         )
@@ -314,7 +314,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             if self._apply_v_norm:
                 _lp_e["scale"] = 1.0
             else:
-                _scalar = self._query_pre_attn_scalar
+                _scalar = _query_pre_attn_scalar
                 _lp_e["scale"] = (_scalar if _scalar is not None else _lp_e["head_dim"]) ** -0.5
 
         # Register q_norm/k_norm tiling transforms so load_weights tiles at upload time,

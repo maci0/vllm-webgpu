@@ -465,7 +465,7 @@ class WebGPUModelRunner:
             self._req_state.pop(rid, None)
         preempted = scheduler_output.preempted_req_ids
         if preempted:
-            resumed = getattr(scheduler_output.scheduled_cached_reqs, "resumed_req_ids", set()) or set()
+            resumed = scheduler_output.scheduled_cached_reqs.resumed_req_ids
             for rid in preempted:
                 if rid not in resumed:
                     self._req_state.pop(rid, None)

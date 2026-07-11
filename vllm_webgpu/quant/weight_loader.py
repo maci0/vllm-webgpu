@@ -1277,17 +1277,20 @@ def load_safetensors_weights(
             # Collect (base, weight_key) pairs for all I32 packed weight tensors.
             # Canonical compressed-tensors saves as .weight_packed; some checkpoints use .weight.
             _ct_base_map = {}  # base -> weight_key
+            # Two-pass selection so .weight_packed always wins over .weight
+            # regardless of safetensors header iteration order.
             for _k in header:
-                if header[_k].get("dtype") != "I32":
+                if header[_k].get("dtype") != "I32" or not _k.endswith(".weight_packed"):
                     continue
-                if _k.endswith(".weight_packed"):
-                    _base = _k.removesuffix(".weight_packed")
-                    if _base + ".weight_scale" in header:
-                        _ct_base_map.setdefault(_base, _k)
-                elif _k.endswith(".weight"):
-                    _base = _k.removesuffix(".weight")
-                    if _base + ".weight_scale" in header:
-                        _ct_base_map.setdefault(_base, _k)
+                _base = _k.removesuffix(".weight_packed")
+                if _base + ".weight_scale" in header:
+                    _ct_base_map[_base] = _k
+            for _k in header:
+                if header[_k].get("dtype") != "I32" or not _k.endswith(".weight"):
+                    continue
+                _base = _k.removesuffix(".weight")
+                if _base + ".weight_scale" in header:
+                    _ct_base_map.setdefault(_base, _k)
             ct_bases = sorted(_ct_base_map)
             ct_reserved = set()
             for _b in ct_bases:
