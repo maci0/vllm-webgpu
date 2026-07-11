@@ -126,11 +126,19 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._is_moe: bool = self._moe_num_experts > 0 and self._moe_k > 0
         # GEMMA_NORM=1 for Gemma safetensors (weights are deviations from 1, mean≈0.2).
         # GEMMA_NORM=0 for standard RMSNorm (weights absolute, mean≈1.0 — MLX format).
-        # Determined from the model config: standard HuggingFace Qwen3.5 checkpoints
-        # set rms_norm_type="gemma" to indicate the deviation format; MLX checkpoints
-        # do not set this field and store absolute weights instead.
+        #
+        # vLLM's reference implementation (qwen3_5.py) imports GemmaRMSNorm and uses it
+        # unconditionally for every layer norm with no config check. rms_norm_type is not
+        # a declared field of Qwen3_5TextConfig — it only materialises if the HF config.json
+        # supplies it via **kwargs. Standard HF safetensors checkpoints may omit it entirely,
+        # which previously caused _gemma_norm to silently fall to 0 and produce wrong outputs
+        # (weights are deviations from 1 with mean≈0.2, not absolute values).
+        #
+        # Fix: treat absent rms_norm_type as Gemma (matching vLLM's unconditional default).
+        # Only opt out to GEMMA_NORM=0 for checkpoints that explicitly signal a non-Gemma
+        # format via a field vLLM itself reads, such as a dedicated MLX-format indicator.
         _rms_norm_type = getattr(model_config, "rms_norm_type", None)
-        self._gemma_norm: int = 1 if _rms_norm_type == "gemma" else 0
+        self._gemma_norm: int = 0 if _rms_norm_type not in ("gemma", None) else 1
 
         # GDN_BF16: when set, GDN projection matmuls use bf16-preserved weight buffers
         # (key + "__bf16") instead of the default f16 version. Falls back silently if
