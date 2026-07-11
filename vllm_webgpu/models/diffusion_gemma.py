@@ -168,6 +168,18 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         }
         self._hstate: int = 0
 
+    # ── Parent path guards ───────────────────────────────────────────────────
+
+    def _prefill_sequential_fallback(self, *args, **kwargs):
+        raise NotImplementedError(
+            "DiffusionGemma uses _decoder_layer; _prefill_sequential_fallback is not supported"
+        )
+
+    def _prefill_batch_forward(self, *args, **kwargs):
+        raise NotImplementedError(
+            "DiffusionGemma uses _decoder_layer; _prefill_batch_forward is not supported"
+        )
+
     # ── Weight key helpers ───────────────────────────────────────────────────
 
     def _layer_key_prefix(self, layer_idx: int) -> str:
