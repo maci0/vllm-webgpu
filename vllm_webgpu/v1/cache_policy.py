@@ -9,6 +9,7 @@ from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (FullAttentionSpec,
                                          KVQuantMode,
                                          MLAAttentionSpec,
+                                         SinkFullAttentionSpec,
                                          SlidingWindowMLASpec,
                                          SlidingWindowSpec,
                                          TQFullAttentionSpec,
@@ -123,6 +124,14 @@ def allocate_kv_from_tensors(
                     "TQFullAttentionSpec overrides real_page_size_bytes with a tq_slot_size-based formula "
                     "that differs from the standard block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes. "
                     "Allocating with head_size/head_size_v would produce wrong buffer sizes."
+                )
+            elif isinstance(spec, SinkFullAttentionSpec):
+                raise NotImplementedError(
+                    f"SinkFullAttentionSpec KV cache is not supported by the WebGPU backend. "
+                    "SinkFullAttentionSpec is used by StaticSinkAttention models that require "
+                    "sink-token pinning during attention computation. Buffer sizes would be "
+                    "allocated correctly, but the WebGPU attention kernel does not implement "
+                    "sink-token logic, producing silently wrong output."
                 )
             elif isinstance(spec, FullAttentionSpec):
                 if spec.kv_quant_mode != KVQuantMode.NONE:
