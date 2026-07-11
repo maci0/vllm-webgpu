@@ -175,6 +175,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             (num_tokens, self.num_kv_heads, 1),
         )
 
+        is_full = (layer_idx < len(self._layer_types)
+                   and self._layer_types[layer_idx] == "full_attention")
         self._dispatch(
             "flash_attn_decode",
             [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
@@ -183,7 +185,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
              "NUM_KV_HEADS": self.num_kv_heads,
              "HEAD_DIM": self.head_dim,
              "CTX_LEN": eff,
-             "START_BLOCK": self._start_block(ctx_len)},
+             "START_BLOCK": 0 if is_full else self._start_block(ctx_len)},
             (self.num_q_heads, 1, 1),
         )
 
