@@ -271,9 +271,10 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
                 _gemv_wg(inter),
             )
-            assert inter % 4 == 0, (
-                f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
-            )
+            if inter % 4 != 0:
+                raise ValueError(
+                    f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
+                )
             self._dispatch(
                 "gelu_mul",
                 [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
