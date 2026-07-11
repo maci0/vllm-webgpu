@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     VLLM_WEBGPU_MEMORY_FRACTION: "float | None" = None
     VLLM_WEBGPU_POWER_PREFERENCE: str = "high-performance"
     VLLM_WEBGPU_BLOCK_SIZE: int = 16
+    GDN_BF16: bool = False
 
 environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_WEBGPU_MEMORY_FRACTION": lambda: _parse_memory_fraction(os.getenv("VLLM_WEBGPU_MEMORY_FRACTION", "auto")),

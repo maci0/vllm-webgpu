@@ -285,9 +285,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Matches Gemma4RotaryEmbedding._compute_inv_freq which uses head_size as
             # denominator regardless of partial_rotary_factor.
             _freq_dim   = _hd if _rope_type == "proportional" else _rotary_dim
-            # Cache rope_base and rotary_dim in _lp for reference.
-            _lp_e["rope_base"]  = _rope_base
-            _lp_e["rotary_dim"] = _rotary_dim
             self._rope_consts.append({
                 "ROPE_BASE":    _rope_base,
                 "LN_ROPE_BASE": math.log(_rope_base),
@@ -1295,16 +1292,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         "a corrupt checkpoint"
                     )
 
-                if pre_ffn_norm_w is not None:
-                    self._dispatch("add_f32_rms_norm",
-                                   [x_buf, attn_delta, pre_ffn_norm_w, residual, sc["normed"]],
-                                   _rms, (num_tokens, 1, 1))
-                    ffn_normed = sc["normed"]
-                else:
-                    raise ValueError(
-                        f"Layer {layer_idx} missing pre_feedforward_layernorm.weight "
-                        "— f32 residual cannot be fed to f16 FFN projection"
-                    )
+                raise ValueError(
+                    f"Layer {layer_idx} missing pre_feedforward_layernorm.weight "
+                    "— f32 residual cannot be fed to f16 FFN projection"
+                )
 
             # Gate + up projection
             # Fused gate+up (f16 only); Gemma uses tanh-GELU.

@@ -22,7 +22,7 @@ def test_worker_instantiates():
 
 def test_compute_request_logprobs():
     """_compute_request_logprobs returns a LogprobsTensors with top-N tokens sorted by log-prob."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
+    from vllm_webgpu.v1.model_runner import _compute_request_logprobs
 
     vocab = 32
     logits = np.zeros(vocab, dtype=np.float32)
@@ -30,7 +30,7 @@ def test_compute_request_logprobs():
     logits[3] = 5.0    # second highest
     logits[7] = 2.0    # third
 
-    result = WebGPUModelRunner._compute_request_logprobs(logits, sampled_tok=5, num_logprobs=3)
+    result = _compute_request_logprobs(logits, sampled_tok=5, num_logprobs=3)
     assert result is not None, "should return LogprobsTensors, not None"
 
     # gather_logprobs returns num_logprobs+1 columns: slot 0 = sampled token,
@@ -51,7 +51,7 @@ def test_compute_request_logprobs():
 
 def test_make_model_output_with_logprobs():
     """_make_model_output builds a non-None LogprobsLists when logprob data is supplied."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, ModelRunnerOutput
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, ModelRunnerOutput, _compute_request_logprobs
     try:
         from vllm.v1.outputs import LogprobsLists
     except ImportError:
@@ -69,7 +69,7 @@ def test_make_model_output_with_logprobs():
     logits[9] = 4.0
     logits[1] = 1.0
 
-    lp_data = WebGPUModelRunner._compute_request_logprobs(logits, sampled_tok=2, num_logprobs=2)
+    lp_data = _compute_request_logprobs(logits, sampled_tok=2, num_logprobs=2)
 
     out = WebGPUModelRunner._make_model_output(runner, ["req-1"], [2], [lp_data])
     assert out is not None
@@ -97,7 +97,7 @@ def test_make_model_output_no_logprobs():
 
 def test_compute_prompt_logprobs():
     """_compute_prompt_logprobs returns LogprobsTensors with correct shape."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
+    from vllm_webgpu.v1.model_runner import _compute_prompt_logprobs
 
     try:
         from vllm.v1.outputs import LogprobsTensors
@@ -117,7 +117,7 @@ def test_compute_prompt_logprobs():
     tok_ids = list(range(T + 1))  # prompt tokens [0..T]
     num_prompt_logprobs = 2
 
-    result = WebGPUModelRunner._compute_prompt_logprobs(full_logits, tok_ids[:T], num_prompt_logprobs)
+    result = _compute_prompt_logprobs(full_logits, tok_ids[:T], num_prompt_logprobs)
 
     assert result is not None
     # Shape: [T-1, num_prompt_logprobs+1]
@@ -132,7 +132,7 @@ def test_compute_prompt_logprobs():
 
 def test_compute_prompt_logprobs_short_sequence():
     """_compute_prompt_logprobs returns None for sequences shorter than 2 tokens."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
+    from vllm_webgpu.v1.model_runner import _compute_prompt_logprobs
 
     try:
         from vllm.v1.outputs import LogprobsTensors
@@ -143,7 +143,7 @@ def test_compute_prompt_logprobs_short_sequence():
         pytest.skip("vllm not available")
 
     # Single-token prompt: no valid position to compute prompt logprobs
-    result = WebGPUModelRunner._compute_prompt_logprobs(
+    result = _compute_prompt_logprobs(
         np.zeros((1, 32), dtype=np.float32), [5], 2
     )
     assert result is None

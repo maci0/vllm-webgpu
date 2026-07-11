@@ -20,7 +20,6 @@ from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from vllm.tasks import SupportedTask
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -79,6 +78,66 @@ def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache:
         f"Architecture {arch!r} is not supported. "
         f"Supported: {sorted(ARCH_MAP)}"
     )
+
+
+def _compute_request_logprobs(
+    logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
+) -> "LogprobsTensors":
+    """Compute top-N logprobs from a 1-D float32 logits vector.
+
+    Returns a LogprobsTensors of shape [1, num_logprobs+1] for top-k
+    requests (slot 0 is always the sampled token; slots 1..k are the
+    top-k tokens by log probability, matching the layout expected by
+    LogprobsLists). num_logprobs must not exceed vocab_size; SamplingParams
+    validation enforces this via max_logprobs.
+    """
+    lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
+    k = min(num_logprobs, logits_1d.shape[-1])
+    lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
+    return lp
+
+
+def _compute_prompt_logprobs(
+    full_logits: "np.ndarray",
+    tok_ids: "list[int]",
+    num_prompt_logprobs: int,
+) -> "LogprobsTensors | None":
+    """Compute per-position prompt logprobs for a prefill pass.
+
+    For T prompt tokens, produces T-1 rows: row i uses full_logits[i]
+    to evaluate the probability of tok_ids[i+1].  Returns a
+    LogprobsTensors of shape [T-1, min(num_prompt_logprobs, vocab_size)+1].
+    k is capped at vocab_size. Returns None when T < 2 or the logits
+    buffer has fewer rows than prompt positions need.
+    """
+    T = len(tok_ids)
+    if T < 2:
+        return None
+
+    num_positions = T - 1
+
+    # Guard: the model may return only the last token's logits (shape
+    # [1, vocab]) even during a multi-token prefill.  In that case we
+    # cannot reconstruct per-position distributions and must bail out
+    # rather than letting the subsequent row-index into a 1-row array
+    # raise IndexError.
+    if full_logits.shape[0] < num_positions:
+        logger.warning(
+            "prompt_logprobs: logits buffer has %d rows but %d prompt "
+            "positions need coverage; skipping (model returns "
+            "last-token-only logits for this prefill length)",
+            full_logits.shape[0],
+            num_positions,
+        )
+        return None
+
+    if num_prompt_logprobs < 0:
+        num_prompt_logprobs = full_logits.shape[-1]
+    k = min(num_prompt_logprobs, full_logits.shape[-1])
+
+    lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
+    lp = Sampler.gather_logprobs(lp_t, k, torch.tensor(tok_ids[1:], dtype=torch.int64))
+    return lp
 
 
 class WebGPUModelRunner:
@@ -290,75 +349,18 @@ class WebGPUModelRunner:
             return EMPTY_MODEL_RUNNER_OUTPUT
         return self._execute_model_v2(scheduler_output)
 
-    @staticmethod
-    def _compute_request_logprobs(
-        logits_1d: "np.ndarray", sampled_tok: int, num_logprobs: int
-    ) -> "LogprobsTensors":
-        """Compute top-N logprobs from a 1-D float32 logits vector.
-
-        Returns a LogprobsTensors of shape [1, num_logprobs+1] for top-k
-        requests (slot 0 is always the sampled token; slots 1..k are the
-        top-k tokens by log probability, matching the layout expected by
-        LogprobsLists). num_logprobs must not exceed vocab_size; SamplingParams
-        validation enforces this via max_logprobs.
-        """
-        lp_t = Sampler.compute_logprobs(torch.from_numpy(logits_1d).unsqueeze(0))
-        k = min(num_logprobs, logits_1d.shape[-1])
-        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor([sampled_tok], dtype=torch.int64))
-        return lp
-
-    @staticmethod
-    def _compute_prompt_logprobs(
-        full_logits: "np.ndarray",
-        tok_ids: "list[int]",
-        num_prompt_logprobs: int,
-    ) -> "LogprobsTensors | None":
-        """Compute per-position prompt logprobs for a prefill pass.
-
-        For T prompt tokens, produces T-1 rows: row i uses full_logits[i]
-        to evaluate the probability of tok_ids[i+1].  Returns a
-        LogprobsTensors of shape [T-1, min(num_prompt_logprobs, vocab_size)+1].
-        k is capped at vocab_size. Returns None when T < 2 or the logits
-        buffer has fewer rows than prompt positions need.
-        """
-        T = len(tok_ids)
-        if T < 2:
-            return None
-
-        num_positions = T - 1
-
-        # Guard: the model may return only the last token's logits (shape
-        # [1, vocab]) even during a multi-token prefill.  In that case we
-        # cannot reconstruct per-position distributions and must bail out
-        # rather than letting the subsequent row-index into a 1-row array
-        # raise IndexError.
-        if full_logits.shape[0] < num_positions:
-            logger.warning(
-                "prompt_logprobs: logits buffer has %d rows but %d prompt "
-                "positions need coverage; skipping (model returns "
-                "last-token-only logits for this prefill length)",
-                full_logits.shape[0],
-                num_positions,
-            )
-            return None
-
-        if num_prompt_logprobs < 0:
-            num_prompt_logprobs = full_logits.shape[-1]
-        k = min(num_prompt_logprobs, full_logits.shape[-1])
-
-        lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
-        lp = Sampler.gather_logprobs(lp_t, k, torch.tensor(tok_ids[1:], dtype=torch.int64))
-        return lp
-
     def _make_model_output(
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "Sequence[LogprobsTensors | None]" = (),
+        logprobs_data: "list[LogprobsTensors | None] | None" = None,
         prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
     ) -> Any:
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
+
+        if logprobs_data is None:
+            logprobs_data = []
 
         # Build LogprobsLists for top-k sampled-token logprob entries.
         # One row per request in the batch (matching req_id_to_index), so that
@@ -373,7 +375,7 @@ class WebGPUModelRunner:
             widths = [d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None]
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
-            if len(set(widths)) == 1 and len(widths) == len(logprobs_data):
+            if all(d is not None for d in logprobs_data) and len(set(widths)) == 1:
                 stacked = LogprobsTensors(
                     torch.cat([d.logprob_token_ids for d in logprobs_data]),
                     torch.cat([d.logprobs for d in logprobs_data]),
@@ -446,7 +448,7 @@ class WebGPUModelRunner:
         if logits.shape[-1] <= 1:
             logger.warning("req %s: logprobs requested but model returned argmax-only output", rid)
             return None
-        return WebGPUModelRunner._compute_request_logprobs(logits[row_idx], tok, num_logprobs)
+        return _compute_request_logprobs(logits[row_idx], tok, num_logprobs)
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> Any:
         """vLLM >= 0.24 SchedulerOutput format."""
@@ -614,7 +616,7 @@ class WebGPUModelRunner:
                 if last_logits.shape[-1] > 1:  # full [T, vocab] logits
                     # Pass only the token window so full_logits[i] and
                     # tok_ids_param[i+1] stay aligned regardless of num_computed.
-                    pt = self._compute_prompt_logprobs(
+                    pt = _compute_prompt_logprobs(
                         last_logits,
                         tok_ids[num_computed:num_computed + T + 1],
                         num_prompt_logprobs,

@@ -113,6 +113,7 @@ def allocate_kv_from_tensors(
             # k_bytes + v_bytes == real_page_size_bytes * num_blocks by construction:
             # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes,
             # and storage_bs == block_size for FullAttentionSpec (storage_block_size returns self.block_size).
+            assert k_bytes + v_bytes == num_blocks * spec.real_page_size_bytes
         elif isinstance(spec, SlidingWindowMLASpec):
             raise NotImplementedError(
                 f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
@@ -194,7 +195,9 @@ def get_layer_types(model, hf_config) -> list | None:
 
 
 def _get_weight_memory_usage(worker: "WebGPUWorker") -> int:
-    """Sum of weight buffer sizes in bytes (excludes scratch/dummy/rope buffers)."""
+    """Sum of weight buffer sizes in bytes. The isinstance guard excludes the
+    "__quant_meta__" dict entry that the quantized weight loader stores in
+    model.weights alongside real buffers."""
     model = worker.model_runner.model if worker.model_runner is not None else None
     if model is None:
         return 0
