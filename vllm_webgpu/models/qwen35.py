@@ -271,8 +271,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                         if uq != 0:
                             hint = "Pre-split the q_proj tensor before quantizing."
                         else:
-                            hint = ("Load an fp16 checkpoint, or pre-split the "
-                                    "q_proj tensor before quantizing.")
+                            hint = (
+                                "The CPU-side split transform for q_proj.weight did not fire; "
+                                "verify that load_weights registered _make_split for this layer "
+                                "and that the base loader's weight_transforms path was reached."
+                            )
                         raise ValueError(
                             f"Layer {i}: q_gate_proj.weight is missing but "
                             f"q_proj.weight has shape {buf.shape}, which matches "

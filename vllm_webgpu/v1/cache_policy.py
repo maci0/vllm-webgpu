@@ -8,6 +8,7 @@ from vllm.utils.mem_utils import get_cpu_memory
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (FullAttentionSpec,
                                          KVCacheGroupSpec,
+                                         KVCacheTensor,
                                          KVQuantMode,
                                          MLAAttentionSpec,
                                          SlidingWindowMLASpec,
@@ -18,6 +19,8 @@ OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
 MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
 
 if TYPE_CHECKING:
+    import wgpu
+    from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.v1.worker import WebGPUWorker
 
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -33,9 +36,9 @@ KV_ATTN_TYPES: frozenset[str] = frozenset(
 
 
 def allocate_kv_from_tensors(
-    wgpu_device,
-    model,
-    kv_cache_tensors,
+    wgpu_device: "wgpu.GPUDevice",
+    model: "BaseWebGPUModel | None",
+    kv_cache_tensors: list[KVCacheTensor],
     num_blocks: int,
     num_total_layers: int,
     kv_cache_groups: list[KVCacheGroupSpec],

@@ -21,13 +21,13 @@ logger = init_logger(__name__)
 class LlamaWebGPUModel(BaseWebGPUModel):
     """
     Handles Llama 3.x and Qwen 2.5/3.x (architecturally identical).
-    Layer order per token:
+    Fused dispatch sequence per token:
       embedding_lookup
-      -> N x (rms_norm -> qkv_proj -> fused_per_head_norm_rope ->
-              kv_cache_store -> attn_score -> softmax -> attn_output ->
-              o_proj -> add -> rms_norm -> gate_proj + up_proj ->
-              gelu_mul -> down_proj -> add)
-      -> rms_norm -> lm_head -> logits
+      -> N x (add_rms_norm -> fused_qkv -> fused_qk_norm_rope ->
+              kv_cache_store_both -> flash_attn_decode ->
+              matmul_quant(o_proj) -> add_rms_norm ->
+              fused_gate_act -> matmul_quant(down_proj) -> add_rms_norm)
+      -> rms_norm -> matmul_quant(lm_head) -> argmax_f16
     """
 
     # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.

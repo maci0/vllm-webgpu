@@ -132,7 +132,7 @@ def compute_yarn_freqs(
     inv_freq = (
         inv_freq_interpolation * (1 - inv_freq_mask)
         + inv_freq_extrapolation * inv_freq_mask
-    ).numpy().astype(np.float32)
+    ).numpy()
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling

@@ -132,6 +132,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         H = self.hidden_size
         I = self._max_inter
         NQ = self.num_q_heads
+        self._scores_max_ctx = max_ctx
 
         self._init_pre_buffers(max_ctx)
 
@@ -149,7 +150,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # scores_buf and sm_buf are DiffusionGemma-specific: the parent
             # Gemma4WebGPUModel does not allocate them. _decoder_layer uses
             # them for per-token attention score and softmax scratch space.
-            "scores_buf": self._make_buf(NQ * max_ctx * 2),
+            "scores_buf": self._make_buf(NQ * max_ctx * 2),  # NQ * max_ctx elements, f16
             "sm_buf":     self._make_buf(NQ * max_ctx * 2),
             "attn_out":   self._make_buf(T * max_q_dim * 2),
             "o_proj_out": self._make_buf(T * H * 2),
@@ -233,10 +234,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         ctx_len = int(attn_metadata.max_decode_seq_len)
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds 65535")
-        scores_capacity = self._sc["scores_buf"].nbytes // (self.num_q_heads * 2)
-        if ctx_len > scores_capacity:
+        if ctx_len > self._scores_max_ctx:
             raise RuntimeError(
-                f"ctx_len={ctx_len} exceeds scores_buf capacity={scores_capacity}; "
+                f"ctx_len={ctx_len} exceeds scores_buf capacity={self._scores_max_ctx}; "
                 f"max_position_embeddings in the model config is too small for this sequence"
             )
 

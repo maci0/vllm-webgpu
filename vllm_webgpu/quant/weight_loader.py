@@ -992,7 +992,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         nvfp4_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, nvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("F8_E4M3", "U8", "I32"))
+            _upload_non_quant(header, nvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 
             for base in nvfp4_bases:
                 try:
@@ -1032,7 +1032,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         dnvfp4_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, dnvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights), ("F8_E4M3", "U8", "I32"))
+            _upload_non_quant(header, dnvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
 
             for base in dnvfp4_bases:
                 try:

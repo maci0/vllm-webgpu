@@ -134,7 +134,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         if self._is_moe:
             if len(input_ids) > 1:
                 raise NotImplementedError(
-                    "Mixtral MoE batch prefill is not yet supported on WebGPU"
+                    "Mixtral MoE batch prefill is not yet supported on WebGPU. "
+                    "The _prefill_sequential_fallback path (per-token forward) is "
+                    "not routed here because _moe_decode_forward requires explicit "
+                    "encoder lifecycle management that _prefill_sequential_fallback "
+                    "does not set up."
                 )
             return self._moe_decode_forward(input_ids, positions, attn_metadata)
         # Mistral dense (SWA, _is_moe=False): delegate to LlamaWebGPUModel.forward().

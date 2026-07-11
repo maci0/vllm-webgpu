@@ -19,39 +19,45 @@ if TYPE_CHECKING:
 # that changes attention-type dispatch, KV-shared layer boundaries, or head-dim
 # selection will fail loudly here instead of silently mis-sizing buffers.
 try:
-    import inspect
     from vllm.model_executor.models.gemma4 import (
         Gemma4Attention as _Gemma4Attention,
         Gemma4DecoderLayer as _Gemma4DecoderLayer,
     )
-    _g4_decoder_src = inspect.getsource(_Gemma4DecoderLayer)
-    _g4_attn_src = inspect.getsource(_Gemma4Attention)
-    # Formula (1): KV-shared boundary uses num_kv_shared_layers.
-    assert "num_kv_shared_layers" in _g4_decoder_src, (
-        "Gemma4DecoderLayer no longer references 'num_kv_shared_layers'. "
-        "Review _build_layer_params_from_config formula (1) before removing this assertion."
-    )
-    # Formula (2): KV-shared target uses reversed layer_types index search.
-    # The original text-match assertion checked for "[::-1].index" in the Attention
-    # source, which would fire incorrectly on any equivalent refactor (e.g. next()
-    # with enumerate). Check layer_types presence in the Attention source instead —
-    # stable across implementation refactors and still catches the behavioral change
-    # we care about (the function no longer consuming layer_types at all).
-    assert "layer_types" in _g4_attn_src, (
-        "Gemma4Attention no longer references 'layer_types'. "
-        "Review _build_layer_params_from_config formula (2) before removing this assertion."
-    )
-    # Formula (3): head-dim selection uses num_global_key_value_heads.
-    assert "num_global_key_value_heads" in _g4_decoder_src, (
-        "Gemma4DecoderLayer no longer references 'num_global_key_value_heads'. "
-        "Review _build_layer_params_from_config formula (3) before removing this assertion."
-    )
-    # Formula (3b): k_eq_v branch controls whether V=K (laptop variant).
-    assert "attention_k_eq_v" in _g4_decoder_src, (
-        "Gemma4DecoderLayer no longer references 'attention_k_eq_v'. "
-        "Review _build_layer_params_from_config formula (3) k_eq_v branch before removing this assertion."
-    )
-    del inspect, _Gemma4Attention, _Gemma4DecoderLayer, _g4_decoder_src, _g4_attn_src
+    import inspect
+    try:
+        _g4_decoder_src = inspect.getsource(_Gemma4DecoderLayer)
+        _g4_attn_src = inspect.getsource(_Gemma4Attention)
+        # Formula (1): KV-shared boundary uses num_kv_shared_layers.
+        assert "num_kv_shared_layers" in _g4_decoder_src, (
+            "Gemma4DecoderLayer no longer references 'num_kv_shared_layers'. "
+            "Review _build_layer_params_from_config formula (1) before removing this assertion."
+        )
+        # Formula (2): KV-shared target uses reversed layer_types index search.
+        # The original text-match assertion checked for "[::-1].index" in the Attention
+        # source, which would fire incorrectly on any equivalent refactor (e.g. next()
+        # with enumerate). Check layer_types presence in the Attention source instead —
+        # stable across implementation refactors and still catches the behavioral change
+        # we care about (the function no longer consuming layer_types at all).
+        assert "layer_types" in _g4_attn_src, (
+            "Gemma4Attention no longer references 'layer_types'. "
+            "Review _build_layer_params_from_config formula (2) before removing this assertion."
+        )
+        # Formula (3): head-dim selection uses num_global_key_value_heads.
+        assert "num_global_key_value_heads" in _g4_decoder_src, (
+            "Gemma4DecoderLayer no longer references 'num_global_key_value_heads'. "
+            "Review _build_layer_params_from_config formula (3) before removing this assertion."
+        )
+        # Formula (3b): k_eq_v branch controls whether V=K (laptop variant).
+        assert "attention_k_eq_v" in _g4_decoder_src, (
+            "Gemma4DecoderLayer no longer references 'attention_k_eq_v'. "
+            "Review _build_layer_params_from_config formula (3) k_eq_v branch before removing this assertion."
+        )
+    finally:
+        del inspect, _Gemma4Attention, _Gemma4DecoderLayer
+        try:
+            del _g4_decoder_src, _g4_attn_src
+        except NameError:
+            pass
 except (ImportError, OSError):
     pass  # vLLM not importable in this environment; skip assertion
 
@@ -414,7 +420,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             p = self._layer_key_prefix(i)
             ls_buf = self.weights.get(f"{p}.layer_scalar")
             if ls_buf is not None:
-                self._layer_scales.append(float(ls_buf.to_numpy().view(self._buf_np_dtype(ls_buf))[0]))
+                self._layer_scales.append(ls_buf.to_numpy().view(self._buf_np_dtype(ls_buf)).item())
             else:
                 self._layer_scales.append(1.0)
 

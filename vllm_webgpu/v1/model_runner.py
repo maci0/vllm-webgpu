@@ -370,15 +370,10 @@ class WebGPUModelRunner:
         built_logprobs = None
         has_topk = any(d is not None for d in logprobs_data)
         if has_topk:
-            _widths = set()
-            non_none = 0
-            for d in logprobs_data:
-                if d is not None:
-                    _widths.add(d.logprob_token_ids.shape[1])
-                    non_none += 1
-            max_k = max(_widths)
+            widths = [d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None]
+            max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
-            if len(_widths) == 1 and non_none == len(logprobs_data):
+            if len(set(widths)) == 1 and len(widths) == len(logprobs_data):
                 stacked = LogprobsTensors(
                     torch.cat([d.logprob_token_ids for d in logprobs_data]),
                     torch.cat([d.logprobs for d in logprobs_data]),
@@ -423,7 +418,7 @@ class WebGPUModelRunner:
             req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
             sampled_token_ids=[[t] for t in sampled],
             logprobs=built_logprobs,
-            prompt_logprobs_dict=prompt_logprobs_dict if prompt_logprobs_dict is not None else {},
+            prompt_logprobs_dict=prompt_logprobs_dict,
         )
         return out
 
