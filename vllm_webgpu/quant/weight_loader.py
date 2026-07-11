@@ -13,7 +13,6 @@ from vllm.logger import init_logger
 # in load_safetensors_weights will silently skip all tensors. Verify on each vLLM
 # version bump that the function still exists at this path and returns the expected structure.
 from vllm.transformers_utils.utils import parse_safetensors_file_metadata
-from vllm.model_executor.layers.quantization.modelopt import ModelOptQuantConfigBase as _ModelOptQuantConfigBase
 
 from compressed_tensors import get_quantization_config as _ct_get_quant_cfg
 from compressed_tensors import QuantizationConfig as _QuantizationConfig
@@ -468,13 +467,15 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
         try:
             with open(hf_quant) as f:
                 cfg = json.load(f)
-            algo = _ModelOptQuantConfigBase._extract_modelopt_quant_algo(cfg) or ""
-            if "MXFP4" in algo:
-                return "mxfp4"
-            if "MXFP8" in algo:
-                return "mxfp8"
-        except Exception:
-            pass
+            if cfg.get("quant_method", "").lower().startswith("modelopt"):
+                quant_config = cfg.get("quantization", cfg)
+                algo = str(quant_config.get("quant_algo", "")).upper() if isinstance(quant_config, dict) else ""
+                if "MXFP4" in algo:
+                    return "mxfp4"
+                if "MXFP8" in algo:
+                    return "mxfp8"
+        except (OSError, json.JSONDecodeError, KeyError) as exc:
+            logger.warning("Failed to read hf_quant_config.json in %s: %s", model_dir, exc)
     if quant_cfg is None:
         config_json = model_dir / "config.json"
         quant_cfg = _load_quant_cfg(config_json) if config_json.exists() else {}
