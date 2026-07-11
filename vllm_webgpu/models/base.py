@@ -107,7 +107,9 @@ def compute_yarn_freqs(
                 )
             rotary_dim = int(head_dim * partial_rotary_factor)
 
-    factor               = float(rope_scaling.get("factor", 1.0))
+    if "factor" not in rope_scaling:
+        raise ValueError("YaRN rope_scaling must include 'factor'")
+    factor               = float(rope_scaling["factor"])
     beta_fast            = int(rope_scaling.get("beta_fast", 32))
     beta_slow            = int(rope_scaling.get("beta_slow", 1))
     orig_ctx             = int(rope_scaling["original_max_position_embeddings"])
