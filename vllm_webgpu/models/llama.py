@@ -149,6 +149,17 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
         """
         _rope_parameters = getattr(self.model_config, "rope_parameters", None)
+
+        if _rope_parameters is not None:
+            from vllm.transformers_utils.config import is_rope_parameters_nested
+            if is_rope_parameters_nested(_rope_parameters):
+                logger.warning(
+                    "rope_parameters is layer-type-keyed (nested format); "
+                    "per-layer RoPE scaling is not supported, falling back to standard RoPE "
+                    "(long-context accuracy reduced beyond 8192 tokens)",
+                )
+                return
+
         rope_scaling = dict(
             _rope_parameters
             if _rope_parameters is not None
