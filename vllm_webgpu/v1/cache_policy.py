@@ -124,7 +124,7 @@ def allocate_kv_from_tensors(
                     "that differs from the standard block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes. "
                     "Allocating with head_size/head_size_v would produce wrong buffer sizes."
                 )
-            elif type(spec) is FullAttentionSpec:
+            elif isinstance(spec, FullAttentionSpec):
                 if spec.kv_quant_mode != KVQuantMode.NONE:
                     raise NotImplementedError(
                         f"Quantized KV cache (kv_quant_mode={spec.kv_quant_mode!r}) is not supported by the WebGPU backend; KV shaders expect float16 data."
