@@ -198,10 +198,11 @@ def _allocate_kv_pool_per_layer(
             raise ValueError(
                 f"num_kv_heads={lp['num_kv_heads']} but head_dim=0; invalid KV spec"
             )
-        kv_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * get_dtype_size(dtype)
+        k_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * get_dtype_size(dtype)
+        v_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp.get("head_dim_v", lp["head_dim"]) * get_dtype_size(dtype)
         model.kv_pool.append((
-            WebGPUBuffer.empty(dev, kv_bytes),
-            WebGPUBuffer.empty(dev, kv_bytes),
+            WebGPUBuffer.empty(dev, k_bytes),
+            WebGPUBuffer.empty(dev, v_bytes),
         ))
 
 
