@@ -205,12 +205,19 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # must compute (1+w)*x. Gemma4 uses plain RMSNorm; weights are actual scale values.
         self._GEMMA_NORM = 1 if getattr(model_config, "model_type", "") == "gemma3" else 0
         if raw_lp and len(raw_lp) == self.num_layers:
-            for lp_entry in raw_lp:
-                lp_entry.setdefault("intermediate_size", self.intermediate_size)
-                lp_entry.setdefault("is_kv_shared", False)
-                lp_entry.setdefault("kv_shared_target", -1)
-                lp_entry.setdefault("has_v_proj", True)
-            self._lp: list[dict] = raw_lp
+            # Shallow-copy each entry before adding defaults so the config object
+            # is not mutated. A second instantiation from the same config would
+            # otherwise find the keys already present and silently skip setdefault.
+            self._lp: list[dict] = [
+                {
+                    **e,
+                    "intermediate_size": e.get("intermediate_size", self.intermediate_size),
+                    "is_kv_shared": e.get("is_kv_shared", False),
+                    "kv_shared_target": e.get("kv_shared_target", -1),
+                    "has_v_proj": e.get("has_v_proj", True),
+                }
+                for e in raw_lp
+            ]
         elif layer_types and len(layer_types) == self.num_layers:
             # Build per-layer params from layer_types list (Gemma4 safetensors config).
             # sliding_attention: local GQA, head_dim=default_hd, has_v_proj=True

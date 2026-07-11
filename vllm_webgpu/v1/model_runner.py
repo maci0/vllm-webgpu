@@ -398,7 +398,7 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
             if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
-                built_logprobs = _stack(logprobs_data)
+                built_logprobs = _stack([d for d in logprobs_data if d is not None])
             else:
                 # Derive the dtype of selected_token_ranks from the first real
                 # entry. batched_count_greater_than returns (bool).sum(-1),
@@ -651,7 +651,7 @@ class WebGPUModelRunner:
             # models never read it, so skip the allocation and per-step append entirely.
             self._req_state[rid] = {
                 "pos": num_computed + T, "block_ids": blk_ids,
-                "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
+                "last_tok": first_decode_tok,
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
@@ -694,7 +694,8 @@ class WebGPUModelRunner:
                     )
                 pos = state["pos"]
                 blk_ids = list(state["block_ids"])
-                num_logprobs = state.get("num_logprobs")
+                sp = state.get("sampling_params")
+                num_logprobs = sp.num_logprobs if sp is not None else None
 
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.

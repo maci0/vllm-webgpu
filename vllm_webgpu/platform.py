@@ -29,9 +29,9 @@ def _get_wgpu_adapter():
     of two adapter requests total, not per-request.
     Returns None if wgpu is unavailable or the probe failed.
     """
-    from vllm_webgpu.config import get_config
-    cfg = get_config()
     try:
+        from vllm_webgpu.config import get_config
+        cfg = get_config()
         import wgpu
         return wgpu.gpu.request_adapter_sync(power_preference=cfg.power_preference)
     except Exception:

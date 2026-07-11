@@ -50,6 +50,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # Use walrus-operator None-check so an explicit moe_intermediate_size=0 is not
         # silently treated as absent (the `or` form would fall back to intermediate_size
         # for zero, which is wrong).
+        # Note: moe_intermediate_size=0 combined with _is_moe=True is a contradiction.
+        # _moe_inter=0 would pass the capacity check (0 <= buffer_size), dispatch zero
+        # workgroups from gelu_mul, and produce silently wrong (zero) expert outputs.
+        # No real model sets moe_intermediate_size=0; treat it as a configuration error
+        # if encountered.
         self._moe_inter: int = v if (v := getattr(model_config, "moe_intermediate_size", None)) is not None else self.intermediate_size
         # Batch prefill bypasses _attn_block and cannot honour per-layer context
         # overrides or inject attention biases. Force sequential prefill whenever
@@ -371,8 +376,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         qi_d = self._quant_extra(f"{ep}.{down_key_name}", uq_d)
 
         # Down GEMV with fused bias (HAS_BIAS=1) → expert_tmp.
-        # Mirrors the router bias pattern used in _moe_ffn_layer; avoids a
-        # separate add dispatch and removes the expert_tmp staging buffer.
+        # Avoids a separate add dispatch by fusing the bias into matmul_quant,
+        # writing the biased result to expert_tmp for moe_accumulate.
         self._dispatch(
             "matmul_quant",
             [msc["expert_act"], self.weights[w2_key],

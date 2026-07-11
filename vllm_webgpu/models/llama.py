@@ -1,6 +1,5 @@
 from __future__ import annotations
 import math
-from functools import partial
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -76,15 +75,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # weights at upload time, avoiding a GPU roundtrip (to_numpy → tile → re-upload).
         # Qwen3 checkpoints store shared norm as (head_dim,); the shader expects
         # (num_heads * head_dim,) with each head using the same values.
-        head_dim = self.head_dim
-        num_q = self.num_q_heads
-        num_kv = self.num_kv_heads
-
-        def _tile_norm(a, n_heads):
-            return np.tile(a, n_heads) if a.shape == (head_dim,) else a
-
-        _q_xform = partial(_tile_norm, n_heads=num_q)
-        _k_xform = partial(_tile_norm, n_heads=num_kv)
+        _hd = self.head_dim
+        _q_xform = lambda a: np.tile(a, self.num_q_heads) if a.shape == (_hd,) else a
+        _k_xform = lambda a: np.tile(a, self.num_kv_heads) if a.shape == (_hd,) else a
         self._weight_transforms.update({
             f"model.layers.{i}.self_attn.{k}.weight": xf
             for i in range(self.num_layers)

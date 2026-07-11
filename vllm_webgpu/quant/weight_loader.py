@@ -40,8 +40,8 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
         # t.numpy() is a zero-copy view (shared memory). clip+cast runs in numpy,
         # which avoids the torch clamp -> to(float16) -> numpy chain.
         return t.numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
-    # BF16: numpy has no bf16 dtype, so the torch roundtrip is unavoidable.
-    return t.to(_torch.float32).clamp(-_F16_MAX, _F16_MAX).to(_torch.float16).numpy()
+    # BF16: numpy has no bf16 dtype; cast to float32 first, then clip+cast in numpy.
+    return t.to(_torch.float32).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
 
 
 def _is_gdn_weight_key(key: str) -> bool:
@@ -197,31 +197,31 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = k.replace(old_pfx, new_pfx, 1)
+                new_k = new_pfx + k.removeprefix(old_pfx)
                 if new_k not in d:
                     to_add[new_k] = v
                 break
     d.update(to_add)
 
 
-def _upload_non_quant(header, reserved, i8_skip, upload_fn, allowed_special=("U8", "I32")):
+def _upload_non_quant(header, reserved, i8_skip, upload_fn):
     """Upload all tensors in header that are not part of the quantized set.
 
     Skips names in `reserved` (the quantized-weight keys) and `i8_skip` (int8
     companion keys). For tensors that _upload_plain cannot handle, warns unless
-    the dtype is in `allowed_special` (known dtypes that are intentionally skipped).
+    the dtype is U8 or I32 (known dtypes that are intentionally skipped).
 
-    F8_E4M3 is NOT in the default allowed_special: every F8_E4M3 weight key is
-    captured in the format-specific reserved set (fp8_set for the fp8 path,
-    nvfp4_set for nvfp4 weight_scale keys), so no unclaimed F8_E4M3 tensor
-    should reach this function. An unexpected F8_E4M3 key warrants a warning.
+    F8_E4M3 is NOT silently skipped: every F8_E4M3 weight key is captured in
+    the format-specific reserved set (fp8_set for the fp8 path, nvfp4_set for
+    nvfp4 weight_scale keys), so no unclaimed F8_E4M3 tensor should reach this
+    function. An unexpected F8_E4M3 key warrants a warning.
     """
     for name in header:
         if name in reserved or name in i8_skip:
             continue
         if not upload_fn(name):
             dt = header[name].get("dtype", "?")
-            if dt not in allowed_special:
+            if dt not in ('U8', 'I32'):
                 logger.warning("Skipping %s (dtype=%s)", name, dt)
 
 

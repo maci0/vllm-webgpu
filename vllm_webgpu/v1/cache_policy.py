@@ -254,7 +254,7 @@ def get_layer_types(model, hf_config, hf_outer_config=None) -> list | None:
     if v is not None:
         return v
     # Minimax-style: integer list where 1 = attention, 0 = non-attention.
-    # model_runner.py filters these with `lt != 1` rather than `lt not in KV_ATTN_TYPES`.
+    # model_runner.py handles integer-encoded layer types via is_attn_layer(lt), which returns True when lt == 1 (Minimax attention).
     # attn_type_list lives on the outer hf_config for multimodal models where
     # hf_text_config (passed as hf_config here) differs from the outer config.
     _outer = hf_outer_config if hf_outer_config is not None else hf_config

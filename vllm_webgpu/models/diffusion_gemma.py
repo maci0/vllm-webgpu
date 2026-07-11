@@ -313,7 +313,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 **self._quant_extra(_lm_base, uq_lm)},
                                (cdiv(vocab, 256), num_tokens, 1))
             else:
-                # Single-token decode path.
+                # Single-token decode path. The branches are exclusive: num_tokens > 1
+                # always takes the matmul_quant_mr4_tiled path above. Assert the
+                # invariant so any future refactor cannot silently route multi-token
+                # batches here and process only row 0 of logits.
+                assert num_tokens == 1
                 self._dispatch("matmul_quant",
                                [norm_out, lm_head_w, sc_lm, logits_buf],
                                {"K": hidden, "N": vocab, "USE_QUANT": uq_lm, "SPLIT_K": 0,

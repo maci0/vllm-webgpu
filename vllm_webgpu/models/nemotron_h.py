@@ -60,19 +60,10 @@ del _mapper
 # 2*intermediate_size + 2*groups_ssm_state_size + num_heads).
 # NOTE: _validate_mamba_weights is the authoritative runtime guard. It checks
 # the actual in_proj.weight shape from the loaded checkpoint against in_proj_dim.
-# A source-text anchor was previously used here but was removed: cosmetic vLLM
-# reformatting (black, variable renames) would fire the assertion without any
-# semantic change, making it fragile without adding safety beyond the runtime check.
-try:
-    from vllm.model_executor.layers.mamba import mamba_mixer2 as _mm2_mod
-    assert hasattr(_mm2_mod.MambaMixer2, '__init__') and callable(_mm2_mod.MambaMixer2.__init__), (
-        "MambaMixer2.__init__ is not callable. Review the in_proj_dim formula "
-        "in NemotronHWebGPUModel.__init__ and _validate_mamba_weights."
-    )
-    del _mm2_mod
-except ImportError:
-    # mamba_mixer2 moved upstream; _validate_mamba_weights checks the actual weight shape.
-    pass
+# No import-time assertion on MambaMixer2.__init__ is made: the check
+# `hasattr(cls, '__init__') and callable(cls.__init__)` is trivially True for
+# any Python class (inherited from object) and provides zero protection against
+# formula changes in the method body.
 
 # Import-time guard: verify that NemotronHMLPDecoderLayer.__init__ still contains
 # the list/scalar intermediate_size resolution logic that _resolve_intermediate_size() mirrors,
@@ -419,10 +410,24 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "HIDDEN_DIM": self.hidden_size,
             "VALS_PER_THREAD": _vals_per_thread(self.hidden_size),
         }
+        # Cached layer-0 pre-norm weight. Set by load_weights; None until then
+        # (tests that inject weights directly use the lazy fallback in forward).
+        self._layer0_norm_w: "WebGPUBuffer | None" = None
         self._hstate: int = 0
         # Set True during replay_prefix_for_ssm so _attn_layer skips KV writes.
         self._replay_mode: bool = False
         self._init_scratch_buffers()
+
+    @property
+    def _norm0_w(self) -> "WebGPUBuffer":
+        """Layer-0 pre-norm weight buffer, lazily populated from weights dict.
+
+        Normally set by load_weights; the lazy fallback covers test paths that
+        inject model.weights directly without calling load_weights.
+        """
+        if self._layer0_norm_w is None:
+            self._layer0_norm_w = self.weights["model.layers.0.norm.weight"]
+        return self._layer0_norm_w
 
     # ── Scratch buffer allocation ─────────────────────────────────────────────
 
@@ -598,7 +603,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     self._dispatch(
                         "rms_norm",
                         [pre["x"],
-                         self.weights["model.layers.0.norm.weight"],
+                         self._norm0_w,
                          sc["normed"]],
                         self._rms_base,
                         (1, 1, 1),
@@ -669,6 +674,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._scale_transforms.clear()
         self._validate_mamba_weights()
         self._init_mamba_states(num_spec)
+        # Cache the layer-0 pre-norm weight buffer. It is accessed on every
+        # forward call (decode, prefill, and replay_prefix_for_ssm); caching
+        # it here avoids three repeated dict lookups per step.
+        self._layer0_norm_w = self.weights["model.layers.0.norm.weight"]
         logger.info(
             "NemotronH: loaded %d weight tensors (%d Mamba layers, %d attn layers)",
             len(self.weights),
@@ -1101,7 +1110,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "rms_norm",
                 [pre["x"],
-                 self.weights["model.layers.0.norm.weight"],
+                 self._norm0_w,
                  self._sc["normed"]],
                 self._rms_base,
                 (num_tokens, 1, 1),
@@ -1468,7 +1477,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 self._dispatch(
                     "rms_norm",
                     [pre["x"],
-                     self.weights["model.layers.0.norm.weight"],
+                     self._norm0_w,
                      sc["normed"]],
                     self._rms_base,
                     (1, 1, 1),
