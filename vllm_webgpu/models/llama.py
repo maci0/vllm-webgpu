@@ -386,6 +386,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Last-token prediction extracted via GPU copy_buffer_to_buffer.
         Returns: (1, 1) int32 (GPU argmax token id) when greedy, or (1, vocab) float32 logits when greedy is False.
         """
+        # Guard: load_weights() must run before forward() so that _batch_matmul_supported
+        # and self.weights are populated. Check before any early-return path so that a
+        # missing load_weights() call always surfaces as a clear RuntimeError, even on
+        # APC prefix-cache hits where positions[0] > 0.
+        if self._batch_matmul_supported is None:
+            raise RuntimeError("load_weights() must be called before forward()")
+
         # APC prefix-cache hit: the first token's absolute position is > 0, meaning
         # num_computed cached K/V blocks already exist in the KV cache. The batch
         # prefill shader has no KV-cache binding and applies a batch-local causal
@@ -400,8 +407,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # All other quant types (AWQ, FP8, NF4, Q4_K, ...) fall through to _transformer_layer
         # which dispatches matmul_quant with the correct USE_QUANT per key.
         # _batch_matmul_supported is computed once in load_weights; no re-scan per call.
-        if self._batch_matmul_supported is None:
-            raise RuntimeError("load_weights() must be called before forward()")
         if not self._batch_matmul_supported:
             return self._prefill_sequential_fallback(
                 input_ids, positions, attn_metadata, T,
