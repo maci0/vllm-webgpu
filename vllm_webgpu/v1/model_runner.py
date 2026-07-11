@@ -622,12 +622,15 @@ class WebGPUModelRunner:
             all_sampled.append(first_decode_tok)
             all_logprobs_data.append(lp_data)
             # Store last sampled token; decode path needs it (new_token_ids is empty without PP).
+            # token_history stores the full token sequence for this request so that
+            # replay_prefix_for_ssm can reconstruct Mamba SSM state after preemption.
             self._req_state[rid] = {
                 "pos": num_computed + T, "block_ids": blk_ids,
                 "last_tok": first_decode_tok, "num_logprobs": num_logprobs,
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
+                "token_history": list(tok_ids),
             }
 
         # ── Decode: cached requests ────────────────────────────────────────────
@@ -706,29 +709,31 @@ class WebGPUModelRunner:
                         # Reset Mamba conv/SSM states to zero before decoding.
                         self.model.reset_recurrent_states()
                         if rolled_back and pos > 0:
-                            # KNOWN WRONG-OUTPUT CONDITION: the request was preempted
-                            # and resumed at position pos > 0 (prefix caching preserved
-                            # pos tokens in the KV cache for attention layers). The SSM
-                            # state has been reset to zero, but the attention KV cache
-                            # already reflects pos tokens of history. All subsequent
-                            # Mamba layer outputs are wrong: they decode from state=0
-                            # while the residual stream is at sequence position pos.
-                            #
-                            # Correct fix: replay input tokens 0..pos-1 one at a time
-                            # through the Mamba layers (without writing to the KV cache,
-                            # which is already populated) to reconstruct the SSM state
-                            # before the first decode step. This requires the full token
-                            # sequence for positions 0..pos-1 to be stored in _req_state,
-                            # which is not currently tracked. Until that is implemented,
-                            # outputs for this request after resumption are silently
-                            # corrupted for every token decoded past the rollback point.
-                            logger.warning(
-                                "req %s: preempted and resumed at pos=%d with prefix-cached "
-                                "KV (attention sees %d tokens of history). Mamba SSM state "
-                                "was reset to zero and cannot be reconstructed without the "
-                                "full token history (not stored). All Mamba layer outputs "
-                                "for this request are wrong until a new prefill runs.",
-                                rid, pos, pos,
+                            # The request was preempted and resumed at position pos > 0.
+                            # Prefix caching preserved pos tokens in the KV cache for
+                            # attention layers, but the Mamba SSM state was lost. Replay
+                            # tokens 0..pos-1 through the full model (skipping KV cache
+                            # writes since the cache is already populated) to reconstruct
+                            # the SSM state before the first resumed decode step.
+                            token_history = state.get("token_history")
+                            if not hasattr(self.model, "replay_prefix_for_ssm"):
+                                raise RuntimeError(
+                                    f"req {rid}: preempted and resumed at pos={pos} with "
+                                    f"prefix-cached KV but model does not implement "
+                                    f"replay_prefix_for_ssm. Mamba SSM state cannot be "
+                                    f"reconstructed. Aborting to prevent corrupt output."
+                                )
+                            if token_history is None or len(token_history) < pos:
+                                raise RuntimeError(
+                                    f"req {rid}: cannot reconstruct SSM state after "
+                                    f"preemption at pos={pos}: token history has only "
+                                    f"{len(token_history) if token_history else 0} tokens. "
+                                    f"Aborting to prevent corrupt output."
+                                )
+                            self.model.replay_prefix_for_ssm(
+                                np.array(token_history[:pos], dtype=np.uint32),
+                                blk_ids,
+                                pos,
                             )
 
                 logits = self.model.forward(
@@ -761,12 +766,17 @@ class WebGPUModelRunner:
 
                 # Commit state after a successful forward — don't mutate on failure.
                 # rng is a stateful object; storing the same reference is sufficient.
+                # Extend token_history with the newly generated token so that
+                # replay_prefix_for_ssm has the full sequence if this request is
+                # later preempted and resumed with prefix-cached KV.
+                prev_history = state.get("token_history", [])
                 self._req_state[rid] = {
                     "pos": pos + 1, "block_ids": blk_ids,
                     "last_tok": stok, "num_logprobs": num_logprobs,
                     "sampling_params": sp,
                     "recurrent_states": decode_recurrent_states,
                     "rng": rng,
+                    "token_history": prev_history + [stok],
                 }
                 all_req_ids.append(rid)
                 all_sampled.append(stok)

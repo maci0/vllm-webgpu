@@ -349,6 +349,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "VALS_PER_THREAD": _vals_per_thread(self.hidden_size),
         }
         self._hstate: int = 0
+        # Set True during replay_prefix_for_ssm so _attn_layer skips KV writes.
+        self._replay_mode: bool = False
         self._init_scratch_buffers()
 
     # ── Scratch buffer allocation ─────────────────────────────────────────────
@@ -470,6 +472,76 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             dev.queue.write_buffer(self._conv_states[i].buf, 0, data)
         for i, data in states.get("ssm", {}).items():
             dev.queue.write_buffer(self._ssm_states[i].buf, 0, data)
+
+    def replay_prefix_for_ssm(
+        self,
+        token_ids: np.ndarray,
+        block_ids: list,
+        pos: int,
+    ) -> None:
+        """Replay pos tokens to reconstruct Mamba SSM state after preemption.
+
+        When a request is preempted and resumed with prefix-cached KV, the attention
+        KV cache already holds the correct K/V for positions 0..pos-1. The caller
+        must zero the SSM states with reset_recurrent_states() before calling this.
+
+        This method runs the full model token by token (embedding + all layers) so
+        the residual stream is correct for each Mamba layer. KV cache writes are
+        skipped because the cache is already populated. Attention reads proceed
+        normally using the existing KV data and the block table.
+
+        After return, the Mamba conv/SSM states match what they would be after a
+        normal prefill of the same tokens.
+        """
+        dev = self.wgpu_device.wgpu_device
+        pre = self._pre
+        sc  = self._sc
+
+        bt_arr = np.array(block_ids, dtype=np.uint32)
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+
+        self._replay_mode = True
+        try:
+            for t in range(pos):
+                self._hstate = 0
+                tok_ctx = t + 1
+                slot = int(block_ids[t // self.block_size]) * self.block_size + t % self.block_size
+
+                dev.queue.write_buffer(
+                    pre["ids"].buf, 0,
+                    token_ids[t:t+1].astype(np.uint32, copy=False).tobytes())
+                dev.queue.write_buffer(
+                    pre["slot_map"].buf, 0,
+                    np.array([slot], dtype=np.uint32).tobytes())
+
+                with self._batched_dispatch():
+                    self._dispatch(
+                        "embedding_lookup",
+                        [self.weights["model.embed_tokens.weight"], pre["ids"], pre["x"]],
+                        {"HIDDEN_DIM": self.hidden_size},
+                        (1, 1, 1),
+                    )
+                    self._dispatch(
+                        "rms_norm",
+                        [pre["x"],
+                         self.weights["model.layers.0.norm.weight"],
+                         sc["normed"]],
+                        self._rms_base,
+                        (1, 1, 1),
+                    )
+
+                    normed_x = sc["normed"]
+                    x_buf    = pre["x"]
+
+                    for i in range(self.num_layers):
+                        normed_x, x_buf = self._layer_dispatch(
+                            i, normed_x, x_buf,
+                            pre["slot_map"], pre["bt"],
+                            tok_ctx, 1,
+                        )
+                    # No final norm or logit needed — SSM state is the goal.
+        finally:
+            self._replay_mode = False
 
     # ── Weight loading ────────────────────────────────────────────────────────
 
@@ -1175,15 +1247,17 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         # No RoPE: NemotronH uses no rotary position embeddings.
 
-        # Fused KV cache store.
+        # Fused KV cache store. Skipped during SSM prefix replay because the
+        # cache is already correctly populated from the original prefill.
         k_cache, v_cache = self.kv_pool[layer_idx]
-        self._dispatch(
-            "kv_cache_store_both",
-            [sc["k_buf"], k_cache, sc["v_buf"], v_cache, slot_map],
-            {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-             "HEAD_DIM": self.head_dim, "V_IN_OFFSET": 0},
-            (num_tokens, self.num_kv_heads, 1),
-        )
+        if not self._replay_mode:
+            self._dispatch(
+                "kv_cache_store_both",
+                [sc["k_buf"], k_cache, sc["v_buf"], v_cache, slot_map],
+                {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
+                 "HEAD_DIM": self.head_dim, "V_IN_OFFSET": 0},
+                (num_tokens, self.num_kv_heads, 1),
+            )
 
         # Flash attention decode.
         self._dispatch(
