@@ -644,13 +644,13 @@ def load_safetensors_weights(
     # _ct_get_safetensors_header does a single binary read of the header
     # (one syscall) rather than O(n) per-tensor slice calls.
     _raw_hdr = _ct_get_safetensors_header(path)
-    with sft.safe_open(path, framework="pt") as sf:
-        header = {
-            k: v for k, v in _raw_hdr.items()
-            if k != "__metadata__"
-            and not (skip_prefixes and any(k.startswith(pfx) for pfx in skip_prefixes))
-        }
+    header = {
+        k: v for k, v in _raw_hdr.items()
+        if k != "__metadata__"
+        and not (skip_prefixes and any(k.startswith(pfx) for pfx in skip_prefixes))
+    }
 
+    with sft.safe_open(path, framework="pt") as sf:
         usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
         # Detect compressed-tensors config from the model directory (needed for
@@ -1235,7 +1235,8 @@ def load_safetensors_weights(
                         _upload_u8(wp, f"{base}.weight", weights)
                         _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
                         weights.setdefault("__quant_meta__", {})[base] = {
-                            "fmt": "nvfp4_gpu", "global_scale": 1.0, "group_size": 32}
+                            "fmt": "nvfp4_gpu", "global_scale": 1.0,
+                            "group_size": K_ // (ws_f32.shape[1] if ws_f32.ndim == 2 else 1)}
                         logger.debug("GPU MXFP4: %s (N=%d, K=%d)", base, N_, K_)
                     except Exception as exc:
                         logger.warning("Failed to process MXFP4 %s: %s", base, exc)
@@ -1381,7 +1382,13 @@ def load_safetensors_weights(
             # Weight: {base}.weight [N, K//8] I32 (8 nibbles/u32, already in [N,K//8] layout)
             # Scale:  {base}.weight_scale [N, G] F16/BF16/F32 → transpose to [G, N] for shader
             # group_size comes from the quantization_config parsed in ct_meta.
-            _ct_group_size = ct_meta["__global__"]["group_size"]
+            _ct_group_size = ct_meta["__global__"].get("group_size")
+            if _ct_group_size is None:
+                raise ValueError(
+                    "ct_pack_int4 format requires group_size in compressed-tensors config, "
+                    "but quantization_config did not specify one. "
+                    "Check the model's quantization_config.group_size field."
+                )
 
             # Collect (base, weight_key) pairs for all I32 packed weight tensors.
             # Canonical compressed-tensors saves as .weight_packed; some checkpoints use .weight.

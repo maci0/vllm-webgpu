@@ -399,7 +399,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         _rms = self._rms_consts
         is_kv_shared    = lp["is_kv_shared"]
         kv_shared_target = lp["kv_shared_target"]
-        _kv_layer = kv_shared_target if (is_kv_shared and kv_shared_target >= 0) else layer_idx
+        _kv_layer = kv_shared_target if is_kv_shared else layer_idx
 
         k_cache, v_cache = self.kv_pool[_kv_layer]
 
@@ -784,13 +784,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     # _gemm_adaptive branches internally on num_tokens > 1.
                     self._gemm_adaptive(moe_in, f"{ep}.gate_proj.weight", sc["gate_buf"], hidden, inter_moe, num_tokens)
                     self._gemm_adaptive(moe_in, f"{ep}.up_proj.weight", sc["up_buf"], hidden, inter_moe, num_tokens)
+                    self._dispatch("gelu_mul",
+                                   [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
+                                   {"N": gelu_n_moe},
+                                   _vec4_wg(gelu_n_moe),
+                                   shader_subdir="gemma")
                     if use_mr4 and num_tokens > 1:
-                        # Batched GEMM path: gelu, down, and accumulate.
-                        self._dispatch("gelu_mul",
-                                       [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                                       {"N": gelu_n_moe},
-                                       _vec4_wg(gelu_n_moe),
-                                       shader_subdir="gemma")
+                        # Batched GEMM path: down and accumulate.
                         # down: [T, inter_moe] x [hidden, inter_moe]^T -> [T, hidden]
                         _sc_dk = self._scales_buf(dk, uq_dk, self._dummy_buf)
                         self._dispatch("matmul_quant_mr4",
@@ -808,12 +808,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                         "EXPERT_SLOT": expert_slot},
                                        (cdiv(add_n, 256), 1, 1))
                     else:
-                        # Single-token GEMV path (num_tokens==1): gelu, down, and accumulate.
-                        self._dispatch("gelu_mul",
-                                       [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                                       {"N": gelu_n_moe},
-                                       _vec4_wg(gelu_n_moe),
-                                       shader_subdir="gemma")
+                        # Single-token GEMV path (num_tokens==1): down and accumulate.
                         self._dispatch("matmul_quant",
                                        [sc["ffn_act"], self.weights[dk],
                                         self._scales_buf(dk, uq_dk, self._dummy_buf),

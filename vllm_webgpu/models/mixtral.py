@@ -84,10 +84,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             usage=self._wgpu_staging_usage)
         # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
         self._topk_w_staging = None
-        # Pre-allocated zero buffer for expert_out initialization. Avoids a
-        # fresh bytes() allocation per decode token (32 layers x 8 KB each on
-        # 8x7B). Reused across both zero-init sites in _moe_ffn_layer.
-        self._expert_out_zeros = bytearray(self.hidden_size * 2)
 
     def _alloc_moe_sc(
         self,
@@ -496,7 +492,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # always precedes Phase B encoder creation (consistent ordering).
         _shared_weights_present = False
         if shared_expert_prefix is None:
-            dev.queue.write_buffer(msc["expert_out"].buf, 0, self._expert_out_zeros)
+            self._zero_write(msc["expert_out"])
         else:
             _sinter = shared_expert_inter if shared_expert_inter is not None else inter
             sp = f"{p}.{shared_expert_prefix}"
@@ -506,7 +502,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             _shared_weights_present = all(k in self.weights for k in (sgw_k, suw_k, sdw_k))
             if not _shared_weights_present:
                 # Shared expert weights not loaded; zero-init before Phase B encoder.
-                dev.queue.write_buffer(msc["expert_out"].buf, 0, self._expert_out_zeros)
+                self._zero_write(msc["expert_out"])
 
         # ── Phase B: expert dispatches (new encoder) ──────────────────────────
         # Subsequent _dispatch() calls (including the residual add in the calling

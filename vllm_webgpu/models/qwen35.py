@@ -297,7 +297,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         """Allocate GPU buffers for persistent GDN recurrent state.
 
         Called after load_weights. Each linear-attention layer gets:
-          - SSM state:  [NUM_V_HEADS * K_DIM * V_DIM] f32 (zero-initialized)
+          - SSM state:  [NUM_V_HEADS, V_DIM, K_DIM] f32 (zero-initialized)
           - Conv state: [(CONV_KERNEL-1+num_spec) * CONV_DIM] f16 (zero-initialized)
 
         num_spec: number of speculative tokens (0 = no speculative decoding).

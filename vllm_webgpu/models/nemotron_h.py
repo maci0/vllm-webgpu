@@ -1425,12 +1425,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # WG_SIZE=256 matches the divisor below; (cdiv(N, WG_SIZE), 1, 1) is the
         # correct formula per the shader comment. _rows_wg has the same formula
         # numerically, but its semantic label ("row-parallel matmul") is wrong here.
-        relu_n = I
         self._dispatch(
             "relu_sq",
             [sc["up_buf"], sc["ffn_act"]],
-            {"N": relu_n, "WG_SIZE": 256},
-            (cdiv(relu_n, 256), 1, 1),
+            {"N": I, "WG_SIZE": 256},
+            (cdiv(I, 256), 1, 1),
         )
 
         # down_proj: intermediate -> hidden

@@ -89,11 +89,11 @@ def _stack(items: list[LogprobsTensors]) -> LogprobsLists:
     uses i directly as the row index when cu_num_generated_tokens is None
     (see vllm/v1/outputs.py:41-42).
     """
-    return LogprobsLists(
-        torch.cat([x.logprob_token_ids for x in items]).numpy(),
-        torch.cat([x.logprobs for x in items]).numpy(),
-        torch.cat([x.selected_token_ranks for x in items]).numpy(),
-    )
+    return LogprobsTensors(
+        torch.cat([x.logprob_token_ids for x in items]),
+        torch.cat([x.logprobs for x in items]),
+        torch.cat([x.selected_token_ranks for x in items]),
+    ).tolists()
 
 
 
