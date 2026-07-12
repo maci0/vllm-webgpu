@@ -43,8 +43,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self.intermediate_size: int = model_config.intermediate_size
         self.vocab_size: int = model_config.vocab_size
         # Use explicit head_dim when present (e.g. Qwen3: head_dim=128, hidden=2560, heads=32,
-        # so hidden//heads=80 but actual Q dim per head is 128).
-        self.head_dim: int = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
+        # so hidden//heads=80 but actual Q dim per head is 128). Mirrors vLLM llama.py:158-159:
+        # `head_dim or hidden_size // total_num_heads` so that a present-but-None or zero
+        # attribute falls back to the computed value instead of crashing on None ** -0.5.
+        _hd = getattr(model_config, "head_dim", None)
+        self.head_dim: int = _hd or (self.hidden_size // self.num_q_heads)
         self._attn_scale: float = self.head_dim ** -0.5
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
         self.block_size: int = block_size
@@ -75,8 +78,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # weights at upload time, avoiding a GPU roundtrip (to_numpy → tile → re-upload).
         # Qwen3 checkpoints store shared norm as (head_dim,); the shader expects
         # (num_heads * head_dim,) with each head using the same values.
-        _q_xform = lambda a, n=self.num_q_heads, hd=self.head_dim: np.tile(a, n) if a.shape == (hd,) else a  # noqa: E731
-        _k_xform = lambda a, n=self.num_kv_heads, hd=self.head_dim: np.tile(a, n) if a.shape == (hd,) else a  # noqa: E731
+        def _q_xform(a: np.ndarray) -> np.ndarray:
+            return np.tile(a, self.num_q_heads) if a.shape == (self.head_dim,) else a
+
+        def _k_xform(a: np.ndarray) -> np.ndarray:
+            return np.tile(a, self.num_kv_heads) if a.shape == (self.head_dim,) else a
+
         self._weight_transforms.update({
             f"model.layers.{i}.self_attn.{k}.weight": xf
             for i in range(self.num_layers)

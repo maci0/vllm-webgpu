@@ -121,7 +121,6 @@ def compute_yarn_freqs(
     # Single import from the common helpers module.
     # vLLM bump: verify yarn_get_mscale and YaRNScalingRotaryEmbedding._compute_inv_freq
     # still live in these locations and their signatures match the calls below.
-    import torch
     from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
     from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
         YaRNScalingRotaryEmbedding,
@@ -189,8 +188,9 @@ class BaseWebGPUModel(ABC):
         self._yarn_mscale: float = 1.0  # set to mscale when rope_type='yarn'
         # Greedy-decode flag: True means forward() returns a (1,1) int32 token
         # ID via GPU argmax; False means it returns (1, vocab) float32 logits
-        # for temperature sampling. Initialized True so hasattr() returns True,
-        # allowing the model runner to flip it to False for non-greedy requests.
+        # for temperature sampling. Initialized here so the attribute exists in
+        # __dict__ before model_runner sets it. model_runner always overwrites
+        # this before calling forward().
         self._greedy_decode: bool = True
         # Per-key weight transforms applied during load_weights before GPU upload.
         # Keys are checkpoint key names; values are callables (np.ndarray) -> np.ndarray.

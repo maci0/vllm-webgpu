@@ -94,13 +94,18 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # conv_dim from vLLM mamba_utils.py:223 (MambaStateShapeCalculator.gated_delta_net_state_shape)
-        # and qwen_gdn_linear_attn.py:466 (self.conv_dim = self.key_dim * 2 + self.value_dim):
-        #   conv_dim = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads
-        # On each vLLM bump, grep both files for 'conv_dim' and verify this formula matches.
-        # The _alloc_lin_states assertion (conv_elems == expected_conv_elems) is
-        # the authoritative guard against drift with future vLLM formula changes.
-        self._lin_conv_dim: int = self._lin_k_dim * self._lin_k_heads * 2 + self._lin_v_dim * self._lin_v_heads
+        # Derive conv_dim from vLLM's canonical formula via MambaStateShapeCalculator,
+        # so the value stays in sync with upstream changes automatically.
+        # conv_kernel_size=2, num_spec=0: shape[0] = conv_dim * (2-1+0) = conv_dim, so
+        # math.prod(conv_shape) gives conv_dim directly without a division.
+        _conv_shape_init, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=2,
+            num_spec=0,
+        )
+        self._lin_conv_dim: int = math.prod(_conv_shape_init)
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         # _gdn_v_base derives from _lin_conv_dim (= 2*key_dim + val_dim per vLLM formula)
@@ -316,16 +321,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             conv_kernel_size=self._lin_conv_kernel,
             num_spec=num_spec,
         )
-        # Guard against _lin_conv_dim drifting from vLLM's canonical formula.
-        conv_elems = math.prod(conv_shape)
-        expected_conv_elems = self._lin_conv_dim * (self._lin_conv_kernel - 1 + num_spec)
-        assert conv_elems == expected_conv_elems, (
-            f"conv_shape product {conv_elems} != _lin_conv_dim * (kernel-1+spec) "
-            f"= {self._lin_conv_dim} * {self._lin_conv_kernel - 1 + num_spec}. "
-            "MambaStateShapeCalculator.gated_delta_net_state_shape may have changed its "
-            "conv_dim formula; update _lin_conv_dim in __init__ to match."
-        )
-        conv_bytes = conv_elems * _ELEM_BYTES["f16"]
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}

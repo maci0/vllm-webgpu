@@ -567,7 +567,11 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                         quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
                     else:
                         quant_algo = cfg.get('quant_algo', '')
-                    algo = str(quant_algo or '').upper()
+                    # Use explicit None check to match vLLM's str(quant_config.get('quant_algo', ''))
+                    # semantics exactly; `or ''` coerces 0 and other falsy non-None values to ''.
+                    if quant_algo is None:
+                        quant_algo = ''
+                    algo = str(quant_algo).upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:

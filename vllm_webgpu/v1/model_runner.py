@@ -1,7 +1,7 @@
 from __future__ import annotations
 from functools import cached_property
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Sequence, cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import torch
@@ -20,7 +20,7 @@ from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
 if TYPE_CHECKING:
-    from typing import Any
+    from typing import Any, Sequence
     from vllm.tasks import SupportedTask
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -434,7 +434,7 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
             if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
-                built_logprobs = _stack(cast(Sequence["LogprobsTensors"], logprobs_data))
+                built_logprobs = _stack(cast("list[LogprobsTensors]", logprobs_data))
             else:
                 # Derive the dtype of selected_token_ranks from the first real
                 # entry. batched_count_greater_than returns (bool).sum(-1),

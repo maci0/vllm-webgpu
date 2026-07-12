@@ -80,6 +80,11 @@ def _gemma4_layer_params(
     # weight shapes are determined by Gemma4DecoderLayer, not Gemma4Attention.
     first_kv_shared = num_layers - num_kv_shared_layers
 
+    # Hoist the non-shared prefix slice: layer_types and first_kv_shared are
+    # invariant across iterations, so slicing inside the loop would allocate the
+    # same list on every is_kv_shared iteration.
+    _prev = layer_types[:first_kv_shared]
+
     lp: list[dict] = []
     for i, lt in enumerate(layer_types):
         # KV-routing guard (Gemma4Attention.__init__ ~L462-464): num_kv_shared_layers > 0
@@ -97,9 +102,8 @@ def _gemma4_layer_params(
 
         # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
         if is_kv_shared:
-            _prev = layer_types[:first_kv_shared]
             kv_shared_target = next(
-                (j for j in range(len(_prev) - 1, -1, -1) if _prev[j] == lt), None
+                (j for j in reversed(range(first_kv_shared)) if layer_types[j] == lt), None
             )
             if kv_shared_target is None:
                 raise ValueError(

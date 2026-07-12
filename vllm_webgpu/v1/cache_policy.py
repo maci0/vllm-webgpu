@@ -28,6 +28,15 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
+# Canonical set of string layer-type values that represent attention layers.
+# Used by is_attn_layer and referenced conceptually in model_runner.py and
+# kv_utils.py. A module-level constant makes it easy to extend when a new
+# layer type is added, without hunting for inline set literals.
+_ATTN_LAYER_TYPE_STRINGS: frozenset[str] = frozenset(
+    {"attention", "full_attention", "sliding_attention", "hybrid"}
+)
+
+
 def is_attn_layer(lt: "str | int") -> bool:
     """Return True when a layer-type value represents an attention layer.
 
@@ -39,7 +48,7 @@ def is_attn_layer(lt: "str | int") -> bool:
     Use this instead of bare string-set membership checks everywhere so that
     the integer sentinel never needs to be repeated at individual call sites.
     """
-    return lt in {"attention", "full_attention", "sliding_attention", "hybrid"} or lt == 1
+    return lt in _ATTN_LAYER_TYPE_STRINGS or lt == 1
 
 
 def allocate_kv_from_tensors(
@@ -178,12 +187,21 @@ def allocate_kv_from_tensors(
                     "add an explicit branch to handle it."
                 )
             try:
+                # extract_layer_index is called with the default num_attn_module=1.
+                # This is intentional: the WebGPU backend does not support models
+                # whose layer names contain two numeric segments (multi-attn-module
+                # naming). All currently supported architectures use single-integer
+                # layer names (e.g. "model.layers.3.self_attn"). If a future model
+                # uses two integers in its layer names, extract_layer_index would
+                # raise AssertionError here and the error block below would surface it.
                 idx = extract_layer_index(layer_name)
                 layer_kv_bytes[idx] = (k_bytes, v_bytes)
             except (AssertionError, ValueError, IndexError) as exc:
                 # extract_layer_index uses bare assert statements; IndexError fires
                 # when -O disables asserts and int_vals ends up empty (bare [0] access
                 # on an empty list). ValueError caught in case vLLM converts asserts.
+                # AssertionError fires when num_attn_module=1 but the name has two
+                # integers (multi-attn-module model) — unsupported by this backend.
                 logger.error(
                     "Cannot parse layer index from KVCacheTensor.shared_by entry %r "
                     "(spec=%s, k=%d, v=%d bytes lost): %s",

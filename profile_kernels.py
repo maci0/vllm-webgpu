@@ -41,13 +41,16 @@ def main() -> None:
     from vllm.transformers_utils.config import get_config as _vllm_get_config
     hf_cfg = _vllm_get_config(model_path, trust_remote_code=True)
     arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
-    num_layers = hf_cfg.num_hidden_layers
     print(f"Architecture: {arch}")
 
     from vllm_webgpu.v1.model_runner import _build_model, ARCH_MAP
-    from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
+    from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config, _make_convertor
     import vllm_webgpu.envs as _envs
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
+    # For multimodal wrapper configs the outer hf_config.num_hidden_layers is
+    # the unified model's count, not the text backbone's. Use the convertor
+    # (which reads from hf_text_config) to get the correct value.
+    num_layers = _make_convertor(hf_cfg).get_num_hidden_layers()
     family = ARCH_MAP.get(arch)
     model = _build_model(arch, family, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
 

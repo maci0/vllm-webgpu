@@ -32,7 +32,11 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     arch = (cfg.architectures or ["LlamaForCausalLM"])[0]
     print(f"Architecture: {arch}")
-    print(f"  hidden={cfg.hidden_size}, layers={cfg.num_hidden_layers}, "
+    from vllm_webgpu.scripts.kv_utils import _make_convertor
+    # For multimodal wrapper configs cfg.num_hidden_layers is the outer wrapper's
+    # count; the convertor reads from hf_text_config and returns the correct value.
+    _num_layers = _make_convertor(cfg).get_num_hidden_layers()
+    print(f"  hidden={cfg.hidden_size}, layers={_num_layers}, "
           f"heads={cfg.num_attention_heads}, kv_heads={getattr(cfg, 'num_key_value_heads', cfg.num_attention_heads)}")
 
     # AutoTokenizer handles chat templates, special tokens, and all tokenizer variants.
