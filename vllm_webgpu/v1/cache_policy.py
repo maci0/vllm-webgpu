@@ -99,7 +99,7 @@ def allocate_kv_from_tensors(
         if isinstance(gs, UniformTypeKVCacheSpecs):
             layer_spec_map.update(gs.kv_cache_specs)
         else:
-            layer_spec_map.update({name: gs for name in group.layer_names})
+            layer_spec_map.update(dict.fromkeys(group.layer_names, gs))
 
     # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".

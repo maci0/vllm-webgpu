@@ -83,11 +83,7 @@ def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     """Convert a BF16, F32, or F16 torch tensor to a float16 numpy array."""
     import torch as _torch
-    if t.dtype == _torch.float16:
-        return t.numpy()
-    # BF16 and F32: cast to float32 (no-op for F32), then clip+cast in numpy.
-    # numpy has no bf16 dtype; the to(float32) step is required for BF16.
-    return t.to(_torch.float32).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
+    return t.to(_torch.float16).numpy()
 
 
 logger = init_logger(__name__)

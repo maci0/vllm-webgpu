@@ -453,11 +453,7 @@ class WebGPUModelRunner:
                             d.selected_token_ranks.to(torch.int32),
                         ))
                     else:
-                        pieces.append(LogprobsTensors(
-                            torch.zeros(1, max_k, dtype=torch.int32),
-                            torch.full((1, max_k), -float("inf"), dtype=torch.float32),
-                            torch.zeros(1, dtype=torch.int32),
-                        ))
+                        pieces.append(LogprobsTensors.empty_cpu(1, max_k))
                 built_logprobs = _stack(pieces)
 
         out = ModelRunnerOutput(

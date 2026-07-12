@@ -638,10 +638,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         # ── MoE expert FFN (all-GPU: router + top-K selection + expert FFNs) ───
         if self.is_moe:
             inter_moe = self.moe_intermediate_size     # MoE expert intermediate size
-            if f"{p}.router.proj.weight" not in self.weights:
-                raise RuntimeError(
-                    f"L{layer_idx}: is_moe=True but router.proj.weight missing"
-                )
             dev = self.wgpu_device.wgpu_device
             router_logits_buf = self._router_logit_buf
             pfn2_w = self.weights.get(f"{p}.pre_feedforward_layernorm_2.weight")

@@ -25,7 +25,7 @@ def _validate_gate_consts(extra_gate_consts: dict) -> None:
     if not {"K", "N"}.isdisjoint(extra_gate_consts):
         raise ValueError(
             f"extra_gate_consts must not contain 'K' or 'N'; "
-            f"got {list(extra_gate_consts.keys())}"
+            f"got {sorted({'K', 'N'} & extra_gate_consts.keys())}"
         )
 
 
