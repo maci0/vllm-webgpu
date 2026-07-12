@@ -14,74 +14,13 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
-# Import-time source-anchor assertions for the three formulas transcribed from
-# vLLM's Gemma4DecoderLayer and Gemma4Attention into _build_layer_params_from_config.
-# If any upstream formula changes, these assertions fire on import rather than
-# silently producing wrong per-layer dimensions. OSError is caught for stripped
-# installs where getsource() is unavailable; ImportError propagates intentionally.
-try:
-    import inspect as _inspect
-    from vllm.model_executor.models.gemma4 import (
-        Gemma4Attention as _Gemma4Attention,
-        Gemma4DecoderLayer as _Gemma4DecoderLayer,
-    )
-    _decoder_src = _inspect.getsource(_Gemma4DecoderLayer.__init__)
-    _attn_src = _inspect.getsource(_Gemma4Attention.__init__)
-
-    # Anchor (1): first_kv_shared boundary and chained comparison guard
-    # (Gemma4DecoderLayer.__init__ ~L599-602 in vLLM 0.24)
-    # Mirrors: `num_layers - getattr(model_config, 'num_kv_shared_layers', 0)` and
-    # `(first_kv_shared > 0) and (i >= first_kv_shared)`.
-    _A = "first_kv_shared_layer_idx = config.num_hidden_layers - getattr("
-    assert _A in _decoder_src, (
-        "Gemma4DecoderLayer.__init__ first_kv_shared boundary has changed "
-        "(expected near vLLM 0.24 L599). Formula (1) in _build_layer_params_from_config "
-        "mirrors `num_layers - getattr(model_config, 'num_kv_shared_layers', 0)`. "
-        "Review and update the mirror and this anchor."
-    )
-    del _A
-    _A = "is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0"
-    assert _A in _decoder_src, (
-        "Gemma4DecoderLayer.__init__ chained comparison `>= ... > 0` for KV-sharing "
-        "has changed (expected near vLLM 0.24 L602). The `(first_kv_shared > 0) and "
-        "(i >= first_kv_shared)` guard in _build_layer_params_from_config must match. "
-        "Update the is_kv_shared check and this anchor."
-    )
-    del _A
-
-    # Anchor (2): reversed-search KV-sharing target
-    # (Gemma4Attention.__init__ ~L469-471 in vLLM 0.24)
-    # Mirrors: `len(_prev) - 1 - _prev[::-1].index(lt)`.
-    _A = "len(prev_layers) - 1 - prev_layers[::-1].index(current_layer_type)"
-    assert _A in _attn_src, (
-        "Gemma4Attention.__init__ reversed-search KV-sharing formula has changed "
-        "(expected near vLLM 0.24 L469-471). Formula (2) in _build_layer_params_from_config "
-        "uses `len(_prev) - 1 - _prev[::-1].index(lt)`. "
-        "Review and update the mirror and this anchor."
-    )
-    del _A
-
-    # Anchor (3): head_dim and num_kv_heads selection by attention type
-    # (Gemma4DecoderLayer.__init__ ~L562-580 in vLLM 0.24)
-    # Mirrors: global_head_dim for full_attention; num_global_key_value_heads when k_eq_v.
-    _A = 'head_dim = getattr(config, "global_head_dim", config.head_dim)'
-    assert _A in _decoder_src, (
-        "Gemma4DecoderLayer.__init__ global_head_dim selection has changed "
-        "(expected near vLLM 0.24 L563). Formula (3) in _build_layer_params_from_config "
-        "sets `hd_l = global_hd` for full_attention. Update the mirror and this anchor."
-    )
-    del _A
-    _A = '"num_global_key_value_heads", config.num_key_value_heads'
-    assert _A in _decoder_src, (
-        "Gemma4DecoderLayer.__init__ num_global_key_value_heads fallback has changed "
-        "(expected near vLLM 0.24 L576-577). Formula (3) in _build_layer_params_from_config "
-        "uses `global_kv if k_eq_v else default_kv`. Update the mirror and this anchor."
-    )
-    del _A
-
-    del _inspect, _Gemma4Attention, _Gemma4DecoderLayer, _decoder_src, _attn_src
-except OSError:
-    pass
+# Three formulas transcribed from vLLM v0.24.0 into _gemma4_layer_params below.
+# Pinned source locations in vllm/model_executor/models/gemma4.py:
+#   (1) Gemma4DecoderLayer.__init__ ~L601: first_kv_shared boundary
+#   (2) Gemma4Attention.__init__    ~L469-471: reversed-search KV-sharing target
+#   (3) Gemma4DecoderLayer.__init__ ~L561-577: head_dim / num_kv_heads by attention type
+# When upgrading past v0.24.0, re-audit these three locations and update _gemma4_layer_params.
+# Unit tests in tests/test_gemma4_layer_params.py verify the formulas against vLLM source.
 
 
 class _RopeConsts(NamedTuple):
@@ -99,54 +38,43 @@ class _RopeConsts(NamedTuple):
     freq_dim: int
 
 
-def _build_layer_params_from_config(
-    model_config,
-    num_layers: int,
+def _gemma4_layer_params(
+    layer_types: list,
+    num_q_heads: int,
+    default_hd: int,
+    default_kv: int,
+    global_hd: int,
+    global_kv: int,
+    k_eq_v: bool,
+    intermediate_size: int,
+    num_kv_shared_layers: int,
+    use_dwm: bool,
 ) -> list[dict]:
-    """Build per-layer attention/FFN params from a Gemma4 safetensors config.
+    """Apply the three vLLM Gemma4 per-layer parameter formulas (pure function).
 
-    Reads all required fields directly from model_config, applying the same
-    defaults as the caller's getattr chains. Transcribes three formulas from
-    vLLM's Gemma4 model implementation. Pin these line references when upgrading
-    vLLM:
+    Pinned to vLLM v0.24.0 (github.com/vllm-project/vllm/releases/tag/v0.24.0).
+    Formula locations in vllm/model_executor/models/gemma4.py:
+      (1) first_kv_shared boundary + chained comparison guard: ~L601-602
+      (2) reversed-search KV-sharing target: ~L469-471
+      (3) head_dim / num_kv_heads / has_v_proj by attention type: ~L561-577
 
-    (1) first_kv_shared boundary:
-        vLLM vllm/model_executor/models/gemma4.py line 601 (Gemma4DecoderLayer.__init__)
-        ``self.num_layers - getattr(model_config, 'num_kv_shared_layers', 0)``
-
-    (2) kv_shared_target reversed-search generator:
-        vLLM vllm/model_executor/models/gemma4.py lines 467-474
-        ``prev_layers[::-1].index(current_layer_type)`` (raises ValueError if not found)
-
-    (3) head_dim / num_kv_heads / has_v_proj per attention type:
-        vLLM vllm/model_executor/models/gemma4.py lines 561-577
-        full_attention uses global_head_dim + num_global_key_value_heads when
-        k_eq_v=True (laptop variant), or global_head_dim + num_key_value_heads
-        when k_eq_v=False (standard variant); sliding_attention uses default
-        head_dim + num_key_value_heads.
+    Tested directly in tests/test_gemma4_layer_params.py against the vLLM
+    reference implementation.
     """
-    num_q_heads       = model_config.num_attention_heads
-    intermediate_size = model_config.intermediate_size
-    layer_types       = model_config.layer_types
-    default_hd = getattr(model_config, "head_dim", model_config.hidden_size // num_q_heads)
-    default_kv        = model_config.num_key_value_heads
-    global_hd        = getattr(model_config, "global_head_dim", default_hd)
-    global_kv        = getattr(model_config, "num_global_key_value_heads", default_kv)
-    k_eq_v           = getattr(model_config, "attention_k_eq_v", False)
+    num_layers = len(layer_types)
 
-    # (1) vLLM gemma4.py L601 (Gemma4DecoderLayer)
-    # Mirror vLLM's chained comparison: is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
-    # The > 0 guard suppresses doubling when num_kv_shared_layers == num_hidden_layers (first_kv_shared=0),
-    # matching Gemma4DecoderLayer line 602 exactly.
-    first_kv_shared = num_layers - getattr(model_config, "num_kv_shared_layers", 0)
-    use_dwm = getattr(model_config, "use_double_wide_mlp", False)
+    # (1) first_kv_shared boundary (Gemma4DecoderLayer.__init__ ~L601)
+    # The > 0 guard in the chained comparison suppresses sharing when
+    # num_kv_shared_layers == num_hidden_layers (first_kv_shared would be 0).
+    first_kv_shared = num_layers - num_kv_shared_layers
 
     lp: list[dict] = []
     for i, lt in enumerate(layer_types):
+        # Mirrors: is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
         is_kv_shared = (first_kv_shared > 0) and (i >= first_kv_shared)
         inter_l = intermediate_size * (2 if use_dwm and is_kv_shared else 1)
 
-        # (2) vLLM gemma4.py L467-474: find last non-shared layer of the same type.
+        # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
         if is_kv_shared:
             _prev = layer_types[:first_kv_shared]
             try:
@@ -159,7 +87,7 @@ def _build_layer_params_from_config(
         else:
             kv_shared_target = -1
 
-        # (3) vLLM gemma4.py L561-577: select dims by attention type.
+        # (3) Select dims by attention type (Gemma4DecoderLayer.__init__ ~L561-577)
         if lt == "full_attention":
             hd_l = global_hd
             nkv_l = global_kv if k_eq_v else default_kv
@@ -180,6 +108,43 @@ def _build_layer_params_from_config(
             "is_kv_shared":      is_kv_shared,
             "kv_shared_target":  kv_shared_target,
         })
+
+    return lp
+
+
+def _build_layer_params_from_config(
+    model_config,
+    num_layers: int,
+) -> list[dict]:
+    """Build per-layer attention/FFN params from a Gemma4 safetensors config.
+
+    Extracts the required fields from model_config (applying the same getattr
+    defaults as vLLM's constructors) and delegates to _gemma4_layer_params for
+    the actual formula application.
+    """
+    num_q_heads       = model_config.num_attention_heads
+    intermediate_size = model_config.intermediate_size
+    layer_types       = model_config.layer_types
+    default_hd = getattr(model_config, "head_dim", model_config.hidden_size // num_q_heads)
+    default_kv        = model_config.num_key_value_heads
+    global_hd         = getattr(model_config, "global_head_dim", default_hd)
+    global_kv         = getattr(model_config, "num_global_key_value_heads", default_kv)
+    k_eq_v            = getattr(model_config, "attention_k_eq_v", False)
+    num_kv_shared_layers = getattr(model_config, "num_kv_shared_layers", 0)
+    use_dwm           = getattr(model_config, "use_double_wide_mlp", False)
+
+    lp = _gemma4_layer_params(
+        layer_types=layer_types,
+        num_q_heads=num_q_heads,
+        default_hd=default_hd,
+        default_kv=default_kv,
+        global_hd=global_hd,
+        global_kv=global_kv,
+        k_eq_v=k_eq_v,
+        intermediate_size=intermediate_size,
+        num_kv_shared_layers=num_kv_shared_layers,
+        use_dwm=use_dwm,
+    )
 
     # Cross-check: when the k_eq_v (laptop) variant is active, full_attention
     # layers use global_kv heads. Verify that the stored kv_dim is consistent

@@ -220,24 +220,14 @@ CONFIGS = {
 # Parametrised comparison test
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("name", list(CONFIGS))
-def test_build_layer_params_matches_vllm_reference(name):
-    """Per-layer head_dim / num_kv_heads / KV-sharing from
-    _build_layer_params_from_config must match the vLLM reference formulas
-    for every combination of Gemma4 config flags."""
-    from vllm_webgpu.models.gemma4 import _build_layer_params_from_config
-
-    cfg = CONFIGS[name]
+def _assert_layer_params_match_reference(cfg, actual):
+    """Shared assertion helper: verify actual params match the vLLM reference."""
     num_layers = cfg.num_hidden_layers
-
     expected = _vllm_reference_layer_params(cfg, num_layers)
-    actual = _build_layer_params_from_config(cfg, num_layers)
-
     assert len(actual) == num_layers
-
     for i, (exp, got) in enumerate(zip(expected, actual)):
         lt = cfg.layer_types[i]
-        ctx = f"layer {i} (type={lt!r}, config={name!r})"
+        ctx = f"layer {i} (type={lt!r})"
         assert got["head_dim"] == exp["head_dim"], (
             f"{ctx}: head_dim {got['head_dim']} != vLLM {exp['head_dim']}"
         )
@@ -253,15 +243,46 @@ def test_build_layer_params_matches_vllm_reference(name):
         assert got["intermediate_size"] == exp["intermediate_size"], (
             f"{ctx}: intermediate_size {got['intermediate_size']} != vLLM {exp['intermediate_size']}"
         )
-        # Derived dims must be consistent
-        assert got["q_dim"] == cfg.num_attention_heads * exp["head_dim"], (
-            f"{ctx}: q_dim mismatch"
-        )
-        assert got["kv_dim"] == exp["num_kv_heads"] * exp["head_dim"], (
-            f"{ctx}: kv_dim mismatch"
-        )
-        # has_v_proj: full_attention with k_eq_v has no separate V
+        assert got["q_dim"] == cfg.num_attention_heads * exp["head_dim"], f"{ctx}: q_dim mismatch"
+        assert got["kv_dim"] == exp["num_kv_heads"] * exp["head_dim"], f"{ctx}: kv_dim mismatch"
         if lt == "full_attention" and cfg.attention_k_eq_v:
             assert got["has_v_proj"] is False, f"{ctx}: expected has_v_proj=False for k_eq_v"
         else:
             assert got["has_v_proj"] is True, f"{ctx}: expected has_v_proj=True"
+
+
+@pytest.mark.parametrize("name", list(CONFIGS))
+def test_build_layer_params_matches_vllm_reference(name):
+    """Per-layer head_dim / num_kv_heads / KV-sharing from
+    _build_layer_params_from_config must match the vLLM reference formulas
+    for every combination of Gemma4 config flags."""
+    from vllm_webgpu.models.gemma4 import _build_layer_params_from_config
+
+    cfg = CONFIGS[name]
+    actual = _build_layer_params_from_config(cfg, cfg.num_hidden_layers)
+    _assert_layer_params_match_reference(cfg, actual)
+
+
+@pytest.mark.parametrize("name", list(CONFIGS))
+def test_gemma4_layer_params_matches_vllm_reference(name):
+    """_gemma4_layer_params (the extracted pure formula helper) must produce the
+    same results as the vLLM reference for every config combination."""
+    from vllm_webgpu.models.gemma4 import _gemma4_layer_params
+
+    cfg = CONFIGS[name]
+    num_layers = cfg.num_hidden_layers
+    default_hd = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
+    default_kv = cfg.num_key_value_heads
+    actual = _gemma4_layer_params(
+        layer_types=cfg.layer_types,
+        num_q_heads=cfg.num_attention_heads,
+        default_hd=default_hd,
+        default_kv=default_kv,
+        global_hd=getattr(cfg, "global_head_dim", default_hd),
+        global_kv=getattr(cfg, "num_global_key_value_heads", default_kv),
+        k_eq_v=getattr(cfg, "attention_k_eq_v", False),
+        intermediate_size=cfg.intermediate_size,
+        num_kv_shared_layers=getattr(cfg, "num_kv_shared_layers", 0),
+        use_dwm=getattr(cfg, "use_double_wide_mlp", False),
+    )
+    _assert_layer_params_match_reference(cfg, actual)
