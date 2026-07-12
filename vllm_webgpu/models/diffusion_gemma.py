@@ -661,14 +661,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
                 rw_ = f"{p}.router.proj.weight"
                 uq_rw = self._uq_for_key(rw_)
-                # Router matmul accumulates in f16 precision (~3.3 decimal digits).
-                # The upcast to f32 before top-K prevents further rounding, but does
-                # not recover precision lost during the matmul itself. vLLM's GateLinear
-                # uses native f32 multiply-accumulate throughout, so expert selections
-                # may differ from vLLM for expert pairs whose logits are within one
-                # f16 ULP (~0.001 at magnitude 1). For a 128-expert router this is a
-                # known divergence from the reference path.
-                rlogit_f16 = self._router_logit_f16_buf
                 if num_tokens > 1 and uq_rw not in (0, 3):
                     raise RuntimeError(
                         f"L{layer_idx}: router.proj.weight quant uq={uq_rw} is not "
@@ -678,13 +670,31 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         f"produces deterministic wrong expert assignments (always "
                         f"experts 0..K-1), not uniform routing."
                     )
-                self._gemm_adaptive(router_proj_in, rw_, rlogit_f16, hidden, self.num_experts, num_tokens)
-                # Upcast to f32 so top-K comparisons don't compound f16 rounding.
-                n_logits = num_tokens * self.num_experts
-                self._dispatch("f16_to_f32",
-                               [rlogit_f16, router_logits_buf],
-                               {"N_ELEMS": n_logits},
-                               (cdiv(n_logits, 256), 1, 1))
+                if num_tokens == 1:
+                    # Single-token decode: matmul_quant_f32out writes the accumulated
+                    # f32 dot-product directly into the f32 logit buffer, matching
+                    # vLLM GateLinear's contract of f32 router logits.  The f16
+                    # intermediate that matmul_quant uses would lose ~0.001 ULP of
+                    # precision, enough to change top-K selection for closely ranked
+                    # expert pairs in a 128-expert router.
+                    sc_buf = self._scales_buf(rw_, uq_rw, self._dummy_buf)
+                    self._dispatch("matmul_quant_f32out",
+                                   [router_proj_in, self.weights[rw_], sc_buf, router_logits_buf],
+                                   {"K": hidden, "N": self.num_experts, "USE_QUANT": uq_rw,
+                                    **self._quant_extra(rw_.removesuffix(".weight"), uq_rw)},
+                                   (self.num_experts, 1, 1))
+                else:
+                    # Batch prefill: matmul_quant_mr4 writes f16; upcast to f32 before
+                    # top-K.  This path only reaches here for uq in (0, 3) — the
+                    # RuntimeError above guards everything else.  A true f32-output batch
+                    # matmul shader does not yet exist, so the f16 intermediate remains.
+                    rlogit_f16 = self._router_logit_f16_buf
+                    self._batch_gemm(router_proj_in, rw_, rlogit_f16, hidden, self.num_experts, num_tokens)
+                    n_logits = num_tokens * self.num_experts
+                    self._dispatch("f16_to_f32",
+                                   [rlogit_f16, router_logits_buf],
+                                   {"N_ELEMS": n_logits},
+                                   (cdiv(n_logits, 256), 1, 1))
                 # GPU top-K: per-token top-K selection from [T, N_EXPERTS] logits.
                 # Dispatch (num_tokens, 1, 1): each workgroup handles one token's logits.
                 self._dispatch("topk_sort",
