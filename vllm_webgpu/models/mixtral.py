@@ -588,9 +588,13 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             w2_key = f"{ep}.{down_key}.weight"
 
             if any(k not in self.weights for k in (w1_key, w3_key, w2_key)):
-                logger.warning("L%02d expert %d weights not loaded, skipping",
-                               layer_idx, exp_idx)
-                continue
+                missing = [k for k in (w1_key, w3_key, w2_key) if k not in self.weights]
+                raise RuntimeError(
+                    f"L{layer_idx:02d} expert {exp_idx}: weights not loaded: {missing}. "
+                    "All top-k expert weights must be present for correct MoE output. "
+                    "Skipping a selected expert loses its softmax probability mass without "
+                    "renormalizing the remaining weights, producing silently wrong outputs."
+                )
 
             self._dispatch_expert_gate_up(normed_x, w1_key, w3_key, inter, extra_gate_consts)
             self._dispatch_expert_down(ep, down_key, w2_key, k_idx, inter)
