@@ -67,17 +67,16 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Uses the public building-block functions from vllm.model_executor.layers.
-    rotary_embedding.common (yarn_find_correction_range, yarn_linear_ramp_mask,
-    yarn_get_mscale) to inline the same arithmetic as
-    YaRNScalingRotaryEmbedding._compute_inv_freq without depending on that
-    private method. The private-API dependency would cause a silent runtime
-    break if vLLM ever restructures _compute_inv_freq; the public functions
-    are part of the stable API surface.
+    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via a minimal
+    __new__ stub so any future changes to that private method (new correction
+    terms, changed blend weights, etc.) are inherited automatically without
+    silent numerical divergence.  The stub sets only the seven instance
+    attributes the method reads; super().__init__() is never called so the
+    expensive cos/sin cache build is skipped.
 
     tests/test_yarn_freqs.py::test_yarn_freqs_matches_vllm asserts numerical
     parity against get_rope() output; run it after each vLLM bump to catch
-    any drift in the public-function arithmetic.
+    any regressions.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -118,8 +117,6 @@ def compute_yarn_freqs(
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
     # Defaults match YaRNScalingRotaryEmbedding.__init__ keyword defaults exactly
     # (verified vLLM 0.24, rotary_embedding/__init__.py:250-256).
-    # tests/test_yarn_freqs.py::test_yarn_freqs_matches_vllm asserts numerical parity
-    # against _compute_inv_freq; run it after each vLLM bump to catch drift.
     beta_fast            = int(rope_scaling.get("beta_fast", 32))
     beta_slow            = int(rope_scaling.get("beta_slow", 1))
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
@@ -127,31 +124,27 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
     )
 
-    # Inline the _compute_inv_freq arithmetic using the public building blocks.
-    # Matches YaRNScalingRotaryEmbedding._compute_inv_freq exactly (verified vLLM 0.24).
-    pos_freqs = rope_theta ** (
-        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
-    )
-    inv_freq_extrapolation = 1.0 / pos_freqs
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
-    low, high = yarn_find_correction_range(
-        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
-    )
-    inv_freq_mask = (
-        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
-    ) * extrapolation_factor
-    inv_freq = (
-        inv_freq_interpolation * (1 - inv_freq_mask)
-        + inv_freq_extrapolation * inv_freq_mask
-    ).numpy()
+    # Build a minimal stub so we can delegate to vLLM's private
+    # _compute_inv_freq without triggering the expensive cos/sin cache
+    # build that super().__init__() performs.  The method only reads seven
+    # instance attributes; set exactly those and nothing else.
+    stub = YaRNScalingRotaryEmbedding.__new__(YaRNScalingRotaryEmbedding)
+    stub.base = rope_theta
+    stub.rotary_dim = rotary_dim
+    stub.max_position_embeddings = orig_ctx
+    stub.beta_fast = beta_fast
+    stub.beta_slow = beta_slow
+    stub.extrapolation_factor = extrapolation_factor
+    stub.truncate = truncate
+    inv_freq = stub._compute_inv_freq(factor).numpy()
 
-    # mscale from yarn_scaling_rope.py:40-43 (verify on each vLLM bump).
+    # mscale uses the public yarn_get_mscale — keep inline so it stays bound
+    # to the imported function, not a stub attribute.
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
