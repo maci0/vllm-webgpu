@@ -657,7 +657,7 @@ class WebGPUModelRunner:
                     # tok_ids_param[i+1] stay aligned regardless of num_computed.
                     pt = _compute_prompt_logprobs(
                         last_logits,
-                        chunk_toks + [first_decode_tok],
+                        chunk_toks,
                         num_prompt_logprobs,
                     )
                     if pt is not None:
