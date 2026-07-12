@@ -118,19 +118,23 @@ try:
         "before removing this assertion."
     )
     del _MLP_INTERMEDIATE_SIZE_ANCHOR
-    # Presence check: if vLLM ever adds _resolve_intermediate_size to the upstream
-    # module, the local copy becomes dead weight. This assertion fires at import time
-    # so the redundancy is caught before it silently drifts out of sync.
-    import vllm.model_executor.models.nemotron_h as _nem_mod
-    assert not hasattr(_nem_mod, "_resolve_intermediate_size"), (
-        "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'. "
-        "Remove the local copy in this file and import it from there instead. "
-        "See vllm/model_executor/models/nemotron_h.py for the authoritative implementation."
-    )
-    del _nem_mod
     del _inspect, _NemotronHMLPDecoder, _mlp_init_src
-except (ImportError, OSError):
+except OSError:
+    # OSError: source not available (e.g. stripped install, .pyc-only). Skip anchor
+    # checks but still run the presence check below. ImportError is intentionally not
+    # caught here: a broken vLLM install should propagate rather than be silently ignored.
     pass
+
+# Presence check: if vLLM ever adds _resolve_intermediate_size to the upstream module,
+# the local copy becomes dead weight. Kept outside the OSError guard above so it always
+# runs when the module can be imported, regardless of whether getsource() succeeded.
+import vllm.model_executor.models.nemotron_h as _nem_mod
+assert not hasattr(_nem_mod, "_resolve_intermediate_size"), (
+    "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'. "
+    "Remove the local copy in this file and import it from there instead. "
+    "See vllm/model_executor/models/nemotron_h.py for the authoritative implementation."
+)
+del _nem_mod
 
 # conv_dim is computed here from config params using the same formula as MambaMixer2
 # (mamba_mixer2.py L313: conv_dim = intermediate_size + 2 * groups_ssm_state_size).
