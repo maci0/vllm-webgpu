@@ -26,7 +26,7 @@ MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
 
 if TYPE_CHECKING:
     import wgpu
-    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheGroupSpec, KVCacheSpec, KVCacheTensor
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.v1.worker import WebGPUWorker
 

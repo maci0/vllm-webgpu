@@ -48,6 +48,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 "sliding_attention. Pass layer_types in the model config."
             )
         self._layer_types: list[str] = _layer_types or []
+        if 'sliding_attention' in self._layer_types and getattr(model_config, 'sliding_window', None) is None:
+            raise ValueError(
+                "GptOssWebGPUModel: layer_types contains sliding_attention but "
+                "sliding_window is not set; _ctx_window would silently use full attention."
+            )
         # SwigluOAI: x*sigmoid(1.702*x) with (up+1) bias; optional symmetric up clamp when swiglu_limit > 0
         self._clamp_extra: dict = {"ACTIVATION": 1, "UP_BIAS": 1.0}
         if self._swiglu_limit > 0:

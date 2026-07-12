@@ -22,7 +22,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Use vLLM's config loader so Mistral-format repos (params.json) are handled correctly.
     from transformers import AutoTokenizer
     from vllm.transformers_utils.config import get_config as _vllm_get_config, get_hf_text_config
-    _GREEDY_TEMP = 1e-5  # greedy-detection threshold; stable semantic constant
     cfg = _vllm_get_config(model_dir, trust_remote_code=True)
 
     arch = (cfg.architectures or ["LlamaForCausalLM"])[0]
@@ -48,7 +47,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nInitializing WebGPU device...")
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.utils import SHADERS_DIR, sample_token
+    from vllm_webgpu.utils import SHADERS_DIR, sample_token, _GREEDY_TEMP
     from vllm_webgpu.config import get_config
     from vllm.utils.math_utils import cdiv
 

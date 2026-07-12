@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched
+from itertools import batched, chain
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -415,7 +415,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         matching gated_delta_net_state_shape. The shader stores state in the same
         layout, so no transposition is needed on readback.
         """
-        bufs = [("conv", i, b) for i, b in self._conv_gpu.items()] + [("ssm", i, b) for i, b in self._ssm_gpu.items()]
+        bufs = list(chain(
+            (("conv", i, b) for i, b in self._conv_gpu.items()),
+            (("ssm", i, b) for i, b in self._ssm_gpu.items()),
+        ))
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:

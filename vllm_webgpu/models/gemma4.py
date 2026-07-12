@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from functools import partial
 from itertools import batched
 from typing import TYPE_CHECKING, NamedTuple
@@ -376,7 +375,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             _freq_dim   = _hd if _rope_type == "proportional" else _rotary_dim
             self._rope_consts.append(_RopeConsts(
                 rope_base=_rope_base,
-                ln_rope_base=math.log(_rope_base),
+                ln_rope_base=float(np.log(_rope_base)),
                 use_freq_buf=_use_freq,
                 rotary_dim=_rotary_dim,
                 freq_dim=_freq_dim,

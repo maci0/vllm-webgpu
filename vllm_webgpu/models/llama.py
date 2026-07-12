@@ -103,9 +103,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             a non-standard qkv buffer (e.g. Qwen35 GDN layers) pass this to
             avoid allocating the standard-sized buffer only to immediately replace it.
         """
-        T = 1  # decode: num_tokens == 1
         H = self.hidden_size
-        I = self.intermediate_size
+        inter = self.intermediate_size
         Q = self.num_q_heads * self.head_dim
         KV = self.num_kv_heads * self.head_dim
 
@@ -115,35 +114,35 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # deployments that extend the KV cache beyond max_position_embeddings at runtime.
         max_bt_blocks = max(4096, cdiv(max_ctx, self.block_size))
         self._pre: dict[str, "WebGPUBuffer"] = {
-            "ids":      self._make_buf(T * 4),              # [1] uint32 token id
-            "pos":      self._make_buf(T * 4),              # [1] uint32 position
-            "slot_map": self._make_buf(T * 4),              # [1] uint32 physical slot
+            "ids":      self._make_buf(4),              # [1] uint32 token id
+            "pos":      self._make_buf(4),              # [1] uint32 position
+            "slot_map": self._make_buf(4),              # [1] uint32 physical slot
             "bt":       self._make_buf(max_bt_blocks * 4),  # [max_blocks] uint32 block table
-            "x":        self._make_buf(T * H * 2),          # [1, H] f16 residual / embedding
-            "norm_out": self._make_buf(T * H * 2),          # [1, H] f16 final norm output
-            "logits":   self._make_buf(T * self.vocab_size * 2),  # [1, vocab] f16 logits
+            "x":        self._make_buf(H * 2),          # [1, H] f16 residual / embedding
+            "norm_out": self._make_buf(H * 2),          # [1, H] f16 final norm output
+            "logits":   self._make_buf(self.vocab_size * 2),  # [1, vocab] f16 logits
         }
 
         self._sc: dict[str, "WebGPUBuffer"] = {
-            "normed":  self._make_buf(T * H * 2),
-            "qkv_buf": self._make_buf(qkv_size if qkv_size is not None else T * (Q + 2 * KV) * 2),  # [Q|K|V] f16
-            "q_buf":       self._make_buf(T * Q * 2),
-            "k_buf":       self._make_buf(T * KV * 2),
-            "v_buf":       self._make_buf(T * KV * 2),
-            "q_rope":      self._make_buf(T * Q * 2),
-            "k_rope":      self._make_buf(T * KV * 2),
-            "attn_out":   self._make_buf(T * Q * 2),
-            "o_proj_out": self._make_buf(T * H * 2),
-            "ffn_normed": self._make_buf(T * H * 2),
-            "gate_buf":   self._make_buf(T * I * 2),
-            "up_buf":     self._make_buf(T * I * 2),
-            "ffn_act":    self._make_buf(T * I * 2),
-            "ffn_out":    self._make_buf(T * H * 2),
+            "normed":  self._make_buf(H * 2),
+            "qkv_buf": self._make_buf(qkv_size if qkv_size is not None else (Q + 2 * KV) * 2),  # [Q|K|V] f16
+            "q_buf":       self._make_buf(Q * 2),
+            "k_buf":       self._make_buf(KV * 2),
+            "v_buf":       self._make_buf(KV * 2),
+            "q_rope":      self._make_buf(Q * 2),
+            "k_rope":      self._make_buf(KV * 2),
+            "attn_out":   self._make_buf(Q * 2),
+            "o_proj_out": self._make_buf(H * 2),
+            "ffn_normed": self._make_buf(H * 2),
+            "gate_buf":   self._make_buf(inter * 2),
+            "up_buf":     self._make_buf(inter * 2),
+            "ffn_act":    self._make_buf(inter * 2),
+            "ffn_out":    self._make_buf(H * 2),
             # Three hidden-state buffers: ping-pong between h0/h1/h2 so that
             # x_buf, residual, and out are always distinct within a single layer.
-            "h0":         self._make_buf(T * H * 2),
-            "h1":         self._make_buf(T * H * 2),
-            "h2":         self._make_buf(T * H * 2),
+            "h0":         self._make_buf(H * 2),
+            "h1":         self._make_buf(H * 2),
+            "h2":         self._make_buf(H * 2),
         }
         # Index into hidden-state rotation: the layer output cycles h0 -> h1 -> h2 -> h0 ...
         self._hstate: int = 0
@@ -172,12 +171,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             else getattr(self.model_config, "rope_scaling", None)
             or {}
         )
-        # vLLM's patch_rope_parameters() normalizes the legacy "type" key to
-        # "rope_type" before __init__ runs, so rope_scaling.get("type", "")
-        # is a dead fallback for any model loaded through the standard vLLM
-        # config pipeline. It is kept here only as a safety net for callers
-        # that bypass vLLM's patching (e.g. run_inference.py calling _vllm_get_config
-        # directly without patch_rope_parameters).
+        # Dead fallback when rope_parameters is set (patch_rope_parameters normalizes
+        # that dict before __init__). Still live for models using the older
+        # rope_scaling.type key, which vLLM does not patch.
         rope_type = rope_scaling.get("rope_type", "") or rope_scaling.get("type", "")
 
         if rope_type != "yarn":

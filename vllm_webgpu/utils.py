@@ -35,6 +35,12 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
 )
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
+# Greedy-detection threshold: temperatures below this value trigger argmax
+# sampling instead of stochastic sampling. Values < _GREEDY_TEMP produce
+# greedy argmax in sample_token. run_inference.py imports this constant to
+# stay in sync with any future threshold changes.
+_GREEDY_TEMP: float = 1e-5
+
 
 @lru_cache(maxsize=16)
 def zero_bytes(n: int) -> bytes:

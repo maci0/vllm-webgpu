@@ -49,6 +49,13 @@ def _unpack_nibbles_std4(packed: "np.ndarray", out_rows: int, in_cols: int) -> "
 
     packed: shape (out_rows, in_cols // 8), dtype int32 or uint32.
     Returns int32 array of shape (out_rows, in_cols) with values in [0, 15].
+
+    Note: vLLM provides vllm.model_executor.layers.quantization.utils.quant_utils.
+    unpack_quantized_values_into_int32, which covers the same unpacking but
+    requires a ScalarType argument and returns a torch.Tensor. Both call sites
+    (_dequant_gptq and _dequant_mlx_int4) operate in numpy with no torch
+    dependency at that point, so the numpy broadcast here avoids two array
+    round-trips (numpy->torch->numpy) for no benefit. Do not consolidate.
     """
     return ((packed[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, in_cols)
 
@@ -514,34 +521,6 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     return w_f32.T.astype(np.float16)  # (N, K)
 
 
-def _extract_modelopt_quant_algo_fallback(cfg: dict | None) -> str | None:
-    """Fallback for ModelOptFp8Config._extract_modelopt_quant_algo when the real
-    import is unavailable (modelopt.py carries top-level CUDA imports that abort
-    on WebGPU).
-
-    Mirrors the upstream body with one deliberate omission: the quant_method
-    startswith('modelopt') guard is skipped because the call site already checks
-    it before invoking this function. The None-input guard is present to match
-    the upstream contract.
-
-    # sync from vllm/model_executor/layers/quantization/modelopt.py
-    #   _extract_modelopt_quant_algo, lines 244-262
-    # On each vLLM bump verify the upstream body still matches:
-    #   sed -n '244,262p' .venv/lib/python*/site-packages/vllm/\
-    #     model_executor/layers/quantization/modelopt.py | sha256sum
-    # Expected: f11d6b95201b43b406eaf265c9b23e9d6416da91b1a3906c462e9a7d4f822e46
-    # If the hash changed, diff the upstream method against this function body
-    # and update accordingly.
-    """
-    if cfg is None:
-        return None
-    if "quantization" in cfg:
-        quant_section = cfg["quantization"]
-        if isinstance(quant_section, dict):
-            return str(quant_section.get('quant_algo', '')).upper()
-        return None
-    return str(cfg.get('quant_algo', '')).upper()
-
 
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
@@ -573,9 +552,20 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                 except (ImportError, OSError):
                     # modelopt.py has top-level CUDA imports (mxfp8_utils,
                     # marlin_utils, flashinfer_utils, fused_moe) that crash on
-                    # WebGPU. Use the standalone fallback that mirrors the
-                    # upstream method body (see _extract_modelopt_quant_algo_fallback).
-                    algo = _extract_modelopt_quant_algo_fallback(cfg) or ''
+                    # WebGPU. Inline the extraction logic from
+                    # ModelOptFp8Config._extract_modelopt_quant_algo
+                    # (vllm/model_executor/layers/quantization/modelopt.py, lines 244-262).
+                    # The startswith('modelopt') guard is already checked above.
+                    # sync hash: f11d6b95201b43b406eaf265c9b23e9d6416da91b1a3906c462e9a7d4f822e46
+                    # On each vLLM bump: sed -n '244,262p' .venv/lib/python*/site-packages/vllm/
+                    #   model_executor/layers/quantization/modelopt.py | sha256sum
+                    if cfg is None:
+                        algo = ''
+                    elif "quantization" in cfg:
+                        _qs = cfg["quantization"]
+                        algo = str(_qs.get('quant_algo', '')).upper() if isinstance(_qs, dict) else ''
+                    else:
+                        algo = str(cfg.get('quant_algo', '')).upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
