@@ -710,6 +710,7 @@ class WebGPUModelRunner:
                         f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
                         "use a positive integer instead"
                     )
+                num_prompt_logprobs = sp.prompt_logprobs if sp is not None else None
 
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.
@@ -760,7 +761,7 @@ class WebGPUModelRunner:
                     slots_ctx = (bt_ctx[blk_idx_ctx].astype(np.int64) * block_size + abs_idx % block_size).tolist()
                     _ctx_pm = SimpleNamespace(slot_mapping=slots_ctx, block_tables=[bt_ctx], max_decode_seq_len=pos + T_ctx)
 
-                    self.model._greedy_decode = (sp is None or sp.sampling_type == SamplingType.GREEDY) and num_logprobs is None
+                    self.model._greedy_decode = (sp is None or sp.sampling_type == SamplingType.GREEDY) and num_logprobs is None and num_prompt_logprobs is None
 
                     # Restore recurrent state from after the previous chunk. The
                     # logic mirrors the decode path: restore saved state when
@@ -815,6 +816,31 @@ class WebGPUModelRunner:
                         )
 
                     lp_data = self._extract_logprob_data(ctx_logits, -1, stok, num_logprobs, rid)
+
+                    # Compute prompt logprobs for this context-phase chunk, mirroring
+                    # the new_reqs path. Position i uses logits[i] to evaluate
+                    # prompt_token_ids[pos + i + 1], producing T_ctx - 1 rows.
+                    if num_prompt_logprobs is not None and T_ctx >= 1:
+                        if ctx_logits.shape[-1] > 1:  # full [T, vocab] logits
+                            pt = _compute_prompt_logprobs(
+                                ctx_logits,
+                                prompt_token_ids[pos:pos + T_ctx + 1],
+                                num_prompt_logprobs,
+                            )
+                            if pt is not None:
+                                # Merge with any rows from earlier chunks of the same
+                                # request so that all chunks accumulate correctly.
+                                existing = prompt_logprobs_dict.get(rid)
+                                if existing is not None:
+                                    prompt_logprobs_dict[rid] = existing + pt
+                                else:
+                                    prompt_logprobs_dict[rid] = pt
+                        else:
+                            logger.warning(
+                                "req %s: prompt_logprobs requested but model returns argmax-only "
+                                "logits; prompt logprobs cannot be computed",
+                                rid,
+                            )
 
                     state["pos"] = pos + T_ctx
                     state["block_ids"] = blk_ids
