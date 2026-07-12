@@ -33,11 +33,6 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-# Numerical stability threshold for temperature comparisons (same value as
-# vllm.v1.sample.sampler._SAMPLING_EPS). Defined locally to avoid importing a
-# private vLLM symbol that could move or be renamed on any patch release.
-# vLLM bump: verify this threshold still matches _SAMPLING_EPS in vllm.v1.sample.sampler.
-_SAMPLING_EPS: float = 1e-5
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
@@ -82,7 +77,7 @@ def sample_token(
         use_fp64_gumbel: When True, Gumbel noise is sampled in fp64 for
             higher numerical precision. Mirrors ModelConfig.use_fp64_gumbel.
     """
-    if temperature < _SAMPLING_EPS:
+    if temperature < 1e-5:
         return logits_1d.argmax().item()
 
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)

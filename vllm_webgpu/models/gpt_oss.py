@@ -96,7 +96,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         def _make_stash(k: str, pending: dict = _bias_pending):
             def _stash(arr):
                 pending[k] = arr
-                return arr
+                # Return a 1-element placeholder so the base loader has a non-None
+                # value to upload. The resulting tiny GPU buffer is deleted immediately
+                # after super().load_weights() returns (lines below), so we avoid
+                # uploading the full fused bias tensor only to discard it.
+                return np.zeros(1, dtype=np.float16)
             return _stash
 
         for i in range(self.num_layers):
@@ -379,6 +383,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
         # Allocate expert_gate, expert_up, and expert_tmp together to maintain the three-buffer
         # invariant expected by _ensure_moe_expert_bufs and the quantized _dispatch_expert_down path.
+        # Note: _ensure_moe_expert_bufs also allocates expert_tmp as a side effect (via
+        # _ensure_expert_tmp). expert_tmp is not used here; it is consumed by _dispatch_expert_down.
         self._ensure_moe_expert_bufs()
         msc = self._moe_sc
         if "expert_gate_biased" not in msc:

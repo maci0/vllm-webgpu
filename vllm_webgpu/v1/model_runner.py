@@ -30,6 +30,28 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+
+def _resolve_num_logprobs(sp, rid: str) -> "int | None":
+    """Validate and return num_logprobs from a SamplingParams object.
+
+    Raises NotImplementedError for unsupported logprob modes that the WebGPU
+    backend cannot handle. Called from both the prefill and decode loops to
+    avoid duplicating the validation block in each.
+    """
+    if sp is not None and sp.logprob_token_ids:
+        raise NotImplementedError(
+            f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
+            "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
+        )
+    num_logprobs = sp.num_logprobs if sp is not None else None
+    if num_logprobs == -1:
+        raise NotImplementedError(
+            f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
+            "use a positive integer instead"
+        )
+    return num_logprobs
+
+
 # KV cache dtype used by all WebGPU attention layers. Referenced in both
 # get_kv_cache_spec and get_cache_block_size_bytes so that changing it
 # keeps both methods consistent.
@@ -539,17 +561,7 @@ class WebGPUModelRunner:
 
             # Extract per-request logprob counts via the stable SamplingParams property.
             sp = req.sampling_params
-            if sp is not None and sp.logprob_token_ids:
-                raise NotImplementedError(
-                    f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
-                    "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
-                )
-            num_logprobs = sp.num_logprobs if sp is not None else None
-            if num_logprobs == -1:
-                raise NotImplementedError(
-                    f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
-                    "use a positive integer instead"
-                )
+            num_logprobs = _resolve_num_logprobs(sp, rid)
             num_prompt_logprobs = sp.prompt_logprobs if sp is not None else None
 
             # Warn early when full-vocab prompt logprobs are requested. The CPU
@@ -709,18 +721,7 @@ class WebGPUModelRunner:
                 pos = state["pos"]
                 blk_ids = list(state["block_ids"])
                 sp = state.get("sampling_params")
-                if sp is not None and sp.logprob_token_ids:
-                    raise NotImplementedError(
-                        f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
-                        "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
-                    )
-                num_logprobs = sp.num_logprobs if sp is not None else None
-                if num_logprobs == -1:
-                    raise NotImplementedError(
-                        f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
-                        "use a positive integer instead"
-                    )
-                num_prompt_logprobs = sp.prompt_logprobs if sp is not None else None
+                num_logprobs = _resolve_num_logprobs(sp, rid)
 
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 
 # Numerical stability threshold for temperature comparisons, matching
-# vllm.v1.sample.sampler._GREEDY_TEMP. Defined locally to avoid a module-level
+# vllm.v1.sample.sampler._SAMPLING_EPS. Defined locally to avoid a module-level
 # import of vllm_webgpu.utils (and transitively vllm internals) in a script that
 # may be imported as a library without the full vLLM stack present.
 _GREEDY_TEMP: float = 1e-5

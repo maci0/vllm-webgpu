@@ -306,11 +306,10 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     memory and clamps to 0 KV blocks.
 
     """
-    # NOTE: gpu_worker.py uses a walrus+truthiness check (`if kv_cache_memory_bytes := ...`),
-    # which treats 0 as not-set and falls through to the profiling path. This path
-    # intentionally uses is-not-None so that an explicit kv_cache_memory_bytes=0 is
-    # honoured rather than silently falling through.
-    if (explicit := worker.cache_config.kv_cache_memory_bytes) is not None:
+    # NOTE: mirrors gpu_worker.py walrus+truthiness check (`if kv_cache_memory_bytes := ...`).
+    # Treats 0 as not-set and falls through to the profiling path rather than returning
+    # 0 bytes (which would produce 0 KV blocks and an unrecoverable engine startup failure).
+    if explicit := worker.cache_config.kv_cache_memory_bytes:
         return explicit
 
     _model = getattr(worker.model_runner, 'model', None)

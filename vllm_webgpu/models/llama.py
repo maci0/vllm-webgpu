@@ -675,7 +675,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # All callers enforce T >= 2 (forward() line 377, MixtralWebGPUModel.forward()
         # line 167, _prefill_batch_forward lines 432/442), so the loop always executes
         # and x_buf is guaranteed to be bound by the loop body on every code path.
-        assert T >= 2, f"_prefill_sequential_fallback requires T >= 2, got T={T}"
+        if T < 2:
+            raise RuntimeError(f"_prefill_sequential_fallback requires T >= 2, got T={T}")
         for t in range(T):
             self._hstate = 0
             tok_pos   = int(positions[t])

@@ -100,21 +100,15 @@ del _mapper
 # mamba2_state_shape. _validate_mamba_weights provides the authoritative runtime
 # guard by checking the actual in_proj.weight shape.
 
-try:
-    # vLLM 0.24 does not export _resolve_intermediate_size; this always raises
-    # ImportError on the current pinned version. On a future vLLM bump, if the
-    # symbol appears here, delete the local definition below and use the import.
-    # Diff vllm/model_executor/models/nemotron_h.py L286-292 on each bump to
-    # verify the local copy still matches.
-    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size
-except ImportError:
-    def _resolve_intermediate_size(v, idx: int) -> int:  # type: ignore[misc]
-        # Mirrors NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24).
-        # No public API exposes this; copy is forced. Defined once at module
-        # scope rather than inside every __init__ call.
-        if isinstance(v, list):
-            return v[0] if len(v) == 1 else v[idx]
-        return v
+# vLLM 0.24 does not export _resolve_intermediate_size. Local copy mirrors
+# NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24). On a future vLLM bump,
+# run `grep -n '_resolve_intermediate_size' vllm/model_executor/models/nemotron_h.py`
+# to check whether the symbol is now exported; if so, replace this definition with
+# `from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size`.
+def _resolve_intermediate_size(v, idx: int) -> int:
+    if isinstance(v, list):
+        return v[0] if len(v) == 1 else v[idx]
+    return v
 
 
 # Verify the len==1 edge case at import time: a single-element list must return

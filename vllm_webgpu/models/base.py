@@ -108,21 +108,15 @@ def compute_yarn_freqs(
         raise ValueError("YaRN rope_scaling must include 'original_max_position_embeddings'")
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
-    # Accepted key set: rotary_embedding/__init__.py:250-256 (vLLM 0.24).
-    # Hardcoded defaults match YaRNScalingRotaryEmbedding.__init__.__kwdefaults__
-    # exactly (verified vLLM 0.24). On each vLLM bump, re-check those defaults.
-    _yarn = {k: rope_scaling.get(k, d)
-             for k, d in {
-                 "extrapolation_factor": 1.0, "attn_factor": 1.0,
-                 "beta_fast": 32, "beta_slow": 1,
-                 "apply_yarn_scaling": True, "truncate": True,
-             }.items()}
-    beta_fast            = int(_yarn["beta_fast"])
-    beta_slow            = int(_yarn["beta_slow"])
-    extrapolation_factor = float(_yarn["extrapolation_factor"])
-    attn_factor          = float(_yarn["attn_factor"])
-    apply_yarn_scaling   = bool(_yarn["apply_yarn_scaling"])
-    truncate             = bool(_yarn["truncate"])
+    # Defaults match YaRNScalingRotaryEmbedding.__init__.__kwdefaults__ exactly
+    # (verified vLLM 0.24, rotary_embedding/__init__.py:250-256). On each vLLM bump,
+    # re-check those defaults.
+    beta_fast            = int(rope_scaling.get("beta_fast", 32))
+    beta_slow            = int(rope_scaling.get("beta_slow", 1))
+    extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
+    attn_factor          = float(rope_scaling.get("attn_factor", 1.0))
+    apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
+    truncate             = bool(rope_scaling.get("truncate", True))
 
     # Single import from the common helpers module.
     # vLLM bump: verify yarn_get_mscale and YaRNScalingRotaryEmbedding._compute_inv_freq
