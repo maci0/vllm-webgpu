@@ -142,25 +142,16 @@ try:
 finally:
     del _NemotronHMLPDecoder
 
-try:
-    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size
-    logger.warning(
-        "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'; "
-        "remove the local copy in this file and import it from upstream instead."
-    )
-except ImportError:
-    pass  # upstream does not export it yet; use the local definition below
-
 # conv_dim is computed here from config params using the same formula as MambaMixer2
 # (mamba_mixer2.py L313: conv_dim = intermediate_size + 2 * groups_ssm_state_size).
 # For tp=1, extra_groups_for_head_shards returns 0, so this exactly matches
 # mamba2_state_shape. _validate_mamba_weights provides the authoritative runtime
 # guard by checking the actual in_proj.weight shape.
 
-
-
-if "_resolve_intermediate_size" not in dir():
-    def _resolve_intermediate_size(v, idx: int) -> int:
+try:
+    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size
+except ImportError:
+    def _resolve_intermediate_size(v, idx: int) -> int:  # type: ignore[misc]
         """Resolve a possibly-list intermediate_size to a scalar for layer `idx`.
 
         Mirrors the 7-line block in NemotronHMLPDecoderLayer.__init__ at:
@@ -180,6 +171,11 @@ if "_resolve_intermediate_size" not in dir():
         if isinstance(v, list):
             return v[0] if len(v) == 1 else v[idx]
         return v
+else:
+    logger.warning(
+        "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'; "
+        "remove the local copy in this file and import it from upstream instead."
+    )
 
 
 # Verify the len==1 edge case at import time: a single-element list must return
@@ -799,7 +795,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             else:
                 # Non-AWQ (GPTQ, FP16, FP8, etc.): GPU-side byte concat is correct.
                 # All weight buffers are 4-byte aligned from the loader.
-                qkv_raw_buf = WebGPUBuffer.empty(dev, max(total_nb, 4))
+                qkv_raw_buf = self._make_buf(total_nb)
                 _enc = dev.create_command_encoder()
                 _enc.copy_buffer_to_buffer(self.weights[q_key].buf, 0, qkv_raw_buf.buf, 0, q_nb)
                 _enc.copy_buffer_to_buffer(self.weights[k_key].buf, 0, qkv_raw_buf.buf, q_nb, k_nb)

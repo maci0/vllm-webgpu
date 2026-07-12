@@ -66,11 +66,8 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     import torch as _torch
     if t.dtype == _torch.float16:
         return t.numpy()
-    if t.dtype == _torch.float32:
-        # t.numpy() is a zero-copy view (shared memory). clip+cast runs in numpy,
-        # which avoids the torch clamp -> to(float16) -> numpy chain.
-        return t.numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
-    # BF16: numpy has no bf16 dtype; cast to float32 first, then clip+cast in numpy.
+    # BF16 and F32: cast to float32 (no-op for F32), then clip+cast in numpy.
+    # numpy has no bf16 dtype; the to(float32) step is required for BF16.
     return t.to(_torch.float32).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
 
 
@@ -1087,12 +1084,11 @@ def load_safetensors_weights(
                     # GPU NVFP4: upload raw weight_packed + F32-converted block scales.
                     # The shader uses GLOBAL_SCALE as an override constant and
                     # reads F8_E4M3 scales via the standard f32 scales binding.
-                    ws_f32 = ws
                     _upload_u8(wp, f"{base}.weight", weights)
-                    _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
+                    _upload(ws, np.float32, 'f32', f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nvfp4_gpu", "global_scale": wgs,
-                        "group_size": K_ // (ws_f32.shape[1] if ws_f32.ndim == 2 else 1)}
+                        "group_size": K_ // (ws.shape[1] if ws.ndim == 2 else 1)}
                     logger.debug("GPU NVFP4: %s (N=%d, K=%d, wgs=%.4f)", base, N_, K_, wgs)
                 except Exception as exc:
                     logger.warning("Failed to process NVFP4 %s: %s", base, exc)
@@ -1124,12 +1120,11 @@ def load_safetensors_weights(
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
                     _, K2_ = wp.shape
                     K_ = K2_ * 2
-                    ws_f32 = ws
                     _upload_u8(wp, f"{base}.weight", weights)
-                    _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
+                    _upload(ws, np.float32, 'f32', f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nvfp4_gpu", "global_scale": wgs,
-                        "group_size": K_ // (ws_f32.shape[1] if ws_f32.ndim == 2 else 1)}
+                        "group_size": K_ // (ws.shape[1] if ws.ndim == 2 else 1)}
                 except Exception as exc:
                     logger.warning("Failed to process diffusion NVFP4 %s: %s", base, exc)
 

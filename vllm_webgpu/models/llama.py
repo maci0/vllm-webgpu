@@ -104,6 +104,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
+        # floor at 4096 blocks (65536 tokens with default block_size=16) to handle
+        # deployments that extend the KV cache beyond max_position_embeddings at runtime.
         max_bt_blocks = max(4096, cdiv(max_ctx, self.block_size))
         self._pre: dict[str, "WebGPUBuffer"] = {
             "ids":      self._make_buf(T * 4),              # [1] uint32 token id
@@ -163,7 +165,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             else getattr(self.model_config, "rope_scaling", None)
             or {}
         )
-        rope_type = rope_scaling.get("rope_type", "")
+        rope_type = rope_scaling.get("rope_type", "") or rope_scaling.get("type", "")
 
         if rope_type != "yarn":
             if rope_type not in ("", "default"):

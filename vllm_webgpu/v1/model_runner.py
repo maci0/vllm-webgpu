@@ -9,7 +9,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, AsyncModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -83,7 +83,7 @@ def _build_model(arch: str, family: "str | None", model_config: Any, wgpu_device
     )
 
 
-def _stack(items: list[LogprobsTensors]) -> "LogprobsLists":
+def _stack(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
     """Cat a list of LogprobsTensors along the batch dimension and convert to lists.
 
     cu_num_generated_tokens is intentionally left as None. WebGPU produces
@@ -360,7 +360,7 @@ class WebGPUModelRunner:
                 queue.write_buffer(k_buf.buf, block_id * bpb, zeros)
                 queue.write_buffer(v_buf.buf, block_id * bpb_v, zeros_v)
 
-    def execute_model(self, scheduler_output: "SchedulerOutput") -> Any:
+    def execute_model(self, scheduler_output: "SchedulerOutput") -> "ModelRunnerOutput | AsyncModelRunnerOutput | None":
         if scheduler_output.has_structured_output_requests:
             raise NotImplementedError(
                 "Guided/constrained decoding is not supported on the WebGPU backend. "
@@ -377,7 +377,7 @@ class WebGPUModelRunner:
         sampled: list[int],
         logprobs_data: "Sequence[LogprobsTensors | None]" = (),
         prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
-    ) -> Any:
+    ) -> "ModelRunnerOutput":
         if prompt_logprobs_dict is None:
             prompt_logprobs_dict = {}
         if not req_ids:
@@ -462,7 +462,7 @@ class WebGPUModelRunner:
         k = min(num_logprobs, logits.shape[-1])
         return Sampler.gather_logprobs(lp_t, k, torch.tensor([tok], dtype=torch.int64))
 
-    def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> Any:
+    def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> "ModelRunnerOutput":
         """vLLM >= 0.24 SchedulerOutput format."""
         # Zero recycled KV blocks before any forward pass. The block pool may
         # reuse blocks from completed requests; without zeroing, attention over
@@ -819,7 +819,7 @@ class WebGPUModelRunner:
             all_req_ids, all_sampled, all_logprobs_data, prompt_logprobs_dict
         )
 
-    def sample_tokens(self, grammar_output: "GrammarOutput | None") -> Any:
+    def sample_tokens(self, grammar_output: "GrammarOutput | None") -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         raise NotImplementedError(
             "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
             "is not supported on the WebGPU backend. The GPU argmax path discards "

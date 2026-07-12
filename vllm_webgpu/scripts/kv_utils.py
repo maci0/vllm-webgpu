@@ -255,7 +255,12 @@ def allocate_kv_from_hf_config(
     _num_layers = _conv.get_num_hidden_layers()
     # model._layer_types wins when set (scripts path, model is fully loaded);
     # fall back to hf_config fields used by different architectures.
-    layer_types = getattr(model, "_layer_types", None) or get_layer_types(hf_config)
+    # Use is not None rather than truthiness: an explicit empty list [] is a valid
+    # signal that the model has no hybrid layers and should not fall through to the
+    # hf_config probe (which might incorrectly return non-None for some architectures).
+    layer_types = getattr(model, "_layer_types", None)
+    if layer_types is None:
+        layer_types = get_layer_types(hf_config)
     # Treat uniform full-attention lists the same as None (avoids tiny buffers).
     if layer_types and all(is_attn_layer(lt) for lt in layer_types):
         layer_types = None
