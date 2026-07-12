@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -74,7 +73,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # LN_ROPE_BASE is the only theta value shaders read (theta_i = exp(-2i/HEAD_DIM * LN_ROPE_BASE)).
             # ROPE_BASE is declared as an override in rope.wgsl and fused variants but never referenced
             # in shader bodies, so it is intentionally excluded to keep the pipeline cache key minimal.
-            "LN_ROPE_BASE": math.log(self.rope_theta),
+            "LN_ROPE_BASE": float(np.log(self.rope_theta)),
             "USE_FREQ_BUF": int(self._use_freq_buf),
             # YaRN post-rope multiplier applied to both Q and K inside the rope shader.
             # Net effective attention scale = YARN_MSCALE^2 * _attn_scale
@@ -232,7 +231,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             proj_keys = [
                 k for k in self.weights
                 if k.endswith('.weight') and 'model.layers.' in k
-                and k.removesuffix('.weight').rsplit('.', 1)[-1] in _proj_suffixes
+                and k.split('.')[-2] in _proj_suffixes
             ]
             self._batch_matmul_supported = bool(proj_keys) and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
 
