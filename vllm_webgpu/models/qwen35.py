@@ -7,7 +7,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
-from vllm.utils.math_utils import cdiv
+from vllm.utils.math_utils import cdiv, round_down
 from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -85,7 +85,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Read head_dim from model_config directly — self.head_dim not set yet.
         _head_dim_raw = getattr(model_config, "head_dim",
                                 model_config.hidden_size // model_config.num_attention_heads)
-        self._rotary_dim: int = max(2, int(_head_dim_raw * _prf) // 2 * 2)
+        self._rotary_dim: int = max(2, round_down(int(_head_dim_raw * _prf), 2))
         # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
         # Qwen3.5 uses mrope_interleaved=True, stored in rope_parameters dict,
         # not as a top-level config attribute.

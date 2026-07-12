@@ -740,7 +740,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 k_buf = self.weights[k_key]
                 v_buf = self.weights[v_key]
                 _staging_w = dev.create_buffer(
-                    size=q_nb + k_nb + v_nb,
+                    size=total_nb,
                     usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
                 _enc_w = dev.create_command_encoder()
                 _enc_w.copy_buffer_to_buffer(q_buf.buf, 0, _staging_w, 0, q_nb)

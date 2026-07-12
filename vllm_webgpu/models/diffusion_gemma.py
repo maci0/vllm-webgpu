@@ -107,9 +107,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
             max_canvas_len = self._scratch_token_count()
-            # Pre-allocated row-index array for vectorized MoE scatter; avoids
-            # allocating a new array on every _decoder_layer call.
-            self._token_arange = np.arange(max_canvas_len, dtype=np.int32)
             self._shared_res_buf = self._make_buf(max_canvas_len * self.hidden_size * 2)  # F16
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
             self._topk_idx_buf     = self._make_buf(max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
@@ -121,9 +118,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # expert loop so a single write_buffer covers all experts. Sized for worst
             # case: all num_experts active across max_canvas_len tokens.
             self._moe_per_expert_weight_buf = self._make_buf(self.num_experts * max_canvas_len * 4)
-            # Pre-allocated dense routing weight matrix: [num_experts, max_canvas_len] f32.
-            # Reused across all _decoder_layer calls; only active token columns are zeroed.
-            self._dense_w = np.zeros((self.num_experts, max_canvas_len), dtype=np.float32)
             # f16 zero buffer for the NO_SCALE=1 router_norm_f32in path: binding 1
             # is bound but the result is discarded by select when NO_SCALE=1.
             # Sized to hidden_size elements so the binding covers the full scale
@@ -777,9 +771,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # affects expert_slot numbering in packed_w, which is indexed consistently
             # by the same order, so the output is correct regardless of sort order.
             # At K=8, T<=256 (E<=2048 elements) the O(E log E) cost is sub-microsecond.
-            unique_eids = np.unique(top_k_idx)
-            self._dense_w[unique_eids, :num_tokens] = 0.0
-            self._dense_w[top_k_idx, self._token_arange[:num_tokens, None]] = rw_vals
+            unique_eids, slot_idx = np.unique(top_k_idx, return_inverse=True)
+            slot_idx = slot_idx.reshape(top_k_idx.shape)
+            packed_w = np.zeros((len(unique_eids), num_tokens), dtype=np.float32)
+            packed_w[slot_idx, np.arange(num_tokens)[:, None]] = rw_vals
 
             # GPU: run selected expert FFNs
             gelu_n_moe = num_tokens * inter_moe
@@ -798,7 +793,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # writes inside the loop would leave only the last expert's weights
             # visible to every dispatch. The expert_slot index passed as an override
             # constant lets each shader read its own row without a re-entrant write.
-            packed_w = self._dense_w[unique_eids, :num_tokens]  # [num_unique, T]
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
             for expert_slot, eid in enumerate(unique_eids):

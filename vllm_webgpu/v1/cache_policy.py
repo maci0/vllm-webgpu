@@ -34,12 +34,13 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
-# Canonical set of string layer-type values that represent attention layers.
-# Used by is_attn_layer and referenced conceptually in model_runner.py and
-# kv_utils.py. A module-level constant makes it easy to extend when a new
-# layer type is added, without hunting for inline set literals.
-_ATTN_LAYER_TYPE_STRINGS: frozenset[str] = frozenset(
-    {"attention", "full_attention", "sliding_attention", "hybrid"}
+# Canonical set of layer-type values that represent attention layers.
+# Includes both string types and the Minimax integer encoding (1 = attention,
+# 0 = non-attention). Used by is_attn_layer and referenced conceptually in
+# model_runner.py and kv_utils.py. A module-level constant makes it easy to
+# extend when a new layer type is added, without hunting for inline set literals.
+_ATTN_LAYER_TYPES: frozenset[str | int] = frozenset(
+    {"attention", "full_attention", "sliding_attention", "hybrid", 1}
 )
 
 
@@ -54,7 +55,7 @@ def is_attn_layer(lt: "str | int") -> bool:
     Use this instead of bare string-set membership checks everywhere so that
     the integer sentinel never needs to be repeated at individual call sites.
     """
-    return lt in _ATTN_LAYER_TYPE_STRINGS or lt == 1
+    return lt in _ATTN_LAYER_TYPES
 
 
 def allocate_kv_from_tensors(
@@ -67,11 +68,11 @@ def allocate_kv_from_tensors(
 
     K and V byte counts are computed directly from spec fields
     (block_size, num_kv_heads, dtype, head_size, head_size_v), split proportionally
-    to head_size (K) and head_size_v (V). Direct field access
-    is used instead of calling real_page_size_bytes because K and V must be
-    sized separately: head_size may differ from head_size_v (e.g. MLA-style
-    models), and real_page_size_bytes returns a single combined total that
-    cannot be split correctly without knowing which dimension differs.
+    to head_size (K) and head_size_v (V). Total bytes are derived from
+    spec.real_page_size_bytes and split by head_size / (head_size + head_size_v),
+    instead of using tensor.size // 2 which would silently over- or under-allocate
+    when head dimensions are asymmetric (head_size != head_size_v) or per-token-head
+    scale bytes inflate tensor.size beyond what K and V data occupies.
 
     Dividing tensor.size by 2 would silently over-allocate when the KV cache
     dtype uses per-token-head scales, because page_size_bytes (and therefore

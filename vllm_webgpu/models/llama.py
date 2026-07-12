@@ -687,8 +687,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
 
         # The block table is the same for every token in this request; write it once.
-        dev = self.wgpu_device.wgpu_device
-        dev.queue.write_buffer(self._pre["bt"].buf, 0, bt_bytes)
+        self.wgpu_device.wgpu_device.queue.write_buffer(pre["bt"].buf, 0, bt_bytes)
 
         for t in range(T):
             self._hstate = 0
@@ -753,7 +752,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         sc = self._sc
         hidden = self.hidden_size
-        p = self._layer_prefix(layer_idx)
+        p = f"model.layers.{layer_idx}"
         q_dim = self.q_dim
         kv_dim = self.kv_dim
         for (out_buf, proj, dim), uq in zip([
@@ -789,7 +788,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         sc = self._sc
         hidden = self.hidden_size
-        p = self._layer_prefix(layer_idx)
+        p = f"model.layers.{layer_idx}"
         q_dim = self.q_dim
         kv_dim = self.kv_dim
 
@@ -913,7 +912,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         sc = self._sc
         hidden = self.hidden_size
-        p = self._layer_prefix(layer_idx)
+        p = f"model.layers.{layer_idx}"
         _rms_c = self._rms_consts
 
         residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
@@ -962,10 +961,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         return 0, ctx_len
 
-    def _layer_prefix(self, layer_idx: int) -> str:
-        """Return the weight-key prefix for a transformer layer."""
-        return f"model.layers.{layer_idx}"
-
     def _ffn_dispatch(
         self,
         normed_x: "WebGPUBuffer",
@@ -977,7 +972,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         another FFN variant without duplicating the surrounding transformer scaffolding.
         """
         sc = self._sc
-        p = self._layer_prefix(layer_idx)
+        p = f"model.layers.{layer_idx}"
         hidden = self.hidden_size
         inter = self.intermediate_size
 

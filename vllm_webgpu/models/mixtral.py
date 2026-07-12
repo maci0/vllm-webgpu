@@ -22,7 +22,7 @@ def _validate_gate_consts(extra_gate_consts: dict) -> None:
     Both the base _dispatch_expert_gate_up and the bias override in
     GptOssWebGPUModel inject K and N themselves; callers must not pre-fill them.
     """
-    if extra_gate_consts.keys() & {"K", "N"}:
+    if not {"K", "N"}.isdisjoint(extra_gate_consts):
         raise ValueError(
             f"extra_gate_consts must not contain 'K' or 'N'; "
             f"got {list(extra_gate_consts.keys())}"

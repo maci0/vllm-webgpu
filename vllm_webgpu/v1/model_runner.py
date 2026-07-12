@@ -108,8 +108,10 @@ def _stack(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
 
     WebGPU tensors are already on CPU, so .cpu() inside tolists() is a no-op.
     selected_token_ranks is cast to int32: gather_logprobs returns int64 (bool
-    sum), but LogprobsTensors.empty_cpu uses int32 and the padded path in
-    _make_model_output casts explicitly. Keep both paths consistent.
+    sum) as of vLLM 0.24, but LogprobsTensors.empty_cpu uses int32. The padded
+    path in _make_model_output also casts to int32 explicitly so both paths are
+    consistent. If gather_logprobs is changed to return int32 in a future vLLM
+    version, remove the .to(torch.int32) cast here and in the padding path.
     """
     return LogprobsTensors(
         torch.cat([x.logprob_token_ids for x in items]),
@@ -430,8 +432,9 @@ class WebGPUModelRunner:
         widths = [d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None]
         if widths:
             max_k = max(widths)
-            # Short-circuit when all real entries have the same width: skip padding.
-            if len(widths) == len(logprobs_data) and all(w == widths[0] for w in widths[1:]):
+            # Short-circuit when all entries are present and share the same width.
+            all_present = all(d is not None for d in logprobs_data)
+            if all_present and len(set(widths)) <= 1:
                 built_logprobs = _stack(cast("list[LogprobsTensors]", logprobs_data))
             else:
                 # Pin rank dtype to int32, matching LogprobsTensors.empty_cpu.
@@ -447,7 +450,7 @@ class WebGPUModelRunner:
                         pieces.append(LogprobsTensors(
                             pad(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
                             pad(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
-                            d.selected_token_ranks,
+                            d.selected_token_ranks.to(torch.int32),
                         ))
                     else:
                         pieces.append(LogprobsTensors(

@@ -220,7 +220,7 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = new_pfx + k.removeprefix(old_pfx)
+                new_k = new_pfx + k[len(old_pfx):]
                 if new_k not in d:
                     to_add[new_k] = v
                 break
@@ -908,7 +908,7 @@ def load_safetensors_weights(
                 # __bf16 companion is created after weight_transforms below, so both
                 # the f16 buffer and the companion see the same (transformed) layout.
             elif dtype_str == "F32":
-                arr = _torch_to_f16_numpy(sf.get_tensor(name))
+                arr = sf.get_tensor(name).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
             elif dtype_str == "I8":
                 # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
                 # Upload raw bytes; shader does sign extension via int8_to_f32().
