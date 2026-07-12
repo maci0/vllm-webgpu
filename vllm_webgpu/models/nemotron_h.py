@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -492,6 +492,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "speculative decoding not yet supported on WebGPU "
             "(mamba2_causal_conv shader uses KERNEL-1 slots)"
         )
+        if is_conv_state_dim_first():
+            raise NotImplementedError(
+                "VLLM_SSM_CONV_STATE_LAYOUT=DS is not supported on the WebGPU "
+                "path: mamba2_causal_conv.wgsl hard-codes the SD (state_len-first) "
+                "index formula and has no runtime path for DS layout."
+            )
         conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
             tp_world_size=1,
             intermediate_size=self.mamba_int,
