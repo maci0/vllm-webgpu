@@ -8,6 +8,8 @@ import vllm_webgpu.envs as _webgpu_envs
 
 from vllm.logger import init_logger
 
+from pydantic import ValidationError
+
 from compressed_tensors import QuantizationConfig as _QuantizationConfig
 from compressed_tensors.quantization import QuantizationType as _QuantizationType
 from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
@@ -627,10 +629,7 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
     try:
         cfg = _QuantizationConfig.model_validate(quant_cfg)
         w_args = next((s.weights for s in cfg.config_groups.values() if s.weights), None)
-    except Exception as exc:
-        from pydantic import ValidationError
-        if not isinstance(exc, (ValidationError, AttributeError, TypeError)):
-            raise
+    except (ValidationError, AttributeError, TypeError):
         return {}
     if w_args is None:
         return {}

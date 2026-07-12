@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -133,14 +134,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             start_block = (ctx_len - self._sw) // self.block_size
             return start_block, ctx_len - start_block * self.block_size
         return 0, ctx_len
-
-    def _effective_ctx_len(self, ctx_len: int) -> int:
-        """Effective context length for flash_attn_decode with SWA cap."""
-        return self._ctx_window(ctx_len)[1]
-
-    def _start_block(self, ctx_len: int) -> int:
-        """First block in the block table that falls inside the SWA window."""
-        return self._ctx_window(ctx_len)[0]
 
     def _ffn_dispatch(
         self,
@@ -315,10 +308,10 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 raise ValueError(
                     f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
                 )
-            self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter, uq_g=uq_g, uq_u=uq_u)
+            gate_buf, up_buf = self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter, uq_g=uq_g, uq_u=uq_u)
             self._dispatch(
                 "gelu_mul",
-                [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
+                [gate_buf, up_buf, msc["expert_act"]],
                 {**extra_gate_consts, "N": inter},
                 _vec4_wg(inter),
             )
@@ -489,7 +482,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(10)  # logging.DEBUG
+        _debug_weights = logger.isEnabledFor(logging.DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

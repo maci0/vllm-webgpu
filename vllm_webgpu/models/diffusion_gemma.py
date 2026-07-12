@@ -47,10 +47,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # _mr4_ok is never consulted. Skip the scan in load_weights().
     _skip_mr4_scan: bool = True
 
-    # _apply_v_norm is set as an instance attribute in __init__ after super().__init__()
-    # so that the correct value is visible regardless of what the parent assigns.
-    # See __init__ below.
-
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         from vllm.model_executor.models.gemma4 import _get_text_config
@@ -243,9 +239,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         if self.is_moe:
             for i in range(self.num_layers):
                 p = self._layer_key_prefix(i)
-                pes_w = self.weights.get(f"{p}.router.per_expert_scale")
-                if pes_w is None:
-                    pes_w = self.weights.get(f"{p}.moe.per_expert_scale")
+                pes_key = self._first_weight_key(f"{p}.router.per_expert_scale", f"{p}.moe.per_expert_scale")
+                pes_w = self.weights.get(pes_key)
                 if pes_w is not None:
                     self._pes_cache[i] = self._buf_to_numpy(pes_w).astype(np.float32)
             self._validate_expert_weights()
@@ -892,7 +887,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                (num_tokens, 1, 1))
                 self._dispatch("add_f32", [residual, sc["ffn_out"], out],
                                {"N": add_n}, _vec4_wg(add_n))
-                if abs(layer_scalar - 1.0) > 1e-6:
+                if self._need_layer_scale(layer_scalar):
                     self._dispatch("f32_scale_inplace", [out],
                                    {"N": add_n, "SCALE": layer_scalar},
                                    (cdiv(add_n, 256), 1, 1))
@@ -926,7 +921,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     self._dispatch("rms_norm_add_f32_rms_norm",
                                    [hidden_states_1, post_ffw_w, residual, next_ln_w, out, sc["normed"]],
                                    _rms, (num_tokens, 1, 1))
-                    if abs(layer_scalar - 1.0) > 1e-6:
+                    if self._need_layer_scale(layer_scalar):
                         self._dispatch("f32_scale_inplace", [out],
                                        {"N": add_n, "SCALE": layer_scalar},
                                        (cdiv(add_n, 256), 1, 1))
@@ -937,7 +932,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    (num_tokens, 1, 1))
                     self._dispatch("add_f32", [residual, sc["normed"], out],
                                    {"N": add_n}, _vec4_wg(add_n))
-                    if abs(layer_scalar - 1.0) > 1e-6:
+                    if self._need_layer_scale(layer_scalar):
                         self._dispatch("f32_scale_inplace", [out],
                                        {"N": add_n, "SCALE": layer_scalar},
                                        (cdiv(add_n, 256), 1, 1))

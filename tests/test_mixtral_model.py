@@ -199,7 +199,7 @@ def test_mixtral_moe_forward(wgpu_device):
 
 @pytest.mark.integration
 def test_mistral_swa_window(wgpu_device):
-    """Verify _effective_ctx_len clips correctly at the sliding_window boundary."""
+    """Verify _ctx_window clips correctly at the sliding_window boundary."""
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.models.mixtral import MixtralWebGPUModel
     from vllm_webgpu.utils import SHADERS_DIR
@@ -224,20 +224,20 @@ def test_mistral_swa_window(wgpu_device):
 
     assert model._sw == 16
     # ctx_len > window: clips to window
-    assert model._effective_ctx_len(32) == 16
+    assert model._ctx_window(32)[1] == 16
     # ctx_len <= window: returns ctx_len unchanged
-    assert model._effective_ctx_len(8) == 8
+    assert model._ctx_window(8)[1] == 8
     # ctx_len == window: no clip
-    assert model._effective_ctx_len(16) == 16
+    assert model._ctx_window(16)[1] == 16
 
-    # _start_block: skip old blocks so flash_attn_decode reads the newest window.
+    # start_block: skip old blocks so flash_attn_decode reads the newest window.
     # block_size defaults to 16.
     bs = model.block_size
     # ctx_len within window: no offset
-    assert model._start_block(8) == 0
-    assert model._start_block(16) == 0
+    assert model._ctx_window(8)[0] == 0
+    assert model._ctx_window(16)[0] == 0
     # ctx_len > window: skip leading blocks
     # 32 tokens, window=16, block_size=16 → start_block = (32-16)//16 = 1
-    assert model._start_block(32) == (32 - 16) // bs
+    assert model._ctx_window(32)[0] == (32 - 16) // bs
     # 48 tokens → start_block = (48-16)//16 = 2
-    assert model._start_block(48) == (48 - 16) // bs
+    assert model._ctx_window(48)[0] == (48 - 16) // bs

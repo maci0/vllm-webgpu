@@ -279,12 +279,12 @@ def allocate_kv_from_tensors(
     )
 
 
-def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
-    """Return the layer-type list from hf_config, using a canonical fallback chain.
+def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
+    """Return the layer-type list from hf_text_config, using a canonical fallback chain.
 
-    Priority: hf_config.layers_block_type (NemotronH/Falcon) >
+    Priority: hf_text_config.layers_block_type (NemotronH/Falcon) >
     hf_outer_config.attn_type_list (Minimax) >
-    hf_config.layer_types (Gemma4/Qwen3.5).
+    hf_text_config.layer_types (Gemma4/Qwen3.5).
 
     Returns None when none of the attributes is present.
 
@@ -294,17 +294,17 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     hf_outer_config: optional outer ModelConfig.hf_config, used only for the
     attn_type_list probe. For multimodal models (e.g. Minimax) where
     hf_text_config != hf_config, attn_type_list lives on the outer config.
-    Defaults to hf_config when not provided (single-config models).
+    Defaults to hf_text_config when not provided (single-config models).
 
     Callers with a fully-loaded model object should check model._layer_types before
     calling this function and use that value if present. This function only inspects
-    hf_config; the vLLM engine always calls it before weight loading (model=None).
+    hf_text_config; the vLLM engine always calls it before weight loading (model=None).
     """
     # Minimax-style: integer list where 1 = attention, 0 = non-attention.
     # model_runner.py handles integer-encoded layer types via is_attn_layer(lt), which returns True when lt == 1 (Minimax attention).
     # attn_type_list lives on the outer hf_config for multimodal models where
-    # hf_text_config (passed as hf_config here) differs from the outer config.
-    _outer = hf_outer_config if hf_outer_config is not None else hf_config
+    # hf_text_config differs from the outer config.
+    _outer = hf_outer_config if hf_outer_config is not None else hf_text_config
     # Priority order mirrors vLLM's ModelConfig.get_num_layers_by_block_type
     # (config/model.py:1327-1362 as of the installed vLLM):
     #   probe 1 (L1330): layers_block_type  -- NemotronH / Falcon
@@ -329,11 +329,11 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     # The 4th probe below (outer-config layer_types) is not present in vLLM and is used
     # as a fallback for multimodal models where layer_types lives only on the outer config.
     _probes = [
-        (hf_config, "layers_block_type", False),   # vLLM config/model.py:1330
-        (_outer,    "attn_type_list",    True),    # vLLM config/model.py:1340 (truthiness)
-        (hf_config, "layer_types",       False),   # vLLM config/model.py:1348
+        (hf_text_config, "layers_block_type", False),   # vLLM config/model.py:1330
+        (_outer,         "attn_type_list",    True),    # vLLM config/model.py:1340 (truthiness)
+        (hf_text_config, "layer_types",       False),   # vLLM config/model.py:1348
     ]
-    if _outer is not hf_config:
+    if _outer is not hf_text_config:
         _probes.append((_outer, "layer_types", False))  # fallback for outer-only configs (not in vLLM)
     for cfg, attr, require_truthy in _probes:
         v = getattr(cfg, attr, None)

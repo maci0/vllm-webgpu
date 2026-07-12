@@ -123,18 +123,28 @@ def compute_yarn_freqs(
     truncate             = bool(rope_scaling.get("truncate", True))
 
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_linear_ramp_mask,
-        yarn_get_mscale,
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
     )
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
 
-    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
-    inv_freq_interp = 1.0 / (factor * pos_freqs)
-    inv_freq_extrap = 1.0 / pos_freqs
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
-    inv_freq = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).numpy()
+    # Delegate arithmetic to the canonical private method to avoid drift on each
+    # vLLM bump. SimpleNamespace satisfies the attribute contract of the method's
+    # `self` without triggering the expensive __init__ (cos/sin cache build).
+    # If _compute_inv_freq is ever renamed or its attribute contract changes,
+    # tests/test_yarn_freqs.py::test_yarn_freqs_matches_vllm will catch the drift.
+    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(
+        SimpleNamespace(
+            base=rope_theta,
+            rotary_dim=rotary_dim,
+            max_position_embeddings=orig_ctx,
+            beta_fast=beta_fast,
+            beta_slow=beta_slow,
+            extrapolation_factor=extrapolation_factor,
+            truncate=truncate,
+        ),
+        factor,
+    ).numpy()
 
     # mscale from yarn_scaling_rope.py:40-43 (verify on each vLLM bump).
     mscale = (
@@ -539,7 +549,7 @@ class BaseWebGPUModel(ABC):
         Falls back to the embedding key for models with tied weights that have
         no separate lm_head.weight tensor in the checkpoint.
         """
-        return self._first_weight_key("lm_head.weight", "model.lm_head.weight", "model.embed_tokens.weight")
+        return self._first_weight_key("lm_head.weight", "model.embed_tokens.weight")
 
     def _uq_for_key(self, key: str) -> int:
         """Return USE_QUANT for a weight key (closure-free helper)."""

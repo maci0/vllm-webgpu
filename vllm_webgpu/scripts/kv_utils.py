@@ -262,7 +262,8 @@ def allocate_kv_from_hf_config(
     # hf_config probe (which might incorrectly return non-None for some architectures).
     layer_types = getattr(model, "_layer_types", None)
     if layer_types is None:
-        layer_types = get_layer_types(hf_config)
+        from vllm.transformers_utils.config import get_hf_text_config as _get_hf_text_config
+        layer_types = get_layer_types(_get_hf_text_config(hf_config), hf_outer_config=hf_config)
     # Treat uniform full-attention lists the same as None (avoids tiny buffers).
     if layer_types and all(is_attn_layer(lt) for lt in layer_types):
         layer_types = None

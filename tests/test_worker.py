@@ -74,7 +74,7 @@ def test_make_model_output_with_logprobs():
 
     lp_data = WebGPUModelRunner._extract_logprob_data(logits, 0, 2, 2, "req-1")
 
-    out = WebGPUModelRunner._make_model_output(runner, ["req-1"], [2], [lp_data])
+    out = WebGPUModelRunner._make_model_output(["req-1"], [2], [lp_data])
     assert out is not None
     assert out.logprobs is not None, "logprobs should be populated, not None"
     # gather_logprobs returns num_logprobs+1 columns: slot 0 = sampled, slots 1..k = top-k.
@@ -93,7 +93,7 @@ def test_make_model_output_no_logprobs():
     runner = MagicMock(spec=WebGPUModelRunner)
     runner._last_model_output = None
 
-    out = WebGPUModelRunner._make_model_output(runner, ["req-1"], [7], [None])
+    out = WebGPUModelRunner._make_model_output(["req-1"], [7], [None])
     assert out is not None
     assert out.logprobs is None
 
@@ -176,7 +176,7 @@ def test_make_model_output_with_prompt_logprobs():
     )
     pld = {"req-1": fake_tensors}
 
-    out = WebGPUModelRunner._make_model_output(runner, ["req-1"], [7], [None], prompt_logprobs_dict=pld)
+    out = WebGPUModelRunner._make_model_output(["req-1"], [7], [None], prompt_logprobs_dict=pld)
     assert out is not None
     assert out.prompt_logprobs_dict == pld
 

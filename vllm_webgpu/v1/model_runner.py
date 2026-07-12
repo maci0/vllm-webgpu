@@ -107,13 +107,15 @@ def _stack(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
     row index when cu_num_generated_tokens is None (see vllm/v1/outputs.py:41-42).
 
     WebGPU tensors are already on CPU, so .cpu() inside tolists() is a no-op.
-    The intermediate LogprobsTensors object is avoided by calling numpy() directly.
+    selected_token_ranks is cast to int32: gather_logprobs returns int64 (bool
+    sum), but LogprobsTensors.empty_cpu uses int32 and the padded path in
+    _make_model_output casts explicitly. Keep both paths consistent.
     """
-    return LogprobsLists(
-        torch.cat([x.logprob_token_ids for x in items]).numpy(),
-        torch.cat([x.logprobs for x in items]).numpy(),
-        torch.cat([x.selected_token_ranks for x in items]).numpy(),
-    )
+    return LogprobsTensors(
+        torch.cat([x.logprob_token_ids for x in items]),
+        torch.cat([x.logprobs for x in items]),
+        torch.cat([x.selected_token_ranks for x in items]).to(torch.int32),
+    ).tolists()
 
 
 
@@ -408,8 +410,8 @@ class WebGPUModelRunner:
             return EMPTY_MODEL_RUNNER_OUTPUT
         return self._execute_model_v2(scheduler_output)
 
+    @staticmethod
     def _make_model_output(
-        self,
         req_ids: list[str],
         sampled: list[int],
         logprobs_data: "Sequence[LogprobsTensors | None]" = (),
