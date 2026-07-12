@@ -9,12 +9,6 @@ from types import SimpleNamespace
 
 import numpy as np
 
-# Numerical stability threshold for temperature comparisons, matching
-# vllm.v1.sample.sampler._SAMPLING_EPS. Defined locally to avoid a module-level
-# import of vllm_webgpu.utils (and transitively vllm internals) in a script that
-# may be imported as a library without the full vLLM stack present.
-_GREEDY_TEMP: float = 1e-5
-
 
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
     print(f"\nLoading model from: {model_dir}")
@@ -28,6 +22,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Use vLLM's config loader so Mistral-format repos (params.json) are handled correctly.
     from transformers import AutoTokenizer
     from vllm.transformers_utils.config import get_config as _vllm_get_config
+    from vllm.v1.sample.sampler import _SAMPLING_EPS as _GREEDY_TEMP
     cfg = _vllm_get_config(model_dir, trust_remote_code=True)
 
     arch = (cfg.architectures or ["LlamaForCausalLM"])[0]
