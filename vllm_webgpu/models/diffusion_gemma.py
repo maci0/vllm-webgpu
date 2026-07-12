@@ -252,16 +252,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._validate_expert_weights()
 
     def _validate_expert_weights(self) -> None:
-        """Check all experts have complete weights at load time.
-
-        Layers without MoE routing (no router.proj.weight) are silently skipped
-        so a future DiffusionGemma variant with a mixed-MoE layout does not
-        raise a false RuntimeError for intentionally empty layers.
-        """
+        """Check all MoE layers have complete router and expert weights at load time."""
         for layer_idx in range(self.num_layers):
             p = self._layer_key_prefix(layer_idx)
             if f"{p}.router.proj.weight" not in self.weights:
-                continue
+                raise RuntimeError(
+                    f"L{layer_idx}: is_moe=True but router.proj.weight missing"
+                )
             for eid in range(self.num_experts):
                 ep = f"{p}.experts.{eid}"
                 if any(f"{ep}.{k}.weight" not in self.weights for k in ("gate_proj", "up_proj", "down_proj")):
