@@ -60,7 +60,7 @@ def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
     """
     if qz is None:
         return True
-    if qz.dtype.kind not in ('i', 'u'):
+    if qz.dtype.kind not in ('i', 'u') or qz.dtype.itemsize != 4:
         # Non-integer dtype (e.g. F16, F32): cannot safely view as int32.
         # Treat as asymmetric so callers fall through to CPU dequant.
         return False
