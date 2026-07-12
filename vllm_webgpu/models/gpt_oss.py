@@ -85,57 +85,56 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         skip_prefixes: "frozenset[str] | None" = None,
         scale_transforms: "dict | None" = None,
     ) -> None:
-        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
-                             scale_transforms=scale_transforms)
-        self._split_expert_biases()
+        # Intercept fused expert bias tensors on the CPU before GPU upload.
+        # The transform stashes the numpy array that the loader already has in
+        # memory and returns it unchanged so the base loader still uploads the
+        # fused tensor. After super().load_weights() the per-expert buffers are
+        # created from the stashed CPU copies and the fused GPU entry is deleted,
+        # avoiding a synchronous GPU-CPU map_sync stall per layer.
+        _bias_pending: dict = {}
 
-    def _split_expert_biases(self) -> None:
-        """Expand fused per-layer expert bias tensors into per-expert GPU buffers.
-
-        The GPT-OSS HF checkpoint stores MoE biases as two fused tensors per
-        transformer layer rather than one tensor per expert:
-          model.layers.{i}.mlp.experts.gate_up_proj_bias  shape [E, 2*inter]
-          model.layers.{i}.mlp.experts.down_proj_bias     shape [E, hidden]
-
-        The dispatch methods (_dispatch_expert_gate_up, _dispatch_expert_down)
-        look up biases under per-expert dot-separated keys:
-          model.layers.{i}.mlp.experts.{j}.w1.bias   (gate, shape [inter])
-          model.layers.{i}.mlp.experts.{j}.w3.bias   (up,   shape [inter])
-          model.layers.{i}.mlp.experts.{j}.w2.bias   (down, shape [hidden])
-
-        This method reads each fused tensor back from the GPU once per layer,
-        slices row {j} for each expert, uploads the slice as a new GPU buffer,
-        and removes the fused tensor from self.weights. The fused tensors are
-        small (float16, at most 8 experts * 2 * 2048 = 32K elements ~= 64 KB),
-        so the readback overhead is negligible compared to overall model load.
-        """
-        num_experts = self._num_experts
-        inter = self._moe_inter
-        hidden = self.hidden_size
-        wgpu_dev = self.wgpu_device.wgpu_device
+        def _make_stash(k: str, pending: dict = _bias_pending):
+            def _stash(arr):
+                pending[k] = arr
+                return arr
+            return _stash
 
         for i in range(self.num_layers):
             p = f"model.layers.{i}.mlp.experts"
+            for _key in (f"{p}.gate_up_proj_bias", f"{p}.down_proj_bias"):
+                self._weight_transforms[_key] = _make_stash(_key)
 
-            gu_key = f"{p}.gate_up_proj_bias"
-            if gu_key in self.weights:
-                arr = self._buf_to_numpy(self.weights[gu_key]).reshape(num_experts, 2 * inter)
-                del self.weights[gu_key]
-                for j in range(num_experts):
-                    ep = f"{p}.{j}"
-                    self.weights[f"{ep}.w1.bias"] = WebGPUBuffer.from_numpy(
-                        wgpu_dev, arr[j, :inter].copy())
-                    self.weights[f"{ep}.w3.bias"] = WebGPUBuffer.from_numpy(
-                        wgpu_dev, arr[j, inter:].copy())
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
+                             scale_transforms=scale_transforms)
 
-            d_key = f"{p}.down_proj_bias"
-            if d_key in self.weights:
-                arr = self._buf_to_numpy(self.weights[d_key]).reshape(num_experts, hidden)
-                del self.weights[d_key]
-                for j in range(num_experts):
-                    ep = f"{p}.{j}"
-                    self.weights[f"{ep}.w2.bias"] = WebGPUBuffer.from_numpy(
-                        wgpu_dev, arr[j].copy())
+        if _bias_pending:
+            num_experts = self._num_experts
+            inter = self._moe_inter
+            hidden = self.hidden_size
+            wgpu_dev = self.wgpu_device.wgpu_device
+
+            for i in range(self.num_layers):
+                p = f"model.layers.{i}.mlp.experts"
+
+                gu_key = f"{p}.gate_up_proj_bias"
+                if gu_key in _bias_pending:
+                    arr = _bias_pending[gu_key].reshape(num_experts, 2 * inter)
+                    del self.weights[gu_key]
+                    for j in range(num_experts):
+                        ep = f"{p}.{j}"
+                        self.weights[f"{ep}.w1.bias"] = WebGPUBuffer.from_numpy(
+                            wgpu_dev, arr[j, :inter].copy())
+                        self.weights[f"{ep}.w3.bias"] = WebGPUBuffer.from_numpy(
+                            wgpu_dev, arr[j, inter:].copy())
+
+                d_key = f"{p}.down_proj_bias"
+                if d_key in _bias_pending:
+                    arr = _bias_pending[d_key].reshape(num_experts, hidden)
+                    del self.weights[d_key]
+                    for j in range(num_experts):
+                        ep = f"{p}.{j}"
+                        self.weights[f"{ep}.w2.bias"] = WebGPUBuffer.from_numpy(
+                            wgpu_dev, arr[j].copy())
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
