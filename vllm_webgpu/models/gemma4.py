@@ -84,13 +84,14 @@ def _gemma4_layer_params(
         # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
         if is_kv_shared:
             _prev = layer_types[:first_kv_shared]
-            _matches = [idx for idx, x in enumerate(_prev) if x == lt]
-            if not _matches:
+            kv_shared_target = next(
+                (idx for idx, x in reversed(list(enumerate(_prev))) if x == lt), None
+            )
+            if kv_shared_target is None:
                 raise ValueError(
                     f"Layer {i} (type={lt!r}) is KV-shared but type {lt!r} was not "
                     f"found in the non-shared prefix {_prev}. Check layer_types config."
                 )
-            kv_shared_target = _matches[-1]
         else:
             kv_shared_target = -1
 
@@ -125,12 +126,15 @@ def _build_layer_params_from_config(
 ) -> list[dict]:
     """Build per-layer attention/FFN params from a Gemma4 safetensors config.
 
+    Precondition: model_config must already be the extracted text config (i.e.
+    _get_text_config has been called by the caller) and must have a `layer_types`
+    attribute with len(layer_types) == num_layers. The caller in
+    Gemma4WebGPUModel.__init__ enforces this before calling this function.
+
     Extracts the required fields from model_config (applying the same getattr
     defaults as vLLM's constructors) and delegates to _gemma4_layer_params for
     the actual formula application.
     """
-    from vllm.model_executor.models.gemma4 import _get_text_config
-    model_config = _get_text_config(model_config)
     num_q_heads       = model_config.num_attention_heads
     intermediate_size = model_config.intermediate_size
     layer_types       = model_config.layer_types

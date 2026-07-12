@@ -66,8 +66,8 @@ def allocate_kv_from_tensors(
     """Allocate KV cache buffers from vLLM's authoritative KVCacheTensor list.
 
     K and V byte counts are computed directly from spec fields
-    (block_size, num_kv_heads, dtype, head_size, head_size_v), equivalent to
-    FullAttentionSpec.real_page_size_bytes split per-half. Direct field access
+    (block_size, num_kv_heads, dtype, head_size, head_size_v), split proportionally
+    to head_size (K) and head_size_v (V). Direct field access
     is used instead of calling real_page_size_bytes because K and V must be
     sized separately: head_size may differ from head_size_v (e.g. MLA-style
     models), and real_page_size_bytes returns a single combined total that
@@ -81,8 +81,10 @@ def allocate_kv_from_tensors(
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
 
-    # Build layer_name -> KVCacheSpec map so we can use real_page_size_bytes,
-    # which excludes the per-token-head scale overhead that page_size_bytes adds.
+    # Build layer_name -> KVCacheSpec map so each layer's head_size and head_size_v
+    # fields are accessible for independent K/V byte calculation, avoiding the combined
+    # page_size_bytes which includes per-token-head scale overhead and cannot be split
+    # correctly for asymmetric head dimensions.
     # UniformTypeKVCacheSpecs wraps per-layer specs (e.g. heterogeneous-but-same-type
     # attention layers like Gemma4's 4-head local vs 8-head global); unpack it so
     # each layer name resolves to its individual spec rather than the umbrella object.
@@ -254,9 +256,9 @@ def allocate_kv_from_tensors(
 def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     """Return the layer-type list from hf_config, using a canonical fallback chain.
 
-    Priority: hf_config.layer_types (Gemma4/Qwen3.5) >
-    hf_config.layers_block_type (NemotronH/Falcon) >
-    hf_outer_config.attn_type_list (Minimax).
+    Priority: hf_config.layers_block_type (NemotronH/Falcon) >
+    hf_outer_config.attn_type_list (Minimax) >
+    hf_config.layer_types (Gemma4/Qwen3.5).
 
     Returns None when none of the attributes is present.
 

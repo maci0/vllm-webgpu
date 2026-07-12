@@ -47,13 +47,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # _mr4_ok is never consulted. Skip the scan in load_weights().
     _skip_mr4_scan: bool = True
 
-    # V-norm is always applied by _decoder_layer in this subclass, regardless
-    # of model_type. The parent's __init__ computes _apply_v_norm=False when
-    # model_type != 'gemma4', which misrepresents the actual behavior because
-    # the parent read sites (_prefill_batch_forward, _transformer_layer) are
-    # never called from this class's forward(). Override here so the class-level
-    # value is accurate; _decoder_layer is the authoritative source of V-norm behavior.
-    _apply_v_norm: bool = True
+    # _apply_v_norm is set as an instance attribute in __init__ after super().__init__()
+    # so that the correct value is visible regardless of what the parent assigns.
+    # See __init__ below.
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
@@ -88,6 +84,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 f"for vec4<f16> shaders"
             )
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
+        # V-norm is always applied by _decoder_layer in this subclass, regardless of
+        # model_type. The parent __init__ may have set _apply_v_norm=False when
+        # model_type != 'gemma4'. Override it here as an instance attribute so the
+        # correct value is visible at all read sites.
+        self._apply_v_norm = True
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
@@ -358,6 +359,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         finally:
             self._active_encoder = None
 
+        # DiffusionGemma intentionally always returns full float32 logits, ignoring
+        # _greedy_decode. Multi-token diffusion inference requires all per-token logits
+        # to sample from the joint distribution; GPU argmax (_finish_forward) is not
+        # wired in here. If greedy decode is ever needed for this model, wire in
+        # _dispatch_softcap_and_sample and _finish_forward here.
         return result.to_numpy().view(np.float16)[:num_tokens * vocab].reshape(num_tokens, vocab).astype(np.float32)
 
     def _gemm_adaptive(

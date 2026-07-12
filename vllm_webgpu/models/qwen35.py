@@ -796,7 +796,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                                [normed_x, gate_w,
                                 self._scales_buf(gate_wk, uq_gate, self._dummy_buf),
                                 sc["q_gate_buf"]],
-                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, **qi_gate},
+                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_gate, "USE_BF16": 0, **qi_gate},
                                (q_dim, 1, 1))
 
         # Per-head RMSNorm + RoPE with Qwen3.5-specific constants.

@@ -139,7 +139,7 @@ for _i, _expected in enumerate([1024, 2048, 4096]):
             "The multi-element list branch of NemotronHMLPDecoderLayer.__init__ has changed; "
             "update _resolve_intermediate_size to match."
         )
-del _i, _expected
+del _i, _expected, _got
 
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.

@@ -161,15 +161,12 @@ def _load_quant_cfg(config_path: Path) -> dict:
     Uses compressed_tensors.get_quantization_config to handle nested locations
     (text_config, compression_config) and multimodal variants.
     compressed_tensors is a hard dependency of vllm (Requires-Dist), so
-    _ct_get_quant_cfg is always non-None. Returns {} only when config.json is
-    absent (FileNotFoundError). Propagates all other exceptions so programming
-    errors in the upstream library or an incompatible install surface immediately
+    _ct_get_quant_cfg is always non-None. All callers pre-check existence before
+    calling this function, so FileNotFoundError is not caught here. Propagates
+    all exceptions so programming errors in the upstream library surface immediately
     rather than being silently treated as an unquantized model.
     """
-    try:
-        return _ct_get_quant_cfg(str(config_path)) or {}
-    except FileNotFoundError:
-        return {}
+    return _ct_get_quant_cfg(str(config_path)) or {}
 
 
 def _check_unsupported_quant(quant_cfg: dict) -> None:
@@ -668,7 +665,7 @@ def load_safetensors_weights(
     header = {
         k: v for k, v in _raw_hdr.items()
         if k != "__metadata__"
-        and not (skip_prefixes and any(k.startswith(pfx) for pfx in skip_prefixes))
+        and not (skip_prefixes and k.startswith(tuple(skip_prefixes)))
     }
 
     with sft.safe_open(path, framework="pt") as sf:
@@ -1581,7 +1578,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     # First handle quantized triplets: find all .weight keys that form a quant group.
     quant_bases: list[str] = []
     for key in sorted(key_to_shard):
-        if skip_prefixes and any(key.startswith(pfx) for pfx in skip_prefixes):
+        if skip_prefixes and key.startswith(tuple(skip_prefixes)):
             continue
         if key.endswith(".weight"):
             base = key.removesuffix(".weight")
@@ -1648,7 +1645,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     remaining_shards = sorted({
         key_to_shard[k] for k in key_to_shard
         if k not in processed
-        and not (skip_prefixes and any(k.startswith(pfx) for pfx in skip_prefixes))
+        and not (skip_prefixes and k.startswith(tuple(skip_prefixes)))
     })
     for shard_path in remaining_shards:
         logger.info("Loading MLX shard %s", shard_path)
@@ -1656,7 +1653,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
             for key in sf.keys():
                 if key in processed:
                     continue
-                if skip_prefixes and any(key.startswith(pfx) for pfx in skip_prefixes):
+                if skip_prefixes and key.startswith(tuple(skip_prefixes)):
                     continue
                 t = sf.get_tensor(key)
                 if t.dtype not in (_torch.bfloat16, _torch.float32, _torch.float16):

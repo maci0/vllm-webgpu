@@ -2,7 +2,7 @@ from __future__ import annotations
 from functools import cached_property
 from itertools import chain
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Sequence, cast
+from typing import TYPE_CHECKING, Sequence, cast
 
 import numpy as np
 import torch
@@ -21,6 +21,7 @@ from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
 if TYPE_CHECKING:
+    from typing import Any
     from vllm.tasks import SupportedTask
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -747,7 +748,7 @@ class WebGPUModelRunner:
                 # num_output_tokens == 0 because its prompt did not fit in the
                 # previous step. Run the next chunk of prompt tokens through a
                 # prefill-style forward pass rather than a single-token decode.
-                if cached.num_output_tokens[i] == 0:
+                if cached.is_context_phase(rid):
                     prompt_token_ids = state.get("prompt_token_ids")
                     if prompt_token_ids is None:
                         raise RuntimeError(

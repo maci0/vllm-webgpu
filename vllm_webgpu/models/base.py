@@ -105,10 +105,9 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
+    # vLLM bump: verify yarn_get_mscale still lives in .rotary_embedding.common
+    # and that its signature matches the call below.
     from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    assert yarn_get_mscale.__module__ == "vllm.model_executor.layers.rotary_embedding.common", (
-        "yarn_get_mscale moved; update the import path above and this assertion."
-    )
 
     if rotary_dim is None:
         if rd := rope_scaling.get("rope_dim", None):
