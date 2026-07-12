@@ -91,11 +91,11 @@ def compute_yarn_freqs(
     from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
 
     if rotary_dim is None:
-        # Mirrors vllm/model_executor/layers/rotary_embedding/__init__.py get_rope() L66-72.
-        # vLLM 0.24 — verify against this file on every vLLM version bump:
+        # Mirrors vllm/model_executor/layers/rotary_embedding/__init__.py get_rope() L66-72
+        # (vLLM 0.24). Verify on each vLLM bump:
         #   grep -n "rope_dim\|partial_rotary_factor" .venv/lib/*/site-packages/vllm/model_executor/layers/rotary_embedding/__init__.py
-        # The vLLM function cannot be called directly here because it also constructs
-        # the full RoPE layer object including an expensive cos/sin cache allocation.
+        # get_rope() cannot be called directly: it allocates a full RoPE layer including
+        # an expensive cos/sin cache (orig_ctx * factor rows x rotary_dim floats).
         if rd := rope_scaling.get("rope_dim", None):
             rotary_dim = int(rd)
         else:
@@ -110,8 +110,12 @@ def compute_yarn_freqs(
         raise ValueError("YaRN rope_scaling must include 'factor'")
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
-    # Key set and defaults mirror vLLM's get_rope() (rotary_embedding/__init__.py:246-258).
-    # Grouping them here makes future drift visible at a glance.
+    # Accepted key set: rotary_embedding/__init__.py:250-256 (vLLM 0.24).
+    # Defaults: YaRNScalingRotaryEmbedding.__init__ kwargs at yarn_scaling_rope.py:26-31 (vLLM 0.24).
+    # Verify both on each vLLM bump:
+    #   grep -n "beta_fast\|beta_slow\|extrapolation_factor\|attn_factor\|apply_yarn\|truncate" \
+    #     .venv/lib/*/site-packages/vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
+    # All six keys are grouped here so a vLLM bump only requires editing this one dict.
     _YARN_DEFAULTS: dict = {
         "beta_fast": 32, "beta_slow": 1,
         "extrapolation_factor": 1.0, "attn_factor": 1.0,
