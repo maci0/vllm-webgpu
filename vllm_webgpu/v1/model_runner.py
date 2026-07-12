@@ -693,6 +693,11 @@ class WebGPUModelRunner:
                 blk_ids = list(state["block_ids"])
                 sp = state.get("sampling_params")
                 num_logprobs = sp.num_logprobs if sp is not None else None
+                if num_logprobs == -1:
+                    raise NotImplementedError(
+                        f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
+                        "use a positive integer instead"
+                    )
 
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.
