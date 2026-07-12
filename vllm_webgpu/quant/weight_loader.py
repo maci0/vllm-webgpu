@@ -316,7 +316,13 @@ def load_safetensors_weights_sharded(
     index_path: pre-found str path to model.safetensors.index.json from detect_weight_format.
     When None, the directory is scanned again via _ct_find_index (backwards compatibility).
     """
-    _check_unsupported_quant(quant_cfg or {})
+    # quant_cfg may be a vLLM pydantic quantization config model when --quantization
+    # is passed as an online-quant shorthand. Such models have no .get() method, so
+    # _check_unsupported_quant and detect_compressed_tensors_fmt would crash with
+    # AttributeError. Normalize to None here; the downstream callers fall back to
+    # config.json. Mirrors the identical guard at lines 692-695 in load_safetensors_weights.
+    _eff_quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else None
+    _check_unsupported_quant(_eff_quant_cfg if _eff_quant_cfg is not None else {})
     if index_path is None:
         index_path = _ct_find_index(model_dir)
     if index_path is None:
@@ -365,7 +371,7 @@ def load_safetensors_weights_sharded(
     # The I8 and F8_E4M3 dtypes are already handled per-shard inside load_safetensors_weights,
     # but we apply comprehensive quant_meta here for any layers not caught by dtype detection.
     try:
-        ct_meta = detect_compressed_tensors_fmt(Path(model_dir) / "config.json", quant_cfg=quant_cfg)
+        ct_meta = detect_compressed_tensors_fmt(Path(model_dir) / "config.json", quant_cfg=_eff_quant_cfg)
     except ValueError as exc:
         raise RuntimeError(
             f"Unsupported compressed-tensors quantization format in {model_dir}: {exc}"
