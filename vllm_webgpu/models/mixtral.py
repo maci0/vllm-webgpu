@@ -90,11 +90,10 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """
         import wgpu as _wgpu_lib
         _staging_sz = max(self._top_k * 4, 8)
-        self._wgpu_map_read = _wgpu_lib.MapMode.READ
-        self._wgpu_staging_usage = _wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ
+        _staging_usage = _wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ
         self._topk_idx_staging = dev.create_buffer(
             size=_staging_sz,
-            usage=self._wgpu_staging_usage)
+            usage=_staging_usage)
         # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
         self._topk_w_staging = None
 
@@ -406,6 +405,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """
         if extra_gate_consts is None:
             extra_gate_consts = {}
+        import wgpu as _wgpu_lib
         dev = self.wgpu_device.wgpu_device
         msc = self._moe_sc
         hidden = self.hidden_size
@@ -449,7 +449,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(
                     size=max(self._top_k * 4, 8),
-                    usage=self._wgpu_staging_usage)
+                    usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
             self._active_encoder.copy_buffer_to_buffer(
                 msc["topk_w"].buf, 0, self._topk_w_staging, 0, K * 4)
 
@@ -458,12 +458,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         dev.queue.on_submitted_work_done_sync()
 
         # Map the pre-allocated staging buffers — no extra GPU submit needed.
-        self._topk_idx_staging.map_sync(mode=self._wgpu_map_read)
+        self._topk_idx_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
         raw_idx = np.frombuffer(self._topk_idx_staging.read_mapped(), dtype=np.uint32).copy()
         self._topk_idx_staging.unmap()
         expert_indices = raw_idx[:K].tolist()
         if _debug_weights:
-            self._topk_w_staging.map_sync(mode=self._wgpu_map_read)
+            self._topk_w_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
             raw_w = np.frombuffer(self._topk_w_staging.read_mapped(), dtype=np.float32).copy()
             self._topk_w_staging.unmap()
             logger.debug(

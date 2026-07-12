@@ -120,6 +120,12 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
+    # Mirrors vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
+    # YaRNScalingRotaryEmbedding._compute_inv_freq — vLLM 0.24.
+    # Bypasses __init__ to avoid the expensive [orig_ctx * factor, rotary_dim]
+    # cos/sin cache. Verify this attribute list on every vLLM version bump:
+    #   grep -n "def _compute_inv_freq\|self\.beta_fast\|self\.beta_slow\|self\.truncate\|self\.extrapolation_factor" \
+    #     .venv/lib/*/site-packages/vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
     inst = object.__new__(YaRNScalingRotaryEmbedding)
     inst.base                    = rope_theta
     inst.rotary_dim              = rotary_dim

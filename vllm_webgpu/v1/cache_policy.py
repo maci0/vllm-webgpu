@@ -136,6 +136,21 @@ def allocate_kv_from_tensors(
                     "allocated correctly, but the WebGPU attention kernel does not implement "
                     "sink-token logic, producing silently wrong output."
                 )
+            # SlidingWindowMLASpec and SlidingWindowSpec are NOT subclasses of
+            # FullAttentionSpec, so they do not interact with the check below.
+            # They are placed here (before FullAttentionSpec) to keep all
+            # non-FullAttentionSpec rejection paths grouped together.
+            elif isinstance(spec, SlidingWindowMLASpec):
+                raise NotImplementedError(
+                    f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
+                    "SlidingWindowMLASpec stores a single MLA latent per position, so "
+                    "real_page_size_bytes is the full per-position size, not a K+V pair. "
+                    "Halving it would silently corrupt both cache buffers."
+                )
+            elif isinstance(spec, SlidingWindowSpec):
+                raise NotImplementedError(
+                    "SlidingWindowSpec KV cache is not supported by the WebGPU backend."
+                )
             elif isinstance(spec, FullAttentionSpec):
                 if spec.sliding_window is not None:
                     raise NotImplementedError(
@@ -159,17 +174,6 @@ def allocate_kv_from_tensors(
                 common = num_blocks * spec.block_size * spec.num_kv_heads * get_dtype_size(spec.dtype)
                 k_bytes = common * spec.head_size
                 v_bytes = common * spec.head_size_v
-            elif isinstance(spec, SlidingWindowMLASpec):
-                raise NotImplementedError(
-                    f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
-                    "SlidingWindowMLASpec stores a single MLA latent per position, so "
-                    "real_page_size_bytes is the full per-position size, not a K+V pair. "
-                    "Halving it would silently corrupt both cache buffers."
-                )
-            elif isinstance(spec, SlidingWindowSpec):
-                raise NotImplementedError(
-                    "SlidingWindowSpec KV cache is not supported by the WebGPU backend."
-                )
             else:
                 raise NotImplementedError(
                     f"Unsupported KV cache spec type {type(spec).__name__} for {layer_name!r}; "
@@ -255,18 +259,20 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     calling this function and use that value if present. This function only inspects
     hf_config; the vLLM engine always calls it before weight loading (model=None).
     """
-    v = getattr(hf_config, "layers_block_type", None)
-    if v is not None:
-        return v
     # Minimax-style: integer list where 1 = attention, 0 = non-attention.
     # model_runner.py handles integer-encoded layer types via is_attn_layer(lt), which returns True when lt == 1 (Minimax attention).
     # attn_type_list lives on the outer hf_config for multimodal models where
     # hf_text_config (passed as hf_config here) differs from the outer config.
     _outer = hf_outer_config if hf_outer_config is not None else hf_config
-    v = getattr(_outer, "attn_type_list", None)
-    if v is not None:
-        return v
-    return getattr(hf_config, "layer_types", None)
+    for cfg, attr in [
+        (hf_config, "layers_block_type"),
+        (_outer,    "attn_type_list"),
+        (hf_config, "layer_types"),
+    ]:
+        v = getattr(cfg, attr, None)
+        if v is not None:
+            return v
+    return None
 
 
 def determine_available_memory(worker: "WebGPUWorker") -> int:

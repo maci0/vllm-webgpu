@@ -1420,15 +1420,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             (I, 1, 1),
         )
 
-        # relu^2 element-wise activation.
-        # WG_SIZE=256 matches the divisor below; (cdiv(N, WG_SIZE), 1, 1) is the
-        # correct formula per the shader comment. _rows_wg has the same formula
-        # numerically, but its semantic label ("row-parallel matmul") is wrong here.
+        # relu^2 element-wise activation. WG_SIZE=256 matches _rows_wg's divisor,
+        # so the workgroup count is identical; this shader is element-wise, not
+        # row-parallel, but the formula (cdiv(N, 256), 1, 1) is the same.
         self._dispatch(
             "relu_sq",
             [sc["up_buf"], sc["ffn_act"]],
             {"N": I, "WG_SIZE": 256},
-            (cdiv(I, 256), 1, 1),
+            _rows_wg(I),
         )
 
         # down_proj: intermediate -> hidden

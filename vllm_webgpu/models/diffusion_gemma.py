@@ -769,10 +769,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             for expert_slot, eid in enumerate(unique_eids):
                 ep = f"{p}.experts.{eid}"
-                g_w = self.weights.get(f"{ep}.gate_proj.weight")
-                u_w = self.weights.get(f"{ep}.up_proj.weight")
-                d_w = self.weights.get(f"{ep}.down_proj.weight")
-                if g_w is None or u_w is None or d_w is None:
+                if any(f"{ep}.{k}.weight" not in self.weights for k in ("gate_proj", "up_proj", "down_proj")):
                     raise RuntimeError(f"L{layer_idx}: expert {eid} missing gate/up/down weights")
 
                 uq_g  = self._uq_for_key(f"{ep}.gate_proj.weight")

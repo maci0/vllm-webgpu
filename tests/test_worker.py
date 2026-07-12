@@ -202,7 +202,7 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
                                   num_hidden_layers=None):
     """Build a WebGPUModelRunner mock with model=None and a Gemma4-style hf_config."""
     from vllm_webgpu.v1.model_runner import WebGPUModelRunner
-    from vllm_webgpu.config import WebGPUConfig
+    from vllm_webgpu.config import get_config as _get_webgpu_config
 
     if num_hidden_layers is None:
         num_hidden_layers = len(layer_types)
@@ -236,7 +236,7 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
     runner = MagicMock(spec=WebGPUModelRunner)
     runner.model = None  # not yet loaded
     runner.vllm_config = vllm_config
-    runner.webgpu_config = WebGPUConfig.from_env()
+    runner.webgpu_config = _get_webgpu_config()
     runner._block_size = 16
     # _get_lp_list() is called inside kv_cache_spec; return None to trigger
     # the layer_types fallback path (model not yet loaded, no _layer_attention_params).
@@ -300,7 +300,7 @@ def test_get_kv_cache_spec_pre_load_gemma4_uniform_fallback():
     del hf_config.layer_types
     del hf_config._layer_attention_params
 
-    from vllm_webgpu.config import WebGPUConfig
+    from vllm_webgpu.config import get_config as _get_webgpu_config
     vllm_config = MagicMock()
     vllm_config.model_config.hf_config = hf_config
     vllm_config.model_config.get_head_size.return_value = 128
@@ -311,7 +311,7 @@ def test_get_kv_cache_spec_pre_load_gemma4_uniform_fallback():
     runner = MagicMock(spec=WebGPUModelRunner)
     runner.model = None
     runner.vllm_config = vllm_config
-    runner.webgpu_config = WebGPUConfig.from_env()
+    runner.webgpu_config = _get_webgpu_config()
     runner._block_size = 16
     runner.kv_cache_spec = WebGPUModelRunner.kv_cache_spec.func(runner)
 

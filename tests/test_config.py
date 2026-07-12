@@ -13,7 +13,7 @@ def teardown_function():
 
 
 def test_defaults():
-    cfg = WebGPUConfig.from_env()
+    cfg = get_config()
     assert cfg.power_preference == "high-performance"
 
 

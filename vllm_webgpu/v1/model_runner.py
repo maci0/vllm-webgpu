@@ -375,13 +375,9 @@ class WebGPUModelRunner:
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "Sequence[LogprobsTensors | None] | None" = None,
-        prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
+        logprobs_data: "Sequence[LogprobsTensors | None]" = (),
+        prompt_logprobs_dict: "dict[str, LogprobsTensors | None]" = {},
     ) -> Any:
-        if logprobs_data is None:
-            logprobs_data = ()
-        if prompt_logprobs_dict is None:
-            prompt_logprobs_dict = {}
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 

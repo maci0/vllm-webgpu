@@ -17,13 +17,8 @@ class WebGPUConfig:
                 f"Valid: {sorted(_PowerPreference)}"
             )
 
-    @classmethod
-    def from_env(cls) -> "WebGPUConfig":
-        return cls(
-            power_preference=envs.VLLM_WEBGPU_POWER_PREFERENCE,
-        )
 
 
 @cache
 def get_config() -> WebGPUConfig:
-    return WebGPUConfig.from_env()
+    return WebGPUConfig(power_preference=envs.VLLM_WEBGPU_POWER_PREFERENCE)
