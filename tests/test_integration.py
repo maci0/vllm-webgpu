@@ -103,6 +103,7 @@ def test_full_pipeline_smoke(wgpu_device, tmp_path):
         rope_theta = 10000.0
         architectures = ["LlamaForCausalLM"]
         model_arch_config = _FakeArchConfig()
+        hf_config = _FakeArchConfig()  # base.py reads hf_config.quantization_config
 
     model = LlamaWebGPUModel(_FakeConfig(), wgpu_device, cache)
     model.load_weights(str(weight_path))
