@@ -59,11 +59,12 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # Build model
     print("\nBuilding model...")
-    from vllm_webgpu.v1.model_runner import _build_model
+    from vllm_webgpu.v1.model_runner import _build_model, ARCH_MAP
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     import vllm_webgpu.envs as _envs
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
-    model = _build_model(arch, cfg, device, pipeline_cache, block_size)
+    family = ARCH_MAP.get(arch)
+    model = _build_model(arch, family, cfg, device, pipeline_cache, block_size)
 
     # Load weights
     print("\nLoading weights (this may take a while)...")
