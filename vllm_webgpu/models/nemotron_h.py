@@ -83,6 +83,14 @@ del _mapper
 # (mamba_mixer2.py L328-340), with output_sizes=[intermediate_size, intermediate_size,
 # groups_ssm_state_size, groups_ssm_state_size, num_heads] (5 entries summing to
 # 2*intermediate_size + 2*groups_ssm_state_size + num_heads).
+# The ColumnParallelLinear branch (mamba_mixer2.py L353-355) uses a single
+# output_size=intermediate_size + self.conv_dim + self.num_heads, which expands to
+# the same total (intermediate_size + (intermediate_size + 2*groups_ssm_state_size)
+# + num_heads). On each vLLM bump, diff BOTH branches:
+#   - MergedColumnParallelLinear: mamba_mixer2.py L328-340 (output_sizes list)
+#   - ColumnParallelLinear:       mamba_mixer2.py L353-355 (output_size expression)
+# If either branch adds a new output group, in_proj_dim and the scratch buffer
+# at _make_buf(IPD * 2) will be wrong until updated here.
 # NOTE: _validate_mamba_weights is the authoritative runtime guard. It checks
 # the actual in_proj.weight shape from the loaded checkpoint against in_proj_dim.
 
@@ -206,9 +214,18 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # _validate_mamba_weights is the primary runtime guard and must remain.
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
-        # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
-        # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
-        # gives the same total for the n_groups%tp!=0 edge case, which does not occur at tp=1)
+        # Derived from MambaMixer2's two in_proj branches (both produce the same total
+        # for tp=1; WebGPU never runs tp>1):
+        #   MergedColumnParallelLinear (mamba_mixer2.py L328-340):
+        #     output_sizes = [intermediate_size, intermediate_size,
+        #                     groups_ssm_state_size, groups_ssm_state_size, num_heads]
+        #     total = 2*intermediate_size + 2*groups_ssm_state_size + num_heads
+        #   ColumnParallelLinear (mamba_mixer2.py L353-355):
+        #     output_size = intermediate_size + conv_dim + num_heads
+        #                 = intermediate_size + (intermediate_size +
+        #                   2*groups_ssm_state_size) + num_heads  (same total)
+        # On each vLLM bump, diff BOTH branches to catch a new output group.
+        # _validate_mamba_weights is the primary runtime guard and must remain.
         self.in_proj_dim: int = (
             self.mamba_int + self.conv_dim + self.mamba_num_heads
         )
