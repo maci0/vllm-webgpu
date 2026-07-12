@@ -162,14 +162,20 @@ class WebGPUModelRunner:
         block_size = self._block_size
 
         family = ARCH_MAP.get(arch)
-        num_spec = self.vllm_config.num_speculative_tokens
-        if num_spec:
+        spec_config = self.vllm_config.speculative_config
+        if spec_config is not None:
             # The decode path in execute_model forwards exactly 1 token per
             # request regardless of scheduler_output.num_scheduled_tokens[rid].
             # With speculative decoding the scheduler sets num_scheduled_tokens > 1
             # for decode steps; the engine then expects N sampled tokens back and
             # will either crash or silently corrupt output when it receives 1.
             # Fail fast here rather than produce wrong results at runtime.
+            #
+            # Note: vllm_config.num_speculative_tokens is not used here because
+            # it also returns diffusion_config.canvas_length for diffusion models,
+            # which would cause a false-positive error for architectures like
+            # DiffusionGemmaForBlockDiffusion that are registered in ARCH_MAP.
+            num_spec = spec_config.num_speculative_tokens
             raise NotImplementedError(
                 f"{arch} with speculative decoding "
                 f"(num_speculative_tokens={num_spec}) is not supported on the "
@@ -180,10 +186,10 @@ class WebGPUModelRunner:
 
         self.model = _build_model(arch, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
         if family == "nemotron_h":
-            # num_spec is always 0 here: the raise above blocks any non-zero value.
-            # Kept explicit so NemotronHWebGPUModel.load_weights can accept it when
+            # spec_config is None here: the raise above blocks any non-None value.
+            # Pass 0 so NemotronHWebGPUModel.load_weights can accept num_spec when
             # speculative decoding is eventually implemented in execute_model.
-            self.model.load_weights(mc.model, num_spec=num_spec)
+            self.model.load_weights(mc.model, num_spec=0)
         else:
             self.model.load_weights(mc.model)
         logger.info("Model loaded: arch=%s", arch)
