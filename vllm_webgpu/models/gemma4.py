@@ -739,8 +739,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             dev, np.asarray(attn_metadata.slot_mapping, dtype=np.uint32))
         pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
         ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32, copy=False))
-        bt_buf  = WebGPUBuffer.from_numpy(dev, self._bt_arr(attn_metadata))
-
         _rms = self._rms_consts
 
         _hstate  = 0
