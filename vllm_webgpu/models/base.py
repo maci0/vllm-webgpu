@@ -1,4 +1,5 @@
 from __future__ import annotations
+import inspect
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -58,15 +59,24 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
-# YaRN RoPE defaults from YaRNScalingRotaryEmbedding.__init__ kwargs
-# (yarn_scaling_rope.py:26-31, vLLM 0.24). Verify on each vLLM bump:
-#   grep -n "beta_fast\|beta_slow\|extrapolation_factor\|attn_factor\|apply_yarn\|truncate" \
-#     .venv/lib/*/site-packages/vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
-_YARN_DEFAULTS: dict = {
-    "beta_fast": 32, "beta_slow": 1,
-    "extrapolation_factor": 1.0, "attn_factor": 1.0,
-    "apply_yarn_scaling": True, "truncate": True,
-}
+_YARN_KEYS = frozenset(
+    {"beta_fast", "beta_slow", "extrapolation_factor", "attn_factor",
+     "apply_yarn_scaling", "truncate"}
+)
+
+def _load_yarn_defaults() -> dict:
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
+    )
+    return {
+        k: p.default
+        for k, p in inspect.signature(
+            YaRNScalingRotaryEmbedding.__init__
+        ).parameters.items()
+        if p.default is not inspect.Parameter.empty and k in _YARN_KEYS
+    }
+
+_YARN_DEFAULTS: dict = _load_yarn_defaults()
 
 def compute_yarn_freqs(
     head_dim: int,
@@ -121,7 +131,7 @@ def compute_yarn_freqs(
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
     # Accepted key set: rotary_embedding/__init__.py:250-256 (vLLM 0.24).
-    # All six default keys live in the module-level _YARN_DEFAULTS constant.
+    # Defaults are read from YaRNScalingRotaryEmbedding.__init__ at import time.
     _yarn = {k: rope_scaling.get(k, d) for k, d in _YARN_DEFAULTS.items()}
     beta_fast            = int(_yarn["beta_fast"])
     beta_slow            = int(_yarn["beta_slow"])
