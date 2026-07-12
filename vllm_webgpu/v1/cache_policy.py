@@ -209,6 +209,11 @@ def allocate_kv_from_tensors(
                     raise NotImplementedError(
                         f"Quantized KV cache (kv_quant_mode={spec.kv_quant_mode!r}) is not supported by the WebGPU backend; KV shaders expect float16 data."
                     )
+                if type(spec) is not FullAttentionSpec:
+                    raise NotImplementedError(
+                        f"FullAttentionSpec subclass {type(spec).__name__} overrides real_page_size_bytes; "
+                        "the head_size ratio split formula may be wrong. Add an explicit branch to handle it."
+                    )
                 # Compute K and V sizes independently so that asymmetric head
                 # dimensions (e.g. MLA-style models where head_size != head_size_v)
                 # get correctly sized buffers instead of an averaged size.
