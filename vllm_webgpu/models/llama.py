@@ -49,6 +49,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _hd = getattr(model_config, "head_dim", None)
         self.head_dim: int = _hd or (self.hidden_size // self.num_q_heads)
         self._attn_scale: float = self.head_dim ** -0.5
+        # Cache head-dimension products; recomputing per call is redundant.
+        # Same pattern as self.intermediate_size above.
+        self.q_dim: int = self.num_q_heads * self.head_dim
+        self.kv_dim: int = self.num_kv_heads * self.head_dim
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
         self.block_size: int = block_size
         # add.wgsl and gelu_mul.wgsl use vec4<f16>: dimensions must be divisible by 4.
@@ -112,8 +116,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         H = self.hidden_size
         inter = self.intermediate_size
-        Q = self.num_q_heads * self.head_dim
-        KV = self.num_kv_heads * self.head_dim
+        Q = self.q_dim
+        KV = self.kv_dim
 
         # Pre-allocated per-step buffers: reused every decode call via write_buffer.
         # Eliminates GPU allocation overhead (~5-10ms per token on Metal).
@@ -224,7 +228,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         if self._is_moe:
             self._batch_matmul_supported = False
         else:
-            proj_keys = [k for k in self.weights if k.endswith('.weight') and 'model.layers.' in k and '_proj' in k]
+            _proj_suffixes = {'q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'}
+            proj_keys = [
+                k for k in self.weights
+                if k.endswith('.weight') and 'model.layers.' in k
+                and k.removesuffix('.weight').rsplit('.', 1)[-1] in _proj_suffixes
+            ]
             self._batch_matmul_supported = bool(proj_keys) and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
 
     def _decode_setup(
@@ -459,8 +468,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         rms_base = self._rms_consts
         dev  = self.wgpu_device.wgpu_device
 
-        q_dim  = self.num_q_heads  * self.head_dim
-        kv_dim = self.num_kv_heads * self.head_dim
+        q_dim  = self.q_dim
+        kv_dim = self.kv_dim
         inter  = self.intermediate_size
 
         # Temporary batch buffers (T × size). Allocated once per prefill call;
@@ -744,9 +753,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         sc = self._sc
         hidden = self.hidden_size
-        p = f"model.layers.{layer_idx}"
-        q_dim = self.num_q_heads * self.head_dim
-        kv_dim = self.num_kv_heads * self.head_dim
+        p = self._layer_prefix(layer_idx)
+        q_dim = self.q_dim
+        kv_dim = self.kv_dim
         for (out_buf, proj, dim), uq in zip([
             (sc["q_buf"], "q_proj", q_dim),
             (sc["k_buf"], "k_proj", kv_dim),
@@ -780,9 +789,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         sc = self._sc
         hidden = self.hidden_size
-        p = f"model.layers.{layer_idx}"
-        q_dim = self.num_q_heads * self.head_dim
-        kv_dim = self.num_kv_heads * self.head_dim
+        p = self._layer_prefix(layer_idx)
+        q_dim = self.q_dim
+        kv_dim = self.kv_dim
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 
@@ -904,7 +913,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         sc = self._sc
         hidden = self.hidden_size
-        p = f"model.layers.{layer_idx}"
+        p = self._layer_prefix(layer_idx)
         _rms_c = self._rms_consts
 
         residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
@@ -953,6 +962,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         """
         return 0, ctx_len
 
+    def _layer_prefix(self, layer_idx: int) -> str:
+        """Return the weight-key prefix for a transformer layer."""
+        return f"model.layers.{layer_idx}"
+
     def _ffn_dispatch(
         self,
         normed_x: "WebGPUBuffer",
@@ -964,7 +977,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         another FFN variant without duplicating the surrounding transformer scaffolding.
         """
         sc = self._sc
-        p = f"model.layers.{layer_idx}"
+        p = self._layer_prefix(layer_idx)
         hidden = self.hidden_size
         inter = self.intermediate_size
 

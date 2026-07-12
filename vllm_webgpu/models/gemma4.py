@@ -1114,6 +1114,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Serialize once: bt_arr does not change across token iterations.
         # Calling tobytes() inside the loop would re-allocate the bytes object T times.
         _bt_bytes = bt_arr.tobytes()
+        # Block table is constant across all tokens; upload once before the loop.
+        dev.queue.write_buffer(pre["bt"].buf, 0, _bt_bytes)
 
         for t in range(T):
             self._hstate = 0
@@ -1127,7 +1129,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             dev.queue.write_buffer(pre["ids"].buf,      0, ids_t.astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(pre["pos"].buf,      0, pos_t.astype(np.uint32, copy=False).tobytes())
             dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_t.tobytes())
-            dev.queue.write_buffer(pre["bt"].buf,       0, _bt_bytes)
 
             normed_x = sc["normed"]
             x_buf    = pre["x"]

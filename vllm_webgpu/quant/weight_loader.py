@@ -229,7 +229,7 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = new_pfx + k[len(old_pfx):]
+                new_k = new_pfx + k.removeprefix(old_pfx)
                 if new_k not in d:
                     to_add[new_k] = v
                 break
@@ -559,9 +559,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     # sync hash: f11d6b95201b43b406eaf265c9b23e9d6416da91b1a3906c462e9a7d4f822e46
                     # On each vLLM bump: sed -n '244,262p' .venv/lib/python*/site-packages/vllm/
                     #   model_executor/layers/quantization/modelopt.py | sha256sum
-                    if cfg is None:
-                        algo = ''
-                    elif "quantization" in cfg:
+                    if "quantization" in cfg:
                         _qs = cfg["quantization"]
                         algo = str(_qs.get('quant_algo', '')).upper() if isinstance(_qs, dict) else ''
                     else:

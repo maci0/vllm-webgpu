@@ -14,6 +14,7 @@ from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
+from vllm.utils.import_utils import resolve_obj_by_qualname
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token, zero_bytes
 from vllm_webgpu.v1.cache_policy import MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types, is_attn_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
@@ -88,7 +89,6 @@ _FAMILY_TO_CLASS: "dict[str, str]" = {
 
 
 def _build_model(arch: str, family: "str | None", model_config: Any, wgpu_device: Any, pipeline_cache: Any, block_size: int) -> "BaseWebGPUModel":
-    from vllm.utils.import_utils import resolve_obj_by_qualname
     qualname = _FAMILY_TO_CLASS.get(family or "")
     if qualname is None:
         raise NotImplementedError(
@@ -357,7 +357,7 @@ class WebGPUModelRunner:
 
     def get_cache_block_size_bytes(self) -> int:
         specs = self.kv_cache_spec
-        return sum(s.page_size_bytes for s in specs.values())
+        return sum(s.real_page_size_bytes for s in specs.values())
 
     def warm_up(self) -> None:
         if self.model is not None:
