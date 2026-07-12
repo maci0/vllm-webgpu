@@ -338,8 +338,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self._max_q_dim = max(lp["q_dim"] for lp in self._lp)
         self._max_kv_dim = max(lp["kv_dim"] for lp in self._lp)
         self._max_inter = self._scratch_inter_size()
-        max_ctx = getattr(model_config, "max_position_embeddings", 8192)
-        self._init_scratch_buffers(max_ctx, self._max_q_dim, self._max_kv_dim)
+        self.max_ctx = getattr(model_config, "max_position_embeddings", 131072)
+        self._init_scratch_buffers(self.max_ctx, self._max_q_dim, self._max_kv_dim)
 
         _vpt = _vals_per_thread(self.hidden_size)
         self._rms_consts = {"HIDDEN_DIM": self.hidden_size, "VALS_PER_THREAD": _vpt, "GEMMA_NORM": self._GEMMA_NORM}
