@@ -693,46 +693,47 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             # Layer method _batched_dispatch calls become re-entrant no-ops
             # because _active_encoder is already set, so all dispatches land here.
             self._active_encoder = dev.create_command_encoder()
+            try:
+                for tc in chunk_toks:
+                    ctx_t = int(positions[tc]) + 1
+                    ids_buf  = tok_ids_bufs[tc]
+                    pos_buf  = tok_pos_bufs[tc]
+                    slot_map = tok_slot_bufs[tc]
+                    # Reset h-state rotation: each token's forward pass starts at h0.
+                    self._hstate = 0
 
-            for tc in chunk_toks:
-                ctx_t = int(positions[tc]) + 1
-                ids_buf  = tok_ids_bufs[tc]
-                pos_buf  = tok_pos_bufs[tc]
-                slot_map = tok_slot_bufs[tc]
-                # Reset h-state rotation: each token's forward pass starts at h0.
-                self._hstate = 0
+                    # Embedding: token id → hidden state in pre["x"]
+                    x_buf = pre["x"]
+                    self._dispatch("embedding_lookup",
+                                   [self.weights["model.embed_tokens.weight"],
+                                    ids_buf, x_buf],
+                                   {"HIDDEN_DIM": hidden}, (1, 1, 1))
 
-                # Embedding: token id → hidden state in pre["x"]
-                x_buf = pre["x"]
-                self._dispatch("embedding_lookup",
-                               [self.weights["model.embed_tokens.weight"],
-                                ids_buf, x_buf],
-                               {"HIDDEN_DIM": hidden}, (1, 1, 1))
-
-                # Pre-norm for layer 0 (subsequent pre-norms fused in add_rms_norm)
-                self._dispatch("rms_norm",
-                               [x_buf,
-                                self.weights["model.layers.0.input_layernorm.weight"],
-                                sc["normed"]],
-                               _rms_base, (1, 1, 1))
-                normed_x = sc["normed"]
-
-                for i in range(self.num_layers):
-                    normed_x, x_buf = self._transformer_layer(
-                        i, normed_x, x_buf, pos_buf, slot_map, bt_buf,
-                        ctx_t, 1)
-
-                # For the last token: final norm, LM head, argmax, staging copy.
-                if tc == num_tokens - 1:
+                    # Pre-norm for layer 0 (subsequent pre-norms fused in add_rms_norm)
                     self._dispatch("rms_norm",
-                                   [x_buf, self.weights["model.norm.weight"],
-                                    pre["norm_out"]],
+                                   [x_buf,
+                                    self.weights["model.layers.0.input_layernorm.weight"],
+                                    sc["normed"]],
                                    _rms_base, (1, 1, 1))
-                    self._decode_teardown(pre["norm_out"], pre["logits"], vocab, greedy)
+                    normed_x = sc["normed"]
 
-            # Submit all dispatches for this chunk.
-            dev.queue.submit([self._active_encoder.finish()])
-            self._active_encoder = None
+                    for i in range(self.num_layers):
+                        normed_x, x_buf = self._transformer_layer(
+                            i, normed_x, x_buf, pos_buf, slot_map, bt_buf,
+                            ctx_t, 1)
+
+                    # For the last token: final norm, LM head, argmax, staging copy.
+                    if tc == num_tokens - 1:
+                        self._dispatch("rms_norm",
+                                       [x_buf, self.weights["model.norm.weight"],
+                                        pre["norm_out"]],
+                                       _rms_base, (1, 1, 1))
+                        self._decode_teardown(pre["norm_out"], pre["logits"], vocab, greedy)
+
+                # Submit all dispatches for this chunk.
+                dev.queue.submit([self._active_encoder.finish()])
+            finally:
+                self._active_encoder = None
 
         return self._finish_forward(greedy)
 
