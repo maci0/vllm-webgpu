@@ -544,8 +544,11 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     )
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
                 except (ImportError, OSError):
-                    q = cfg.get("quantization", {})
-                    algo = str(q.get("quant_algo", "") if isinstance(q, dict) else cfg.get("quant_algo", "")).upper()
+                    if 'quantization' in cfg:
+                        q = cfg['quantization']
+                        algo = str(q.get('quant_algo', '')).upper() if isinstance(q, dict) else ''
+                    else:
+                        algo = str(cfg.get('quant_algo', '')).upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
