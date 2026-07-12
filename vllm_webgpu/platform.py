@@ -146,6 +146,22 @@ class WebGPUPlatform(Platform):
             vllm_config.cache_config.block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
 
     @classmethod
+    def update_block_size_for_backend(cls, vllm_config: VllmConfig) -> None:
+        # The base class always derives block_size from
+        # backend_cls.get_preferred_block_size(), which ignores
+        # VLLM_WEBGPU_BLOCK_SIZE set in check_and_update_config above.
+        # For non-hybrid models there is nothing to reconcile, so return
+        # immediately to preserve the block size already written.
+        # For hybrid models (SSM + attention layers), align the page size
+        # between the attention backend and the Mamba state size.
+        model_config = vllm_config.model_config
+        if model_config is None or not model_config.is_hybrid:
+            return
+        backend_cls = cls._find_non_ssm_backend(vllm_config)
+        if backend_cls is not None:
+            cls._align_hybrid_block_size(vllm_config, backend_cls)
+
+    @classmethod
     def get_attn_backend_cls(
         cls,
         selected_backend: AttentionBackendEnum,
