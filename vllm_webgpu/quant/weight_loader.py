@@ -57,12 +57,10 @@ def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
         # Unexpected dtype (e.g. I16, F16): cannot safely view as int32.
         # Treat as asymmetric so callers fall through to CPU dequant.
         return False
-    # 0x88888888 viewed as int32 = -2004318072 (all eight nibbles = 8).
-    _sentinel = np.int32(-2004318072)
     v = qz.view(np.int32)
-    if v.flat[0] != _sentinel:
+    if v.flat[0] != _SYM_ZERO_SENTINEL:
         return False
-    return bool(np.all(v == _sentinel))
+    return bool(np.all(v == _SYM_ZERO_SENTINEL))
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
@@ -90,6 +88,8 @@ logger = init_logger(__name__)
 _FLUSH_THRESHOLD = 512 * 1024 * 1024
 # BitsAndBytes NF4 quantization block size (fixed by the BnB format spec).
 _BNB_GROUP_K = 64
+# 0x88888888 viewed as int32 = -2004318072 (all eight nibbles = 8, symmetric zero-point).
+_SYM_ZERO_SENTINEL: "np.int32" = np.int32(-2004318072)
 
 
 
@@ -105,6 +105,26 @@ def _flush_pending(wgpu_device) -> None:
     """
     wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
     wgpu_device.queue.on_submitted_work_done_sync()
+
+
+class _FlushAccumulator:
+    """Track pending write_buffer bytes and flush the GPU queue when over threshold.
+
+    Replaces the duplicated (_pending_bytes, _maybe_flush) closure pair that
+    appeared verbatim in load_safetensors_weights and load_mlx_weights.
+    """
+    __slots__ = ("_device", "_pending")
+
+    def __init__(self, device) -> None:
+        self._device = device
+        self._pending: int = 0
+
+    def add(self, n: int) -> None:
+        """Record n bytes written and flush if the threshold is exceeded."""
+        self._pending += n
+        if self._pending >= _FLUSH_THRESHOLD:
+            _flush_pending(self._device)
+            self._pending = 0
 
 
 
@@ -499,11 +519,6 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     return w_f32.T.astype(np.float16)  # (N, K)
 
 
-# NOTE: This function intentionally duplicates detection logic from
-# ModelOptFp8Config._extract_modelopt_quant_algo (vllm/model_executor/layers/
-# quantization/modelopt.py). Importing that class is unsafe on WebGPU because
-# modelopt.py has top-level CUDA kernel imports (mxfp8_utils, marlin_utils,
-# flashinfer_utils, fused_moe). Do not replace this with a direct import.
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
 
@@ -512,6 +527,13 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
 
     Pass quant_cfg to skip re-reading config.json (avoids a redundant disk read
     when the caller already loaded it via _load_quant_cfg or detect_compressed_tensors_fmt).
+
+    For hf_quant_config.json parsing, attempts to delegate to
+    ModelOptFp8Config._extract_modelopt_quant_algo (vllm/model_executor/layers/
+    quantization/modelopt.py) to avoid duplicating the quant_method/quant_algo
+    extraction. That import may fail on WebGPU because modelopt.py has top-level
+    CUDA kernel imports (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe);
+    the fallback inline logic is used in that case.
     """
     hf_quant = model_dir / "hf_quant_config.json"
     if hf_quant.exists():
@@ -519,9 +541,14 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
             with open(hf_quant) as f:
                 cfg = json.load(f)
             if cfg.get('quant_method', '').lower().startswith('modelopt'):
-                quant_section = cfg.get('quantization')
-                quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
-                algo = str(quant_algo or cfg.get('quant_algo', '')).upper()
+                algo = ""
+                try:
+                    from vllm.model_executor.layers.quantization.modelopt import ModelOptFp8Config
+                    algo = str(ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or "").upper()
+                except (ImportError, Exception):
+                    quant_section = cfg.get('quantization')
+                    quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
+                    algo = str(quant_algo or cfg.get('quant_algo', '')).upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
@@ -799,13 +826,7 @@ def load_safetensors_weights(
         # Metal silently drops write_buffer operations when the pending write queue
         # exceeds the GPU staging buffer capacity (~1-2GB). For large single-file
         # models (e.g. Gemma4-12B at 22GB), we must flush periodically.
-        _pending_bytes = 0
-
-        def _maybe_flush() -> None:
-            nonlocal _pending_bytes
-            if _pending_bytes >= _FLUSH_THRESHOLD:
-                _flush_pending(wgpu_device)
-                _pending_bytes = 0
+        _flusher = _FlushAccumulator(wgpu_device)
 
         def _upload(arr: np.ndarray, np_dtype, wgpu_dtype: str, name: str, weights: dict,
                     logical_shape: "tuple | None" = None) -> None:
@@ -819,9 +840,7 @@ def load_safetensors_weights(
             of arr.shape. Use when uploading a packed representation (e.g. u16 pairs
             stored as u32) but the shader expects the original element shape.
             """
-            nonlocal _pending_bytes
-            _pending_bytes += _upload_tensor(arr, np_dtype, wgpu_dtype, name, weights, wgpu_device, usage, logical_shape)
-            _maybe_flush()
+            _flusher.add(_upload_tensor(arr, np_dtype, wgpu_dtype, name, weights, wgpu_device, usage, logical_shape))
 
         def _upload_u8(arr: np.ndarray, name: str, weights: dict) -> None:
             """Upload uint8 raw bytes to GPU (packed 4/u32 as shader binding).
@@ -1536,19 +1555,11 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     # Track pending write_buffer bytes to flush periodically.
     # Metal silently drops write_buffer operations when the GPU staging buffer
     # queue exceeds ~1-2 GB. Flush every 512 MB, matching load_safetensors_weights.
-    _pending_bytes = 0
-
-    def _maybe_flush() -> None:
-        nonlocal _pending_bytes
-        if _pending_bytes >= _FLUSH_THRESHOLD:
-            _flush_pending(wgpu_device)
-            _pending_bytes = 0
+    _flusher = _FlushAccumulator(wgpu_device)
 
     def _upload_f16(arr: np.ndarray, name: str) -> None:
         """Upload a float16 array to GPU via write_buffer with periodic flushing."""
-        nonlocal _pending_bytes
-        _pending_bytes += _upload_tensor(arr, np.float16, 'f16', name, weights, wgpu_device, usage)
-        _maybe_flush()
+        _flusher.add(_upload_tensor(arr, np.float16, 'f16', name, weights, wgpu_device, usage))
 
     # Pass 2: process tensors shard-by-shard, opening each shard at most once per group.
     # Quantized triplets (weight + scales + biases) are loaded together from their
@@ -1621,8 +1632,14 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 _upload_f16(arr, wk)
 
     # Stream non-quantized tensors shard-by-shard.
-    shard_paths = sorted(set(key_to_shard.values()))
-    for shard_path in shard_paths:
+    # Only open shards that contain at least one unprocessed, non-skipped key to
+    # avoid re-opening every shard file a second time for fully-quantized models.
+    remaining_shards = sorted({
+        key_to_shard[k] for k in key_to_shard
+        if k not in processed
+        and not (skip_prefixes and any(k.startswith(pfx) for pfx in skip_prefixes))
+    })
+    for shard_path in remaining_shards:
         logger.info("Loading MLX shard %s", shard_path)
         with _sft.safe_open(shard_path, framework="pt") as sf:
             for key in sf.keys():

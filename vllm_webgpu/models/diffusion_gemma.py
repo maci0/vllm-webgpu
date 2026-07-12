@@ -228,6 +228,28 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                          or self.weights.get(f"{p}.moe.per_expert_scale"))
                 if pes_w is not None:
                     self._pes_cache[i] = self._buf_to_numpy(pes_w).astype(np.float32)
+        if self.is_moe:
+            self._validate_expert_weights()
+
+    def _validate_expert_weights(self) -> None:
+        """Check all experts have complete weights and cache the valid set per layer.
+
+        Called once from _load_layer_scales() after weights are loaded. The per-call
+        guard in the expert loop is replaced by an assert against this set, avoiding
+        dict lookups on every forward() call.
+        """
+        self._valid_expert_ids: dict[int, set[int]] = {}
+        for layer_idx in range(self.num_layers):
+            p = self._layer_key_prefix(layer_idx)
+            valid: set[int] = set()
+            for eid in range(self.num_experts):
+                ep = f"{p}.experts.{eid}"
+                if any(f"{ep}.{k}.weight" not in self.weights for k in ("gate_proj", "up_proj", "down_proj")):
+                    raise RuntimeError(
+                        f"L{layer_idx}: expert {eid} missing gate/up/down weights"
+                    )
+                valid.add(eid)
+            self._valid_expert_ids[layer_idx] = valid
 
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 
@@ -769,8 +791,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
             for expert_slot, eid in enumerate(unique_eids):
                 ep = f"{p}.experts.{eid}"
-                if any(f"{ep}.{k}.weight" not in self.weights for k in ("gate_proj", "up_proj", "down_proj")):
-                    raise RuntimeError(f"L{layer_idx}: expert {eid} missing gate/up/down weights")
+                assert eid in self._valid_expert_ids[layer_idx], (
+                    f"L{layer_idx}: expert {eid} missing gate/up/down weights"
+                )
 
                 uq_g  = self._uq_for_key(f"{ep}.gate_proj.weight")
                 uq_u  = self._uq_for_key(f"{ep}.up_proj.weight")

@@ -1200,28 +1200,25 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 _v_src_offset = 0
                 _v_src = sc["v_buf"]
                 _k_src = sc["k_buf"]
-                uq = uq_q
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[qw],
-                                self._scales_buf(qw, uq, self._dummy_buf), sc["q_buf"]],
-                               {"K": hidden, "N": q_dim, "USE_QUANT": uq,
-                                **self._quant_extra(f"{p}.self_attn.q_proj", uq)},
+                                self._scales_buf(qw, uq_q, self._dummy_buf), sc["q_buf"]],
+                               {"K": hidden, "N": q_dim, "USE_QUANT": uq_q,
+                                **self._quant_extra(f"{p}.self_attn.q_proj", uq_q)},
                                (q_dim, 1, 1))
                 if not is_kv_shared:
-                    uq = uq_k
                     self._dispatch("matmul_quant",
                                    [normed_x, self.weights[kw],
-                                    self._scales_buf(kw, uq, self._dummy_buf), sc["k_buf"]],
-                                   {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                                    **self._quant_extra(f"{p}.self_attn.k_proj", uq)},
+                                    self._scales_buf(kw, uq_k, self._dummy_buf), sc["k_buf"]],
+                                   {"K": hidden, "N": kv_dim, "USE_QUANT": uq_k,
+                                    **self._quant_extra(f"{p}.self_attn.k_proj", uq_k)},
                                    (kv_dim, 1, 1))
                     if has_v:
-                        uq = uq_v
                         self._dispatch("matmul_quant",
                                        [normed_x, self.weights[vw],
-                                        self._scales_buf(vw, uq, self._dummy_buf), sc["v_buf"]],
-                                       {"K": hidden, "N": kv_dim, "USE_QUANT": uq,
-                                        **self._quant_extra(f"{p}.self_attn.v_proj", uq)},
+                                        self._scales_buf(vw, uq_v, self._dummy_buf), sc["v_buf"]],
+                                       {"K": hidden, "N": kv_dim, "USE_QUANT": uq_v,
+                                        **self._quant_extra(f"{p}.self_attn.v_proj", uq_v)},
                                        (kv_dim, 1, 1))
                         _v_src = sc["v_buf"]
                     else:

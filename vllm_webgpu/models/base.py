@@ -108,14 +108,22 @@ def compute_yarn_freqs(
 
     if "factor" not in rope_scaling:
         raise ValueError("YaRN rope_scaling must include 'factor'")
-    factor               = float(rope_scaling["factor"])
-    beta_fast            = int(rope_scaling.get("beta_fast", 32))
-    beta_slow            = int(rope_scaling.get("beta_slow", 1))
-    orig_ctx             = int(rope_scaling["original_max_position_embeddings"])
-    extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
-    attn_factor          = float(rope_scaling.get("attn_factor", 1.0))
-    apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
-    truncate             = bool(rope_scaling.get("truncate", True))
+    factor   = float(rope_scaling["factor"])
+    orig_ctx = int(rope_scaling["original_max_position_embeddings"])
+    # Key set and defaults mirror vLLM's get_rope() (rotary_embedding/__init__.py:246-258).
+    # Grouping them here makes future drift visible at a glance.
+    _YARN_DEFAULTS: dict = {
+        "beta_fast": 32, "beta_slow": 1,
+        "extrapolation_factor": 1.0, "attn_factor": 1.0,
+        "apply_yarn_scaling": True, "truncate": True,
+    }
+    _yarn = {k: rope_scaling.get(k, d) for k, d in _YARN_DEFAULTS.items()}
+    beta_fast            = int(_yarn["beta_fast"])
+    beta_slow            = int(_yarn["beta_slow"])
+    extrapolation_factor = float(_yarn["extrapolation_factor"])
+    attn_factor          = float(_yarn["attn_factor"])
+    apply_yarn_scaling   = bool(_yarn["apply_yarn_scaling"])
+    truncate             = bool(_yarn["truncate"])
 
     from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
         YaRNScalingRotaryEmbedding,

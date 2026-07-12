@@ -259,7 +259,8 @@ class WebGPUModelRunner:
         # excluded — emitting a FullAttentionSpec for them over-reports KV memory.
         # NemotronH attention layers live under .mixer, not .self_attn.
         _archs = self.vllm_config.model_config.architectures or []
-        _attn_suffix = ".mixer" if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" else ".self_attn"
+        _is_nemotron_h = bool(_archs) and ARCH_MAP.get(_archs[0]) == "nemotron_h"
+        _attn_suffix = ".mixer" if _is_nemotron_h else ".self_attn"
         # The vLLM engine always calls get_kv_cache_spec before weight loading,
         # so no model object is available here; get_layer_types probes hf_config only.
         _layer_types = get_layer_types(
@@ -304,7 +305,7 @@ class WebGPUModelRunner:
             # gets a .mixer suffix, so non-attention layers (Mamba, MLP) would
             # receive spurious KV cache entries.  A mismatched layer_types list
             # is a configuration error, not a safe fallback.
-            if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" and _layer_types is not None:
+            if _is_nemotron_h and _layer_types is not None:
                 raise ValueError(
                     f"layer_types length ({len(_layer_types)}) does not match "
                     f"num_hidden_layers ({num_hidden_layers}) for NemotronH — "
@@ -818,7 +819,7 @@ class WebGPUModelRunner:
             all_req_ids, all_sampled, all_logprobs_data, prompt_logprobs_dict
         )
 
-    def sample_tokens(self, grammar_output: "GrammarOutput | None") -> "ModelRunnerOutput | AsyncModelRunnerOutput":
+    def sample_tokens(self, grammar_output: "GrammarOutput") -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         raise NotImplementedError(
             "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
             "is not supported on the WebGPU backend. The GPU argmax path discards "
