@@ -238,8 +238,8 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     """Return the layer-type list from hf_config, using a canonical fallback chain.
 
     Priority: hf_config.layers_block_type (NemotronH/Falcon) >
-    hf_config.layer_types (Gemma4 and similar) >
-    hf_outer_config.attn_type_list (Minimax).
+    hf_outer_config.attn_type_list (Minimax) >
+    hf_config.layer_types (Gemma4 and similar).
 
     Returns None when none of the attributes is present.
 
@@ -256,8 +256,6 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     hf_config; the vLLM engine always calls it before weight loading (model=None).
     """
     v = getattr(hf_config, "layers_block_type", None)
-    if v is None:
-        v = getattr(hf_config, "layer_types", None)
     if v is not None:
         return v
     # Minimax-style: integer list where 1 = attention, 0 = non-attention.
@@ -265,7 +263,10 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     # attn_type_list lives on the outer hf_config for multimodal models where
     # hf_text_config (passed as hf_config here) differs from the outer config.
     _outer = hf_outer_config if hf_outer_config is not None else hf_config
-    return getattr(_outer, "attn_type_list", None)
+    v = getattr(_outer, "attn_type_list", None)
+    if v is not None:
+        return v
+    return getattr(hf_config, "layer_types", None)
 
 
 def determine_available_memory(worker: "WebGPUWorker") -> int:

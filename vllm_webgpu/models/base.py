@@ -1,5 +1,4 @@
 from __future__ import annotations
-import functools
 from functools import cache
 import time
 from abc import ABC, abstractmethod

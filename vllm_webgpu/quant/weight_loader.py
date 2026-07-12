@@ -528,12 +528,12 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
         try:
             with open(hf_quant) as f:
                 cfg = json.load(f)
-            from vllm.model_executor.layers.quantization.modelopt import ModelOptQuantConfigBase
-            algo = (ModelOptQuantConfigBase._extract_modelopt_quant_algo(cfg) or '').upper()
-            if "MXFP4" in algo:
-                return "mxfp4"
-            if "MXFP8" in algo:
-                return "mxfp8"
+            if cfg.get('quant_method', '').lower().startswith('modelopt'):
+                algo = str((cfg.get('quantization') or {}).get('quant_algo') or cfg.get('quant_algo', '')).upper()
+                if "MXFP4" in algo:
+                    return "mxfp4"
+                if "MXFP8" in algo:
+                    return "mxfp8"
         except (OSError, json.JSONDecodeError, KeyError, AttributeError, TypeError) as exc:
             logger.warning("Failed to read hf_quant_config.json in %s: %s", model_dir, exc)
     if quant_cfg is None:
