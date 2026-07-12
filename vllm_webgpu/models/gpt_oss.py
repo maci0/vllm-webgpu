@@ -56,6 +56,12 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
+        if self._layer_types:
+            assert len(self._layer_types) == self.num_layers, (
+                f"layer_types has {len(self._layer_types)} entries but model has "
+                f"{self.num_layers} layers"
+            )
+
         # _moe_inter does not need to precede super().__init__() because no code
         # invoked during that call (including _init_scratch_buffers) references it.
         # Moving it here consolidates config reads and lets us use self.intermediate_size
