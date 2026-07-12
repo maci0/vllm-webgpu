@@ -1433,7 +1433,11 @@ def load_safetensors_weights(
                         sc = np.ascontiguousarray(sc.T)
 
                     _upload(qw, np.int32, 'i32', f"{base}.weight", weights)
-                    _upload(sc, np.float32, 'f32', f"{base}.weight.scales", weights)
+                    sc_key = f"{base}.weight.scales"
+                    if scale_transforms and sc_key in scale_transforms:
+                        scale_transforms[sc_key](sc)
+                    else:
+                        _upload(sc, np.float32, 'f32', sc_key, weights)
                     weights["__quant_meta__"][base] = {
                         "fmt": "gptq_sym",
                         "group_size": _ct_group_size,
