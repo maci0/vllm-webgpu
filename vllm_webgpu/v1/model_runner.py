@@ -666,6 +666,7 @@ class WebGPUModelRunner:
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
+                "prompt_token_ids": list(tok_ids),
                 **({"token_history": list(tok_ids) + [first_decode_tok]} if _has_replay else {}),
             }
 
@@ -730,6 +731,108 @@ class WebGPUModelRunner:
                         pos = cached.num_computed_tokens[i]
                     else:
                         blk_ids.extend(flat_new)
+
+                # Context-phase (chunked-prefill continuation): the scheduler
+                # routed this request back via scheduled_cached_reqs with
+                # num_output_tokens == 0 because its prompt did not fit in the
+                # previous step. Run the next chunk of prompt tokens through a
+                # prefill-style forward pass rather than a single-token decode.
+                if cached.num_output_tokens[i] == 0:
+                    prompt_token_ids = state.get("prompt_token_ids")
+                    if prompt_token_ids is None:
+                        raise RuntimeError(
+                            f"cached req {rid} is in context phase (num_output_tokens=0) "
+                            "but prompt_token_ids is missing from _req_state; chunked "
+                            "prefill requires storing the full prompt at first-chunk time"
+                        )
+                    num_sched_ctx = scheduler_output.num_scheduled_tokens[rid]
+                    T_ctx = min(num_sched_ctx, len(prompt_token_ids) - pos)
+                    chunk_toks = prompt_token_ids[pos:pos + T_ctx]
+                    abs_idx = np.arange(pos, pos + T_ctx)
+                    bt_ctx = np.array(blk_ids, dtype=np.uint32)
+                    blk_idx_ctx = abs_idx // block_size
+                    oob_ctx = blk_idx_ctx >= len(blk_ids)
+                    if np.any(oob_ctx):
+                        bad = int(abs_idx[oob_ctx][0])
+                        raise RuntimeError(
+                            f"block table too short for req {rid}: token {bad} needs block "
+                            f"{bad // block_size} but only {len(blk_ids)} blocks allocated"
+                        )
+                    slots_ctx = (bt_ctx[blk_idx_ctx].astype(np.int64) * block_size + abs_idx % block_size).tolist()
+                    _ctx_pm = SimpleNamespace(slot_mapping=slots_ctx, block_tables=[bt_ctx], max_decode_seq_len=pos + T_ctx)
+
+                    self.model._greedy_decode = (sp is None or sp.sampling_type == SamplingType.GREEDY) and num_logprobs is None
+
+                    # Restore recurrent state from after the previous chunk. The
+                    # logic mirrors the decode path: restore saved state when
+                    # available, reset (and optionally replay) after preemption.
+                    if _has_restore:
+                        saved_recurrent = state.get("recurrent_states")
+                        rolled_back = rid in resumed_req_ids and pos < state["pos"]
+                        if not rolled_back and saved_recurrent is not None:
+                            self.model.restore_recurrent_states(saved_recurrent)
+                        elif _has_reset:
+                            self.model.reset_recurrent_states()
+                            if rolled_back and pos > 0:
+                                token_history = state.get("token_history")
+                                if not _has_replay:
+                                    raise RuntimeError(
+                                        f"req {rid}: preempted and resumed at pos={pos} with "
+                                        f"prefix-cached KV but model does not implement "
+                                        f"replay_prefix_for_ssm. Mamba SSM state cannot be "
+                                        f"reconstructed. Aborting to prevent corrupt output."
+                                    )
+                                if token_history is None or len(token_history) < pos:
+                                    raise RuntimeError(
+                                        f"req {rid}: cannot reconstruct SSM state after "
+                                        f"preemption at pos={pos}: token history has only "
+                                        f"{len(token_history) if token_history else 0} tokens. "
+                                        f"Aborting to prevent corrupt output."
+                                    )
+                                self.model.replay_prefix_for_ssm(
+                                    np.array(token_history[:pos], dtype=np.uint32),
+                                    blk_ids,
+                                    pos,
+                                )
+
+                    ctx_logits = self.model.forward(
+                        np.array(chunk_toks, dtype=np.uint32),
+                        np.arange(pos, pos + T_ctx, dtype=np.uint32),
+                        _ctx_pm,
+                    )
+
+                    ctx_recurrent_states = None
+                    if _has_save:
+                        ctx_recurrent_states = self.model.save_recurrent_states()
+
+                    rng = state.get("rng")
+                    if sp is None or ctx_logits.shape[-1] == 1:
+                        stok = int(ctx_logits[-1, 0])
+                    else:
+                        stok = _sample_token(
+                            ctx_logits[-1], temperature=sp.temperature,
+                            top_p=sp.top_p, top_k=sp.top_k, generator=rng,
+                            use_fp64_gumbel=self.vllm_config.model_config.use_fp64_gumbel,
+                        )
+
+                    lp_data = self._extract_logprob_data(ctx_logits, -1, stok, num_logprobs, rid)
+
+                    state["pos"] = pos + T_ctx
+                    state["block_ids"] = blk_ids
+                    state["last_tok"] = stok
+                    state["recurrent_states"] = ctx_recurrent_states
+                    # token_history already contains the full prompt from the
+                    # initial new_reqs store (list(tok_ids)). Update the
+                    # first-decode-token slot when this is the last context chunk
+                    # so that replay_prefix_for_ssm uses the correct token.
+                    if _has_replay and pos + T_ctx >= len(prompt_token_ids):
+                        th = state.get("token_history")
+                        if th is not None and len(th) > len(prompt_token_ids):
+                            th[len(prompt_token_ids)] = stok
+                    all_req_ids.append(rid)
+                    all_sampled.append(stok)
+                    all_logprobs_data.append(lp_data)
+                    continue
 
                 # Decode step: forward one token at the current position.
                 tok = state["last_tok"]
