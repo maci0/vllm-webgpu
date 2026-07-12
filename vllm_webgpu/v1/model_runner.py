@@ -54,32 +54,28 @@ ARCH_MAP = {
 }
 
 
+_FAMILY_TO_CLASS: "dict[str, tuple[str, str]]" = {
+    "llama":           ("vllm_webgpu.models.llama",           "LlamaWebGPUModel"),
+    "mixtral":         ("vllm_webgpu.models.mixtral",         "MixtralWebGPUModel"),
+    "gemma4":          ("vllm_webgpu.models.gemma4",          "Gemma4WebGPUModel"),
+    "qwen35":          ("vllm_webgpu.models.qwen35",          "Qwen35WebGPUModel"),
+    "diffusion_gemma": ("vllm_webgpu.models.diffusion_gemma", "DiffusionGemmaWebGPUModel"),
+    "gpt_oss":         ("vllm_webgpu.models.gpt_oss",         "GptOssWebGPUModel"),
+    "nemotron_h":      ("vllm_webgpu.models.nemotron_h",      "NemotronHWebGPUModel"),
+}
+
+
 def _build_model(arch: str, family: "str | None", model_config: Any, wgpu_device: Any, pipeline_cache: Any, block_size: int) -> "BaseWebGPUModel":
-    if family == "llama":
-        from vllm_webgpu.models.llama import LlamaWebGPUModel
-        return LlamaWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-    if family == "mixtral":
-        from vllm_webgpu.models.mixtral import MixtralWebGPUModel
-        return MixtralWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-    if family == "gemma4":
-        from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
-        return Gemma4WebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-    if family == "qwen35":
-        from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
-        return Qwen35WebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-    if family == "diffusion_gemma":
-        from vllm_webgpu.models.diffusion_gemma import DiffusionGemmaWebGPUModel
-        return DiffusionGemmaWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-    if family == "gpt_oss":
-        from vllm_webgpu.models.gpt_oss import GptOssWebGPUModel
-        return GptOssWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-    if family == "nemotron_h":
-        from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel
-        return NemotronHWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-    raise NotImplementedError(
-        f"Architecture {arch!r} is not supported. "
-        f"Supported: {sorted(ARCH_MAP)}"
-    )
+    import importlib
+    entry = _FAMILY_TO_CLASS.get(family or "")
+    if entry is None:
+        raise NotImplementedError(
+            f"Architecture {arch!r} is not supported. "
+            f"Supported: {sorted(ARCH_MAP)}"
+        )
+    module_path, class_name = entry
+    cls = getattr(importlib.import_module(module_path), class_name)
+    return cls(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
 
 def _stack(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
@@ -395,7 +391,7 @@ class WebGPUModelRunner:
         if widths:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
-            if len(widths) == len(logprobs_data) and min(widths) == max_k:
+            if len(widths) == len(logprobs_data) and len(set(widths)) <= 1:
                 built_logprobs = _stack(logprobs_data)
             else:
                 # Derive the dtype of selected_token_ranks from the first real

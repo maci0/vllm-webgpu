@@ -309,14 +309,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             num_spec=num_spec,
         )
         # Guard against _lin_conv_dim drifting from vLLM's canonical formula.
+        conv_elems = math.prod(conv_shape)
         expected_conv_elems = self._lin_conv_dim * (self._lin_conv_kernel - 1 + num_spec)
-        assert math.prod(conv_shape) == expected_conv_elems, (
-            f"conv_shape product {math.prod(conv_shape)} != _lin_conv_dim * (kernel-1+spec) "
+        assert conv_elems == expected_conv_elems, (
+            f"conv_shape product {conv_elems} != _lin_conv_dim * (kernel-1+spec) "
             f"= {self._lin_conv_dim} * {self._lin_conv_kernel - 1 + num_spec}. "
             "MambaStateShapeCalculator.gated_delta_net_state_shape may have changed its "
             "conv_dim formula; update _lin_conv_dim in __init__ to match."
         )
-        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        conv_bytes = conv_elems * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}
@@ -490,7 +491,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
           7. linear_attn_norm_gate(gdn,z)     → gated      [4096 f16]
           8. matmul_quant(gated, out_proj)    → out_buf    [hidden f16]
           9. add(x, out_buf)                  → residual
-          10. FFN (rms_norm → gate/up → gelu → down → add)
+          10. FFN (gate/up → silu → down)
         """
         sc = self._sc
         hidden = self.hidden_size

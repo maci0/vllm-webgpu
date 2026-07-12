@@ -92,7 +92,7 @@ del _mapper
 # guard by checking the actual in_proj.weight shape.
 
 try:
-    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size
+    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size  # vLLM 0.24: not exported
 except ImportError:
     def _resolve_intermediate_size(v, idx: int) -> int:  # type: ignore[misc]
         """Resolve a possibly-list intermediate_size to a scalar for layer `idx`.
@@ -217,12 +217,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # diverging. On each vLLM bump, diff mamba_mixer2.py L313 and L328-355
         # against these two lines. The _validate_mamba_weights runtime check is
         # the primary guard and must remain.
-        _extra_groups: int = MambaStateShapeCalculator.extra_groups_for_head_shards(
-            self.n_groups, 1
-        )  # always 0 for tp=1; kept to stay aligned with the vLLM formula
-        self.conv_dim: int = (
-            self.mamba_int + 2 * (self.n_groups + _extra_groups) * self.ssm_state_size
-        )
+        # conv_dim mirrors mamba_mixer2.py L313 (tp=1: no extra groups).
+        # On each vLLM bump, diff mamba_mixer2.py L313 against this line.
+        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353

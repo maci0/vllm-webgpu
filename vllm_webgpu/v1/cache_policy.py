@@ -123,14 +123,14 @@ def allocate_kv_from_tensors(
                 )
             elif isinstance(spec, TQFullAttentionSpec):
                 raise NotImplementedError(
-                    f"TQFullAttentionSpec KV cache is not supported by the WebGPU backend. "
+                    "TQFullAttentionSpec KV cache is not supported by the WebGPU backend. "
                     "TQFullAttentionSpec overrides real_page_size_bytes with a tq_slot_size-based formula "
                     "that differs from the standard block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes. "
                     "Allocating with head_size/head_size_v would produce wrong buffer sizes."
                 )
             elif isinstance(spec, SinkFullAttentionSpec):
                 raise NotImplementedError(
-                    f"SinkFullAttentionSpec KV cache is not supported by the WebGPU backend. "
+                    "SinkFullAttentionSpec KV cache is not supported by the WebGPU backend. "
                     "SinkFullAttentionSpec is used by StaticSinkAttention models that require "
                     "sink-token pinning during attention computation. Buffer sizes would be "
                     "allocated correctly, but the WebGPU attention kernel does not implement "
@@ -142,7 +142,7 @@ def allocate_kv_from_tensors(
             # non-FullAttentionSpec rejection paths grouped together.
             elif isinstance(spec, SlidingWindowMLASpec):
                 raise NotImplementedError(
-                    f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
+                    "SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
                     "SlidingWindowMLASpec stores a single MLA latent per position, so "
                     "real_page_size_bytes is the full per-position size, not a K+V pair. "
                     "Halving it would silently corrupt both cache buffers."

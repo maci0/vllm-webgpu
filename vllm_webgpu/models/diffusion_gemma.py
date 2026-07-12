@@ -203,7 +203,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def _lm_head_key(self) -> str:
         return self._first_weight_key(
             "lm_head.weight", "model.decoder.lm_head.weight", "model.lm_head.weight",
-            self._embed_key(),
+            "model.decoder.embed_tokens.weight", "model.embed_tokens.weight",
         )
 
     # ── Weight loading ───────────────────────────────────────────────────────

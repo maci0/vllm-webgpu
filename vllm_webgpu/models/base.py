@@ -128,6 +128,8 @@ def compute_yarn_freqs(
 
     if "factor" not in rope_scaling:
         raise ValueError("YaRN rope_scaling must include 'factor'")
+    if "original_max_position_embeddings" not in rope_scaling:
+        raise ValueError("YaRN rope_scaling must include 'original_max_position_embeddings'")
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
     # Accepted key set: rotary_embedding/__init__.py:250-256 (vLLM 0.24).
@@ -508,9 +510,9 @@ class BaseWebGPUModel(ABC):
         return self._gpu_sample_tok
 
     def _finish_forward(self, greedy: bool) -> "np.ndarray":
-        """Return a (1, 1) int32 token id on the greedy path or full (1, vocab) float32 logits otherwise."""
+        """Return a (1, 1) uint32 token id on the greedy path or full (1, vocab) float32 logits otherwise."""
         if greedy:
-            return np.array([[self._read_sample_tok()]], dtype=np.int32)
+            return np.array([[self._read_sample_tok()]], dtype=np.uint32)
         return self.logit_readback()
 
     def logit_readback(self) -> "np.ndarray":

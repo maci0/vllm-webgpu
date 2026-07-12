@@ -233,7 +233,7 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = new_pfx + k[len(old_pfx):]
+                new_k = new_pfx + k.removeprefix(old_pfx)
                 if new_k not in d:
                     to_add[new_k] = v
                 break
@@ -540,14 +540,15 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
             with open(hf_quant) as f:
                 cfg = json.load(f)
             if cfg.get('quant_method', '').lower().startswith('modelopt'):
-                algo = ""
-                try:
-                    from vllm.model_executor.layers.quantization.modelopt import ModelOptFp8Config
-                    algo = str(ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or "").upper()
-                except (ImportError, Exception):
-                    quant_section = cfg.get('quantization')
-                    quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
-                    algo = str(quant_algo or cfg.get('quant_algo', '')).upper()
+                # Duplicate of ModelOptFp8Config._extract_modelopt_quant_algo
+                # (vllm/model_executor/layers/quantization/modelopt.py).
+                # modelopt.py has top-level CUDA imports that crash on WebGPU,
+                # making ModelOptFp8Config permanently unimportable here.
+                # On each vLLM bump, diff _extract_modelopt_quant_algo against
+                # this block and update if the hf_quant_config.json parsing changes.
+                quant_section = cfg.get('quantization')
+                quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
+                algo = str(quant_algo or cfg.get('quant_algo', '')).upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:

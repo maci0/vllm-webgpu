@@ -1,8 +1,7 @@
 from __future__ import annotations
 import math
-from dataclasses import dataclass
 from itertools import batched
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
@@ -85,13 +84,12 @@ except OSError:
     pass
 
 
-@dataclass(frozen=True)
-class _RopeConsts:
+class _RopeConsts(NamedTuple):
     """Per-layer RoPE shader constants, precomputed once in __init__.
 
     Fused shaders (fused_per_head_norm_rope, fused_qk_norm_rope) consume all
     five fields. Plain rope.wgsl only uses rope_base, ln_rope_base, use_freq_buf.
-    Using a frozen dataclass over a plain dict avoids the `**spread` allocation
+    Using a NamedTuple over a plain dict avoids the `**spread` allocation
     on the decode hot path and gives typed attribute access.
     """
     rope_base: float
@@ -586,7 +584,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         return self._finish_forward(self._greedy_decode)
 
-    def _lm_head_parts(self) -> "tuple[str, object, int, str]":
+    def _lm_head_parts(self) -> "tuple[str, WebGPUBuffer, int, str]":
         """Return (key, weight_buf, uq, base_key) for the LM head.
 
         Centralises the four-line setup repeated in forward(), _prefill_batch_forward(),

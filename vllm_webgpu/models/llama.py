@@ -237,18 +237,22 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         pos_1d: "np.ndarray",
         slot_1d: bytes,
         bt_bytes: bytes,
+        write_bt: bool = True,
     ) -> None:
-        """Write the four per-token input buffers (ids, pos, slot_map, bt).
+        """Write per-token input buffers (ids, pos, slot_map, and optionally bt).
 
         Extracted so _decode_setup and _prefill_sequential_fallback share the
         same write pattern without duplicating queue.write_buffer calls.
+        Pass write_bt=False when the block table is unchanged between iterations
+        (e.g. the prefill sequential loop) and has already been written once before.
         """
         pre = self._pre
         dev = self.wgpu_device.wgpu_device
         dev.queue.write_buffer(pre["ids"].buf,      0, ids_1d.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(pre["pos"].buf,      0, pos_1d.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_1d)
-        dev.queue.write_buffer(pre["bt"].buf,       0, bt_bytes)
+        if write_bt:
+            dev.queue.write_buffer(pre["bt"].buf,   0, bt_bytes)
 
     def _decode_teardown(
         self,
@@ -654,6 +658,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         bt_bytes = bt_arr.tobytes()
         slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
 
+        # The block table is the same for every token in this request; write it once.
+        dev = self.wgpu_device.wgpu_device
+        dev.queue.write_buffer(self._pre["bt"].buf, 0, bt_bytes)
+
         # x_buf is updated inside the loop; initialize here so the final-norm
         # dispatch is always bound even if T were ever 0.
         # In practice T >= 1 (enforced by _prefill_batch_forward callers), but
@@ -667,7 +675,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
             ids_t  = input_ids[t : t + 1]
             pos_t  = positions[t : t + 1]
-            self._write_token_bufs(ids_t, pos_t, slot_arr[t : t + 1].tobytes(), bt_bytes)
+            self._write_token_bufs(ids_t, pos_t, slot_arr[t : t + 1].tobytes(), bt_bytes, write_bt=False)
 
             with self._batched_dispatch():
                 self._dispatch(

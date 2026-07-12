@@ -142,7 +142,7 @@ def main() -> None:
         print(f"Unlabeled overhead (LM head + embed + norms + Python): {avg_step_ms - total:.2f} ms")
         print(f"Each layer avg: {total/num_layers:.3f} ms")
 
-        print(f"\nBottleneck analysis:")
+        print("\nBottleneck analysis:")
         # Sum weights for transformer layers only. Embedding, final norm, and LM-head
         # weights are dispatched inside unlabeled blocks whose time is not captured in
         # _prof_stats, so including them in the numerator would overstate effective BW.
