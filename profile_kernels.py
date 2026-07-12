@@ -88,7 +88,7 @@ def main() -> None:
     logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
     def _next_tok(lg):
-        return int(lg[0, 0]) if lg.shape[-1] == 1 else int(np.argmax(lg[-1]))
+        return int(lg[0, 0])
 
     decode_tok = _next_tok(logits)
     pos = len(tok_ids)

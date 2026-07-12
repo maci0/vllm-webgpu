@@ -102,7 +102,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     )
 
     if temperature < 1e-5:
-        last_token = int(logits[-1, 0]) if logits.shape[-1] == 1 else int(np.argmax(logits[-1]))
+        last_token = int(logits[-1, 0])
         print(f"  Last prefill logit: argmax={last_token}")
     else:
         _best = int(np.argmax(logits[-1]))
@@ -137,7 +137,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         )
 
         if temperature < 1e-5:
-            last_token = int(logits[0, 0]) if logits.shape[-1] == 1 else int(np.argmax(logits[0]))
+            last_token = int(logits[0, 0])
         else:
             # _greedy_decode=False: forward() already returned full (1, vocab) logits.
             # No logit_readback() call needed.

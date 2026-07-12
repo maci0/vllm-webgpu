@@ -26,7 +26,7 @@ from compressed_tensors.utils.safetensors_load import (
 _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 2, 4, 6, 1, 3, 5, 7], dtype=np.int32) * 4
 # GPTQ nibble unpack: each int32 holds 8 nibbles at bit offsets [0, 4, 8, ..., 28].
 _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
-_F16_MAX: float = np.finfo(np.float16).max
+_F16_MAX: float = 65504.0
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
 

@@ -9,7 +9,7 @@ import torch
 # These paths have no stability guarantees; a patch release may move or rename
 # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
 # Update this comment and pyproject.toml when bumping the vLLM version.
-from vllm.distributed.ec_transfer import ensure_ec_transfer_initialized, ensure_ec_transfer_shutdown
+from vllm.distributed.ec_transfer import ensure_ec_transfer_shutdown
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized, ensure_kv_transfer_shutdown
 from vllm.v1.worker.gpu_worker import init_worker_distributed_environment
 from vllm.logger import init_logger

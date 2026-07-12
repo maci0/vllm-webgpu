@@ -1,5 +1,6 @@
 from __future__ import annotations
 import functools
+from functools import cache
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -72,6 +73,12 @@ def compute_yarn_freqs(
     YaRNScalingRotaryEmbedding object (which calls _compute_cos_sin_cache and
     allocates an [orig_ctx * factor, rotary_dim] tensor, e.g. 16 384 rows when
     orig_ctx=4096, factor=4).
+
+    Mirrors YaRNScalingRotaryEmbedding._compute_inv_freq in
+    vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py (vllm==0.24).
+    On each vLLM version bump, verify this function against that method:
+      grep -n "_compute_inv_freq\|yarn_find_correction_range\|yarn_linear_ramp_mask" \
+        .venv/lib/*/site-packages/vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
 
     Args:
         head_dim:    Full attention head dimension.
@@ -147,7 +154,7 @@ def compute_yarn_freqs(
 
 
 
-@functools.lru_cache(maxsize=None)
+@cache
 def _zeros(n: int) -> bytes:
     return bytes(n)
 

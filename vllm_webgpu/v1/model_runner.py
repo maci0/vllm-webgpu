@@ -9,11 +9,12 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
+from vllm_webgpu.models.base import _zeros
 from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
 from vllm_webgpu.v1.cache_policy import MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types, is_attn_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
@@ -27,7 +28,6 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
-    from vllm.v1.outputs import LogprobsLists
 
 logger = init_logger(__name__)
 
@@ -91,14 +91,13 @@ def _stack(items: list[LogprobsTensors]) -> "LogprobsLists":
     (see vllm/v1/outputs.py:41-42).
 
     WebGPU tensors are already on CPU, so .cpu() inside tolists() is a no-op.
-    Build LogprobsLists directly to avoid the intermediate LogprobsTensors allocation.
     """
-    from vllm.v1.outputs import LogprobsLists as _LogprobsLists
-    return _LogprobsLists(
-        torch.cat([x.logprob_token_ids for x in items]).numpy(),
-        torch.cat([x.logprobs for x in items]).numpy(),
-        torch.cat([x.selected_token_ranks for x in items]).numpy(),
+    stacked = LogprobsTensors(
+        torch.cat([x.logprob_token_ids for x in items]),
+        torch.cat([x.logprobs for x in items]),
+        torch.cat([x.selected_token_ranks for x in items]),
     )
+    return stacked.tolists()
 
 
 
@@ -153,7 +152,6 @@ class WebGPUModelRunner:
         self.model: "BaseWebGPUModel | None" = None
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
-        self._zeros_cache: dict[int, bytes] = {}  # amortizes zero-byte alloc across scheduling steps; see also NemotronHWebGPUModel._zero_buf_cache for the analogous Mamba-state cache
         self._block_size: int = vllm_config.cache_config.block_size
 
     def load_model(self) -> None:
@@ -348,23 +346,15 @@ class WebGPUModelRunner:
         if self.model is None or self._num_kv_blocks == 0:
             return
         queue = self.wgpu_device.wgpu_device.queue
-        _zeros_cache = self._zeros_cache
 
         for k_buf, v_buf in self.model.kv_pool:
             if k_buf.nbytes <= MIN_WEBGPU_BUFFER_BYTES:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
                 continue
             bpb = k_buf.nbytes // self._num_kv_blocks
-            zeros = _zeros_cache.get(bpb)
-            if zeros is None:
-                zeros = _zeros_cache[bpb] = bytes(bpb)
+            zeros = _zeros(bpb)
             bpb_v = v_buf.nbytes // self._num_kv_blocks
-            if bpb_v == bpb:
-                zeros_v = zeros
-            else:
-                zeros_v = _zeros_cache.get(bpb_v)
-                if zeros_v is None:
-                    zeros_v = _zeros_cache[bpb_v] = bytes(bpb_v)
+            zeros_v = zeros if bpb_v == bpb else _zeros(bpb_v)
             for block_id in block_ids:
                 queue.write_buffer(k_buf.buf, block_id * bpb, zeros)
                 queue.write_buffer(v_buf.buf, block_id * bpb_v, zeros_v)

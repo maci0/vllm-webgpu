@@ -927,7 +927,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         """Validate weights for all Mamba layers.
 
         Checks:
-        1. in_proj.weight shape[0] against in_proj_dim (first Mamba layer only).
+        1. in_proj.weight shape[0] against in_proj_dim (all Mamba layers).
            Catches a silent formula mismatch if vLLM changes MambaMixer2Tp's
            conv_dim or in_proj output_sizes, which would mis-size scratch buffers.
         2. conv1d.weight element count (shape may be [conv_dim, 1, kernel] or
