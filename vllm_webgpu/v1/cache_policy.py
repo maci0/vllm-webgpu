@@ -275,21 +275,20 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     _outer = hf_outer_config if hf_outer_config is not None else hf_config
     # Priority order approximates vLLM's ModelConfig.get_num_layers_by_block_type
     # (config/model.py:1327-1362): layers_block_type > attn_type_list > layer_types.
-    # Divergence: vLLM tests attn_type_list with a truthiness check (`if attn_type_list:`),
-    # so an empty list falls through to layer_types. This function uses `if v is not None:`
-    # so an empty attn_type_list terminates the probe chain and returns [] instead.
+    # attn_type_list uses a truthiness check (matching vLLM) so an empty list falls
+    # through to layer_types rather than short-circuiting the probe chain.
     # The 4th probe below (outer-config layer_types) is not present in vLLM and is used
     # as a fallback for multimodal models where layer_types lives only on the outer config.
     _probes = [
-        (hf_config, "layers_block_type"),
-        (_outer,    "attn_type_list"),
-        (hf_config, "layer_types"),
+        (hf_config, "layers_block_type", False),
+        (_outer,    "attn_type_list",    True),   # truthiness check: mirrors vLLM's `if attn_type_list:`
+        (hf_config, "layer_types",       False),
     ]
     if _outer is not hf_config:
-        _probes.append((_outer, "layer_types"))  # fallback for outer-only configs (not in vLLM)
-    for cfg, attr in _probes:
+        _probes.append((_outer, "layer_types", False))  # fallback for outer-only configs (not in vLLM)
+    for cfg, attr, require_truthy in _probes:
         v = getattr(cfg, attr, None)
-        if v is not None:
+        if v is not None and (not require_truthy or v):
             return v
     return None
 
