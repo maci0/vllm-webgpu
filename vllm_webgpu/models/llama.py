@@ -164,7 +164,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _rope_parameters = getattr(self.model_config, "rope_parameters", None)
 
         if _rope_parameters is not None:
-            from vllm.transformers_utils.config import is_rope_parameters_nested
+            from vllm.transformers_utils.config import is_rope_parameters_nested, patch_legacy_rope_type
             if is_rope_parameters_nested(_rope_parameters):
                 logger.warning(
                     "rope_parameters is layer-type-keyed (nested format); "
@@ -172,6 +172,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     "(long-context accuracy reduced beyond 8192 tokens)",
                 )
                 return
+        else:
+            from vllm.transformers_utils.config import patch_legacy_rope_type
 
         rope_scaling = dict(
             _rope_parameters
@@ -179,10 +181,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             else getattr(self.model_config, "rope_scaling", None)
             or {}
         )
-        # Dead fallback when rope_parameters is set (patch_rope_parameters normalizes
-        # that dict before __init__). Still live for models using the older
-        # rope_scaling.type key, which vLLM does not patch.
-        rope_type = rope_scaling.get("rope_type", "") or rope_scaling.get("type", "")
+        # Normalise legacy type keys ("su" -> "longrope", "mrope" -> "default", etc.)
+        # so that rope_type is always the canonical vLLM name.
+        patch_legacy_rope_type(rope_scaling)
+        rope_type = rope_scaling.get("rope_type", "")
 
         if rope_type != "yarn":
             if rope_type not in ("", "default"):

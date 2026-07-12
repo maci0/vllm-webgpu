@@ -160,10 +160,7 @@ class WebGPUModelRunner:
         self._has_reset = self._has_save = self._has_replay = self._has_restore = False
 
     def load_model(self) -> None:
-        try:
-            del self.kv_cache_spec
-        except AttributeError:
-            pass
+        self.__dict__.pop("kv_cache_spec", None)
         # Reset capability flags before model is assigned; a reload clears stale values.
         self._has_reset = False
         self._has_save = False

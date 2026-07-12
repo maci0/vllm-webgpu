@@ -20,6 +20,22 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+# Import-time sentinels: verify the element byte counts used by _alloc_lin_states
+# to size conv and SSM state buffers. Mirrors the identical guards in nemotron_h.py.
+# A refactor of _ELEM_BYTES would silently under/over-allocate buffers here without
+# these checks, causing GPU memory corruption or wrong reads at runtime.
+if _ELEM_BYTES["f16"] != 2:
+    raise AssertionError(
+        f"_ELEM_BYTES['f16'] is {_ELEM_BYTES['f16']!r}, expected 2; "
+        "_alloc_lin_states conv state buffer sizing is wrong. "
+        "Review the conv_bytes formula before removing this assertion."
+    )
+if _ELEM_BYTES["f32"] != 4:
+    raise AssertionError(
+        f"_ELEM_BYTES['f32'] is {_ELEM_BYTES['f32']!r}, expected 4; "
+        "_alloc_lin_states SSM state buffer sizing is wrong. "
+        "Review the ssm_bytes formula before removing this assertion."
+    )
 
 # Qwen3.5 linear attention layer constants.
 # These serve a dual purpose:
@@ -72,6 +88,14 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Read head_dim from model_config directly — self.head_dim not set yet.
         _head_dim_raw = getattr(model_config, "head_dim",
                                 model_config.hidden_size // model_config.num_attention_heads)
+        # The WGSL rope shader requires ROTARY_DIM to be even. round_down(..., 2)
+        # ensures this but silently reduces the rotated dimension by 1 relative to
+        # vLLM when the raw product is odd. Catch such configs at construction time
+        # so the divergence is loud rather than a silent accuracy regression.
+        assert int(_head_dim_raw * _prf) % 2 == 0, (
+            f"rotary_dim={int(_head_dim_raw * _prf)} is odd; the WGSL rope shader requires "
+            f"even ROTARY_DIM. This model config diverges from vLLM."
+        )
         self._rotary_dim: int = max(2, round_down(int(_head_dim_raw * _prf), 2))
         # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
         # Qwen3.5 uses mrope_interleaved=True, stored in rope_parameters dict,

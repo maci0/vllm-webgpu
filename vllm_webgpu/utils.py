@@ -33,13 +33,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
+# _SAMPLING_EPS is a vLLM v1 sampler internal verified against vllm>=0.24,<0.25.
+# Same stability caveat as apply_top_k_top_p_pytorch above: no public API
+# guarantee. Pin vllm in pyproject.toml and check this import on each bump.
+from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
 SHADERS_DIR = Path(__file__).parent / "shaders"
-
-# Greedy-detection threshold: temperatures below this value trigger argmax
-# sampling instead of stochastic sampling. Values < GREEDY_TEMP produce
-# greedy argmax in sample_token. run_inference.py imports this constant to
-# stay in sync with any future threshold changes.
-GREEDY_TEMP: float = 1e-5
 
 
 @lru_cache(maxsize=16)

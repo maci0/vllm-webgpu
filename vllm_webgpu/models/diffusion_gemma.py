@@ -258,7 +258,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._validate_expert_weights()
 
     def _validate_expert_weights(self) -> None:
-        """Check all MoE layers have complete router and expert weights at load time."""
+        """Check all MoE layers have complete router and expert weights at load time.
+
+        Also builds self._expert_prefix_cache so forward passes can look up the
+        per-expert weight prefix in O(1) without probing self.weights twice per expert.
+        The prefix is stable after load_weights() completes because checkpoint key
+        names never change at runtime.
+        """
+        self._expert_prefix_cache: dict[tuple[int, int], str] = {}
         for layer_idx in range(self.num_layers):
             p = self._layer_key_prefix(layer_idx)
             if f"{p}.router.proj.weight" not in self.weights:
@@ -271,6 +278,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     raise RuntimeError(
                         f"L{layer_idx}: expert {eid} missing gate/up/down weights"
                     )
+                self._expert_prefix_cache[(layer_idx, eid)] = ep
 
     # ── Override forward() for decoder-prefixed keys ─────────────────────────
 
@@ -805,7 +813,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
             for expert_slot, eid in enumerate(unique_eids):
-                ep = self._expert_prefix(p, eid)
+                ep = self._expert_prefix_cache[(layer_idx, eid)]
 
                 uq_g  = self._uq_for_key(f"{ep}.gate_proj.weight")
                 uq_u  = self._uq_for_key(f"{ep}.up_proj.weight")
