@@ -683,12 +683,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 f"to be guarded accordingly."
             )
         self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
-        qmeta = self.weights.get("__quant_meta__")
-        if qmeta:
-            qmeta = self._hf_to_vllm_mapper.apply_dict(qmeta)
-            # Drop metadata for weight buffers that were filtered out (e.g. mtp.*).
-            qmeta = {k: v for k, v in qmeta.items() if (k + ".weight") in self.weights}
-            self.weights["__quant_meta__"] = qmeta
+        # self.weight_meta was populated by super().load_weights() with HF-prefixed
+        # keys (e.g. 'backbone.layers.0.mixer.in_proj'). Remap those keys to match
+        # the vLLM key space that the rest of the model uses ('model.*'), then drop
+        # entries whose weight was filtered out before loading (e.g. mtp.*).
+        if self.weight_meta:
+            self.weight_meta = self._hf_to_vllm_mapper.apply_dict(self.weight_meta)
+            self.weight_meta = {
+                k: v for k, v in self.weight_meta.items()
+                if (k + ".weight") in self.weights
+            }
         self._pack_attn_weights()
         # Release CPU-side scale accumulators and closures; they are only needed
         # during load_weights and are never accessed after _pack_attn_weights returns.
@@ -873,8 +877,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
             # Propagate quant_meta from q_proj to qkv_proj so _uq_for_key
             # and _quant_extra find the correct fmt / group_size / global_scale.
-            qmeta = self.weights.get("__quant_meta__")
-            if qmeta is not None:
+            # self.weight_meta (populated and remapped in load_weights) is the
+            # authoritative store; __quant_meta__ no longer lives in self.weights.
+            qmeta = self.weight_meta
+            if qmeta:
                 q_base = q_key.removesuffix(".weight")
                 k_base = k_key.removesuffix(".weight")
                 v_base = v_key.removesuffix(".weight")

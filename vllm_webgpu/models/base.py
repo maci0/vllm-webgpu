@@ -351,6 +351,11 @@ class BaseWebGPUModel(ABC):
                               invoked with the scale array and the GPU upload is suppressed.
                               Used by NemotronH to accumulate q/k/v scales on CPU before
                               stacking, avoiding per-layer GPU map_sync stalls.
+
+        After this method returns, ``self.weight_meta`` holds quantization metadata keyed
+        by the original checkpoint key names (e.g. ``'backbone.layers.0.mixer.in_proj'``).
+        Subclasses that remap weight keys (via ``_hf_to_vllm_mapper`` or similar) must also
+        remap ``self.weight_meta`` before calling any method that relies on ``_quant_info()``.
         """
         from vllm_webgpu.quant.weight_loader import (
             _check_unsupported_quant,
