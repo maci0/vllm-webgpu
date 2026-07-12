@@ -93,37 +93,20 @@ del _mapper
 # guard by checking the actual in_proj.weight shape.
 
 try:
-    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size  # vLLM 0.24: not exported
+    # vLLM 0.24 does not export _resolve_intermediate_size; this always raises
+    # ImportError on the current pinned version. On a future vLLM bump, if the
+    # symbol appears here, delete the local definition below and use the import.
+    # Diff vllm/model_executor/models/nemotron_h.py L286-292 on each bump to
+    # verify the local copy still matches.
+    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size
 except ImportError:
     def _resolve_intermediate_size(v, idx: int) -> int:  # type: ignore[misc]
-        """Resolve a possibly-list intermediate_size to a scalar for layer `idx`.
-
-        Mirrors the 7-line block in NemotronHMLPDecoderLayer.__init__ at:
-          vllm/model_executor/models/nemotron_h.py L286-292 (vLLM 0.24)
-
-        No public vLLM API exposes this logic, so the copy is forced. Defined here
-        at module scope so it is created once rather than inside every __init__ call.
-
-        On every vLLM version bump:
-          1. Diff vllm/model_executor/models/nemotron_h.py L286-292 against this body.
-          2. If the upstream block changed, update this function to match.
-          3. Update the _MLP_INTERMEDIATE_SIZE_ANCHOR string in the import-time guard
-             above so the anchor tracks the new source text.
-          4. If vLLM ever exports _resolve_intermediate_size from that module, the
-             try-import block at the top will log a warning and use upstream's copy.
-        """
+        # Mirrors NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24).
+        # No public API exposes this; copy is forced. Defined once at module
+        # scope rather than inside every __init__ call.
         if isinstance(v, list):
             return v[0] if len(v) == 1 else v[idx]
         return v
-else:
-    # Dead for vLLM 0.24: _resolve_intermediate_size is private and not exported
-    # from vllm.model_executor.models.nemotron_h, so the try branch always raises
-    # ImportError and this else block never executes. It fires when a future vLLM
-    # version exports the symbol, signaling that the local copy below can be deleted.
-    logger.warning(
-        "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'; "
-        "remove the local copy in this file and import it from upstream instead."
-    )
 
 
 # Verify the len==1 edge case at import time: a single-element list must return
