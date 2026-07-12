@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -118,24 +119,16 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
     )
 
-    # Build a minimal stub to call _compute_inv_freq without triggering the
-    # full __init__ (which allocates the entire cos/sin cache). The method only
-    # reads base, rotary_dim, max_position_embeddings, beta_fast, beta_slow,
-    # extrapolation_factor, and truncate — all set below.
-    yarn_emb = object.__new__(YaRNScalingRotaryEmbedding)
-    yarn_emb.base                    = rope_theta
-    yarn_emb.rotary_dim              = rotary_dim
-    yarn_emb.max_position_embeddings = orig_ctx
-    yarn_emb.beta_fast               = beta_fast
-    yarn_emb.beta_slow               = beta_slow
-    yarn_emb.extrapolation_factor    = extrapolation_factor
-    yarn_emb.truncate                = truncate
-    inv_freq = yarn_emb._compute_inv_freq(factor).numpy()
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    inv_freq = (1.0 / (factor * pos_freqs) * (1 - mask) + 1.0 / pos_freqs * mask).numpy()
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
