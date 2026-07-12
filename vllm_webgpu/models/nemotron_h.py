@@ -1034,13 +1034,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Always use SPLIT_K=0 (row-per-thread, ceil(vocab/256) WGs) for the LM
         # head: SPLIT_K=1 dispatches (vocab, 1, 1) WGs which exceeds the 65535
         # per-dimension WebGPU limit for large vocabularies. SPLIT_K=0 supports
-        # quant types 0-4 only; fp8/int8/nvfp4/nf4 (5-8) are not yet handled.
-        if uq not in (0, 3, 4):
-            raise NotImplementedError(
-                f"LM head USE_QUANT={uq} is not supported with SPLIT_K=0 "
-                f"(fp8/int8/nvfp4/nf4). Implement those paths in the SPLIT_K=0 "
-                f"shader branch or split the large-vocab dispatch differently."
-            )
+        # USE_QUANT values 0 (f16), 3 (gptq_sym), 4 (awq_sym), 5 (fp8_gpu),
+        # 6 (nvfp4_gpu), 7 (int8_gpu), 8 (nf4_gpu) — the full set that
+        # _uq_for_key() can return.
         self._dispatch(
             "matmul_quant",
             [pre["norm_out"], lm_head_w,
