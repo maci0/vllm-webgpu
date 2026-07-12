@@ -107,6 +107,24 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
                              scale_transforms=scale_transforms)
 
+        # Verify that stash transforms ran for every bias key that was loaded.
+        # The weight loader silently skips weight_transforms for I8 tensors
+        # (logs a warning, then bypasses the transform). If that happened for a
+        # bias key, _bias_pending would not be populated and the fused GPU buffer
+        # would stay in self.weights, leaving per-expert biases unallocated and
+        # producing silently wrong outputs.
+        for _i in range(self.num_layers):
+            _p = f"model.layers.{_i}.mlp.experts"
+            for _key in (f"{_p}.gate_up_proj_bias", f"{_p}.down_proj_bias"):
+                if _key in self.weights and _key not in _bias_pending:
+                    raise RuntimeError(
+                        f"Bias stash transform was not called for {_key!r}. "
+                        f"The checkpoint likely stores this tensor as I8, which "
+                        f"the weight loader does not support for weight_transforms. "
+                        f"Per-expert biases would be silently ignored. "
+                        f"Convert the checkpoint bias tensors to F16 or F32."
+                    )
+
         if _bias_pending:
             num_experts = self._num_experts
             inter = self._moe_inter
