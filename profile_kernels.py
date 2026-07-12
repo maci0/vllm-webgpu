@@ -6,7 +6,6 @@ Usage:
     python3 profile_kernels.py [--model MODEL_PATH] [--decode-steps N] [--warmup-steps N]
 """
 import argparse
-import math
 from pathlib import Path
 import time
 from types import SimpleNamespace
@@ -42,6 +41,7 @@ def main() -> None:
     arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
     print(f"Architecture: {arch}")
 
+    from vllm.utils.math_utils import cdiv
     from vllm_webgpu.v1.model_runner import _build_model, ARCH_MAP
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config, _make_convertor
     import vllm_webgpu.envs as _envs
@@ -70,7 +70,7 @@ def main() -> None:
     # ── Setup fake KV pool ────────────────────────────────────────────────────────
     # Compute block count before allocating so the pool covers every block ID in bt.
     total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
-    bt_blocks = math.ceil(total_toks / block_size)
+    bt_blocks = cdiv(total_toks, block_size)
     num_blocks = max(512, bt_blocks)
 
     allocate_kv_from_hf_config(wgpu_dev.wgpu_device, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)

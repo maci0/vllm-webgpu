@@ -236,11 +236,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Returns (ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len).
         """
         pre = self._pre
-        bt_arr = self._bt_arr(attn_metadata)
         self._write_token_bufs(
             input_ids, positions,
             np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes(),
-            bt_arr.tobytes(),
+            self._bt_arr(attn_metadata).tobytes(),
         )
         ctx_len = int(attn_metadata.max_decode_seq_len)
         return (
@@ -672,8 +671,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         pre = self._pre
         sc  = self._sc
 
-        bt_arr = self._bt_arr(attn_metadata)
-        bt_bytes = bt_arr.tobytes()
+        bt_bytes = self._bt_arr(attn_metadata).tobytes()
         slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)
 
         # The block table is the same for every token in this request; write it once.

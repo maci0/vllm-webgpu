@@ -744,7 +744,7 @@ def load_safetensors_weights(
             if k.endswith(".weight"):
                 base = k.removesuffix(".weight")
                 if dtype == "U8" and base + ".weight_scale" in header:
-                    ws_dtype = header.get(base + ".weight_scale", {}).get("dtype")
+                    ws_dtype = header[base + ".weight_scale"].get("dtype")
                     if ws_dtype == "F8_E4M3":
                         has_diffusion_nvfp4 = True
                     elif ws_dtype == "U8":

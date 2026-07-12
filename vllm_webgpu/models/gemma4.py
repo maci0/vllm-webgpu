@@ -1,5 +1,6 @@
 from __future__ import annotations
 import math
+from functools import partial
 from itertools import batched
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -12,6 +13,17 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
+
+
+def _tile_if_shared(a: "np.ndarray", expected_dim: int, n: int) -> "np.ndarray":
+    """Tile a shared norm weight (shape [expected_dim]) into per-head layout (shape [n * expected_dim]).
+
+    Gemma4 checkpoints store q_norm/k_norm as (head_dim,) when all heads share
+    the same norm weights. The shaders expect (num_heads * head_dim,) with the
+    head weights laid out contiguously. If the weight already has the per-head
+    shape, it is returned unchanged.
+    """
+    return np.tile(a, n) if a.shape == (expected_dim,) else a
 
 
 # Three formulas transcribed from vLLM v0.24.0 into _gemma4_layer_params below.
@@ -393,10 +405,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             _nq = _lp["num_q_heads"]
             _nkv = _lp["num_kv_heads"]
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = (
-                lambda a, hd=_hd, n=_nq: np.tile(a, n) if a.shape == (hd,) else a
+                partial(_tile_if_shared, expected_dim=_hd, n=_nq)
             )
             self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
-                lambda a, hd=_hd, n=_nkv: np.tile(a, n) if a.shape == (hd,) else a
+                partial(_tile_if_shared, expected_dim=_hd, n=_nkv)
             )
         # Spot-check: verify the tiling factors produce the expected output dimensions
         # for at least one layer. Catches cases where num_kv_heads for global layers
@@ -502,6 +514,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         Avoids 48 GPU→CPU readbacks per token (each to_numpy() is a blocking ~100µs sync).
         Subclasses with a different key scheme should override _layer_key_prefix instead.
+
+        All layer_scalar values must be positive. For layer_scalar <= 0,
+        RMSNorm(s*x) = -RMSNorm(x) or 0, which breaks the scale-invariance
+        assumption used in rms_norm_add_f32_rms_norm. A non-positive value
+        indicates a corrupt or incorrectly quantized checkpoint.
         """
         self._layer_scales: list[float] = [
             self._buf_to_numpy(buf).item()
@@ -509,6 +526,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else 1.0
             for i in range(self.num_layers)
         ]
+        bad = [i for i, s in enumerate(self._layer_scales) if s <= 0]
+        if bad:
+            raise ValueError(
+                f"layer_scalar must be positive (required for RMSNorm scale-invariance); "
+                f"layers {bad} have non-positive values {[self._layer_scales[i] for i in bad]}. "
+                "This indicates a corrupt or incorrectly quantized checkpoint."
+            )
 
     def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
                      skip_prefixes: "frozenset[str] | None" = None) -> None:
@@ -1016,7 +1040,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             {"N": add_n}, _vec4_wg(add_n))
 
                     # Apply layer_scalar to the full f32 residual (matches vLLM).
-                    if abs(_ls - 1.0) > 1e-6:
+                    if _ls != 1.0:
                         self._dispatch(
                             "f32_scale_inplace", [out_h],
                             {"N": add_n, "SCALE": _ls},
@@ -1471,7 +1495,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Apply layer_scalar to the full residual once per decoder layer.
             # Matches vLLM: hidden_states = hidden_states * self.layer_scalar,
             # which scales (x + delta_attn + delta_ffn), not just the deltas.
-            if abs(_ls - 1.0) > 1e-6:
+            if _ls != 1.0:
                 self._dispatch("f32_scale_inplace", [out],
                                {"N": add_n, "SCALE": _ls},
                                (cdiv(add_n, 256), 1, 1))
