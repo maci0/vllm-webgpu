@@ -15,6 +15,11 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
+# Tolerance for treating a layer_scalar value as exactly 1.0 (no-op scaling).
+# A layer_scalar within this distance of 1.0 skips the f32_scale_inplace dispatch.
+_SCALE_EPS = 1e-6
+
+
 def _tile_if_shared(a: "np.ndarray", expected_dim: int, n: int) -> "np.ndarray":
     """Tile a shared norm weight (shape [expected_dim]) into per-head layout (shape [n * expected_dim]).
 
@@ -508,11 +513,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         """Return the weight key for the final layer norm. Subclasses may override."""
         return "model.norm.weight"
 
-
-    @staticmethod
-    def _need_layer_scale(s: float) -> bool:
-        """Return True when layer_scalar s is not close enough to 1.0 to skip scaling."""
-        return abs(s - 1.0) > 1e-6
 
     def _load_layer_scales(self) -> None:
         """Cache layer_scalar values on CPU at load time.
@@ -1045,7 +1045,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             {"N": add_n}, _vec4_wg(add_n))
 
                     # Apply layer_scalar to the full f32 residual (matches vLLM).
-                    if self._need_layer_scale(_ls):
+                    if abs(_ls - 1.0) > _SCALE_EPS:
                         self._dispatch(
                             "f32_scale_inplace", [out_h],
                             {"N": add_n, "SCALE": _ls},
@@ -1500,7 +1500,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Apply layer_scalar to the full residual once per decoder layer.
             # Matches vLLM: hidden_states = hidden_states * self.layer_scalar,
             # which scales (x + delta_attn + delta_ffn), not just the deltas.
-            if self._need_layer_scale(_ls):
+            if abs(_ls - 1.0) > _SCALE_EPS:
                 self._dispatch("f32_scale_inplace", [out],
                                {"N": add_n, "SCALE": _ls},
                                (cdiv(add_n, 256), 1, 1))

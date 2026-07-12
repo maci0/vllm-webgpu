@@ -7,7 +7,7 @@ from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.utils import zero_bytes
-from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
+from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel, _SCALE_EPS
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -246,9 +246,16 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             self._validate_expert_weights()
 
     def _validate_expert_weights(self) -> None:
-        """Check all experts have complete weights at load time."""
+        """Check all experts have complete weights at load time.
+
+        Layers without MoE routing (no router.proj.weight) are silently skipped
+        so a future DiffusionGemma variant with a mixed-MoE layout does not
+        raise a false RuntimeError for intentionally empty layers.
+        """
         for layer_idx in range(self.num_layers):
             p = self._layer_key_prefix(layer_idx)
+            if f"{p}.router.proj.weight" not in self.weights:
+                continue
             for eid in range(self.num_experts):
                 ep = f"{p}.experts.{eid}"
                 if any(f"{ep}.{k}.weight" not in self.weights for k in ("gate_proj", "up_proj", "down_proj")):
@@ -583,7 +590,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 )
 
             # ── Shared expert FFN ─────────────────────────────────────────────
-            gelu_n_shared = num_tokens * inter_shared
             # Fuse rms_norm + add_f32 + rms_norm_f32in into one dispatch,
             # matching the parent Gemma4WebGPUModel._transformer_layer path.
             self._dispatch("rms_norm_add_f32_rms_norm",
@@ -602,6 +608,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                [ffn_in, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
                                {"K": hidden, "N": inter_shared, "GELU": 1}, (inter_shared, 1, 1))
             else:
+                gelu_n_shared = num_tokens * inter_shared
                 self._gemm_adaptive(ffn_in, gw_k, sc["gate_buf"], hidden, inter_shared, num_tokens)
                 self._gemm_adaptive(ffn_in, uw_k, sc["up_buf"], hidden, inter_shared, num_tokens)
                 self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
@@ -887,7 +894,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                (num_tokens, 1, 1))
                 self._dispatch("add_f32", [residual, sc["ffn_out"], out],
                                {"N": add_n}, _vec4_wg(add_n))
-                if self._need_layer_scale(layer_scalar):
+                if abs(layer_scalar - 1.0) > _SCALE_EPS:
                     self._dispatch("f32_scale_inplace", [out],
                                    {"N": add_n, "SCALE": layer_scalar},
                                    (cdiv(add_n, 256), 1, 1))
@@ -921,7 +928,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     self._dispatch("rms_norm_add_f32_rms_norm",
                                    [hidden_states_1, post_ffw_w, residual, next_ln_w, out, sc["normed"]],
                                    _rms, (num_tokens, 1, 1))
-                    if self._need_layer_scale(layer_scalar):
+                    if abs(layer_scalar - 1.0) > _SCALE_EPS:
                         self._dispatch("f32_scale_inplace", [out],
                                        {"N": add_n, "SCALE": layer_scalar},
                                        (cdiv(add_n, 256), 1, 1))
@@ -932,7 +939,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                    (num_tokens, 1, 1))
                     self._dispatch("add_f32", [residual, sc["normed"], out],
                                    {"N": add_n}, _vec4_wg(add_n))
-                    if self._need_layer_scale(layer_scalar):
+                    if abs(layer_scalar - 1.0) > _SCALE_EPS:
                         self._dispatch("f32_scale_inplace", [out],
                                        {"N": add_n, "SCALE": layer_scalar},
                                        (cdiv(add_n, 256), 1, 1))

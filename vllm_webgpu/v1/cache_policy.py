@@ -26,7 +26,7 @@ MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
 
 if TYPE_CHECKING:
     import wgpu
-    from vllm.v1.kv_cache_interface import KVCacheGroupSpec, KVCacheSpec, KVCacheTensor
+    from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheGroupSpec, KVCacheSpec, KVCacheTensor
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.v1.worker import WebGPUWorker
 
@@ -60,10 +60,8 @@ def is_attn_layer(lt: "str | int") -> bool:
 def allocate_kv_from_tensors(
     wgpu_device: "wgpu.GPUDevice",
     model: "BaseWebGPUModel",
-    kv_cache_tensors: list[KVCacheTensor],
-    num_blocks: int,
+    kv_cache_config: "KVCacheConfig",
     num_total_layers: int,
-    kv_cache_groups: list[KVCacheGroupSpec],
 ) -> None:
     """Allocate KV cache buffers from vLLM's authoritative KVCacheTensor list.
 
@@ -82,6 +80,10 @@ def allocate_kv_from_tensors(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
+
+    kv_cache_tensors = kv_cache_config.kv_cache_tensors
+    num_blocks = kv_cache_config.num_blocks
+    kv_cache_groups = kv_cache_config.kv_cache_groups
 
     # Build layer_name -> KVCacheSpec map so each layer's head_size and head_size_v
     # fields are accessible for independent K/V byte calculation, avoiding the combined

@@ -678,10 +678,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         dev.queue.write_buffer(self._pre["bt"].buf, 0, bt_bytes)
 
-        # T=0 would leave x_buf unbound (the loop body never executes);
-        # callers pass T > 1 because forward() routes T=1 through the decode path.
-        if T < 1:
-            raise RuntimeError(f"_prefill_sequential_fallback requires T >= 1, got T={T}")
         for t in range(T):
             self._hstate = 0
             tok_pos   = int(positions[t])

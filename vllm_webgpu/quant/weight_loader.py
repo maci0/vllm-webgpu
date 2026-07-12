@@ -222,7 +222,7 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = k.replace(old_pfx, new_pfx, 1)
+                new_k = new_pfx + k[len(old_pfx):]
                 if new_k not in d:
                     to_add[new_k] = v
                 break

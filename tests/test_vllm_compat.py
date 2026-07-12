@@ -1,4 +1,4 @@
-"""Version-pinned assertions for private vLLM symbols used by vllm-webgpu.
+"""Version-pinned assertions for private vLLM symbols and internal logic used by vllm-webgpu.
 
 These tests catch upstream renames or moves of internal APIs before they
 silently break at runtime. The pinned range is declared in pyproject.toml:
@@ -21,6 +21,7 @@ Until then, the assertions below act as an early-warning system.
 import importlib
 import importlib.util
 import inspect
+from types import SimpleNamespace
 import pytest
 
 
@@ -114,3 +115,87 @@ def test_modelopt_extract_quant_algo_drift():
             "Diff _detect_mx_quant in vllm_webgpu/quant/weight_loader.py "
             "against the updated _extract_modelopt_quant_algo and update the copy."
         )
+
+
+@pytest.mark.parametrize("probe,hf_text_attrs,hf_outer_attrs,expected,attn_count", [
+    (
+        "layers_block_type",
+        {"layers_block_type": ["attention", "mamba", "attention", "mamba"]},
+        {},
+        ["attention", "mamba", "attention", "mamba"],
+        2,
+    ),
+    (
+        "attn_type_list",
+        {},
+        {"attn_type_list": [1, 0, 1, 0]},
+        [1, 0, 1, 0],
+        2,
+    ),
+    (
+        "layer_types",
+        {"layer_types": ["full_attention", "linear_attention", "full_attention", "linear_attention"]},
+        {},
+        ["full_attention", "linear_attention", "full_attention", "linear_attention"],
+        2,
+    ),
+])
+def test_get_layer_types_probe_order_matches_vllm(
+    probe, hf_text_attrs, hf_outer_attrs, expected, attn_count
+):
+    """get_layer_types probe ordering and attribute selection must match
+    ModelConfig.get_num_layers_by_block_type.
+
+    For each probe fixture, this test:
+    1. Calls get_layer_types and verifies it returns the expected list.
+    2. Calls get_num_layers_by_block_type (via a minimal mock ModelConfig)
+       on the same fixture and verifies the attention count agrees with
+       what the returned list implies.
+
+    When vLLM adds or reorders probes in get_num_layers_by_block_type,
+    one of these assertions will fail, turning the VERSION SYNC comment
+    in cache_policy.py into a mechanical CI gate.
+    """
+    pytest.importorskip("vllm", reason="vllm not installed")
+
+    from vllm.config.model import ModelConfig
+    from vllm_webgpu.v1.cache_policy import get_layer_types, is_attn_layer
+
+    n = len(expected)
+    hf_text_config = SimpleNamespace(**hf_text_attrs)
+    hf_outer_config = SimpleNamespace(**{**hf_text_attrs, **hf_outer_attrs})
+
+    # Verify get_layer_types returns the right list for this probe.
+    result = get_layer_types(hf_text_config, hf_outer_config)
+    assert result == expected, (
+        f"get_layer_types returned {result!r} for probe={probe!r}; "
+        f"expected {expected!r}. "
+        "The probe ordering in cache_policy.py may have drifted from vLLM."
+    )
+
+    # Verify the attention count from the returned list matches what
+    # get_num_layers_by_block_type would count on the same fixture.
+    # Build a minimal mock ModelConfig that routes straight to the hybrid
+    # probe path (is_hybrid=True, no noops, not attention-free).
+    mock_mc = SimpleNamespace(
+        is_hybrid=True,
+        has_noops=False,
+        is_attention_free=False,
+        hf_text_config=hf_text_config,
+        hf_config=hf_outer_config,
+        model_arch_config=SimpleNamespace(text_model_type="llama"),
+        get_layers_start_end_indices=lambda _pc: (0, n),
+        get_num_layers=lambda _pc: n,
+    )
+    vllm_count = ModelConfig.get_num_layers_by_block_type(
+        mock_mc,
+        parallel_config=SimpleNamespace(),
+        block_type="attention",
+    )
+    local_count = sum(1 for lt in result if is_attn_layer(lt))
+    assert vllm_count == local_count == attn_count, (
+        f"probe={probe!r}: vLLM count={vllm_count}, local count={local_count}, "
+        f"expected={attn_count}. "
+        "get_layer_types and get_num_layers_by_block_type disagree on this fixture. "
+        "Diff the probe order in cache_policy.py against the updated vLLM source."
+    )

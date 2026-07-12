@@ -232,16 +232,13 @@ class WebGPUModelRunner:
         logger.info("Model loaded: arch=%s", arch)
 
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
-        num_blocks = kv_cache_config.num_blocks
-        self._num_kv_blocks = num_blocks
+        self._num_kv_blocks = kv_cache_config.num_blocks
 
         allocate_kv_from_tensors(
             self.wgpu_device.wgpu_device,
             self.model,
-            kv_cache_config.kv_cache_tensors,
-            num_blocks=num_blocks,
+            kv_cache_config,
             num_total_layers=self.vllm_config.model_config.get_total_num_hidden_layers(),
-            kv_cache_groups=kv_cache_config.kv_cache_groups,
         )
 
     def _get_lp_list(self) -> "list | None":
@@ -434,7 +431,7 @@ class WebGPUModelRunner:
         if widths:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
-            if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
+            if len(widths) == len(logprobs_data) and all(w == widths[0] for w in widths[1:]):
                 built_logprobs = _stack(cast("list[LogprobsTensors]", logprobs_data))
             else:
                 # Pin rank dtype to int32, matching LogprobsTensors.empty_cpu.
@@ -657,7 +654,7 @@ class WebGPUModelRunner:
                     # tok_ids_param[i+1] stay aligned regardless of num_computed.
                     pt = _compute_prompt_logprobs(
                         last_logits,
-                        tok_ids[num_computed:num_computed + T] + [first_decode_tok],
+                        chunk_toks + [first_decode_tok],
                         num_prompt_logprobs,
                     )
                     if pt is not None:

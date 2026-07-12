@@ -67,10 +67,9 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Inlines the arithmetic from YaRNScalingRotaryEmbedding._compute_inv_freq
-    using only public vLLM utilities (yarn_find_correction_range,
-    yarn_linear_ramp_mask, yarn_get_mscale), avoiding the private method and
-    the expensive cos/sin cache build in __init__ (which allocates an
+    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via an unbound
+    call with a SimpleNamespace that satisfies the method's attribute contract,
+    avoiding the expensive cos/sin cache built by __init__ (which allocates an
     [orig_ctx * factor, rotary_dim] tensor, e.g. 16 384 rows when
     orig_ctx=4096, factor=4).
 
@@ -122,7 +121,6 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    import torch
     from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
         YaRNScalingRotaryEmbedding,
     )
