@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import cached_property
+from itertools import chain
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -572,7 +573,7 @@ class WebGPUModelRunner:
             raw_bids = req.block_ids
             if not raw_bids:
                 raise RuntimeError(f"req {rid}: scheduler produced NewRequestData with empty block_ids")
-            blk_ids = [b for lst in raw_bids for b in lst]
+            blk_ids = list(chain.from_iterable(raw_bids))
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -722,7 +723,7 @@ class WebGPUModelRunner:
                         f"resumed req {rid} has no new_block_ids from scheduler"
                     )
                 if cur_new_bids is not None:
-                    flat_new = [b for lst in cur_new_bids for b in lst]
+                    flat_new = list(chain.from_iterable(cur_new_bids))
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.

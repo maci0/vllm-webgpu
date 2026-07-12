@@ -22,7 +22,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # Use vLLM's config loader so Mistral-format repos (params.json) are handled correctly.
     from transformers import AutoTokenizer
-    from vllm.transformers_utils.config import get_config as _vllm_get_config, get_hf_text_config
+    from vllm.transformers_utils.config import get_config as _vllm_get_config
     cfg = _vllm_get_config(model_dir, trust_remote_code=True)
 
     arch = (cfg.architectures or ["LlamaForCausalLM"])[0]
@@ -63,10 +63,9 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
     family = ARCH_MAP.get(arch)
     model = _build_model(arch, family, cfg, device, pipeline_cache, block_size)
-    _text_cfg = get_hf_text_config(cfg)
-    print(f"  hidden={_text_cfg.hidden_size}, layers={model.num_layers}, "
-          f"heads={_text_cfg.num_attention_heads}, "
-          f"kv_heads={getattr(_text_cfg, 'num_key_value_heads', _text_cfg.num_attention_heads)}")
+    print(f"  hidden={model.hidden_size}, layers={model.num_layers}, "
+          f"heads={getattr(model, 'num_q_heads', '?')}, "
+          f"kv_heads={getattr(model, 'num_kv_heads', '?')}")
 
     # Load weights
     print("\nLoading weights (this may take a while)...")

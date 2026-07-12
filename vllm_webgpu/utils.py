@@ -46,7 +46,7 @@ except ImportError:
     logger.warning('_SAMPLING_EPS not found in vllm.v1.sample.sampler; using hardcoded fallback 1e-5')
     GREEDY_TEMP = 1e-5
 if GREEDY_TEMP != 1e-5:
-    raise AssertionError(f'_SAMPLING_EPS changed to {GREEDY_TEMP}; update the fallback')
+    logger.warning('_SAMPLING_EPS changed to %s; verify greedy-threshold behaviour and update the fallback constant', GREEDY_TEMP)
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

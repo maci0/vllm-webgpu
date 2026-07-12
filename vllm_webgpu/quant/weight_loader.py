@@ -51,12 +51,12 @@ def _unpack_nibbles_std4(packed: "np.ndarray") -> "np.ndarray":
     Returns int32 array of shape (out_rows, in_cols) with values in [0, 15].
 
     Note: vLLM provides vllm.model_executor.layers.quantization.utils.quant_utils.
-    unpack_quantized_values_into_int32, which covers the same nibble extraction but
-    returns a different output shape: for input [R, C] it returns [R*8, C] (nibbles
-    unpacked along the first axis), whereas this function returns [R, C*8] (nibbles
-    unpacked along the second axis). The two are not drop-in replacements at the
-    current call sites without additional transposing, and the numpy broadcast avoids
-    a torch round-trip in these weight-load paths. Do not consolidate.
+    unpack_quantized_values_into_int32, which covers the same nibble extraction.
+    With packed_dim=0 (the default) it returns [R*8, C]; with packed_dim=1 it
+    returns [R, C*8], which IS the same layout as this function and is a functional
+    drop-in replacement. The reason for keeping this numpy implementation is solely
+    to avoid a numpy->torch->numpy round-trip per layer during weight loading. Do
+    not consolidate unless the round-trip cost is shown to be negligible.
     """
     out_rows, k8 = packed.shape
     return ((packed[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, k8 * 8)
@@ -980,8 +980,6 @@ def load_safetensors_weights(
                     )
                 else:
                     u16 = t_bf16.view(torch.uint16).numpy()
-                    if u16.shape != arr.shape:
-                        u16 = u16.reshape(arr.shape)
                     u16_flat = np.ascontiguousarray(u16.ravel())
                     if u16_flat.size % 2 != 0:
                         u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
