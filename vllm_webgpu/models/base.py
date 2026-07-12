@@ -124,24 +124,17 @@ def compute_yarn_freqs(
     truncate             = bool(rope_scaling.get("truncate", True))
 
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
     )
 
-    # Build a minimal stub so we can delegate to vLLM's private
-    # _compute_inv_freq without triggering the expensive cos/sin cache
-    # build that super().__init__() performs.  The method only reads seven
-    # instance attributes; set exactly those and nothing else.
-    stub = YaRNScalingRotaryEmbedding.__new__(YaRNScalingRotaryEmbedding)
-    stub.base = rope_theta
-    stub.rotary_dim = rotary_dim
-    stub.max_position_embeddings = orig_ctx
-    stub.beta_fast = beta_fast
-    stub.beta_slow = beta_slow
-    stub.extrapolation_factor = extrapolation_factor
-    stub.truncate = truncate
-    inv_freq = stub._compute_inv_freq(factor).numpy()
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    inv_freq_mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    inv_freq_tensor = (1.0 / (factor * pos_freqs)) * (1 - inv_freq_mask) + (1.0 / pos_freqs) * inv_freq_mask
+    inv_freq = inv_freq_tensor.numpy()
 
     # mscale uses the public yarn_get_mscale — keep inline so it stays bound
     # to the imported function, not a stub attribute.
