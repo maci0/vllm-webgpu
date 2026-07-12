@@ -175,12 +175,27 @@ def _assert_gemma4_formula_compat() -> None:
       1. Key formula strings are still present in the vLLM source (source-level guard).
       2. _gemma4_layer_params produces the same per-layer params as the vLLM reference
          formula applied to a canonical 4-layer config (output-level guard).
+         Compared fields: head_dim, num_kv_heads, has_v_proj, q_dim, kv_dim,
+         is_kv_shared, kv_shared_target, intermediate_size.
 
     Raises AssertionError immediately on any mismatch, surfacing drift at import time
     rather than silently producing wrong KV buffer sizes at inference.
 
     Pinned to vllm 0.24.0. tests/test_gemma4_layer_params.py owns the full parametrised
     suite and must be run as a CI gate after any vLLM bump.
+
+    On each vLLM upgrade, manually check these specific call-sites in
+    vllm/model_executor/models/gemma4.py before updating this file:
+
+      Gemma4Attention.__init__
+        ~L461-464  first_kv_shared_layer_idx and KV-routing guard
+        ~L469-471  reversed-search KV-sharing target (prev_layers[::-1].index)
+        ~L561-577  head_dim / num_kv_heads / has_v_proj selection by attention type
+                   (also the source of q_dim = num_heads * head_dim, kv_dim = nkv * head_dim)
+
+      Gemma4DecoderLayer.__init__
+        ~L559-580  head_dim / num_kv_heads (same formulas, different guard)
+        ~L599-608  intermediate_size doubling guard (chained "i >= first > 0")
     """
     import inspect
     import types as _types
@@ -259,11 +274,22 @@ def _assert_gemma4_formula_compat() -> None:
         # Gemma4DecoderLayer.__init__ MLP-doubling guard (chained comparison)
         is_kv_shared_mlp = i >= first_kv > 0
         inter = cfg.intermediate_size * (2 if (cfg.use_double_wide_mlp and is_kv_shared_mlp) else 1)
+        # has_v_proj: Gemma4Attention.__init__ ~L561-577
+        # False only when use_k_eq_v (full_attention + attention_k_eq_v=True);
+        # all other layer types (including full_attention without k_eq_v) use a
+        # separate V projection.
+        use_k_eq_v_ref = (lt == "full_attention") and cfg.attention_k_eq_v
+        has_v_proj_ref = not use_k_eq_v_ref
+        q_dim_ref  = cfg.num_attention_heads * hd
+        kv_dim_ref = nkv * hd
         ref.append({
-            "head_dim": hd,
-            "num_kv_heads": nkv,
-            "is_kv_shared": is_kv_shared,
-            "kv_shared_target": kv_target,
+            "head_dim":          hd,
+            "num_kv_heads":      nkv,
+            "has_v_proj":        has_v_proj_ref,
+            "q_dim":             q_dim_ref,
+            "kv_dim":            kv_dim_ref,
+            "is_kv_shared":      is_kv_shared,
+            "kv_shared_target":  kv_target,
             "intermediate_size": inter,
         })
 
@@ -282,7 +308,10 @@ def _assert_gemma4_formula_compat() -> None:
 
     for i, (r, a) in enumerate(zip(ref, actual)):
         lt = cfg.layer_types[i]
-        for field in ("head_dim", "num_kv_heads", "is_kv_shared", "kv_shared_target", "intermediate_size"):
+        for field in (
+            "head_dim", "num_kv_heads", "has_v_proj", "q_dim", "kv_dim",
+            "is_kv_shared", "kv_shared_target", "intermediate_size",
+        ):
             if r[field] != a[field]:
                 raise AssertionError(
                     f"_gemma4_layer_params drift at layer {i} ({lt!r}): "
