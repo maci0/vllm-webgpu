@@ -67,11 +67,10 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates directly to YaRNScalingRotaryEmbedding._compute_inv_freq via a
-    minimal stub instance built with object.__new__, mirroring what get_rope()
-    does in vllm/model_executor/layers/rotary_embedding/__init__.py. The stub
-    avoids triggering the full __init__ (which allocates the entire cos/sin
-    cache); only the six attributes read by _compute_inv_freq are set.
+    Uses the three public utilities from vllm.model_executor.layers.rotary_embedding.common:
+    yarn_find_correction_range, yarn_linear_ramp_mask, and yarn_get_mscale.
+    Inlines the four-line inv_freq formula directly so there is no dependency on
+    the private YaRNScalingRotaryEmbedding._compute_inv_freq method.
 
     Args:
         head_dim:    Full attention head dimension.
