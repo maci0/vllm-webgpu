@@ -25,8 +25,6 @@ from compressed_tensors.utils.safetensors_load import (
 # order [0,2,4,6,1,3,5,7] instead of natural order [0,1,2,3,4,5,6,7], which misaligns
 # (w-z) against the scales tensor.
 _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 2, 4, 6, 1, 3, 5, 7], dtype=np.int32) * 4
-# GPTQ nibble unpack: each int32 holds 8 nibbles at bit offsets [0, 4, 8, ..., 28].
-_GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = float(np.finfo(np.float16).max)  # 65504.0
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
@@ -42,24 +40,19 @@ _BNB_GROUP_K = 64
 def _unpack_nibbles_std4(packed: "np.ndarray") -> "np.ndarray":
     """Unpack 8 uint4 nibbles per int32 into a 2-D int32 array [out_rows, in_cols].
 
-    Handles any standard 4-bit packing where nibbles live at bit offsets
-    [0, 4, 8, ..., 28] inside each int32. Used by both GPTQ (via _dequant_gptq)
-    and MLX affine int4 (via the numpy fallback in _dequant_mlx_int4). Both
-    formats use identical nibble layout, so one function covers both.
-
     packed: shape (out_rows, in_cols // 8), dtype int32 or uint32.
     Returns int32 array of shape (out_rows, in_cols) with values in [0, 15].
-
-    Note: vLLM provides vllm.model_executor.layers.quantization.utils.quant_utils.
-    unpack_quantized_values_into_int32, which covers the same nibble extraction.
-    With packed_dim=0 (the default) it returns [R*8, C]; with packed_dim=1 it
-    returns [R, C*8], which IS the same layout as this function and is a functional
-    drop-in replacement. The reason for keeping this numpy implementation is solely
-    to avoid a numpy->torch->numpy round-trip per layer during weight loading. Do
-    not consolidate unless the round-trip cost is shown to be negligible.
     """
-    out_rows, k8 = packed.shape
-    return ((packed[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, k8 * 8)
+    import torch as _torch
+    from vllm.model_executor.layers.quantization.utils.quant_utils import (
+        unpack_quantized_values_into_int32 as _vllm_unpack,
+    )
+    from vllm.scalar_type import scalar_types as _scalar_types
+    return _vllm_unpack(
+        _torch.from_numpy(np.ascontiguousarray(packed.astype(np.int32))),
+        _scalar_types.uint4,
+        packed_dim=1,
+    ).numpy()
 
 
 def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
