@@ -110,7 +110,7 @@ class WebGPUWorker(WorkerBase):
         return self.model_runner.execute_model(scheduler_output)
 
     def sample_tokens(
-        self, grammar_output: "GrammarOutput"
+        self, grammar_output: "GrammarOutput | None"
     ) -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         return self.model_runner.sample_tokens(grammar_output)
 

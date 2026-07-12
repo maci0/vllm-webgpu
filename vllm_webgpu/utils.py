@@ -40,7 +40,8 @@ try:
     from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
 except ImportError:
     GREEDY_TEMP = 1e-5
-assert GREEDY_TEMP == 1e-5, f'_SAMPLING_EPS changed to {GREEDY_TEMP}; update the fallback'
+if GREEDY_TEMP != 1e-5:
+    raise AssertionError(f'_SAMPLING_EPS changed to {GREEDY_TEMP}; update the fallback')
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

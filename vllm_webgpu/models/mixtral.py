@@ -590,8 +590,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             w3_key = f"{ep}.{up_key}.weight"
             w2_key = f"{ep}.{down_key}.weight"
 
-            if any(k not in self.weights for k in (w1_key, w3_key, w2_key)):
-                missing = [k for k in (w1_key, w3_key, w2_key) if k not in self.weights]
+            missing = [k for k in (w1_key, w3_key, w2_key) if k not in self.weights]
+            if missing:
                 raise RuntimeError(
                     f"L{layer_idx:02d} expert {exp_idx}: weights not loaded: {missing}. "
                     "All top-k expert weights must be present for correct MoE output. "

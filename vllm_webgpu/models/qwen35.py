@@ -7,7 +7,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
-from vllm.utils.math_utils import cdiv, round_down
+from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
@@ -96,7 +96,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             f"rotary_dim={int(_head_dim_raw * _prf)} is odd; the WGSL rope shader requires "
             f"even ROTARY_DIM. This model config diverges from vLLM."
         )
-        self._rotary_dim: int = max(2, round_down(int(_head_dim_raw * _prf), 2))
+        self._rotary_dim: int = max(2, int(_head_dim_raw * _prf))
         # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
         # Qwen3.5 uses mrope_interleaved=True, stored in rope_parameters dict,
         # not as a top-level config attribute.

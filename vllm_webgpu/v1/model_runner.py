@@ -8,7 +8,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
-    from vllm.v1.outputs import AsyncModelRunnerOutput, LogprobsLists
+    from vllm.v1.outputs import AsyncModelRunnerOutput
 
 logger = init_logger(__name__)
 
@@ -44,7 +44,7 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.logprobs if sp is not None else None
+    num_logprobs = sp.num_logprobs if sp is not None else None
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -412,11 +412,11 @@ class WebGPUModelRunner:
             # passing it here, making the cast below a no-op in that branch.
             # If a future vLLM release casts token_ranks to int32 in gather_logprobs,
             # remove both casts (here and at the padded path) together.
-            return LogprobsTensors(
-                torch.cat([x.logprob_token_ids for x in items]),
-                torch.cat([x.logprobs for x in items]),
-                torch.cat([x.selected_token_ranks for x in items]).to(torch.int32),
-            ).tolists()
+            return LogprobsLists(
+                torch.cat([x.logprob_token_ids for x in items]).cpu().numpy(),
+                torch.cat([x.logprobs for x in items]).cpu().numpy(),
+                torch.cat([x.selected_token_ranks for x in items]).to(torch.int32).cpu().numpy(),
+            )
 
         # Build LogprobsLists for top-k sampled-token logprob entries.
         # One row per request in the batch (matching req_id_to_index), so that
