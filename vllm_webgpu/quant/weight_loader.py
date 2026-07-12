@@ -526,6 +526,31 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     return w_f32.T.astype(np.float16)  # (N, K)
 
 
+def _extract_modelopt_quant_algo_fallback(cfg: dict) -> str:
+    """Fallback for ModelOptFp8Config._extract_modelopt_quant_algo when the real
+    import is unavailable (modelopt.py carries top-level CUDA imports that abort
+    on WebGPU).
+
+    # sync from vllm/model_executor/layers/quantization/modelopt.py
+    #   _extract_modelopt_quant_algo, lines 244-262 @ b13d666ea04f (vllm 0.24.0)
+    # On each vLLM bump verify the upstream body still matches:
+    #   sed -n '244,263p' .venv/lib/python*/site-packages/vllm/\
+    #     model_executor/layers/quantization/modelopt.py | sha256sum
+    # If the hash changed, diff the upstream method against this function body
+    # and update accordingly.
+    """
+    if "quantization" in cfg:
+        quant_section = cfg["quantization"]
+        quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
+    else:
+        quant_algo = cfg.get('quant_algo', '')
+    # Use explicit None check to match vLLM's str(quant_config.get('quant_algo', ''))
+    # semantics exactly; `or ''` coerces 0 and other falsy non-None values to ''.
+    if quant_algo is None:
+        quant_algo = ''
+    return str(quant_algo).upper()
+
+
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
 
@@ -556,22 +581,9 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                 except (ImportError, OSError):
                     # modelopt.py has top-level CUDA imports (mxfp8_utils,
                     # marlin_utils, flashinfer_utils, fused_moe) that crash on
-                    # WebGPU. Fallback inlines the body of the upstream method.
-                    # sync from modelopt.py _extract_modelopt_quant_algo @ b13d666ea04f (vllm 0.24.0)
-                    # On each vLLM bump verify the hash still matches:
-                    #   sed -n '244,263p' .venv/lib/python*/site-packages/vllm/\
-                    #     model_executor/layers/quantization/modelopt.py | sha256sum
-                    # If it changed, diff the method body against this block.
-                    if "quantization" in cfg:
-                        quant_section = cfg["quantization"]
-                        quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
-                    else:
-                        quant_algo = cfg.get('quant_algo', '')
-                    # Use explicit None check to match vLLM's str(quant_config.get('quant_algo', ''))
-                    # semantics exactly; `or ''` coerces 0 and other falsy non-None values to ''.
-                    if quant_algo is None:
-                        quant_algo = ''
-                    algo = str(quant_algo).upper()
+                    # WebGPU. Use the standalone fallback that mirrors the
+                    # upstream method body (see _extract_modelopt_quant_algo_fallback).
+                    algo = _extract_modelopt_quant_algo_fallback(cfg)
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
