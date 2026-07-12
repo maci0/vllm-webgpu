@@ -332,13 +332,13 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # hf_text_config differs from the outer config.
     _outer = hf_outer_config if hf_outer_config is not None else hf_text_config
     # Priority order mirrors vLLM's ModelConfig.get_num_layers_by_block_type
-    # (config/model.py:1327-1362 as of the installed vLLM):
+    # (vllm/config/model.py:1327-1362 as of the installed vLLM):
     #   probe 1 (L1330): layers_block_type  -- NemotronH / Falcon
     #   probe 2 (L1340): attn_type_list     -- Minimax (truthiness, not is-not-None)
     #   probe 3 (L1348): layer_types        -- Gemma4 / Qwen3.5
     #
-    # NOTE -- Jamba (has_noops / block_configs) is intentionally NOT supported here.
-    # vLLM's has_noops path (config/model.py:1322-1324) uses hf_config.block_configs,
+    # NOTE: Jamba (has_noops / block_configs) is intentionally NOT supported here.
+    # vLLM's has_noops path (vllm/config/model.py:1322-1324) uses hf_config.block_configs,
     # a list of structured config objects (bc.attention.no_op), not a flat list of
     # type strings.  This function returns a flat list, so the block_configs format
     # is incompatible with that contract.  Jamba models will fall through to returning
@@ -346,24 +346,27 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # Jamba but safe to fail loudly rather than silently misclassify.  If Jamba support
     # is needed: convert block_configs to a flat string list and return it here.
     #
-    # VERSION SYNC: on each vLLM bump, diff get_num_layers_by_block_type against this
-    # probe list.  The block_configs / has_noops path is the known gap; check whether
-    # vLLM has added any further probes beyond the three below.
+    # VERSION SYNC: on each vLLM bump, diff ModelConfig.get_num_layers_by_block_type
+    # (vllm/config/model.py:1327-1362) against the probe sequence below.
+    # The block_configs / has_noops path is the known gap; check whether vLLM has
+    # added any further probes beyond the three mirrored here.
     #
     # attn_type_list uses a truthiness check (matching vLLM) so an empty list falls
     # through to layer_types rather than short-circuiting the chain.
-    # The 4th probe below (outer-config layer_types) is not present in vLLM and is used
-    # as a fallback for multimodal models where layer_types lives only on the outer config.
-    _probes = [
-        (hf_text_config, "layers_block_type", False),   # vLLM config/model.py:1330
-        (_outer,         "attn_type_list",    True),    # vLLM config/model.py:1340 (truthiness)
-        (hf_text_config, "layer_types",       False),   # vLLM config/model.py:1348
-    ]
-    if _outer is not hf_text_config:
-        _probes.append((_outer, "layer_types", False))  # fallback for outer-only configs (not in vLLM)
-    for cfg, attr, require_truthy in _probes:
-        v = getattr(cfg, attr, None)
-        if v is not None and (not require_truthy or v):
+    # Probe 4 (outer-config layer_types) is not present in vLLM; it is a local
+    # extension for multimodal models where layer_types lives only on the outer config.
+    v = getattr(hf_text_config, "layers_block_type", None)  # vllm/config/model.py:1330
+    if v is not None:
+        return v
+    v = getattr(_outer, "attn_type_list", None)             # vllm/config/model.py:1340 (truthiness)
+    if v:
+        return v
+    v = getattr(hf_text_config, "layer_types", None)        # vllm/config/model.py:1348
+    if v is not None:
+        return v
+    if _outer is not hf_text_config:                        # local extension: outer-only configs
+        v = getattr(_outer, "layer_types", None)
+        if v is not None:
             return v
     return None
 

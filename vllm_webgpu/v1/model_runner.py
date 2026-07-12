@@ -412,11 +412,11 @@ class WebGPUModelRunner:
             # passing it here, making the cast below a no-op in that branch.
             # If a future vLLM release casts token_ranks to int32 in gather_logprobs,
             # remove both casts (here and at the padded path) together.
-            return LogprobsLists(
-                torch.cat([x.logprob_token_ids for x in items]).cpu().numpy(),
-                torch.cat([x.logprobs for x in items]).cpu().numpy(),
-                torch.cat([x.selected_token_ranks for x in items]).to(torch.int32).cpu().numpy(),
-            )
+            return LogprobsTensors(
+                torch.cat([x.logprob_token_ids for x in items]),
+                torch.cat([x.logprobs for x in items]),
+                torch.cat([x.selected_token_ranks for x in items]).to(torch.int32),
+            ).tolists()
 
         # Build LogprobsLists for top-k sampled-token logprob entries.
         # One row per request in the batch (matching req_id_to_index), so that
@@ -488,6 +488,9 @@ class WebGPUModelRunner:
             return None
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits[row_idx]).unsqueeze(0))
         k = min(num_logprobs, logits.shape[-1])
+        # selected_token_ranks is cast to int32 in _stack so no explicit cast is needed
+        # here. The _replace at line 141 is needed because _compute_prompt_logprobs
+        # returns directly without going through _stack.
         return Sampler.gather_logprobs(lp_t, k, torch.tensor([tok], dtype=torch.int64))
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> "ModelRunnerOutput":

@@ -544,6 +544,9 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     )
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
                 except (ImportError, OSError):
+                    # Mirrors ModelOptFp8Config._extract_modelopt_quant_algo
+                    # (vllm/model_executor/layers/quantization/modelopt.py). If that
+                    # method's key names or nesting change, update this fallback to match.
                     if 'quantization' in cfg:
                         q = cfg['quantization']
                         algo = str(q.get('quant_algo', '')).upper() if isinstance(q, dict) else ''
@@ -1525,8 +1528,8 @@ def _dequant_mlx_int4(
         in_cols = packed_cols * 8
         nibbles = _unpack_nibbles_std4(weight_u32, out_rows, in_cols).astype(np.float32)
         n_groups = in_cols // group_size
-        scales_bc = np.repeat(scales_f32.reshape(out_rows, n_groups), group_size, axis=1)
-        biases_bc = np.repeat(biases_f32.reshape(out_rows, n_groups), group_size, axis=1)
+        scales_bc = np.repeat(scales_f32, group_size, axis=1)
+        biases_bc = np.repeat(biases_f32, group_size, axis=1)
         return scales_bc * nibbles + biases_bc
 
 
