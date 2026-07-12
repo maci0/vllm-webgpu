@@ -94,11 +94,11 @@ def main() -> None:
     pos = len(tok_ids)
     print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")
 
-    def _run_decode_step(tok, p):
+    def _run_decode_step(token_id, p):
         """Run one decode step; returns (next_tok, elapsed_ms)."""
         _dm = SimpleNamespace(slot_mapping=[p], block_tables=[bt], max_decode_seq_len=p + 1)
         t_start = time.perf_counter()
-        lg = model.forward(np.array([tok], dtype=np.uint32), np.array([p], dtype=np.uint32), _dm)
+        lg = model.forward(np.array([token_id], dtype=np.uint32), np.array([p], dtype=np.uint32), _dm)
         elapsed = (time.perf_counter() - t_start) * 1000
         return _next_tok(lg), elapsed
 
@@ -160,10 +160,11 @@ def main() -> None:
         )
         total_w_mb = total_w_bytes / 1e6
         print(f"  Weight data moved: {total_w_mb:.0f} MB  ({total_w_mb/num_layers:.1f} MB/layer avg)")
+        _PEAK_BW_GBS = 300  # M3 Max mid-range estimate; adjust for your hardware
         if total > 0:
             bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
             print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (M3 Peak: ~200-400 GB/s)")
-            print(f"  BW utilization: {bw_util_gb_s/300*100:.1f}%")
+            print(f"  BW utilization: {bw_util_gb_s / _PEAK_BW_GBS * 100:.1f}%")
 
 
 if __name__ == '__main__':

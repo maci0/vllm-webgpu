@@ -26,7 +26,7 @@ from compressed_tensors.utils.safetensors_load import (
 _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 2, 4, 6, 1, 3, 5, 7], dtype=np.int32) * 4
 # GPTQ nibble unpack: each int32 holds 8 nibbles at bit offsets [0, 4, 8, ..., 28].
 _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
-_F16_MAX: float = 65504.0
+_F16_MAX: float = float(np.finfo(np.float16).max)  # 65504.0
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
 
@@ -465,7 +465,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
             t_qz = _torch.from_numpy(qzeros.astype(np.int32))
             t_sc = _torch.from_numpy(scales.astype(np.float16))
             out = _awq_dq(t_qw, t_qz, t_sc, bits=4, group_size=group_size)
-            return np.ascontiguousarray(out.numpy().T.astype(np.float16))
+            return out.numpy().T.astype(np.float16)
         except Exception as _e:
             logger.debug("auto_awq dequantize_gemm failed, using numpy fallback: %s", _e)
 
@@ -478,7 +478,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     z_int4 = ((qz[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(G, N).astype(np.uint8)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
-    return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
+    return w_f32.T.astype(np.float16)  # (N, K)
 
 
 def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
@@ -516,7 +516,7 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     z_int4 = _unpack_nibbles_gptq(qzeros, G, N).astype(np.int8)       # (G, N)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
-    return np.ascontiguousarray(w_f32.T.astype(np.float16))  # (N, K)
+    return w_f32.T.astype(np.float16)  # (N, K)
 
 
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:

@@ -6,10 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm.model_executor.layers.mamba.mamba_utils import (
-    MambaStateShapeCalculator,
-    is_conv_state_dim_first,
-)
+from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator
 from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
@@ -97,20 +94,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # Derive conv_dim directly from MambaStateShapeCalculator so CONV_DIM always
-        # matches the vLLM formula regardless of future changes to mamba_utils.py.
-        # The shape calculator returns a 2-tuple; extract conv_dim from the axis that
-        # holds it (axis order depends on VLLM_SSM_CONV_STATE_LAYOUT).
-        _gdn_conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            tp_world_size=1,
-            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
-            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
-            conv_kernel_size=self._lin_conv_kernel,
-        )
-        # conv_dim is read back from the shape the calculator already returned so
-        # any upstream formula change is automatically reflected here.
-        # DS layout: (dim, state_len) → index 0; SD layout: (state_len, dim) → index 1.
-        self._lin_conv_dim: int = _gdn_conv_shape[0] if is_conv_state_dim_first() else _gdn_conv_shape[1]
+        # conv_dim = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads
+        # (mamba_utils.py gated_delta_net_state_shape, tp_world_size=1).
+        # This value is layout-independent: the SD/DS layout only determines which
+        # axis of the shape tuple holds it, not the value itself. Reading it directly
+        # from the formula avoids a layout-dependent index dance on the shape tuple.
+        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         # _gdn_v_base derives from _lin_conv_dim (= 2*key_dim + val_dim per vLLM formula)

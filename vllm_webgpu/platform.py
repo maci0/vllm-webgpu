@@ -36,7 +36,10 @@ def _get_wgpu_adapter():
         cfg = get_config()
         import wgpu
         return wgpu.gpu.request_adapter_sync(power_preference=cfg.power_preference)
-    except Exception:
+    except ImportError:
+        return None
+    except Exception as exc:
+        logger.debug("WebGPU adapter probe failed: %s", exc)
         return None
 
 

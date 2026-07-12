@@ -152,8 +152,10 @@ def _build_layer_params_from_config(
         if is_kv_shared:
             _prev = layer_types[:first_kv_shared]
             try:
-                kv_shared_target = len(_prev) - 1 - _prev[::-1].index(lt)
-            except ValueError:
+                kv_shared_target = len(_prev) - 1 - next(
+                    i for i, t in enumerate(reversed(_prev)) if t == lt
+                )
+            except StopIteration:
                 raise ValueError(
                     f"Layer {i} (type={lt!r}) is KV-shared but type {lt!r} was not "
                     f"found in the non-shared prefix {_prev}. Check layer_types config."

@@ -59,6 +59,21 @@ if _mapper.orig_to_new_substr != {"A_log": "A", "embeddings": "embed_tokens"}:
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_substr changed upstream: "
         f"{_mapper.orig_to_new_substr!r}. Review load_weights before removing this assertion."
     )
+# Behavioral check: verify the mapper's actual output, not just its fields.
+# A new regex or suffix rule added to the mapper could silently rename keys
+# (e.g. 'model.norm_f.weight') even if the field equality checks above still pass.
+if _mapper.apply_list(["backbone.layers.0.mixer.A_log"]) != ["model.layers.0.mixer.A"]:
+    raise AssertionError(
+        "NemotronHForCausalLM.hf_to_vllm_mapper no longer produces the expected key "
+        "for 'backbone.layers.0.mixer.A_log'. A new mapping rule may have been added. "
+        "Review load_weights and update this assertion."
+    )
+if _mapper.apply_list(["backbone.embed_tokens.weight"]) != ["model.embed_tokens.weight"]:
+    raise AssertionError(
+        "NemotronHForCausalLM.hf_to_vllm_mapper no longer produces the expected key "
+        "for 'backbone.embed_tokens.weight'. A new mapping rule may have been added. "
+        "Review load_weights and update this assertion."
+    )
 del _mapper
 
 # Import-time sentinel: confirm MambaMixer2's in_proj layout still matches the
@@ -70,62 +85,62 @@ del _mapper
 # NOTE: _validate_mamba_weights is the authoritative runtime guard. It checks
 # the actual in_proj.weight shape from the loaded checkpoint against in_proj_dim.
 
-# Import-time guard: verify that NemotronHMLPDecoderLayer.__init__ still contains
-# the list/scalar intermediate_size resolution logic that _resolve_intermediate_size() mirrors,
-# AND that mlp_index is still computed as count("-") - 1, which is the semantic
-# equivalent of the running counter (_mlp_count) used in __init__.
-# Any vLLM upgrade changing either will fail here rather than silently producing
-# wrong per-layer sizes.
+# Import-time behavioral guard: verify that NemotronHMLPDecoderLayer.__init__ still
+# picks the correct per-layer intermediate_size from a multi-element list using a
+# heterogeneous hybrid_override_pattern. This catches any change to the upstream
+# mlp_index formula or list-resolution logic without being fragile to reformat-only
+# commits (unlike getsource string matching).
+# ImportError is intentionally not caught: a broken vLLM install should propagate.
+_NemotronHMLPDecoder = None
 try:
-    import inspect as _inspect
     from vllm.model_executor.models.nemotron_h import NemotronHMLPDecoderLayer as _NemotronHMLPDecoder
-    _mlp_init_src = _inspect.getsource(_NemotronHMLPDecoder.__init__)
-    # Anchor 1: the mlp_index computation (vLLM 0.24, L280).
-    # _mlp_count in __init__ is the O(n) equivalent of this O(n^2) expression.
-    # If vLLM changes the character ("-"), the direction (count from end), or the
-    # variable name, the running counter would silently produce wrong indices for
-    # every MLP layer.
-    _MLP_INDEX_ANCHOR = 'mlp_index = hybrid_override_pattern[: layer_idx + 1].count("-") - 1'
-    if _MLP_INDEX_ANCHOR not in _mlp_init_src:
-        raise AssertionError(
-            "NemotronHMLPDecoderLayer.__init__ mlp_index computation has changed "
-            "upstream (vLLM 0.24 L280). The running counter (_mlp_count) in "
-            "NemotronHWebGPUModel.__init__ is the O(n) equivalent of "
-            "`hybrid_override_pattern[:layer_idx+1].count('-') - 1` and would "
-            "silently produce wrong intermediate sizes if the upstream formula "
-            "changes (different character, reverse count, or renamed variable). "
-            "Review the _mlp_count loop and update it to match the new upstream "
-            "logic, then update this anchor string before removing this assertion."
-        )
-    del _MLP_INDEX_ANCHOR
-    # Anchor 2: the 7-line list/scalar resolution block (vLLM 0.24, L286-292).
-    # Catches any new branch (e.g. per-head lists) or index-variable rename
-    # that the coarse isinstance+len check would have missed.
-    _MLP_INTERMEDIATE_SIZE_ANCHOR = (
-        "if isinstance(config.intermediate_size, list):\n"
-        "            if len(config.intermediate_size) == 1:\n"
-        "                intermediate_size = config.intermediate_size[0]\n"
-        "            else:\n"
-        "                intermediate_size = config.intermediate_size[mlp_index]\n"
-        "        else:\n"
-        "            intermediate_size = config.intermediate_size"
+    from vllm.transformers_utils.configs.nemotron_h import NemotronHConfig as _NemotronHConfig
+    from unittest.mock import patch as _patch
+
+    # "---": three consecutive MLP layers, mlp_index 0/1/2 at layer_idx 0/1/2.
+    _mlp_cfg = _NemotronHConfig(
+        num_hidden_layers=3,
+        hybrid_override_pattern="---",
+        intermediate_size=[1024, 2048, 4096],
     )
-    if _MLP_INTERMEDIATE_SIZE_ANCHOR not in _mlp_init_src:
-        raise AssertionError(
-            "NemotronHMLPDecoderLayer.__init__ intermediate_size resolution block "
-            "no longer matches the snapshot used by _resolve_intermediate_size() (vLLM 0.24 L286-292). "
-            "The upstream formula has changed (new branch, renamed index variable, or "
-            "restructured logic). Review _resolve_intermediate_size() in NemotronHWebGPUModel.__init__, "
-            "update it to match the new upstream logic, then update this anchor string "
-            "before removing this assertion."
-        )
-    del _MLP_INTERMEDIATE_SIZE_ANCHOR
-    del _inspect, _NemotronHMLPDecoder, _mlp_init_src
-except OSError:
-    # OSError: source not available (e.g. stripped install, .pyc-only). Skip anchor
-    # checks but still run the presence check below. ImportError is intentionally not
-    # caught here: a broken vLLM install should propagate rather than be silently ignored.
-    logger.warning("inspect.getsource unavailable; skipping anchor validation for NemotronHMLPDecoderLayer.__init__")
+    _captured: dict = {}
+
+    class _MockMLP:
+        def __init__(self_, config, *, hidden_size, intermediate_size, **kw):
+            _captured["size"] = intermediate_size
+
+    class _MockNoop:
+        """Stub that accepts any positional/keyword args and does nothing."""
+        def __init__(self_, *a, **kw):
+            pass
+
+    _patches = [
+        _patch("vllm.model_executor.models.nemotron_h.NemotronHMLP", _MockMLP),
+        _patch("vllm.model_executor.models.nemotron_h.RMSNorm", _MockNoop),
+    ]
+    for _p in _patches:
+        _p.start()
+    try:
+        for _layer_idx, _expected_inter in [(0, 1024), (1, 2048), (2, 4096)]:
+            _captured.clear()
+            _NemotronHMLPDecoder(_mlp_cfg, _layer_idx)
+            if _captured.get("size") != _expected_inter:
+                raise AssertionError(
+                    f"NemotronHMLPDecoderLayer selected intermediate_size="
+                    f"{_captured.get('size')!r} at layer_idx={_layer_idx}, "
+                    f"expected {_expected_inter}. The upstream mlp_index formula or "
+                    f"list-resolution logic has changed. Review _resolve_intermediate_size() "
+                    f"and the _mlp_count loop in NemotronHWebGPUModel.__init__, update "
+                    f"them to match, then re-run this check."
+                )
+    finally:
+        for _p in _patches:
+            _p.stop()
+
+    del _NemotronHConfig, _patch, _mlp_cfg, _captured, _MockMLP, _MockNoop, _patches
+    del _layer_idx, _expected_inter
+finally:
+    del _NemotronHMLPDecoder
 
 try:
     from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size
