@@ -682,6 +682,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         under Metal's per-command-buffer GPU timeout.
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """
+        assert not self._skip_attn_scale, 'lp["scale"] not populated when _skip_attn_scale=True'
         if not self._mr4_ok:
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 
@@ -1118,6 +1119,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         num_tokens: int,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Returns (normed_out, raw_out) — normed_out is sc['normed'] for next layer."""
+        assert not self._skip_attn_scale, 'lp["scale"] not populated when _skip_attn_scale=True'
         sc = self._sc
         lp = self._lp[layer_idx]
         hidden = self.hidden_size
