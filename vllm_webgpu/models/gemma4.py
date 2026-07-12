@@ -240,8 +240,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     _PREFILL_CHUNK: int = 4
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
-        from vllm.model_executor.models.gemma4 import _get_text_config
-        model_config = _get_text_config(model_config)
+        from vllm.transformers_utils.config import get_hf_text_config
+        model_config = get_hf_text_config(model_config)
         _ple = getattr(model_config, 'hidden_size_per_layer_input', None)
         if _ple is not None and _ple > 0:
             raise ValueError(

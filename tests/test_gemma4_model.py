@@ -18,9 +18,9 @@ def make_tiny_gemma4_config():
     cfg.ple_layer_indices = []
     cfg.max_position_embeddings = 128
     cfg.hidden_size_per_layer_input = 0
-    # MagicMock auto-creates cfg.text_config as a sub-mock; point it back to cfg
-    # so _get_text_config() returns the same configured object unchanged.
-    cfg.text_config = cfg
+    # get_hf_text_config calls config.get_text_config(); return self so the
+    # configured attributes are preserved rather than a fresh sub-mock.
+    cfg.get_text_config.return_value = cfg
     return cfg
 
 
@@ -81,6 +81,7 @@ def test_gemma4_gptq_forward(wgpu_device):
         ple_layer_indices = []
         max_position_embeddings = 128
         rope_theta = 10000.0
+        def get_text_config(self): return self
 
     cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
     model = Gemma4WebGPUModel(_FakeConfig(), wgpu_device, cache)
@@ -196,6 +197,7 @@ def test_gemma4_prefill_forward(wgpu_device):
         ple_layer_indices = []
         max_position_embeddings = 128
         rope_theta = 10000.0
+        def get_text_config(self): return self
 
     cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
     model = Gemma4WebGPUModel(_FakeCfg(), wgpu_device, cache)

@@ -29,9 +29,9 @@ def make_diffusion_gemma_config():
     # (sized at intermediate_size) can safely hold expert projections too.
     cfg.moe_intermediate_size = 128
     cfg.canvas_length = 1
-    # MagicMock auto-creates cfg.text_config as a sub-mock; point it back to cfg
-    # so _get_text_config() returns the same configured object unchanged.
-    cfg.text_config = cfg
+    # get_hf_text_config calls config.get_text_config(); return self so the
+    # configured attributes are preserved rather than a fresh sub-mock.
+    cfg.get_text_config.return_value = cfg
     return cfg
 
 
@@ -115,6 +115,7 @@ def test_diffusion_gemma_moe_forward(wgpu_device):
         num_experts                = n_experts
         top_k_experts              = 2
         moe_intermediate_size      = moe_inter
+        def get_text_config(self): return self
 
     cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
     model = DiffusionGemmaWebGPUModel(_Cfg(), wgpu_device, cache)
