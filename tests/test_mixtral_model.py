@@ -99,6 +99,7 @@ def test_mistral_forward(wgpu_device):
     kv_dim = kv_heads * head_dim
     _inject_llama_weights(model, dev, rng, hidden, q_dim, kv_dim, inter, vocab, layers)
     _kv_pool(model, dev, layers, num_blocks, block_size, kv_heads, head_dim)
+    model._batch_matmul_supported = True  # set by load_weights(); bypass guard for direct-inject test
 
     result = model.forward(
         np.array([1], dtype=np.uint32),

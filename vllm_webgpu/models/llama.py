@@ -386,6 +386,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         self._check_single_sequence(attn_metadata)
 
+        if self._batch_matmul_supported is None:
+            raise RuntimeError("load_weights() must be called before forward()")
+
         vocab = self.vocab_size
 
         # Batch prefill: T>1 tokens use matmul_quant_mr4 (all T rows at once) plus
