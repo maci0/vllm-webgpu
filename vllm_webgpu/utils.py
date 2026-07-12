@@ -32,7 +32,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-from vllm.v1.sample.sampler import _SAMPLING_EPS
+# Inlined from vllm.v1.sample.sampler._SAMPLING_EPS (private symbol; value has
+# been 1e-5 since vLLM 0.4 and is unlikely to change, but we avoid importing a
+# private name). If vLLM ever exposes this as a public constant, import that
+# instead and delete this line.
+_SAMPLING_EPS: float = 1e-5
 
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
