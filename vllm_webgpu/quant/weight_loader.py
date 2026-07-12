@@ -49,6 +49,10 @@ def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
     """
     if qz is None:
         return True
+    if qz.itemsize != 4:
+        # Unexpected dtype (e.g. I16, F16): cannot safely view as int32.
+        # Treat as asymmetric so callers fall through to CPU dequant.
+        return False
     # 0x88888888 viewed as int32 = -2004318072 (all eight nibbles = 8).
     _sentinel = np.int32(-2004318072)
     v = qz.view(np.int32)
