@@ -512,32 +512,33 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     return w_f32.T.astype(np.float16)  # (N, K)
 
 
-def _extract_modelopt_quant_algo_fallback(cfg: dict) -> str:
+def _extract_modelopt_quant_algo_fallback(cfg: dict | None) -> str | None:
     """Fallback for ModelOptFp8Config._extract_modelopt_quant_algo when the real
     import is unavailable (modelopt.py carries top-level CUDA imports that abort
     on WebGPU).
 
+    Mirrors the upstream body with one deliberate omission: the quant_method
+    startswith('modelopt') guard is skipped because the call site already checks
+    it before invoking this function. The None-input guard is present to match
+    the upstream contract.
+
     # sync from vllm/model_executor/layers/quantization/modelopt.py
-    #   _extract_modelopt_quant_algo, lines 244-262 @ b13d666ea04f (vllm 0.24.0)
+    #   _extract_modelopt_quant_algo, lines 244-262
     # On each vLLM bump verify the upstream body still matches:
-    #   sed -n '244,263p' .venv/lib/python*/site-packages/vllm/\
+    #   sed -n '244,262p' .venv/lib/python*/site-packages/vllm/\
     #     model_executor/layers/quantization/modelopt.py | sha256sum
+    # Expected: f11d6b95201b43b406eaf265c9b23e9d6416da91b1a3906c462e9a7d4f822e46
     # If the hash changed, diff the upstream method against this function body
     # and update accordingly.
     """
+    if cfg is None:
+        return None
     if "quantization" in cfg:
         quant_section = cfg["quantization"]
-        quant_algo = quant_section.get('quant_algo', '') if isinstance(quant_section, dict) else None
-    else:
-        quant_algo = cfg.get('quant_algo', '')
-    # Use explicit None check; `or ''` coerces 0 and other falsy non-None values to ''.
-    # One remaining deviation from upstream: non-dict quant_section returns None here
-    # (caller's `or ''` at the call site normalizes it), while upstream returns None
-    # then applies str(), producing "None". No functional impact since neither matches
-    # "MXFP4" or "MXFP8", and the caller normalizes None to "" anyway.
-    if quant_algo is None:
-        quant_algo = ''
-    return str(quant_algo).upper()
+        if isinstance(quant_section, dict):
+            return str(quant_section.get('quant_algo', '')).upper()
+        return None
+    return str(cfg.get('quant_algo', '')).upper()
 
 
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
@@ -572,7 +573,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     # marlin_utils, flashinfer_utils, fused_moe) that crash on
                     # WebGPU. Use the standalone fallback that mirrors the
                     # upstream method body (see _extract_modelopt_quant_algo_fallback).
-                    algo = _extract_modelopt_quant_algo_fallback(cfg)
+                    algo = _extract_modelopt_quant_algo_fallback(cfg) or ''
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
