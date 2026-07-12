@@ -354,6 +354,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
         _validate_gate_consts(extra_gate_consts)
 
+        if inter % 4 != 0:
+            raise ValueError(
+                f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
+            )
+
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
         # Allocate expert_gate, expert_up, and expert_tmp together to maintain the three-buffer
         # invariant expected by _ensure_moe_expert_bufs and the quantized _dispatch_expert_down path.
