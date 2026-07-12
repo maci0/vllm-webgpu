@@ -559,26 +559,19 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # post_attention norm + residual add + pre_feedforward norm
             pan_w = self.weights.get(f"{p}.post_attention_layernorm.weight")
             pfn_w = self.weights.get(f"{p}.pre_feedforward_layernorm.weight")
-            if pfn_w is None:
+            if pan_w is None or pfn_w is None:
+                missing = "post_attention" if pan_w is None else "pre_feedforward"
                 raise ValueError(
-                    f"Layer {layer_idx} missing pre_feedforward_layernorm.weight "
-                    "— f32 residual cannot be fed to f16 FFN projection"
+                    f"Layer {layer_idx} missing {missing}_layernorm.weight"
                 )
 
             # ── Shared expert FFN ─────────────────────────────────────────────
             gelu_n_shared = num_tokens * inter_shared
-            if pan_w is not None:
-                # Fuse rms_norm + add_f32 + rms_norm_f32in into one dispatch,
-                # matching the parent Gemma4WebGPUModel._transformer_layer path.
-                self._dispatch("rms_norm_add_f32_rms_norm",
-                               [sc["o_proj_out"], pan_w, x_buf, pfn_w, residual, sc["normed"]],
-                               _rms, (num_tokens, 1, 1))
-            else:
-                raise ValueError(
-                    f"Layer {layer_idx} missing post_attention_layernorm.weight "
-                    "— vLLM creates this norm unconditionally; absence indicates a "
-                    "corrupt checkpoint"
-                )
+            # Fuse rms_norm + add_f32 + rms_norm_f32in into one dispatch,
+            # matching the parent Gemma4WebGPUModel._transformer_layer path.
+            self._dispatch("rms_norm_add_f32_rms_norm",
+                           [sc["o_proj_out"], pan_w, x_buf, pfn_w, residual, sc["normed"]],
+                           _rms, (num_tokens, 1, 1))
             ffn_in = sc["normed"]
 
             # Shared expert gate + up → tanh-GELU activation
