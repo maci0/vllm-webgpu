@@ -98,6 +98,10 @@ def allocate_kv_from_tensors(
     for group in kv_cache_groups:
         gs = group.kv_cache_spec
         if isinstance(gs, UniformTypeKVCacheSpecs):
+            assert set(gs.kv_cache_specs.keys()) == set(group.layer_names), (
+                f"UniformTypeKVCacheSpecs keys {set(gs.kv_cache_specs.keys())} "
+                f"do not match group.layer_names {set(group.layer_names)}"
+            )
             layer_spec_map.update(gs.kv_cache_specs)
         else:
             layer_spec_map.update(dict.fromkeys(group.layer_names, gs))
