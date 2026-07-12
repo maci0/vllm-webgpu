@@ -207,14 +207,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     # ── Weight loading ───────────────────────────────────────────────────────
 
+    def _mr4_quant_supported(self) -> bool:
+        # DiffusionGemmaWebGPUModel.forward() fully overrides the batch-prefill
+        # path that reads _mr4_ok, so the scan is never useful here.
+        return False
+
     def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
                      skip_prefixes: "frozenset[str] | None" = None) -> None:
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
-        # _mr4_ok is set by the parent to gate the batch-prefill path in
-        # Gemma4WebGPUModel.forward(). DiffusionGemmaWebGPUModel.forward() fully
-        # overrides that path and never reads _mr4_ok, so force it False here to
-        # avoid the O(num_layers) _mr4_quant_supported() scan run by the parent.
-        self._mr4_ok = False
 
     def _load_layer_scales(self) -> None:
         """Override to cache layer_scalar and per_expert_scale in one O(num_layers) pass.
