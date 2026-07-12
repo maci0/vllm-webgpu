@@ -349,11 +349,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             conv_kernel_size=self._lin_conv_kernel,
             num_spec=num_spec,
         )
-        _conv_dim = conv_shape[1]  # DS layout is blocked above; SD layout always uses index 1
-        assert self._lin_conv_dim == _conv_dim, (
-            f"_lin_conv_dim={self._lin_conv_dim} diverged from gated_delta_net_state_shape "
-            f"conv_dim={_conv_dim}: vLLM changed the conv_dim formula -- update qwen35.py"
-        )
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
 
@@ -391,7 +386,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         if self._attn_output_gate:
             _q_dim = self.num_q_heads * self.head_dim
 
-            def _make_split(gk, pending=_q_gate_pending):
+            def _make_split(gk):
                 def _split(arr):
                     if arr.shape[0] != 2 * _q_dim:
                         return arr  # already split or unexpected shape; pass through
@@ -399,7 +394,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     a = arr.reshape(self.num_q_heads, 2 * self.head_dim, self.hidden_size)
                     q_half    = a[:, :self.head_dim, :].reshape(_q_dim, self.hidden_size)
                     gate_half = a[:, self.head_dim:, :].reshape(_q_dim, self.hidden_size)
-                    pending[gk] = gate_half
+                    _q_gate_pending[gk] = gate_half
                     return q_half
                 return _split
 

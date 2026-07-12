@@ -118,6 +118,11 @@ def allocate_kv_from_tensors(
                 "To add support: use tensor.size and tensor.offset to compute per-layer byte ranges "
                 "rather than deriving buffer sizes from spec fields."
             )
+        # vLLM 0.24 never produces offset != 0 without block_stride > 0 (the only
+        # non-zero-offset construction site, _get_kv_cache_config_packed, always sets
+        # block_stride = total_num_bytes_per_block > 0, which is caught above).
+        # This guard fires only if a future vLLM version introduces a non-zero offset
+        # without a packed stride, breaking that invariant.
         if tensor.offset != 0:
             raise NotImplementedError(
                 f"KVCacheTensor with non-zero offset ({tensor.offset}) is not supported by the WebGPU backend"

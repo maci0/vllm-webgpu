@@ -33,10 +33,10 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-# _SAMPLING_EPS is a vLLM v1 sampler internal verified against vllm>=0.24,<0.25.
-# Same stability caveat as apply_top_k_top_p_pytorch above: no public API
-# guarantee. Pin vllm in pyproject.toml and check this import on each bump.
-from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
+# Greedy-temperature threshold below which sampling is treated as greedy.
+# Hardcoded to match vllm.v1.sample.sampler._SAMPLING_EPS = 1e-5 (vllm>=0.24).
+# mirrors vllm.v1.sample.sampler._SAMPLING_EPS; verify on each vLLM version bump
+GREEDY_TEMP = 1e-5
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

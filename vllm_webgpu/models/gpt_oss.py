@@ -106,9 +106,9 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # avoiding a synchronous GPU-CPU map_sync stall per layer.
         _bias_pending: dict = {}
 
-        def _make_stash(k: str, pending: dict = _bias_pending):
+        def _make_stash(k: str):
             def _stash(arr):
-                pending[k] = arr
+                _bias_pending[k] = arr
                 # Return a minimum-size (2-element, 4-byte) placeholder so the base
                 # loader has a non-None value to upload. WebGPU requires STORAGE buffers
                 # to be at least 4 bytes; a single float16 (2 bytes) would be rejected.

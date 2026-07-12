@@ -66,18 +66,13 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via a __new__
-    stub.  The stub sets only the seven instance attributes the method reads
-    (base, rotary_dim, max_position_embeddings, beta_fast, beta_slow,
-    extrapolation_factor, truncate); __init__ is never called so the expensive
-    cos/sin cache build is skipped.  Any future change to _compute_inv_freq
-    (new correction terms, changed blend weights, etc.) is inherited
-    automatically.  If vLLM adds new required attributes the AttributeError
-    will surface immediately rather than silently diverging.
-
-    tests/test_yarn_freqs.py::test_yarn_freqs_matches_vllm asserts numerical
-    parity against get_rope() output; run it after each vLLM bump to catch
-    any regressions.
+    Uses inline arithmetic with the public vLLM helpers yarn_find_correction_range,
+    yarn_linear_ramp_mask, and yarn_get_mscale imported from
+    vllm.model_executor.layers.rotary_embedding.common. The implementation does
+    NOT delegate to YaRNScalingRotaryEmbedding._compute_inv_freq and does NOT
+    automatically track upstream changes to that private method; run
+    tests/test_yarn_freqs.py::test_yarn_freqs_matches_vllm after each vLLM bump
+    to catch any numerical divergence.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -272,8 +267,7 @@ class BaseWebGPUModel(ABC):
             dev.queue.submit([saved_encoder.finish()])
             saved_encoder = dev.create_command_encoder()
 
-        encoder = dev.create_command_encoder()
-        self._active_encoder = encoder
+        self._active_encoder = dev.create_command_encoder()
         try:
             yield
             # Submit the currently active encoder for this level.  For inner CMs,

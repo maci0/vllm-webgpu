@@ -1,5 +1,4 @@
 from __future__ import annotations
-import itertools
 from functools import cached_property
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -45,7 +44,9 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.num_logprobs if sp is not None else None
+    # sp.logprob_token_ids is guaranteed falsy here (the guard above raises if not).
+    # sp.num_logprobs == sp.logprobs in that case, so read the underlying field directly.
+    num_logprobs = sp.logprobs if sp is not None else None
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -408,8 +409,11 @@ class WebGPUModelRunner:
             # selected_token_ranks is cast to int32: gather_logprobs returns int64 for
             # selected_token_ranks (via batched_count_greater_than) but int32 for
             # logprob_token_ids (indices). The cast normalises selected_token_ranks.
+            # This cast is load-bearing only in the fast path (all_present, uniform
+            # widths): the padded path already casts each piece at line 448 before
+            # passing it here, making the cast below a no-op in that branch.
             # If a future vLLM release casts token_ranks to int32 in gather_logprobs,
-            # only the selected_token_ranks casts here and at line 431 can be removed.
+            # remove both casts (here and at the padded path) together.
             return LogprobsTensors(
                 torch.cat([x.logprob_token_ids for x in items]),
                 torch.cat([x.logprobs for x in items]),
@@ -567,7 +571,7 @@ class WebGPUModelRunner:
             raw_bids = req.block_ids
             if not raw_bids:
                 raise RuntimeError(f"req {rid}: scheduler produced NewRequestData with empty block_ids")
-            blk_ids = list(itertools.chain.from_iterable(raw_bids))
+            blk_ids = [b for lst in raw_bids for b in lst]
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -717,7 +721,7 @@ class WebGPUModelRunner:
                         f"resumed req {rid} has no new_block_ids from scheduler"
                     )
                 if cur_new_bids is not None:
-                    flat_new = list(itertools.chain.from_iterable(cur_new_bids))
+                    flat_new = [b for lst in cur_new_bids for b in lst]
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.

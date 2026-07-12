@@ -161,10 +161,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         When rope_type == 'yarn', replaces the base-class dummy buffer with actual
         YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
         """
+        from vllm.transformers_utils.config import is_rope_parameters_nested, patch_legacy_rope_type
         _rope_parameters = getattr(self.model_config, "rope_parameters", None)
 
         if _rope_parameters is not None:
-            from vllm.transformers_utils.config import is_rope_parameters_nested, patch_legacy_rope_type
             if is_rope_parameters_nested(_rope_parameters):
                 logger.warning(
                     "rope_parameters is layer-type-keyed (nested format); "
@@ -172,8 +172,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     "(long-context accuracy reduced beyond 8192 tokens)",
                 )
                 return
-        else:
-            from vllm.transformers_utils.config import patch_legacy_rope_type
 
         rope_scaling = dict(
             _rope_parameters

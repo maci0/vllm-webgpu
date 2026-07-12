@@ -51,11 +51,12 @@ def _unpack_nibbles_std4(packed: "np.ndarray", out_rows: int, in_cols: int) -> "
     Returns int32 array of shape (out_rows, in_cols) with values in [0, 15].
 
     Note: vLLM provides vllm.model_executor.layers.quantization.utils.quant_utils.
-    unpack_quantized_values_into_int32, which covers the same unpacking but
-    requires a ScalarType argument and returns a torch.Tensor. Both call sites
-    (_dequant_gptq and _dequant_mlx_int4) operate in numpy with no torch
-    dependency at that point, so the numpy broadcast here avoids two array
-    round-trips (numpy->torch->numpy) for no benefit. Do not consolidate.
+    unpack_quantized_values_into_int32, which covers the same nibble extraction but
+    returns a different output shape: for input [R, C] it returns [R*8, C] (nibbles
+    unpacked along the first axis), whereas this function returns [R, C*8] (nibbles
+    unpacked along the second axis). The two are not drop-in replacements at the
+    current call sites without additional transposing, and the numpy broadcast avoids
+    a torch round-trip in these weight-load paths. Do not consolidate.
     """
     return ((packed[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, in_cols)
 
@@ -658,7 +659,7 @@ def load_safetensors_weights(
         # always performs a disk read.
         header = {}
         for k in sf.keys():
-            if k == "__metadata__" or (skip_prefixes and k.startswith(tuple(skip_prefixes))):
+            if skip_prefixes and k.startswith(tuple(skip_prefixes)):
                 continue
             sl = sf.get_slice(k)
             header[k] = {"dtype": sl.get_dtype(), "shape": list(sl.get_shape())}
