@@ -357,7 +357,7 @@ class WebGPUModelRunner:
 
     def get_cache_block_size_bytes(self) -> int:
         specs = self.kv_cache_spec
-        return sum(s.real_page_size_bytes for s in specs.values())
+        return sum(s.page_size_bytes for s in specs.values())
 
     def warm_up(self) -> None:
         if self.model is not None:
@@ -447,7 +447,7 @@ class WebGPUModelRunner:
                         pieces.append(LogprobsTensors(
                             pad(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
                             pad(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
-                            d.selected_token_ranks.to(torch.int32),
+                            d.selected_token_ranks,
                         ))
                     else:
                         pieces.append(LogprobsTensors(

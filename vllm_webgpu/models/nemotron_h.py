@@ -102,8 +102,9 @@ del _mapper
 
 # vLLM 0.24 does not export _resolve_intermediate_size. Local copy mirrors
 # NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24). On a future vLLM bump,
-# run `grep -n '_resolve_intermediate_size' vllm/model_executor/models/nemotron_h.py`
-# to check whether the symbol is now exported; if so, replace this definition with
+# run `grep -n '_resolve_intermediate_size' .venv/lib/python*/site-packages/vllm/model_executor/models/nemotron_h.py`
+# to check whether the symbol is now exported at module scope (not indented inside a
+# class); if so, replace this definition with
 # `from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size`.
 def _resolve_intermediate_size(v, idx: int) -> int:
     if isinstance(v, list):
@@ -399,6 +400,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         V   = self.vocab_size
 
         max_ctx = self.model_config.max_position_embeddings
+        # 4096-block floor provides 4096 * block_size token slots of headroom
+        # regardless of max_position_embeddings, covering generation past the
+        # declared context limit without reallocation.
         max_bt_blocks = max(4096, cdiv(max_ctx, self.block_size))
 
         # Fixed pre-allocated decode buffers (zero-alloc hot path for T=1).

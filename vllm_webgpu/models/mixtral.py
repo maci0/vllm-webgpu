@@ -285,7 +285,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         keys (ending in '.weight'); the quant-extra prefix is derived by
         stripping the suffix.
         """
-        _validate_gate_consts(extra_gate_consts)
         msc = self._moe_sc
         hidden = self.hidden_size
         uq_g = self._uq_for_key(gw_key)
@@ -361,7 +360,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 (hidden, 1, 1),
             )
         else:
-            self._ensure_moe_expert_bufs()
+            self._ensure_expert_tmp()
             qi_d = self._quant_extra(f"{ep}.{down_key_name}", uq_d)
             self._dispatch(
                 "matmul_quant",
@@ -437,6 +436,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """
         if extra_gate_consts is None:
             extra_gate_consts = {}
+        _validate_gate_consts(extra_gate_consts)
         import wgpu as _wgpu_lib
         dev = self.wgpu_device.wgpu_device
         msc = self._moe_sc

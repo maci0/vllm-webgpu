@@ -90,15 +90,6 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     return t.to(_torch.float32).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
 
 
-_GDN_WEIGHT_SUFFIXES: frozenset[str] = frozenset(
-    {"in_proj_qkv", "in_proj_a", "in_proj_b", "in_proj_z", "out_proj", "conv1d"}
-)
-
-
-def _is_gdn_weight_key(key: str) -> bool:
-    """True for GDN linear-attention projection weights that benefit from bf16 storage."""
-    return "linear_attn" in key and any(p in key for p in _GDN_WEIGHT_SUFFIXES)
-
 logger = init_logger(__name__)
 
 
@@ -903,7 +894,7 @@ def load_safetensors_weights(
             # bindings as array<f32> need the full-precision values.
             if f32_keys and name in f32_keys and dtype_str in ("F32", "BF16", "F16"):
                 arr_raw = _load_raw(name)
-                arr_f32 = np.ascontiguousarray(arr_raw.astype(np.float32, copy=False))
+                arr_f32 = arr_raw.astype(np.float32, copy=False)
                 if weight_transforms and name in weight_transforms:
                     arr_f32 = weight_transforms[name](arr_f32)
                 _upload(arr_f32, np.float32, 'f32', name, weights)
@@ -970,7 +961,7 @@ def load_safetensors_weights(
             # Do not register value-changing (non-shape) transforms for GDN weight
             # keys: this block mirrors the shape but not value changes from f16 back
             # to bf16.
-            if dtype_str == "BF16" and _gdn_bf16 and _is_gdn_weight_key(name):
+            if dtype_str == "BF16" and _gdn_bf16 and "linear_attn" in name and any(p in name for p in {"in_proj_qkv", "in_proj_a", "in_proj_b", "in_proj_z", "out_proj", "conv1d"}):
                 # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
                 # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
                 # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
@@ -1193,8 +1184,7 @@ def load_safetensors_weights(
                         else:
                             # Per-channel scale: shape (N,) — one float per output channel.
                             # Upload as F32 scales buffer; shader reads scales[row] when GROUP_K=1.
-                            scale_f32 = np.ascontiguousarray(
-                                scale_arr.ravel().astype(np.float32))
+                            scale_f32 = scale_arr.ravel().astype(np.float32)
                             _upload(scale_f32, np.float32, 'f32', wname + ".scales", weights)
                             weights["__quant_meta__"][base] = {
                                 "fmt": "fp8_gpu", "global_scale": 1.0, "group_size": 1}
@@ -1222,7 +1212,6 @@ def load_safetensors_weights(
                                     1.0, scale_inv_f32,
                                     where=scale_inv_f32 != 0.0,
                                     out=np.ones_like(scale_inv_f32))
-                                scale_f32 = np.ascontiguousarray(scale_f32)
                                 _upload(scale_f32, np.float32, 'f32', wname + ".scales", weights)
                                 weights["__quant_meta__"][base] = {
                                     "fmt": "fp8_gpu", "global_scale": 1.0, "group_size": 1}
@@ -1254,7 +1243,7 @@ def load_safetensors_weights(
                     try:
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                         ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                        ws_f32 = np.ascontiguousarray(np.exp2(ws_u8.astype(np.float32) - 127.0))  # E8M0: 2^(u8-127)
+                        ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)  # E8M0: 2^(u8-127)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2
                         _upload_u8(wp, f"{base}.weight", weights)
@@ -1284,7 +1273,7 @@ def load_safetensors_weights(
                         ws_u8_t = sf.get_tensor(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                         N_, K_ = w_t.shape
                         w_bf16 = dequant_mxfp8_to_bf16(w_t.view(torch.float8_e4m3fn), ws_u8_t)
-                        w_f16 = np.ascontiguousarray(_torch_to_f16_numpy(w_bf16))
+                        w_f16 = _torch_to_f16_numpy(w_bf16)
                         _upload(w_f16, np.float16, 'f16', f"{base}.weight", weights)
                         logger.debug("CPU MXFP8: %s (N=%d, K=%d, blocks=%d)", base, N_, K_, ws_u8_t.shape[1] if ws_u8_t.ndim == 2 else 1)
                     except Exception as exc:
@@ -1388,8 +1377,7 @@ def load_safetensors_weights(
                         bnb_codes.reshape(N, K_half))
 
                     # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
-                    absmax_2d = np.ascontiguousarray(
-                        absmax_arr.reshape(N, K // _BNB_GROUP_K).astype(np.float32))
+                    absmax_2d = absmax_arr.reshape(N, K // _BNB_GROUP_K).astype(np.float32)
 
                     _upload_u8(shader_codes, f"{base}.weight", weights)
                     _upload(absmax_2d, np.float32, 'f32', f"{base}.weight.scales", weights)

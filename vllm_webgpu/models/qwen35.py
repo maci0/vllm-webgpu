@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched, chain
+from itertools import batched
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -13,6 +13,19 @@ from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
 
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
+
+if _ELEM_BYTES["f16"] != 2:
+    raise AssertionError(
+        f"_ELEM_BYTES['f16'] is {_ELEM_BYTES['f16']!r}, expected 2; "
+        "_alloc_lin_states conv state buffer sizing is wrong. "
+        "Review the conv_bytes formula before removing this assertion."
+    )
+if _ELEM_BYTES["f32"] != 4:
+    raise AssertionError(
+        f"_ELEM_BYTES['f32'] is {_ELEM_BYTES['f32']!r}, expected 4; "
+        "_alloc_lin_states SSM state buffer sizing is wrong. "
+        "Review the ssm_bytes formula in _alloc_lin_states before removing this assertion."
+    )
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -415,10 +428,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         matching gated_delta_net_state_shape. The shader stores state in the same
         layout, so no transposition is needed on readback.
         """
-        bufs = list(chain(
-            (("conv", i, b) for i, b in self._conv_gpu.items()),
-            (("ssm", i, b) for i, b in self._ssm_gpu.items()),
-        ))
+        bufs = [("conv", i, b) for i, b in self._conv_gpu.items()] + [("ssm", i, b) for i, b in self._ssm_gpu.items()]
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:
