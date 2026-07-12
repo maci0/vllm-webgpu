@@ -119,35 +119,29 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             "expert_out":   self._make_buf(self.hidden_size * 2),  # [hidden] f16 accumulated
         }
 
-    def _effective_ctx_len(self, ctx_len: int) -> int:
-        """Number of KV pairs the shader reads, starting from START_BLOCK.
+    def _ctx_window(self, ctx_len: int) -> "tuple[int, int]":
+        """Return (start_block, effective_ctx_len) for flash_attn_decode.
 
-        For SWA, the shader loops [0, CTX_LEN) offset from START_BLOCK, so
-        CTX_LEN must equal ctx_len minus the number of tokens in the skipped
-        leading blocks. When (ctx_len - sw) is block-aligned this equals sw
-        exactly; otherwise it is sw plus the partial-block remainder so the
-        shader covers all tokens from the first position of START_BLOCK through
-        ctx_len-1 (including the current token's KV entry).
+        Computes the floor-division once and returns both values so _attn_block
+        does not need two separate calls. Equivalent to (_start_block, _effective_ctx_len)
+        but avoids the redundant division.
 
         Example: ctx_len=21, sw=8, block_size=4
           start_block = (21-8)//4 = 3, skipped tokens = 3*4 = 12
           CTX_LEN = 21-12 = 9 (tokens 12-20, all 9 in range)
         """
         if self._sw is not None and ctx_len > self._sw:
-            return ctx_len - self._start_block(ctx_len) * self.block_size
-        return ctx_len
+            start_block = (ctx_len - self._sw) // self.block_size
+            return start_block, ctx_len - start_block * self.block_size
+        return 0, ctx_len
+
+    def _effective_ctx_len(self, ctx_len: int) -> int:
+        """Effective context length for flash_attn_decode with SWA cap."""
+        return self._ctx_window(ctx_len)[1]
 
     def _start_block(self, ctx_len: int) -> int:
-        """First block in the block table that falls inside the SWA window.
-
-        When the sequence exceeds the sliding window, the block table holds all
-        blocks ever allocated (oldest first). flash_attn_decode must skip the
-        leading blocks so it reads tokens (ctx_len - sw)..(ctx_len - 1) instead
-        of 0..(sw - 1).
-        """
-        if self._sw is None or ctx_len <= self._sw:
-            return 0
-        return (ctx_len - self._sw) // self.block_size
+        """First block in the block table that falls inside the SWA window."""
+        return self._ctx_window(ctx_len)[0]
 
     def _ffn_dispatch(
         self,
@@ -262,6 +256,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         gw_key: str,
         uw_key: str,
         inter: int,
+        uq_g: "int | None" = None,
+        uq_u: "int | None" = None,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Run gate and up expert matmuls into msc['expert_gate'] and msc['expert_up'].
 
@@ -269,14 +265,19 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         fused_gate_act directly in _dispatch_expert_gate_up). Callers are
         responsible for any activation dispatch after the projections.
 
+        uq_g and uq_u may be passed in by _dispatch_expert_gate_up, which
+        already holds both values, to avoid duplicate _uq_for_key lookups.
+
         Returns the (gate, up) output buffers so callers can decide how to
         combine them (gelu_mul, bias injection, etc.) without duplicating the
         _ensure_moe_expert_bufs + _quant_extra + _matmul_expert sequence.
         """
         self._ensure_moe_expert_bufs()
         msc = self._moe_sc
-        uq_g = self._uq_for_key(gw_key)
-        uq_u = self._uq_for_key(uw_key)
+        if uq_g is None:
+            uq_g = self._uq_for_key(gw_key)
+        if uq_u is None:
+            uq_u = self._uq_for_key(uw_key)
         qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
         qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
         self._matmul_expert(normed_x, gw_key, uq_g, qi_g, msc["expert_gate"], inter)
@@ -315,7 +316,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 raise ValueError(
                     f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
                 )
-            self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter)
+            self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter, uq_g=uq_g, uq_u=uq_u)
             self._dispatch(
                 "gelu_mul",
                 [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],

@@ -860,14 +860,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Always use flash_attn_decode for single-token decode.
         # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
         # loops internally and has no dispatch dimension limit.
+        _start_block, _eff_ctx_len = self._ctx_window(ctx_len)
         self._dispatch("flash_attn_decode",
                        [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
                        {"BLOCK_SIZE": self.block_size,
                         "NUM_Q_HEADS": self.num_q_heads,
                         "NUM_KV_HEADS": self.num_kv_heads,
                         "HEAD_DIM": self.head_dim,
-                        "CTX_LEN": self._effective_ctx_len(ctx_len),
-                        "START_BLOCK": self._start_block(ctx_len),
+                        "CTX_LEN": _eff_ctx_len,
+                        "START_BLOCK": _start_block,
                         "SCALE": self._attn_scale},
                        (self.num_q_heads, 1, 1))
 
@@ -955,6 +956,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         so the shader reads the most-recent window blocks instead of block 0.
         """
         return 0
+
+    def _ctx_window(self, ctx_len: int) -> "tuple[int, int]":
+        """Return (start_block, effective_ctx_len) for flash_attn_decode in one call.
+
+        Base class returns (0, ctx_len) with no computation. The Mixtral override
+        computes the floor-division once and returns both values, avoiding the
+        duplicate _start_block call that _effective_ctx_len would otherwise make.
+        """
+        return 0, ctx_len
 
     def _ffn_dispatch(
         self,

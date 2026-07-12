@@ -8,6 +8,28 @@ SHADERS_DIR = Path(__file__).parent.parent / "vllm_webgpu" / "shaders"
 
 # ── Layer type list (no GPU) ──────────────────────────────────────────────────
 
+def test_resolve_intermediate_size():
+    """_resolve_intermediate_size matches NemotronHMLPDecoderLayer.__init__ L286-292."""
+    from vllm_webgpu.models.nemotron_h import _resolve_intermediate_size
+
+    # Single-element list must return v[0] for any idx.
+    assert _resolve_intermediate_size([1024], 0) == 1024
+    assert _resolve_intermediate_size([1024], 5) == 1024, (
+        "_resolve_intermediate_size: single-element list must return v[0] for any idx. "
+        "The len==1 branch of NemotronHMLPDecoderLayer.__init__ was refactored; "
+        "update _resolve_intermediate_size to match."
+    )
+    # Multi-element list: each index returns the corresponding entry.
+    for i, expected in enumerate([1024, 2048, 4096]):
+        got = _resolve_intermediate_size([1024, 2048, 4096], i)
+        assert got == expected, (
+            f"_resolve_intermediate_size([1024, 2048, 4096], {i}) returned {got!r}, "
+            f"expected {expected}. The multi-element list branch has changed; update to match."
+        )
+    # Scalar passthrough.
+    assert _resolve_intermediate_size(2048, 3) == 2048
+
+
 def test_nemotron_h_layer_types_from_config():
     """Model reads _layer_types directly from layers_block_type."""
     # Verify the ARCH_MAP entry and layer type ordering without touching GPU.

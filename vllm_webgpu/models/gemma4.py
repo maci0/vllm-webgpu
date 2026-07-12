@@ -392,7 +392,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 _query_pre_attn_scalar: float | None = getattr(model_config, "query_pre_attn_scalar", None)
                 _base_scalar: float | None = float(_query_pre_attn_scalar) if _query_pre_attn_scalar is not None else None
                 for _lp_e in self._lp:
-                    _lp_e["scale"] = (_base_scalar or float(_lp_e["head_dim"])) ** -0.5
+                    _lp_e["scale"] = (_base_scalar if _base_scalar is not None else float(_lp_e["head_dim"])) ** -0.5
 
         # Register q_norm/k_norm tiling transforms so load_weights tiles at upload time,
         # avoiding a GPU roundtrip (to_numpy → tile → re-upload) per weight per layer.

@@ -102,7 +102,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 # value to upload. The resulting tiny GPU buffer is deleted immediately
                 # after super().load_weights() returns (lines below), so we avoid
                 # uploading the full fused bias tensor only to discard it.
-                return np.zeros(1, dtype=np.float16)
+                return np.zeros(2, dtype=np.float16)
             return _stash
 
         for i in range(self.num_layers):

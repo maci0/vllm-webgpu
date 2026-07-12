@@ -158,19 +158,6 @@ def _upload_tensor(
     )
     return len(data)
 
-def _load_quant_cfg(config_path: Path) -> dict:
-    """Return the quantization config dict for a model.
-
-    Uses compressed_tensors.get_quantization_config to handle nested locations
-    (text_config, compression_config) and multimodal variants.
-    compressed_tensors is a hard dependency of vllm (Requires-Dist), so
-    _ct_get_quant_cfg is always non-None. All callers pre-check existence before
-    calling this function, so FileNotFoundError is not caught here. Propagates
-    all exceptions so programming errors in the upstream library surface immediately
-    rather than being silently treated as an unquantized model.
-    """
-    return _ct_get_quant_cfg(str(config_path)) or {}
-
 
 def _check_unsupported_quant(quant_cfg: dict) -> None:
     """Raise ValueError if config.json names an unsupported quantization scheme.
@@ -540,11 +527,14 @@ def _extract_modelopt_quant_algo_fallback(cfg: dict) -> str:
     """
     if "quantization" in cfg:
         quant_section = cfg["quantization"]
-        quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
+        quant_algo = quant_section.get('quant_algo', '') if isinstance(quant_section, dict) else None
     else:
         quant_algo = cfg.get('quant_algo', '')
-    # Use explicit None check to match vLLM's str(quant_config.get('quant_algo', ''))
-    # semantics exactly; `or ''` coerces 0 and other falsy non-None values to ''.
+    # Use explicit None check; `or ''` coerces 0 and other falsy non-None values to ''.
+    # One remaining deviation from upstream: non-dict quant_section returns None here
+    # (caller's `or ''` at the call site normalizes it), while upstream returns None
+    # then applies str(), producing "None". No functional impact since neither matches
+    # "MXFP4" or "MXFP8", and the caller normalizes None to "" anyway.
     if quant_algo is None:
         quant_algo = ''
     return str(quant_algo).upper()
@@ -557,7 +547,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     config.json quantization_config.quant_type. Returns 'mxfp4', 'mxfp8', or ''.
 
     Pass quant_cfg to skip re-reading config.json (avoids a redundant disk read
-    when the caller already loaded it via _load_quant_cfg or detect_compressed_tensors_fmt).
+    when the caller already loaded it via detect_compressed_tensors_fmt or equivalent).
 
     For hf_quant_config.json parsing, attempts to delegate to
     ModelOptFp8Config._extract_modelopt_quant_algo (vllm/model_executor/layers/
@@ -591,7 +581,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
             logger.warning("Failed to read hf_quant_config.json in %s: %s", model_dir, exc)
     if quant_cfg is None:
         config_json = model_dir / "config.json"
-        quant_cfg = _load_quant_cfg(config_json) if config_json.exists() else {}
+        quant_cfg = _ct_get_quant_cfg(str(config_json)) or {} if config_json.exists() else {}
     qt = (quant_cfg.get("quant_type") or quant_cfg.get("quant_method") or "").lower()
     if qt == "mxfp4":
         return "mxfp4"
@@ -607,7 +597,7 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
     describes the actual format. Returns a dict with key '__global__' mapped to
     {fmt, group_size} when detected, otherwise empty dict.
 
-    Pass quant_cfg to skip the disk read (avoids a redundant _load_quant_cfg call
+    Pass quant_cfg to skip the disk read (avoids a redundant config.json read
     when the caller has already loaded the config for other purposes).
 
     Routing:
@@ -630,7 +620,7 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
     if quant_cfg is None:
         if not p.exists():
             return {}
-        quant_cfg = _load_quant_cfg(p)
+        quant_cfg = _ct_get_quant_cfg(str(p)) or {}
     if not quant_cfg.get("config_groups"):
         return {}
     try:
@@ -698,12 +688,12 @@ def load_safetensors_weights(
         # are in-memory dict accesses (the Rust library caches the header on open),
         # so this is cheaper than a separate _ct_get_safetensors_header call, which
         # always performs a disk read.
-        header = {
-            k: {"dtype": sf.get_slice(k).get_dtype(), "shape": list(sf.get_slice(k).get_shape())}
-            for k in sf.keys()
-            if k != "__metadata__"
-            and not (skip_prefixes and k.startswith(tuple(skip_prefixes)))
-        }
+        header = {}
+        for k in sf.keys():
+            if k == "__metadata__" or (skip_prefixes and k.startswith(tuple(skip_prefixes))):
+                continue
+            sl = sf.get_slice(k)
+            header[k] = {"dtype": sl.get_dtype(), "shape": list(sl.get_shape())}
         usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
         # Detect compressed-tensors config from the model directory (needed for
@@ -718,7 +708,7 @@ def load_safetensors_weights(
         # crash below. Fall through to the config.json path in that case.
         _effective_quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else None
         _raw_quant_cfg = _effective_quant_cfg if _effective_quant_cfg is not None else (
-            _load_quant_cfg(_config_json) if _config_json.exists() else {}
+            _ct_get_quant_cfg(str(_config_json)) or {} if _config_json.exists() else {}
         )
         if not _already_checked:
             _check_unsupported_quant(_raw_quant_cfg)

@@ -193,9 +193,13 @@ def allocate_kv_from_tensors(
                 # Compute K and V sizes independently so that asymmetric head
                 # dimensions (e.g. MLA-style models where head_size != head_size_v)
                 # get correctly sized buffers instead of an averaged size.
-                common = num_blocks * spec.block_size * spec.num_kv_heads * get_dtype_size(spec.dtype)
-                k_bytes = common * spec.head_size
-                v_bytes = common * spec.head_size_v
+                # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_size.
+                # Splitting by head_size ratio is only correct because kv_quant_mode == KVQuantMode.NONE
+                # is enforced above; for NVFP4, real_page_size_bytes uses a different formula that cannot
+                # be split this way.
+                total = num_blocks * spec.real_page_size_bytes
+                k_bytes = total * spec.head_size // (spec.head_size + spec.head_size_v)
+                v_bytes = total - k_bytes
             else:
                 raise NotImplementedError(
                     f"Unsupported KV cache spec type {type(spec).__name__} for {layer_name!r}; "

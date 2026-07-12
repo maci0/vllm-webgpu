@@ -111,29 +111,8 @@ def _resolve_intermediate_size(v, idx: int) -> int:
     return v
 
 
-# Verify the len==1 edge case at import time: a single-element list must return
-# v[0] for any idx, not v[mlp_index % len(v)] or a similar fallback that a future
-# refactor might introduce. A wrong formula here would silently produce the correct
-# result only when idx==0, making the bug invisible in tests that use layer 0.
-if _resolve_intermediate_size([1024], 5) != 1024:
-    raise AssertionError(
-        "_resolve_intermediate_size: single-element list must return v[0] for any idx. "
-        "The len==1 branch of NemotronHMLPDecoderLayer.__init__ (L288) was refactored; "
-        "update _resolve_intermediate_size to match, then fix this assertion."
-    )
-# Verify multi-element list resolution: each index must return the corresponding
-# entry. This is equivalent to checking the upstream mlp_index formula without
-# touching vLLM module namespaces or importing test infrastructure.
-for _i, _expected in enumerate([1024, 2048, 4096]):
-    _got = _resolve_intermediate_size([1024, 2048, 4096], _i)
-    if _got != _expected:
-        raise AssertionError(
-            f"_resolve_intermediate_size([1024, 2048, 4096], {_i}) returned "
-            f"{_got!r}, expected {_expected}. "
-            "The multi-element list branch of NemotronHMLPDecoderLayer.__init__ has changed; "
-            "update _resolve_intermediate_size to match."
-        )
-del _i, _expected, _got
+# Correctness of _resolve_intermediate_size is verified in
+# tests/test_nemotron_h_model.py::test_resolve_intermediate_size.
 
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.

@@ -76,27 +76,26 @@ ARCH_MAP = {
 }
 
 
-_FAMILY_TO_CLASS: "dict[str, tuple[str, str]]" = {
-    "llama":           ("vllm_webgpu.models.llama",           "LlamaWebGPUModel"),
-    "mixtral":         ("vllm_webgpu.models.mixtral",         "MixtralWebGPUModel"),
-    "gemma4":          ("vllm_webgpu.models.gemma4",          "Gemma4WebGPUModel"),
-    "qwen35":          ("vllm_webgpu.models.qwen35",          "Qwen35WebGPUModel"),
-    "diffusion_gemma": ("vllm_webgpu.models.diffusion_gemma", "DiffusionGemmaWebGPUModel"),
-    "gpt_oss":         ("vllm_webgpu.models.gpt_oss",         "GptOssWebGPUModel"),
-    "nemotron_h":      ("vllm_webgpu.models.nemotron_h",      "NemotronHWebGPUModel"),
+_FAMILY_TO_CLASS: "dict[str, str]" = {
+    "llama":           "vllm_webgpu.models.llama.LlamaWebGPUModel",
+    "mixtral":         "vllm_webgpu.models.mixtral.MixtralWebGPUModel",
+    "gemma4":          "vllm_webgpu.models.gemma4.Gemma4WebGPUModel",
+    "qwen35":          "vllm_webgpu.models.qwen35.Qwen35WebGPUModel",
+    "diffusion_gemma": "vllm_webgpu.models.diffusion_gemma.DiffusionGemmaWebGPUModel",
+    "gpt_oss":         "vllm_webgpu.models.gpt_oss.GptOssWebGPUModel",
+    "nemotron_h":      "vllm_webgpu.models.nemotron_h.NemotronHWebGPUModel",
 }
 
 
 def _build_model(arch: str, family: "str | None", model_config: Any, wgpu_device: Any, pipeline_cache: Any, block_size: int) -> "BaseWebGPUModel":
-    import importlib
-    entry = _FAMILY_TO_CLASS.get(family or "")
-    if entry is None:
+    from vllm.utils.import_utils import resolve_obj_by_qualname
+    qualname = _FAMILY_TO_CLASS.get(family or "")
+    if qualname is None:
         raise NotImplementedError(
             f"Architecture {arch!r} is not supported. "
             f"Supported: {sorted(ARCH_MAP)}"
         )
-    module_path, class_name = entry
-    cls = getattr(importlib.import_module(module_path), class_name)
+    cls = resolve_obj_by_qualname(qualname)
     return cls(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
 
@@ -535,6 +534,11 @@ class WebGPUModelRunner:
             if not tok_ids:
                 raise NotImplementedError(
                     f"req {rid}: prompt_embeds (no token IDs) are not supported "
+                    f"on the WebGPU backend"
+                )
+            if req.prompt_is_token_ids is not None and not all(req.prompt_is_token_ids):
+                raise NotImplementedError(
+                    f"req {rid}: mixed token/embedding prompts (prompt_is_token_ids) are not supported "
                     f"on the WebGPU backend"
                 )
 
