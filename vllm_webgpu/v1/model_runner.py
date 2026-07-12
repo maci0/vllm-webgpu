@@ -8,7 +8,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
-    from vllm.v1.outputs import AsyncModelRunnerOutput
+    from vllm.v1.outputs import AsyncModelRunnerOutput, LogprobsLists
 
 logger = init_logger(__name__)
 

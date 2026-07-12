@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import numpy as np
 import torch
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
+
 # vLLM v1 sampling internals verified against vllm>=0.24,<0.25.
 # These paths have no stability guarantees; a patch release may move or rename
 # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
@@ -39,6 +43,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
 try:
     from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
 except ImportError:
+    logger.warning('_SAMPLING_EPS not found in vllm.v1.sample.sampler; using hardcoded fallback 1e-5')
     GREEDY_TEMP = 1e-5
 if GREEDY_TEMP != 1e-5:
     raise AssertionError(f'_SAMPLING_EPS changed to {GREEDY_TEMP}; update the fallback')

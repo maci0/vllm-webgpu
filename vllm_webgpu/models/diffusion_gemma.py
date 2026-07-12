@@ -473,7 +473,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Q projection: unconditional (KV-shared layers still need Q).
             # K and V projections: skip for KV-shared layers; they reuse the
             # target layer's already-populated cache and never consume these outputs.
-            v_src: "WebGPUBuffer | None" = None
             self._gemm_adaptive(sc["normed"], f"{p}.self_attn.q_proj.weight", sc["q_buf"], hidden, q_dim, num_tokens)
             if not is_kv_shared:
                 self._gemm_adaptive(sc["normed"], f"{p}.self_attn.k_proj.weight", sc["k_buf"], hidden, kv_dim, num_tokens)
@@ -935,13 +934,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     next_ln_w = self.weights[
                         f"{self._layer_key_prefix(layer_idx + 1)}.input_layernorm.weight"
                     ]
-                    # Safety net: _load_layer_scales validates at load time.
-                    # if/raise rather than assert so the check survives python -O.
-                    if layer_scalar <= 0:
-                        raise RuntimeError(
-                            f"layer_scalar={layer_scalar} must be positive (caught at forward time; "
-                            "should have been rejected at load by _load_layer_scales)"
-                        )
                     self._dispatch("rms_norm_add_f32_rms_norm",
                                    [hidden_states_1, post_ffw_w, residual, next_ln_w, out, sc["normed"]],
                                    _rms, (num_tokens, 1, 1))

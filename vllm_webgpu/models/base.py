@@ -12,6 +12,11 @@ import torch
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
+from vllm.model_executor.layers.rotary_embedding.common import (
+    yarn_find_correction_range,
+    yarn_get_mscale,
+    yarn_linear_ramp_mask,
+)
 from vllm_webgpu.utils import zero_bytes
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -117,12 +122,6 @@ def compute_yarn_freqs(
     attn_factor          = float(rope_scaling.get("attn_factor", 1.0))
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
-
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
-    )
 
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)

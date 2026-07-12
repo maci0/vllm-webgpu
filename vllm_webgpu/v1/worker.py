@@ -150,7 +150,11 @@ class WebGPUWorker(WorkerBase):
         return set()
 
     def sleep(self, level: int = 1) -> None:
-        logger.warning("Sleep mode not supported on WebGPU")
+        logger.warning(
+            "Sleep requested but WebGPU backend cannot offload weights; "
+            "available memory is unchanged. If loading a second model fails "
+            "with OOM, this is the cause."
+        )
 
     def wake_up(self, tags: list[str] | None = None) -> None:
         logger.warning("Wake mode not supported on WebGPU")

@@ -39,7 +39,7 @@ _FLUSH_THRESHOLD = 512 * 1024 * 1024
 _BNB_GROUP_K = 64
 
 
-def _unpack_nibbles_std4(packed: "np.ndarray", out_rows: int, in_cols: int) -> "np.ndarray":
+def _unpack_nibbles_std4(packed: "np.ndarray") -> "np.ndarray":
     """Unpack 8 uint4 nibbles per int32 into a 2-D int32 array [out_rows, in_cols].
 
     Handles any standard 4-bit packing where nibbles live at bit offsets
@@ -58,7 +58,8 @@ def _unpack_nibbles_std4(packed: "np.ndarray", out_rows: int, in_cols: int) -> "
     current call sites without additional transposing, and the numpy broadcast avoids
     a torch round-trip in these weight-load paths. Do not consolidate.
     """
-    return ((packed[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, in_cols)
+    out_rows, k8 = packed.shape
+    return ((packed[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, k8 * 8)
 
 
 def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
@@ -90,6 +91,8 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     _upload_plain.
     """
     import torch as _torch
+    if t.dtype == _torch.float16:
+        return t.numpy()
     return t.to(_torch.float32).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
 
 
@@ -508,8 +511,8 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     # Unpack 8 nibbles per int32.
     # qweight (K//8, N): packed along K axis → transpose to (N, K//8) then unpack to (N, K) → T to (K, N).
     # qzeros  (G, N//8): packed along N axis → unpack to (G, N).
-    w_int4 = _unpack_nibbles_std4(qweight.T, N, K).T.astype(np.int8)  # (K, N)
-    z_int4 = _unpack_nibbles_std4(qzeros, G, N).astype(np.int8)       # (G, N)
+    w_int4 = _unpack_nibbles_std4(qweight.T).T.astype(np.int8)  # (K, N)
+    z_int4 = _unpack_nibbles_std4(qzeros).astype(np.int8)       # (G, N)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
     return w_f32.T.astype(np.float16)  # (N, K)
@@ -543,7 +546,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                         ModelOptFp8Config,
                     )
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
-                except (ImportError, OSError):
+                except ImportError:
                     # Mirrors ModelOptFp8Config._extract_modelopt_quant_algo
                     # (vllm/model_executor/layers/quantization/modelopt.py). If that
                     # method's key names or nesting change, update this fallback to match.
@@ -1524,10 +1527,7 @@ def _dequant_mlx_int4(
         mx.eval(result)
         return np.array(result, dtype=np.float32)
     except (ImportError, RuntimeError):
-        out_rows, packed_cols = weight_u32.shape
-        in_cols = packed_cols * 8
-        nibbles = _unpack_nibbles_std4(weight_u32, out_rows, in_cols).astype(np.float32)
-        n_groups = in_cols // group_size
+        nibbles = _unpack_nibbles_std4(weight_u32).astype(np.float32)
         scales_bc = np.repeat(scales_f32, group_size, axis=1)
         biases_bc = np.repeat(biases_f32, group_size, axis=1)
         return scales_bc * nibbles + biases_bc

@@ -447,16 +447,18 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # of cross-validation.
         if raw_lp and len(raw_lp) == self.num_layers and self._lp:
             _lp0 = self._lp[0]
-            assert _lp0["num_q_heads"] * _lp0["head_dim"] == _lp0["q_dim"], (
-                f"q_norm tile shape mismatch at layer 0: "
-                f"num_q_heads={_lp0['num_q_heads']} * head_dim={_lp0['head_dim']} "
-                f"!= q_dim={_lp0['q_dim']}"
-            )
-            assert _lp0["num_kv_heads"] * _lp0["head_dim"] == _lp0["kv_dim"], (
-                f"k_norm tile shape mismatch at layer 0: "
-                f"num_kv_heads={_lp0['num_kv_heads']} * head_dim={_lp0['head_dim']} "
-                f"!= kv_dim={_lp0['kv_dim']}"
-            )
+            if _lp0["num_q_heads"] * _lp0["head_dim"] != _lp0["q_dim"]:
+                raise ValueError(
+                    f"q_norm tile shape mismatch at layer 0: "
+                    f"num_q_heads={_lp0['num_q_heads']} * head_dim={_lp0['head_dim']} "
+                    f"!= q_dim={_lp0['q_dim']}"
+                )
+            if _lp0["num_kv_heads"] * _lp0["head_dim"] != _lp0["kv_dim"]:
+                raise ValueError(
+                    f"k_norm tile shape mismatch at layer 0: "
+                    f"num_kv_heads={_lp0['num_kv_heads']} * head_dim={_lp0['head_dim']} "
+                    f"!= kv_dim={_lp0['kv_dim']}"
+                )
 
         # Updated to True/False in load_weights() once weights are known.
         # Defaults to True so tests that bypass load_weights() reach the batch path.
@@ -493,7 +495,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             "logits":   self._make_buf(T * V * 2),     # [T, V] f16 logits
         }
         if self.softcap is not None and self.softcap > 0:
-            self._pre["capped"] = self._make_buf(T * V * 2)  # [1, V] f16 softcapped logits (Gemma4)
+            self._pre["capped"] = self._make_buf(T * V * 2)  # [T, V] f16 softcapped logits (T=1 for Gemma4, T=canvas_length for DiffusionGemma)
 
     def _init_scratch_buffers(self, max_ctx: int, max_q_dim: int, max_kv_dim: int) -> None:
         """Pre-allocate scratch buffers at maximum layer dimensions."""
