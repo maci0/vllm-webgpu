@@ -1,4 +1,5 @@
 from __future__ import annotations
+import itertools
 from functools import cached_property
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -529,12 +530,6 @@ class WebGPUModelRunner:
         prompt_logprobs_dict: dict[str, LogprobsTensors | None] = {}  # req_id -> LogprobsTensors for prefill
 
         # ── Prefill: new requests ──────────────────────────────────────────────
-        # Model capability flags are cached as instance attributes in load_model();
-        # use the cached values directly instead of recomputing on every step.
-        _has_reset = self._has_reset
-        _has_save = self._has_save
-        _has_replay = self._has_replay
-        _has_restore = self._has_restore
         _use_fp64_gumbel = self.vllm_config.model_config.use_fp64_gumbel
         for req in new_reqs:
             rid = req.req_id
@@ -581,7 +576,7 @@ class WebGPUModelRunner:
             raw_bids = req.block_ids
             if not raw_bids:
                 raise RuntimeError(f"req {rid}: scheduler produced NewRequestData with empty block_ids")
-            blk_ids = [bid for group in raw_bids for bid in group]
+            blk_ids = list(itertools.chain.from_iterable(raw_bids))
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -611,7 +606,7 @@ class WebGPUModelRunner:
             # (inside the loop) so that multiple new requests in the same step
             # each get a clean slate rather than inheriting the previous request's
             # post-prefill state.
-            if _has_reset:
+            if self._has_reset:
                 self.model.reset_recurrent_states()
 
             last_logits = self.model.forward(
@@ -623,7 +618,7 @@ class WebGPUModelRunner:
             # Save recurrent state so the decode path can restore it before this
             # request's first (and every subsequent) decode step.
             prefill_recurrent_states = None
-            if _has_save:
+            if self._has_save:
                 prefill_recurrent_states = self.model.save_recurrent_states()
 
             # Use the last position's logits for the first generated token.
@@ -688,7 +683,7 @@ class WebGPUModelRunner:
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
-                **({"token_history": list(tok_ids) + [first_decode_tok]} if _has_replay else {}),
+                **({"token_history": list(tok_ids) + [first_decode_tok]} if self._has_replay else {}),
             }
 
         # ── Decode: cached requests ────────────────────────────────────────────
@@ -731,7 +726,7 @@ class WebGPUModelRunner:
                         f"resumed req {rid} has no new_block_ids from scheduler"
                     )
                 if cur_new_bids is not None:
-                    flat_new = [bid for group in cur_new_bids for bid in group]
+                    flat_new = list(itertools.chain.from_iterable(cur_new_bids))
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.
@@ -766,12 +761,12 @@ class WebGPUModelRunner:
                 # in-place-updated state left by the previous request instead of
                 # its own saved state, producing wrong recurrent outputs for every
                 # request beyond the first in a multi-sequence decode batch.
-                if _has_restore:
+                if self._has_restore:
                     saved_recurrent = state.get("recurrent_states")
                     rolled_back = rid in resumed_req_ids and pos < state["pos"]
                     if not rolled_back and saved_recurrent is not None:
                         self.model.restore_recurrent_states(saved_recurrent)
-                    elif _has_reset:
+                    elif self._has_reset:
                         # Reset Mamba conv/SSM states to zero before decoding.
                         self.model.reset_recurrent_states()
                         if rolled_back and pos > 0:
@@ -782,7 +777,7 @@ class WebGPUModelRunner:
                             # writes since the cache is already populated) to reconstruct
                             # the SSM state before the first resumed decode step.
                             token_history = state.get("token_history")
-                            if not _has_replay:
+                            if not self._has_replay:
                                 raise RuntimeError(
                                     f"req {rid}: preempted and resumed at pos={pos} with "
                                     f"prefix-cached KV but model does not implement "
@@ -811,7 +806,7 @@ class WebGPUModelRunner:
                 # Save recurrent state immediately after the forward pass, before
                 # any other request's forward can overwrite the shared GPU buffers.
                 decode_recurrent_states = None
-                if _has_save:
+                if self._has_save:
                     decode_recurrent_states = self.model.save_recurrent_states()
 
                 # Greedy path: model returns (1, 1) uint32 with the argmax index.
@@ -840,7 +835,7 @@ class WebGPUModelRunner:
                 state["block_ids"] = blk_ids
                 state["last_tok"] = stok
                 state["recurrent_states"] = decode_recurrent_states
-                if _has_replay:
+                if self._has_replay:
                     state.setdefault("token_history", []).append(stok)
                 all_req_ids.append(rid)
                 all_sampled.append(stok)

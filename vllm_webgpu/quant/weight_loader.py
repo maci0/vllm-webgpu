@@ -347,7 +347,7 @@ def load_safetensors_weights_sharded(
             is_gemma_mm = True
         if not is_qwen35_mm and k.startswith("model.language_model."):
             is_qwen35_mm = True
-        if has_biases and is_gemma_mm and is_qwen35_mm:
+        if has_biases and (is_gemma_mm or is_qwen35_mm):
             break
 
     if has_biases:

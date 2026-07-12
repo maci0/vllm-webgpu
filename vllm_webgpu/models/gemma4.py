@@ -80,11 +80,6 @@ def _gemma4_layer_params(
     # weight shapes are determined by Gemma4DecoderLayer, not Gemma4Attention.
     first_kv_shared = num_layers - num_kv_shared_layers
 
-    # Hoist the non-shared prefix slice: layer_types and first_kv_shared are
-    # invariant across iterations, so slicing inside the loop would allocate the
-    # same list on every is_kv_shared iteration.
-    _prev = layer_types[:first_kv_shared]
-
     lp: list[dict] = []
     for i, lt in enumerate(layer_types):
         # KV-routing guard (Gemma4Attention.__init__ ~L462-464): num_kv_shared_layers > 0
@@ -102,13 +97,14 @@ def _gemma4_layer_params(
 
         # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
         if is_kv_shared:
-            kv_shared_target = next(
-                (j for j in reversed(range(first_kv_shared)) if layer_types[j] == lt), None
-            )
-            if kv_shared_target is None:
+            prev = layer_types[:first_kv_shared]
+            try:
+                idx = prev[::-1].index(lt)
+                kv_shared_target = first_kv_shared - 1 - idx
+            except ValueError:
                 raise ValueError(
                     f"Layer {i} (type={lt!r}) is KV-shared but type {lt!r} was not "
-                    f"found in the non-shared prefix {_prev}. Check layer_types config."
+                    f"found in the non-shared prefix {prev}. Check layer_types config."
                 )
         else:
             kv_shared_target = -1
@@ -382,8 +378,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     _lp_e["scale"] = 1.0
             else:
                 _query_pre_attn_scalar: float | None = getattr(model_config, "query_pre_attn_scalar", None)
+                _base_scalar: float | None = float(_query_pre_attn_scalar) if _query_pre_attn_scalar is not None else None
                 for _lp_e in self._lp:
-                    _lp_e["scale"] = (_query_pre_attn_scalar if _query_pre_attn_scalar is not None else _lp_e["head_dim"]) ** -0.5
+                    _lp_e["scale"] = (_base_scalar or float(_lp_e["head_dim"])) ** -0.5
 
         # Register q_norm/k_norm tiling transforms so load_weights tiles at upload time,
         # avoiding a GPU roundtrip (to_numpy → tile → re-upload) per weight per layer.

@@ -253,7 +253,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         ids_1d: "np.ndarray",
         pos_1d: "np.ndarray",
         slot_1d: bytes,
-        bt_bytes: bytes,
+        bt_bytes: bytes | None = None,
         write_bt: bool = True,
     ) -> None:
         """Write per-token input buffers (ids, pos, slot_map, and optionally bt).
@@ -262,13 +262,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         same write pattern without duplicating queue.write_buffer calls.
         Pass write_bt=False when the block table is unchanged between iterations
         (e.g. the prefill sequential loop) and has already been written once before.
+        When write_bt=False, bt_bytes need not be supplied.
         """
         pre = self._pre
         dev = self.wgpu_device.wgpu_device
         dev.queue.write_buffer(pre["ids"].buf,      0, ids_1d.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(pre["pos"].buf,      0, pos_1d.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_1d)
-        if write_bt:
+        if write_bt and bt_bytes is not None:
             dev.queue.write_buffer(pre["bt"].buf,   0, bt_bytes)
 
     def _decode_teardown(
@@ -691,7 +692,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
             ids_t  = input_ids[t : t + 1]
             pos_t  = positions[t : t + 1]
-            self._write_token_bufs(ids_t, pos_t, slot_arr[t : t + 1].tobytes(), bt_bytes, write_bt=False)
+            self._write_token_bufs(ids_t, pos_t, slot_arr[t : t + 1].tobytes(), write_bt=False)
 
             with self._batched_dispatch():
                 self._dispatch(

@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import torch
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -70,9 +71,10 @@ def compute_yarn_freqs(
 
     Inlines the arithmetic from YaRNScalingRotaryEmbedding._compute_inv_freq
     using only public vLLM utilities (yarn_find_correction_range,
-    yarn_linear_ramp_mask), avoiding the expensive cos/sin cache build in
-    __init__ (which allocates an [orig_ctx * factor, rotary_dim] tensor,
-    e.g. 16 384 rows when orig_ctx=4096, factor=4).
+    yarn_linear_ramp_mask, yarn_get_mscale), avoiding the private method and
+    the expensive cos/sin cache build in __init__ (which allocates an
+    [orig_ctx * factor, rotary_dim] tensor, e.g. 16 384 rows when
+    orig_ctx=4096, factor=4).
 
     Args:
         head_dim:    Full attention head dimension.
@@ -118,28 +120,28 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    # Single import from the common helpers module.
-    # vLLM bump: verify yarn_get_mscale and YaRNScalingRotaryEmbedding._compute_inv_freq
-    # still live in these locations and their signatures match the calls below.
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    # Public helpers from the common module (same location as yarn_get_mscale below).
+    # vLLM bump: verify these still live in rotary_embedding.common and their
+    # signatures match the calls below.
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
     )
 
-    # Delegate inv_freq arithmetic to vLLM's private method via a minimal stub.
-    # This avoids duplicating the 13-line formula and tracks vLLM changes automatically.
-    # _compute_inv_freq only constructs the inv_freq tensor; the full cos/sin cache
-    # (which allocates an [orig_ctx * factor, rotary_dim] tensor) is never built.
-    stub = SimpleNamespace(
-        base=rope_theta,
-        rotary_dim=rotary_dim,
-        beta_fast=beta_fast,
-        beta_slow=beta_slow,
-        extrapolation_factor=extrapolation_factor,
-        max_position_embeddings=orig_ctx,
-        truncate=truncate,
+    # Inline the inv_freq formula from YaRNScalingRotaryEmbedding._compute_inv_freq
+    # using only public helpers, avoiding the private method and SimpleNamespace stub.
+    # vLLM bump: verify against yarn_scaling_rope.py::_compute_inv_freq.
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    inv_freq_extrapolation = 1.0 / pos_freqs
+    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
+    low, high = yarn_find_correction_range(
+        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
     )
-    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(stub, factor)
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
+    ) * extrapolation_factor
+    inv_freq = inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
 
     # mscale from yarn_scaling_rope.py:40-43 (verify on each vLLM bump).
     mscale = (
