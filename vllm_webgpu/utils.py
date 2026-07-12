@@ -33,7 +33,10 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-from vllm.v1.sample.sampler import _SAMPLING_EPS
+# Copied from vllm.v1.sample.sampler._SAMPLING_EPS. That symbol is private (leading
+# underscore) with no stability guarantee; vLLM's own TPU platform defines it locally
+# rather than importing it. Value is constant across all vLLM releases checked.
+_SAMPLING_EPS: float = 1e-5
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

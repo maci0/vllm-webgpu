@@ -412,7 +412,7 @@ class WebGPUModelRunner:
         if widths:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
-            if len(widths) == len(logprobs_data) and len(set(widths)) <= 1:
+            if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
                 built_logprobs = _stack(cast(Sequence["LogprobsTensors"], logprobs_data))
             else:
                 # Derive the dtype of selected_token_ranks from the first real
@@ -676,7 +676,11 @@ class WebGPUModelRunner:
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
-                "prompt_token_ids": list(tok_ids),
+                # prompt_token_ids is only read by the context-phase branch of
+                # scheduled_cached_reqs, which requires chunked prefill. The
+                # WebGPU platform disables chunked prefill unconditionally
+                # (platform.py), so skip the O(T) copy for all requests.
+                **({"prompt_token_ids": list(tok_ids)} if self.vllm_config.scheduler_config.enable_chunked_prefill else {}),
                 **({"token_history": list(tok_ids) + [first_decode_tok]} if _has_replay else {}),
             }
 

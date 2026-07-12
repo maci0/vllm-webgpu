@@ -833,9 +833,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if not _is_awq:
                 # Preserve the source weight dtype so _uq_for_key resolves the
                 # correct USE_QUANT for GPU-quantized formats (GPTQ i32, FP8/INT8
-                # u8 with fmt tag).
+                # u8 with fmt tag). The shape is not set here; callers derive K
+                # and N from model-config constants passed as shader overrides.
                 src_dtype = self.weights[q_key].dtype
-                qkv_raw_buf.shape = (total_nb // _ELEM_BYTES[src_dtype],)
                 qkv_raw_buf.dtype = src_dtype
             packed_buf = qkv_raw_buf
             self.weights[qkv_key] = packed_buf

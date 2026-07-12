@@ -80,12 +80,14 @@ def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
     return t.to(_torch.float32).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
 
 
+_GDN_WEIGHT_SUFFIXES: frozenset[str] = frozenset(
+    {"in_proj_qkv", "in_proj_a", "in_proj_b", "in_proj_z", "out_proj", "conv1d"}
+)
+
+
 def _is_gdn_weight_key(key: str) -> bool:
     """True for GDN linear-attention projection weights that benefit from bf16 storage."""
-    return "linear_attn" in key and any(
-        p in key for p in ("in_proj_qkv", "in_proj_a", "in_proj_b", "in_proj_z",
-                           "out_proj", "conv1d")
-    )
+    return "linear_attn" in key and any(p in key for p in _GDN_WEIGHT_SUFFIXES)
 
 logger = init_logger(__name__)
 
@@ -607,7 +609,10 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
     try:
         cfg = _QuantizationConfig.model_validate(quant_cfg)
         w_args = next((s.weights for s in cfg.config_groups.values() if s.weights), None)
-    except Exception:
+    except Exception as exc:
+        from pydantic import ValidationError
+        if not isinstance(exc, (ValidationError, AttributeError, TypeError)):
+            raise
         return {}
     if w_args is None:
         return {}

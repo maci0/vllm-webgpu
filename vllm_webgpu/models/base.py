@@ -58,20 +58,6 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
-# YaRN paper constants from YaRNScalingRotaryEmbedding.__init__.__kwdefaults__.
-# Stable across all checked vLLM releases. On each vLLM bump, verify against
-# YaRNScalingRotaryEmbedding.__init__.__kwdefaults__ in
-# vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py.
-# Inlined to avoid importing the full rotary embedding infrastructure at module
-# load time for every model type, including those with no YaRN RoPE.
-_YARN_DEFAULTS: dict = {
-    "extrapolation_factor": 1.0,
-    "attn_factor": 1.0,
-    "beta_fast": 32,
-    "beta_slow": 1,
-    "apply_yarn_scaling": True,
-    "truncate": True,
-}
 
 
 def compute_yarn_freqs(
@@ -127,8 +113,18 @@ def compute_yarn_freqs(
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
     # Accepted key set: rotary_embedding/__init__.py:250-256 (vLLM 0.24).
-    # Defaults are read from YaRNScalingRotaryEmbedding.__init__ at import time.
-    _yarn = {k: rope_scaling.get(k, d) for k, d in _YARN_DEFAULTS.items()}
+    # Defaults come directly from YaRNScalingRotaryEmbedding so they track
+    # any upstream changes automatically instead of drifting on each vLLM bump.
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding as _YaRNRoPE,
+    )
+    _yarn_defaults = _YaRNRoPE.__init__.__kwdefaults__ or {}
+    _yarn = {k: rope_scaling.get(k, _yarn_defaults.get(k, d))
+             for k, d in {
+                 "extrapolation_factor": 1.0, "attn_factor": 1.0,
+                 "beta_fast": 32, "beta_slow": 1,
+                 "apply_yarn_scaling": True, "truncate": True,
+             }.items()}
     beta_fast            = int(_yarn["beta_fast"])
     beta_slow            = int(_yarn["beta_slow"])
     extrapolation_factor = float(_yarn["extrapolation_factor"])
@@ -383,9 +379,8 @@ class BaseWebGPUModel(ABC):
             )
         transforms = self._weight_transforms
         _path = Path(path)
-        _hf_cfg = getattr(self.model_config, 'hf_config', None)
-        _quant_cfg = getattr(_hf_cfg, 'quantization_config', None) if _hf_cfg is not None else None
-        _check_unsupported_quant(quant_cfg=_quant_cfg or {})
+        _quant_cfg = getattr(self.model_config, 'quantization_config', None) or {}
+        _check_unsupported_quant(quant_cfg=_quant_cfg)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             actual = str(_path / "model.safetensors") if _path.is_dir() else path

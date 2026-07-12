@@ -53,7 +53,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.utils import SHADERS_DIR, sample_token
     from vllm_webgpu.config import get_config
-    from vllm.utils.math_utils import cdiv
+    def cdiv(a: int, b: int) -> int:
+        return -(a // -b)
 
     device = WebGPUDevice.initialize(get_config().power_preference)
     print(f"  Adapter: f16={device.supports_f16}")

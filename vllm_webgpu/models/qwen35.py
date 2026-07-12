@@ -724,10 +724,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             dev.queue.submit([self._active_encoder.finish()])
             self._active_encoder = None
 
-        if greedy:
-            tok = self._read_sample_tok()
-            return np.array([[tok]], dtype=np.int32)
-        return self.logit_readback()
+        return self._finish_forward(greedy)
 
     def forward(
         self,

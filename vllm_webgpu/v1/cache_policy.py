@@ -28,36 +28,23 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
-# Layer type strings that carry KV state and require cache allocation.
-# Must stay in sync with get_kv_cache_spec in model_runner.py, which imports
-# this constant and uses it as the authoritative set.
-#
-# Note: Minimax models encode layer type as an integer where 1 = attention and
-# 0 = non-attention. That integer sentinel is NOT in this frozenset. Use
-# is_attn_layer() rather than direct `in _KV_ATTN_TYPES` checks to handle both
-# string and integer encodings at every call site.
-_KV_ATTN_TYPES: frozenset[str] = frozenset(
-    {"attention", "full_attention", "sliding_attention", "hybrid"}
-)
-
-
 def is_attn_layer(lt: "str | int") -> bool:
     """Return True when a layer-type value represents an attention layer.
 
-    Handles both string layer types (in _KV_ATTN_TYPES) and the Minimax integer
-    encoding where 1 means attention and 0 means non-attention (Mamba/MLP).
-    The "hybrid" type is used by Zamba2-family models, where layers alternate
-    between Mamba SSM and full attention; vLLM counts hybrid layers as
+    Handles both string layer types and the Minimax integer encoding where
+    1 means attention and 0 means non-attention (Mamba/MLP). The "hybrid"
+    type is used by Zamba2-family models, where layers alternate between
+    Mamba SSM and full attention; vLLM counts hybrid layers as
     attention-bearing in its block-type accounting.
-    Use this instead of bare `lt in _KV_ATTN_TYPES` everywhere so that the
-    integer sentinel never needs to be repeated at individual call sites.
+    Use this instead of bare string-set membership checks everywhere so that
+    the integer sentinel never needs to be repeated at individual call sites.
     """
-    return lt in _KV_ATTN_TYPES or lt == 1
+    return lt in {"attention", "full_attention", "sliding_attention", "hybrid"} or lt == 1
 
 
 def allocate_kv_from_tensors(
     wgpu_device: "wgpu.GPUDevice",
-    model: "BaseWebGPUModel | None",
+    model: "BaseWebGPUModel",
     kv_cache_tensors: list[KVCacheTensor],
     num_blocks: int,
     num_total_layers: int,

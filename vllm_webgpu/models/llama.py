@@ -75,8 +75,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # weights at upload time, avoiding a GPU roundtrip (to_numpy → tile → re-upload).
         # Qwen3 checkpoints store shared norm as (head_dim,); the shader expects
         # (num_heads * head_dim,) with each head using the same values.
-        _q_xform = lambda a: np.tile(a, self.num_q_heads) if a.shape == (self.head_dim,) else a
-        _k_xform = lambda a: np.tile(a, self.num_kv_heads) if a.shape == (self.head_dim,) else a
+        def _norm_xform(n_heads: int):
+            hd = self.head_dim
+            return lambda a: np.tile(a, n_heads) if a.shape == (hd,) else a
+        _q_xform = _norm_xform(self.num_q_heads)
+        _k_xform = _norm_xform(self.num_kv_heads)
         self._weight_transforms.update({
             f"model.layers.{i}.self_attn.{k}.weight": xf
             for i in range(self.num_layers)
@@ -183,11 +186,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return
 
         dev = self.wgpu_device.wgpu_device
-        # rope_theta fallback matches vLLM's get_rope() at
-        # rotary_embedding/__init__.py:64 (vLLM 0.24): hardcoded 10000, not
-        # the model-level rope_theta. Using self.rope_theta here would diverge
-        # from vLLM for models that set a non-10000 global rope_theta but omit
-        # it from the rope_scaling dict.
+        # rope_scaling.get("rope_theta", 10000) matches vLLM get_rope() line 64
+        # (rotary_embedding/__init__.py, vLLM 0.24). For vLLM-loaded models,
+        # patch_rope_parameters (transformers_utils/config.py:430-436) always
+        # sets rope_parameters["rope_theta"] to the model's actual theta before
+        # any rope creation call, so the 10000 fallback never fires in production.
+        # It is kept as a safety net for callers that bypass patching.
         freqs, mscale = compute_yarn_freqs(self.head_dim, rope_scaling.get("rope_theta", 10000), rope_scaling)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale

@@ -136,7 +136,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
     def _scratch_token_count(self) -> int:
-        return getattr(self.model_config, "canvas_length", 256)
+        _cl = getattr(self.model_config, "canvas_length", None)
+        if _cl is None:
+            logger.warning(
+                "canvas_length not found in model config (text_config), defaulting to 256. "
+                "If the model stores canvas_length on the outer config, pass the outer config "
+                "as model_config so the attribute is visible here."
+            )
+        return _cl or 256
 
     def _scratch_inter_size(self) -> int:
         return max(super()._scratch_inter_size(), self.moe_intermediate_size)
@@ -231,8 +238,21 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         changes (e.g. new per-layer scalars) are picked up automatically. The
         per_expert_scale pass runs separately; the two-pass O(num_layers) cost is
         negligible at load time.
+
+        Validates that no layer_scalar is zero or negative at load time so that the
+        normed_ready RMSNorm scale-invariance optimization (which requires a positive
+        scalar) fails early with a clear message rather than silently producing wrong
+        output after a full warm-up cycle.
         """
         super()._load_layer_scales()
+        bad = [i for i, s in enumerate(self._layer_scales) if s <= 0]
+        if bad:
+            raise ValueError(
+                f"layer_scalar must be positive for the normed_ready optimization; "
+                f"layers {bad} have non-positive values {[self._layer_scales[i] for i in bad]}. "
+                "A non-positive layer_scalar flips or collapses the RMSNorm output. "
+                "This indicates a corrupt or incorrectly quantized checkpoint."
+            )
         if self.is_moe:
             for i in range(self.num_layers):
                 p = self._layer_key_prefix(i)
@@ -909,13 +929,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     next_ln_w = self.weights[
                         f"{self._layer_key_prefix(layer_idx + 1)}.input_layernorm.weight"
                     ]
-                    if layer_scalar <= 0:
-                        raise RuntimeError(
-                            f"layer_scalar={layer_scalar} must be positive for the normed_ready "
-                            "optimization: RMSNorm is scale-invariant only for positive scalars; "
-                            "a negative scalar would flip the sign of sc['normed'] relative to "
-                            "what the next layer expects."
-                        )
+                    # Safety net: _load_layer_scales validates at load time.
+                    assert layer_scalar > 0, (
+                        f"layer_scalar={layer_scalar} must be positive (caught at forward time; "
+                        "should have been rejected at load by _load_layer_scales)"
+                    )
                     self._dispatch("rms_norm_add_f32_rms_norm",
                                    [hidden_states_1, post_ffw_w, residual, next_ln_w, out, sc["normed"]],
                                    _rms, (num_tokens, 1, 1))

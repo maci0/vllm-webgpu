@@ -28,7 +28,8 @@ def main() -> None:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.utils import SHADERS_DIR
     from vllm_webgpu.config import get_config
-    from vllm.utils.math_utils import cdiv
+    def cdiv(a: int, b: int) -> int:
+        return -(a // -b)
 
     wgpu_dev = WebGPUDevice.initialize(get_config().power_preference)
     pipeline_cache = PipelineCache(wgpu_dev.wgpu_device, SHADERS_DIR)
