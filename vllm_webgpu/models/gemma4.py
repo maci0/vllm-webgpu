@@ -15,11 +15,74 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
-# vLLM source-compatibility assertions for _build_layer_params_from_config are in
-# tests/test_gemma4_layer_params.py. When upgrading vLLM, run that test suite to
-# verify that Gemma4DecoderLayer still references num_kv_shared_layers,
-# num_global_key_value_heads, and attention_k_eq_v, and that Gemma4Attention still
-# references layer_types with the expected reversed-index KV-sharing logic.
+# Import-time source-anchor assertions for the three formulas transcribed from
+# vLLM's Gemma4DecoderLayer and Gemma4Attention into _build_layer_params_from_config.
+# If any upstream formula changes, these assertions fire on import rather than
+# silently producing wrong per-layer dimensions. OSError is caught for stripped
+# installs where getsource() is unavailable; ImportError propagates intentionally.
+try:
+    import inspect as _inspect
+    from vllm.model_executor.models.gemma4 import (
+        Gemma4Attention as _Gemma4Attention,
+        Gemma4DecoderLayer as _Gemma4DecoderLayer,
+    )
+    _decoder_src = _inspect.getsource(_Gemma4DecoderLayer.__init__)
+    _attn_src = _inspect.getsource(_Gemma4Attention.__init__)
+
+    # Anchor (1): first_kv_shared boundary and chained comparison guard
+    # (Gemma4DecoderLayer.__init__ ~L599-602 in vLLM 0.24)
+    # Mirrors: `num_layers - getattr(model_config, 'num_kv_shared_layers', 0)` and
+    # `(first_kv_shared > 0) and (i >= first_kv_shared)`.
+    _A = "first_kv_shared_layer_idx = config.num_hidden_layers - getattr("
+    assert _A in _decoder_src, (
+        "Gemma4DecoderLayer.__init__ first_kv_shared boundary has changed "
+        "(expected near vLLM 0.24 L599). Formula (1) in _build_layer_params_from_config "
+        "mirrors `num_layers - getattr(model_config, 'num_kv_shared_layers', 0)`. "
+        "Review and update the mirror and this anchor."
+    )
+    del _A
+    _A = "is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0"
+    assert _A in _decoder_src, (
+        "Gemma4DecoderLayer.__init__ chained comparison `>= ... > 0` for KV-sharing "
+        "has changed (expected near vLLM 0.24 L602). The `(first_kv_shared > 0) and "
+        "(i >= first_kv_shared)` guard in _build_layer_params_from_config must match. "
+        "Update the is_kv_shared check and this anchor."
+    )
+    del _A
+
+    # Anchor (2): reversed-search KV-sharing target
+    # (Gemma4Attention.__init__ ~L469-471 in vLLM 0.24)
+    # Mirrors: `len(_prev) - 1 - _prev[::-1].index(lt)`.
+    _A = "len(prev_layers) - 1 - prev_layers[::-1].index(current_layer_type)"
+    assert _A in _attn_src, (
+        "Gemma4Attention.__init__ reversed-search KV-sharing formula has changed "
+        "(expected near vLLM 0.24 L469-471). Formula (2) in _build_layer_params_from_config "
+        "uses `len(_prev) - 1 - _prev[::-1].index(lt)`. "
+        "Review and update the mirror and this anchor."
+    )
+    del _A
+
+    # Anchor (3): head_dim and num_kv_heads selection by attention type
+    # (Gemma4DecoderLayer.__init__ ~L562-580 in vLLM 0.24)
+    # Mirrors: global_head_dim for full_attention; num_global_key_value_heads when k_eq_v.
+    _A = 'head_dim = getattr(config, "global_head_dim", config.head_dim)'
+    assert _A in _decoder_src, (
+        "Gemma4DecoderLayer.__init__ global_head_dim selection has changed "
+        "(expected near vLLM 0.24 L563). Formula (3) in _build_layer_params_from_config "
+        "sets `hd_l = global_hd` for full_attention. Update the mirror and this anchor."
+    )
+    del _A
+    _A = '"num_global_key_value_heads", config.num_key_value_heads'
+    assert _A in _decoder_src, (
+        "Gemma4DecoderLayer.__init__ num_global_key_value_heads fallback has changed "
+        "(expected near vLLM 0.24 L576-577). Formula (3) in _build_layer_params_from_config "
+        "uses `global_kv if k_eq_v else default_kv`. Update the mirror and this anchor."
+    )
+    del _A
+
+    del _inspect, _Gemma4Attention, _Gemma4DecoderLayer, _decoder_src, _attn_src
+except OSError:
+    pass
 
 
 @dataclass(frozen=True)
