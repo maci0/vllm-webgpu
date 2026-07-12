@@ -123,26 +123,18 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_linear_ramp_mask,
+        yarn_get_mscale,
     )
 
-    # Build a minimal proxy object so we can call _compute_inv_freq without
-    # triggering the full __init__ (which allocates an [orig_ctx * factor, rotary_dim]
-    # cos/sin cache we do not need).  The method only reads six attributes from self;
-    # set exactly those and nothing else.
-    # vLLM bump: if _compute_inv_freq gains new self.* references this will raise
-    # AttributeError, which is a clear signal to update the proxy fields below.
-    _proxy = object.__new__(YaRNScalingRotaryEmbedding)
-    _proxy.base = rope_theta
-    _proxy.rotary_dim = rotary_dim
-    _proxy.max_position_embeddings = orig_ctx
-    _proxy.beta_fast = beta_fast
-    _proxy.beta_slow = beta_slow
-    _proxy.truncate = truncate
-    _proxy.extrapolation_factor = extrapolation_factor
-    inv_freq = _proxy._compute_inv_freq(factor).numpy()
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    inv_freq_interp = 1.0 / (factor * pos_freqs)
+    inv_freq_extrap = 1.0 / pos_freqs
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    inv_freq = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).numpy()
 
     # mscale from yarn_scaling_rope.py:40-43 (verify on each vLLM bump).
     mscale = (
