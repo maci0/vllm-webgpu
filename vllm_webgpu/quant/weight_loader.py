@@ -317,21 +317,16 @@ def load_safetensors_weights_sharded(
         index = json.load(f)
     weight_map = index.get("weight_map", {})
 
-    # Two-phase detection over weight_map keys.
-    # Phase 1: check for MLX affine int4 (.biases keys). Break early because
-    # has_biases=True immediately delegates to load_mlx_weights, which has its
-    # own prefix logic — is_gemma_mm and is_qwen35_mm are irrelevant on that path.
-    # Phase 2: scan for multimodal prefix style only when the MLX path is skipped.
+    # Two independent scans over weight_map keys.
+    # Scan 1: check for MLX affine int4 (.biases keys). Can break early once found.
+    # Scan 2: check for multimodal prefix style, fully independent of scan 1.
     # Gemma3 MM uses "language_model." prefix; Qwen3.5 MM uses "model.language_model.".
-    has_biases = is_gemma_mm = is_qwen35_mm = False
-    for k in weight_map:
-        if k.endswith(".biases"):
-            has_biases = True
-            break
-        is_gemma_mm  |= k.startswith("language_model.")
-        is_qwen35_mm |= k.startswith("model.language_model.")
-        if is_gemma_mm or is_qwen35_mm:
-            break
+    # These must be separate: a language_model.* key appearing before any .biases key
+    # would cause an early break in a combined loop, leaving has_biases=False and
+    # silently skipping the MLX int4 dequant path.
+    has_biases = any(k.endswith(".biases") for k in weight_map)
+    is_gemma_mm = any(k.startswith("language_model.") for k in weight_map)
+    is_qwen35_mm = any(k.startswith("model.language_model.") for k in weight_map)
 
     if has_biases:
         if f32_keys:
