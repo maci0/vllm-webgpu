@@ -97,8 +97,16 @@ def allocate_kv_from_tensors(
     layer_kv_bytes: dict[int, tuple[int, int]] = {}
     for tensor in kv_cache_tensors:
         if tensor.block_stride > 0:
+            # block_stride > 0 means K and V data for multiple layers share one
+            # contiguous buffer, with each layer's slice separated by block_stride
+            # bytes (vLLM's packed/interleaved layout for small or shared pages).
+            # Supporting this would require reading tensor.size and tensor.offset
+            # to compute per-layer byte ranges instead of deriving sizes from
+            # spec fields (num_kv_heads, head_size, block_size, dtype_bytes).
             raise NotImplementedError(
-                f"Packed KV cache layout (block_stride={tensor.block_stride}) is not supported by the WebGPU backend"
+                f"Packed KV cache layout (block_stride={tensor.block_stride}) is not supported by the WebGPU backend. "
+                "To add support: use tensor.size and tensor.offset to compute per-layer byte ranges "
+                "rather than deriving buffer sizes from spec fields."
             )
         if tensor.offset != 0:
             raise NotImplementedError(
