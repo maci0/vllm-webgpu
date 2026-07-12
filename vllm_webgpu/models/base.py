@@ -367,7 +367,7 @@ class BaseWebGPUModel(ABC):
             )
         transforms = self._weight_transforms
         _path = Path(path)
-        _hf_cfg = self.model_config.hf_config
+        _hf_cfg = getattr(self.model_config, 'hf_config', self.model_config)
         _quant_cfg = getattr(_hf_cfg, 'quantization_config', None)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
