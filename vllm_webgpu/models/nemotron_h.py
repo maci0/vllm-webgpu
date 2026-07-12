@@ -843,8 +843,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 # and N from model-config constants passed as shader overrides.
                 src_dtype = self.weights[q_key].dtype
                 qkv_raw_buf.dtype = src_dtype
-            packed_buf = qkv_raw_buf
-            self.weights[qkv_key] = packed_buf
+            self.weights[qkv_key] = qkv_raw_buf
 
             # Propagate quant_meta from q_proj to qkv_proj so _uq_for_key
             # and _quant_extra find the correct fmt / group_size / global_scale.

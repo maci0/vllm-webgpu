@@ -6,6 +6,7 @@ Usage:
     python3 profile_kernels.py [--model MODEL_PATH] [--decode-steps N] [--warmup-steps N]
 """
 import argparse
+import math
 from pathlib import Path
 import time
 from types import SimpleNamespace
@@ -28,8 +29,6 @@ def main() -> None:
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.utils import SHADERS_DIR
     from vllm_webgpu.config import get_config
-    from vllm.utils.math_utils import cdiv
-
     wgpu_dev = WebGPUDevice.initialize(get_config().power_preference)
     pipeline_cache = PipelineCache(wgpu_dev.wgpu_device, SHADERS_DIR)
 
@@ -71,7 +70,7 @@ def main() -> None:
     # ── Setup fake KV pool ────────────────────────────────────────────────────────
     # Compute block count before allocating so the pool covers every block ID in bt.
     total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps * 2
-    bt_blocks = cdiv(total_toks, block_size)
+    bt_blocks = math.ceil(total_toks / block_size)
     num_blocks = max(512, bt_blocks)
 
     allocate_kv_from_hf_config(wgpu_dev.wgpu_device, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)

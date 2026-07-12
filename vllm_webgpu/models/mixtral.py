@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging
+from logging import DEBUG
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -128,7 +128,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         the window, but their attention scores are negligibly low.
         """
         if self._sw is not None and ctx_len > self._sw:
-            return ctx_len - self._start_block(ctx_len) * self.block_size
+            return self._sw + (ctx_len - self._sw) % self.block_size
         return ctx_len
 
     def _start_block(self, ctx_len: int) -> int:
@@ -460,7 +460,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(logging.DEBUG)
+        _debug_weights = logger.isEnabledFor(DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

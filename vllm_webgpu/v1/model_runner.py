@@ -9,7 +9,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
-    from vllm.v1.outputs import AsyncModelRunnerOutput, LogprobsLists
+    from vllm.v1.outputs import AsyncModelRunnerOutput
 
 logger = init_logger(__name__)
 
@@ -110,12 +110,12 @@ def _stack(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
 
     WebGPU tensors are already on CPU, so .cpu() inside tolists() is a no-op.
     """
-    stacked = LogprobsTensors(
-        torch.cat([x.logprob_token_ids for x in items]),
-        torch.cat([x.logprobs for x in items]),
-        torch.cat([x.selected_token_ranks for x in items]),
+    return LogprobsLists(
+        torch.cat([x.logprob_token_ids for x in items]).cpu().numpy(),
+        torch.cat([x.logprobs for x in items]).cpu().numpy(),
+        torch.cat([x.selected_token_ranks for x in items]).cpu().numpy(),
+        None,
     )
-    return stacked.tolists()
 
 
 
