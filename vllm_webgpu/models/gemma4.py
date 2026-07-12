@@ -234,7 +234,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     _PREFILL_CHUNK: int = 4
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
-        if getattr(model_config, 'hidden_size_per_layer_input', 0) > 0:
+        _ple = getattr(model_config, 'hidden_size_per_layer_input', None)
+        if _ple is not None and _ple > 0:
             raise ValueError(
                 'PLE (hidden_size_per_layer_input > 0) is not supported by the WebGPU plugin'
             )
