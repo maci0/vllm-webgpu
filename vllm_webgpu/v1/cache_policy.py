@@ -107,9 +107,14 @@ def allocate_kv_from_tensors(
         else:
             layer_spec_map.update(dict.fromkeys(group.layer_names, gs))
 
-    # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
+    # Build layer_name -> (k_bytes, v_bytes) from the tensors vLLM already computed.
+    # Keyed by layer name (str) rather than integer index so that two distinct layer
+    # names that happen to resolve to the same integer (e.g. "model.layers.3.self_attn"
+    # and "model.layers.3.cross_attn" in a future multi-attention-per-layer model) do
+    # not silently overwrite each other. The name-to-index mapping is resolved once
+    # after the loop with an explicit collision check.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
-    layer_kv_bytes: dict[int, tuple[int, int]] = {}
+    layer_kv_bytes: dict[str, tuple[int, int]] = {}
     for tensor in kv_cache_tensors:
         if tensor.block_stride > 0:
             # block_stride > 0 means K and V data for multiple layers share one
@@ -238,8 +243,9 @@ def allocate_kv_from_tensors(
                 # layer names (e.g. "model.layers.3.self_attn"). If a future model
                 # uses two integers in its layer names, extract_layer_index would
                 # raise AssertionError here and the error block below would surface it.
-                idx = extract_layer_index(layer_name)
-                layer_kv_bytes[idx] = (k_bytes, v_bytes)
+                # The return value is discarded here; the index-to-bytes mapping is
+                # built after the loop with an explicit duplicate-index check.
+                extract_layer_index(layer_name)
             except (AssertionError, ValueError, IndexError) as exc:
                 # extract_layer_index uses bare assert statements; IndexError fires
                 # when -O disables asserts and int_vals ends up empty (bare [0] access
@@ -256,6 +262,22 @@ def allocate_kv_from_tensors(
                     exc,
                 )
                 raise
+            layer_kv_bytes[layer_name] = (k_bytes, v_bytes)
+
+    # Resolve layer names to integer indices once, after the loop, with an explicit
+    # collision check. Two distinct layer names that map to the same integer (e.g.
+    # "model.layers.3.self_attn" and "model.layers.3.cross_attn" in a future
+    # multi-attention-per-layer model) would otherwise silently overwrite each other's
+    # buffer sizes, producing wrong K/V allocations with no error at runtime.
+    layer_idx_kv: dict[int, tuple[int, int]] = {}
+    for _lname, _sizes in layer_kv_bytes.items():
+        _idx = extract_layer_index(_lname)
+        if _idx in layer_idx_kv:
+            raise RuntimeError(
+                f"Two layer names resolve to the same index {_idx}: "
+                f"{_lname!r} and a previous entry. This is a model configuration bug."
+            )
+        layer_idx_kv[_idx] = _sizes
 
     # Sliding-attention layers in supported models always receive FullAttentionSpec(sliding_window=None)
     # from get_kv_cache_spec; the SlidingWindowSpec/FullAttentionSpec(sliding_window!=None) rejections
@@ -270,13 +292,13 @@ def allocate_kv_from_tensors(
     if _model_layer_types is not None and len(_model_layer_types) == num_total_layers:
         _missing_attn = [
             i for i, lt in enumerate(_model_layer_types)
-            if is_attn_layer(lt) and i not in layer_kv_bytes
+            if is_attn_layer(lt) and i not in layer_idx_kv
         ]
         if _missing_attn:
             raise RuntimeError(
                 f"Attention layer(s) {_missing_attn} were not assigned real KV "
                 f"buffers (kv_cache_tensors covered layers "
-                f"{sorted(layer_kv_bytes.keys())}). These layers would receive "
+                f"{sorted(layer_idx_kv.keys())}). These layers would receive "
                 f"16-byte placeholder buffers, silently corrupting "
                 f"kv_cache_store_both and flash_attn_decode dispatches. "
                 f"Verify that kv_cache_config.kv_cache_tensors includes entries "
@@ -286,8 +308,8 @@ def allocate_kv_from_tensors(
     model.kv_pool.clear()
     total_bytes = 0
     for i in range(num_total_layers):
-        if i in layer_kv_bytes:
-            k_bytes, v_bytes = layer_kv_bytes[i]
+        if i in layer_idx_kv:
+            k_bytes, v_bytes = layer_idx_kv[i]
             model.kv_pool.append((
                 WebGPUBuffer.empty(wgpu_device, k_bytes),
                 WebGPUBuffer.empty(wgpu_device, v_bytes),
@@ -301,7 +323,7 @@ def allocate_kv_from_tensors(
 
     logger.info(
         "KV cache: %d blocks, %d kv-attn layers, total=%dMiB",
-        num_blocks, len(layer_kv_bytes), total_bytes // MiB_bytes,
+        num_blocks, len(layer_idx_kv), total_bytes // MiB_bytes,
     )
 
 
