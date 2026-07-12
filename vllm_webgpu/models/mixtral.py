@@ -122,12 +122,19 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
     def _effective_ctx_len(self, ctx_len: int) -> int:
         """Number of KV pairs the shader reads, starting from START_BLOCK.
 
-        For SWA, cap at the window size so the shader never attends to tokens
-        outside the window. The flash_attn_decode shader applies a causal mask
-        up to CTX_LEN from START_BLOCK, so CTX_LEN = min(ctx_len, sw) is exact.
+        For SWA, the shader loops [0, CTX_LEN) offset from START_BLOCK, so
+        CTX_LEN must equal ctx_len minus the number of tokens in the skipped
+        leading blocks. When (ctx_len - sw) is block-aligned this equals sw
+        exactly; otherwise it is sw plus the partial-block remainder so the
+        shader covers all tokens from the first position of START_BLOCK through
+        ctx_len-1 (including the current token's KV entry).
+
+        Example: ctx_len=21, sw=8, block_size=4
+          start_block = (21-8)//4 = 3, skipped tokens = 3*4 = 12
+          CTX_LEN = 21-12 = 9 (tokens 12-20, all 9 in range)
         """
         if self._sw is not None and ctx_len > self._sw:
-            return self._sw
+            return ctx_len - self._start_block(ctx_len) * self.block_size
         return ctx_len
 
     def _start_block(self, ctx_len: int) -> int:
