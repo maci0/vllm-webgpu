@@ -873,7 +873,7 @@ def load_safetensors_weights(
             Used for FP8 E4M3 and NVFP4 packed weights. The shader reads via
             rd_byte_at() which unpacks individual bytes from the u32 array.
             """
-            arr_flat = np.ascontiguousarray(arr.ravel().view(np.uint8))
+            arr_flat = arr.ravel().view(np.uint8)
             _upload(arr_flat, np.uint8, 'u8', name, weights, logical_shape=tuple(arr.shape))
 
         weights: dict = {}
@@ -1638,7 +1638,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 t = sf_w.get_tensor(wk)
                 if t.dtype != _torch.uint32:
                     # Not actually an int4 weight; upload as plain float.
-                    processed.add(wk)
+                    # Suppress sk and bk too: they were pre-bound above but
+                    # belong to this non-quantized tensor, not a real quant triplet.
+                    processed.update({wk, sk, bk})
                     arr = _torch_to_f16_numpy(t)
                     if weight_transforms and wk in weight_transforms:
                         arr = weight_transforms[wk](arr)

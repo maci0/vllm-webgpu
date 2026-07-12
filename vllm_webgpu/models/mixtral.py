@@ -294,6 +294,16 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 _vec4_wg(inter),
             )
 
+    def _ensure_expert_tmp(self) -> None:
+        """Lazily allocate expert_tmp scratch buffer if not already present.
+
+        Called from _ensure_moe_expert_bufs (which also allocates gate/up) and
+        from GptOssWebGPUModel._dispatch_expert_down (which needs only expert_tmp).
+        Both share this formula so a hidden_size change propagates to both callers.
+        """
+        if "expert_tmp" not in self._moe_sc:
+            self._moe_sc["expert_tmp"] = self._make_buf(self.hidden_size * 2)
+
     def _ensure_moe_expert_bufs(self) -> None:
         """Lazily allocate expert_gate, expert_up, and expert_tmp scratch buffers on first quantized call."""
         msc = self._moe_sc
@@ -301,7 +311,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             _act_sz = self._moe_act_sz
             msc["expert_gate"] = self._make_buf(_act_sz * 2)
             msc["expert_up"]   = self._make_buf(_act_sz * 2)
-            msc["expert_tmp"]  = self._make_buf(self.hidden_size * 2)
+            self._ensure_expert_tmp()
 
     def _dispatch_expert_down(
         self,

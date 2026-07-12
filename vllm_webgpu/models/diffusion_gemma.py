@@ -930,10 +930,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         f"{self._layer_key_prefix(layer_idx + 1)}.input_layernorm.weight"
                     ]
                     # Safety net: _load_layer_scales validates at load time.
-                    assert layer_scalar > 0, (
-                        f"layer_scalar={layer_scalar} must be positive (caught at forward time; "
-                        "should have been rejected at load by _load_layer_scales)"
-                    )
+                    # if/raise rather than assert so the check survives python -O.
+                    if layer_scalar <= 0:
+                        raise RuntimeError(
+                            f"layer_scalar={layer_scalar} must be positive (caught at forward time; "
+                            "should have been rejected at load by _load_layer_scales)"
+                        )
                     self._dispatch("rms_norm_add_f32_rms_norm",
                                    [hidden_states_1, post_ffw_w, residual, next_ln_w, out, sc["normed"]],
                                    _rms, (num_tokens, 1, 1))

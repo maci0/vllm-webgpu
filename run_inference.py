@@ -9,7 +9,11 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from vllm_webgpu.utils import _SAMPLING_EPS
+# Numerical stability threshold for temperature comparisons, matching
+# vllm.v1.sample.sampler._GREEDY_TEMP. Defined locally to avoid a module-level
+# import of vllm_webgpu.utils (and transitively vllm internals) in a script that
+# may be imported as a library without the full vLLM stack present.
+_GREEDY_TEMP: float = 1e-5
 
 
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
@@ -93,7 +97,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_table[:n_blks] = np.arange(n_blks, dtype=np.uint32)
     slots = list(range(T))
 
-    model._greedy_decode = (temperature < _SAMPLING_EPS)
+    model._greedy_decode = (temperature < _GREEDY_TEMP)
 
     batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)
     logits = model.forward(
@@ -102,7 +106,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         batch_meta,
     )
 
-    if temperature < _SAMPLING_EPS:
+    if temperature < _GREEDY_TEMP:
         last_token = int(logits[-1, 0])
         print(f"  Last prefill logit: argmax={last_token}")
     else:
@@ -137,7 +141,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             meta,
         )
 
-        if temperature < _SAMPLING_EPS:
+        if temperature < _GREEDY_TEMP:
             last_token = int(logits[0, 0])
         else:
             # _greedy_decode=False: forward() already returned full (1, vocab) logits.

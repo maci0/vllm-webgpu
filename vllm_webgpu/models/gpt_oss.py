@@ -422,11 +422,10 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             super()._dispatch_expert_down(ep, down_key_name, w2_key, k_idx, inter)
             return
 
-        # Only expert_tmp is needed on the biased-down path. Allocate it
-        # directly rather than calling _ensure_moe_expert_bufs(), which would
+        # Only expert_tmp is needed on the biased-down path. Use the shared
+        # helper rather than calling _ensure_moe_expert_bufs(), which would
         # also allocate expert_gate and expert_up unnecessarily.
-        if "expert_tmp" not in self._moe_sc:
-            self._moe_sc["expert_tmp"] = self._make_buf(self.hidden_size * 2)
+        self._ensure_expert_tmp()
         msc = self._moe_sc
         hidden = self.hidden_size
         uq_d = self._uq_for_key(w2_key)

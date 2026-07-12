@@ -180,9 +180,10 @@ def allocate_kv_from_tensors(
             try:
                 idx = extract_layer_index(layer_name)
                 layer_kv_bytes[idx] = (k_bytes, v_bytes)
-            except (AssertionError, ValueError) as exc:
-                # extract_layer_index currently uses bare assert statements; catch
-                # ValueError too so logging fires if vLLM converts those to ValueError.
+            except (AssertionError, ValueError, IndexError) as exc:
+                # extract_layer_index uses bare assert statements; IndexError fires
+                # when -O disables asserts and int_vals ends up empty (bare [0] access
+                # on an empty list). ValueError caught in case vLLM converts asserts.
                 logger.error(
                     "Cannot parse layer index from KVCacheTensor.shared_by entry %r "
                     "(spec=%s, k=%d, v=%d bytes lost): %s",

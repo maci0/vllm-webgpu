@@ -183,13 +183,13 @@ def _build_layer_params_from_config(
     # default_kv heads (not global_kv), so the check would spuriously fail there.
     if "full_attention" in layer_types and k_eq_v:
         expected_fa_kv_dim = global_hd * global_kv
-        if not any(p["kv_dim"] == expected_fa_kv_dim for p, lt in zip(lp, layer_types) if lt == "full_attention"):
-            actual_fa_kv_dims = {p["kv_dim"] for p, lt in zip(lp, layer_types) if lt == "full_attention"}
+        fa_kv_dims = {p["kv_dim"] for p, lt in zip(lp, layer_types) if lt == "full_attention"}
+        if expected_fa_kv_dim not in fa_kv_dims:
             raise ValueError(
                 f"full_attention kv_dim mismatch: expected {expected_fa_kv_dim} "
                 f"(global_head_dim={getattr(model_config, 'global_head_dim', default_hd)!r} "
                 f"* num_global_key_value_heads={getattr(model_config, 'num_global_key_value_heads', default_kv)!r}) "
-                f"but full_attention layers produced {actual_fa_kv_dims}. "
+                f"but full_attention layers produced {fa_kv_dims}. "
                 "Check whether vLLM renamed global attention config attributes, or "
                 "whether the k_eq_v branch in formula (3) is misapplied."
             )
@@ -706,7 +706,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         under Metal's per-command-buffer GPU timeout.
         Returns shape (1, 1) int32 (GPU argmax of last-token logits).
         """
-        assert not self._skip_attn_scale, 'lp["scale"] not populated when _skip_attn_scale=True'
+        if self._skip_attn_scale:
+            raise RuntimeError(
+                'lp["scale"] not populated when _skip_attn_scale=True; '
+                "_prefill_batch_forward must not be called from DiffusionGemmaWebGPUModel"
+            )
         if not self._mr4_ok:
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 
@@ -1143,7 +1147,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         num_tokens: int,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Returns (normed_out, raw_out) — normed_out is sc['normed'] for next layer."""
-        assert not self._skip_attn_scale, 'lp["scale"] not populated when _skip_attn_scale=True'
+        if self._skip_attn_scale:
+            raise RuntimeError(
+                'lp["scale"] not populated when _skip_attn_scale=True; '
+                "_transformer_layer must not be called from DiffusionGemmaWebGPUModel"
+            )
         sc = self._sc
         lp = self._lp[layer_idx]
         hidden = self.hidden_size

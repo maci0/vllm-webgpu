@@ -362,7 +362,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             attn_metadata: carries slot_mapping and block_table
 
         Returns:
-            int32 [1, 1] token ID when greedy (default); float32 [1, vocab_size] logits for the
+            uint32 [1, 1] token ID when greedy (default); float32 [1, vocab_size] logits for the
             last token when non-greedy. Even during prefill only the last token is read back.
         """
         num_tokens = len(input_ids)

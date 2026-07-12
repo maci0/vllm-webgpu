@@ -1,6 +1,5 @@
 from __future__ import annotations
 from functools import cached_property
-from itertools import chain
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Sequence, cast
 
@@ -570,7 +569,7 @@ class WebGPUModelRunner:
             raw_bids = req.block_ids
             if not raw_bids:
                 raise RuntimeError(f"req {rid}: scheduler produced NewRequestData with empty block_ids")
-            blk_ids = list(chain.from_iterable(raw_bids))
+            blk_ids = [bid for group in raw_bids for bid in group]
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -731,7 +730,7 @@ class WebGPUModelRunner:
                         f"resumed req {rid} has no new_block_ids from scheduler"
                     )
                 if cur_new_bids is not None:
-                    flat_new = list(chain.from_iterable(cur_new_bids))
+                    flat_new = [bid for group in cur_new_bids for bid in group]
                     if rid in resumed_req_ids:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.
@@ -814,7 +813,7 @@ class WebGPUModelRunner:
                 if _has_save:
                     decode_recurrent_states = self.model.save_recurrent_states()
 
-                # Greedy path: model returns (1, 1) int32 with the argmax index.
+                # Greedy path: model returns (1, 1) uint32 with the argmax index.
                 # Non-greedy path: model returns (1, vocab) float32; sample here.
                 # Use the persisted per-request generator so the RNG state
                 # advances between steps (not reset to the same seed each step).
@@ -852,7 +851,7 @@ class WebGPUModelRunner:
             all_req_ids, all_sampled, all_logprobs_data, prompt_logprobs_dict
         )
 
-    def sample_tokens(self, grammar_output: "GrammarOutput") -> "ModelRunnerOutput | AsyncModelRunnerOutput":
+    def sample_tokens(self, grammar_output: "GrammarOutput | None") -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         raise NotImplementedError(
             "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
             "is not supported on the WebGPU backend. The GPU argmax path discards "

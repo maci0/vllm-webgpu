@@ -33,9 +33,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-# vLLM bump: verify _SAMPLING_EPS still lives in vllm.v1.sample.sampler (same as
-# apply_top_k_top_p_pytorch above, which shares the same stability caveat).
-from vllm.v1.sample.sampler import _SAMPLING_EPS
+# Numerical stability threshold for temperature comparisons (same value as
+# vllm.v1.sample.sampler._SAMPLING_EPS). Defined locally to avoid importing a
+# private vLLM symbol that could move or be renamed on any patch release.
+# vLLM bump: verify this threshold still matches _SAMPLING_EPS in vllm.v1.sample.sampler.
+_SAMPLING_EPS: float = 1e-5
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
