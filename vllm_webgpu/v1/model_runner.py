@@ -680,7 +680,7 @@ class WebGPUModelRunner:
                 "sampling_params": sp,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
-                **({"token_history": list(tok_ids) + [first_decode_tok]} if self._has_replay else {}),
+                **({"token_history": list(tok_ids) + [first_decode_tok], "prefix_offset": num_computed} if self._has_replay else {}),
             }
 
         # ── Decode: cached requests ────────────────────────────────────────────
@@ -788,10 +788,13 @@ class WebGPUModelRunner:
                                     f"{len(token_history) if token_history else 0} tokens. "
                                     f"Aborting to prevent corrupt output."
                                 )
+                            prefix_offset = state.get("prefix_offset", 0)
+                            replay_len = pos - prefix_offset
                             self.model.replay_prefix_for_ssm(
-                                np.array(token_history[:pos], dtype=np.uint32),
+                                np.array(token_history[prefix_offset:pos], dtype=np.uint32),
                                 blk_ids,
-                                pos,
+                                replay_len,
+                                start_pos=prefix_offset,
                             )
 
                 logits = self.model.forward(
