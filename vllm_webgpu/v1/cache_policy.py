@@ -140,6 +140,12 @@ def allocate_kv_from_tensors(
                         "Buffer sizes would be correct but flash_attn_decode does not implement "
                         "sliding window masking, producing silently wrong output."
                     )
+                if spec.attention_chunk_size is not None:
+                    raise NotImplementedError(
+                        f"FullAttentionSpec with attention_chunk_size={spec.attention_chunk_size!r} is not supported by the WebGPU backend. "
+                        "Chunked local attention layers are converted to FullAttentionSpec when the hybrid KV cache manager is disabled; "
+                        "flash_attn_decode does not implement chunked local attention masking."
+                    )
                 if spec.kv_quant_mode != KVQuantMode.NONE:
                     raise NotImplementedError(
                         f"Quantized KV cache (kv_quant_mode={spec.kv_quant_mode!r}) is not supported by the WebGPU backend; KV shaders expect float16 data."
