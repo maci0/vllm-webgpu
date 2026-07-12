@@ -86,10 +86,8 @@ def main() -> None:
     _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
     logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
-    _has_gpu_argmax = model.logit_returns_token_id
-
     def _next_tok(lg):
-        return int(lg[0, 0]) if _has_gpu_argmax else int(np.argmax(lg[-1]))
+        return int(lg[0, 0]) if lg.shape[-1] == 1 else int(np.argmax(lg[-1]))
 
     decode_tok = _next_tok(logits)
     pos = len(tok_ids)
@@ -122,14 +120,14 @@ def main() -> None:
     print(f"Profiling {args.decode_steps} decode steps...")
     model.profiling = True
     model.profile_reset()
-
-    decode_times = []
-    for step in range(args.decode_steps):
-        decode_tok, step_ms = _run_decode_step(decode_tok, pos)
-        decode_times.append(step_ms)
-        pos += 1
-
-    model.profiling = False
+    try:
+        decode_times = []
+        for step in range(args.decode_steps):
+            decode_tok, step_ms = _run_decode_step(decode_tok, pos)
+            decode_times.append(step_ms)
+            pos += 1
+    finally:
+        model.profiling = False
     avg_step_ms = np.mean(decode_times) if decode_times else 0.0
     if not decode_times:
         print("\nNo profiled decode steps measured")

@@ -9,7 +9,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -27,7 +27,6 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
-    from vllm.v1.outputs import LogprobsLists
 
 logger = init_logger(__name__)
 
@@ -54,8 +53,7 @@ ARCH_MAP = {
 }
 
 
-def _build_model(arch: str, model_config: Any, wgpu_device: Any, pipeline_cache: Any, block_size: int) -> "BaseWebGPUModel":
-    family = ARCH_MAP.get(arch)
+def _build_model(arch: str, family: "str | None", model_config: Any, wgpu_device: Any, pipeline_cache: Any, block_size: int) -> "BaseWebGPUModel":
     if family == "llama":
         from vllm_webgpu.models.llama import LlamaWebGPUModel
         return LlamaWebGPUModel(model_config, wgpu_device, pipeline_cache, block_size=block_size)
@@ -91,11 +89,11 @@ def _stack(items: list[LogprobsTensors]) -> LogprobsLists:
     uses i directly as the row index when cu_num_generated_tokens is None
     (see vllm/v1/outputs.py:41-42).
     """
-    return LogprobsTensors(
-        torch.cat([x.logprob_token_ids for x in items]),
-        torch.cat([x.logprobs for x in items]),
-        torch.cat([x.selected_token_ranks for x in items]),
-    ).tolists()
+    return LogprobsLists(
+        torch.cat([x.logprob_token_ids for x in items]).numpy(),
+        torch.cat([x.logprobs for x in items]).numpy(),
+        torch.cat([x.selected_token_ranks for x in items]).numpy(),
+    )
 
 
 
@@ -184,7 +182,7 @@ class WebGPUModelRunner:
                 f"Implement multi-token decode in execute_model before enabling."
             )
 
-        self.model = _build_model(arch, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
+        self.model = _build_model(arch, family, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
         if family == "nemotron_h":
             # spec_config is None here: the raise above blocks any non-None value.
             # Pass 0 so NemotronHWebGPUModel.load_weights can accept num_spec when
@@ -216,11 +214,10 @@ class WebGPUModelRunner:
         has confirmed there are no heterogeneous layers, and that signal must
         not be overridden by a stale HF config attribute.
 
-        Note: the _layer_attention_params fallback branch is only reachable
-        by out-of-lifecycle callers (tests, scripts) that invoke
-        get_kv_cache_spec() before load_model(). The worker.py lifecycle
-        guarantees load_model() runs first, so self.model is always set
-        when kv_cache_spec is evaluated in production.
+        Note: when self.model is None (always the case on the first call, since
+        vLLM calls get_kv_cache_spec before load_model), falls back to
+        hf_config._layer_attention_params, which is set by GGUF parsing for
+        Gemma4 checkpoints.
         """
         lp = getattr(self.model, "_lp", None) if self.model is not None else None
         return lp if lp is not None else getattr(self.vllm_config.model_config.hf_config, "_layer_attention_params", None)

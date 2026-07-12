@@ -2,8 +2,6 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-import numpy as np
-
 from vllm_webgpu.models.base import _rows_wg, _vec4_wg
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer

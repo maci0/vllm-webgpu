@@ -226,6 +226,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         hd = getattr(model_config, "head_dim", None)
         self.head_dim: int = hd if hd is not None else self.hidden_size // self.num_q_heads
         self._attn_scale: float = self.head_dim ** -0.5
+        self._q_dim: int = self.num_q_heads * self.head_dim
+        self._k_dim: int = self.num_kv_heads * self.head_dim
         # Mamba-2 parameters
         self.mamba_num_heads: int = model_config.mamba_num_heads
         self.mamba_head_dim: int = model_config.mamba_head_dim
@@ -454,8 +456,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         MNH = self.mamba_num_heads
         I   = self._max_int_size
         V   = self.vocab_size
-        qd  = self.num_q_heads * self.head_dim
-        kd  = self.num_kv_heads * self.head_dim
 
         max_ctx = self.model_config.max_position_embeddings
         max_bt_blocks = max(4096, cdiv(max_ctx, self.block_size))
@@ -491,11 +491,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "mamba_norm_out": self._make_buf(MI * 2),  # [mamba_int] f16 — after gated norm
 
             # Attention intermediates
-            "qkv_buf":     self._make_buf((qd + 2 * kd) * 2),
-            "q_buf":       self._make_buf(qd * 2),
-            "k_buf":       self._make_buf(kd * 2),
-            "v_buf":       self._make_buf(kd * 2),
-            "attn_out":    self._make_buf(qd * 2),
+            "qkv_buf":     self._make_buf((self._q_dim + 2 * self._k_dim) * 2),
+            "q_buf":       self._make_buf(self._q_dim * 2),
+            "k_buf":       self._make_buf(self._k_dim * 2),
+            "v_buf":       self._make_buf(self._k_dim * 2),
+            "attn_out":    self._make_buf(self._q_dim * 2),
 
             # MLP intermediates
             "up_buf":  self._make_buf(I * 2),
@@ -1331,8 +1331,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         sc    = self._sc
         p     = f"model.layers.{layer_idx}.mixer"
         H     = self.hidden_size
-        q_dim = self.num_q_heads * self.head_dim
-        k_dim = self.num_kv_heads * self.head_dim
+        q_dim = self._q_dim
+        k_dim = self._k_dim
 
         # Fused QKV projection.
         qkv_w    = f"{p}.qkv_proj.weight"
