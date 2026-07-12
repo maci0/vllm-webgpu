@@ -31,11 +31,10 @@ logger = init_logger(__name__)
 # internal registry will fail here rather than silently returning wrong KV
 # dimensions at runtime.
 #
-# Source anchors are pinned to the base-class method signatures as they appear
-# in the installed vLLM. If a future vLLM version renames or restructures
-# these methods, update the anchor strings and review _make_convertor callers.
+# hasattr checks work on compiled/stripped wheels where inspect.getsource
+# raises OSError. The except clause logs a warning instead of silently passing
+# so that a missing module is visible in logs even when it is not fatal.
 try:
-    import inspect as _inspect
     from vllm.transformers_utils.model_arch_config_convertor import (
         MODEL_ARCH_CONFIG_CONVERTORS as _CONVERTORS,
         ModelArchConfigConvertorBase as _ConvertorBase,
@@ -47,38 +46,40 @@ try:
         "per-architecture KV head/size classes. Review _make_convertor "
         "and update to match the new upstream structure."
     )
-    _base_src = _inspect.getsource(_ConvertorBase)
-    # Anchor 1: get_total_num_kv_heads signature (vLLM 0.9+, base class L106).
-    _KV_HEADS_ANCHOR = "def get_total_num_kv_heads(self) -> int:"
-    assert _KV_HEADS_ANCHOR in _base_src, (
+    # Anchor 1: get_total_num_kv_heads (vLLM 0.9+, base class).
+    assert hasattr(_ConvertorBase, "get_total_num_kv_heads"), (
         "ModelArchConfigConvertorBase.get_total_num_kv_heads no longer "
         "exists at vllm.transformers_utils.model_arch_config_convertor. "
         "_make_convertor callers call .get_total_num_kv_heads() on the "
         "returned convertor instance (allocate_kv_from_hf_config L189). "
         "Find the replacement API and update the call site."
     )
-    # Anchor 2: get_head_size signature (vLLM 0.9+, base class L48).
-    _HEAD_SIZE_ANCHOR = "def get_head_size(self) -> int:"
-    assert _HEAD_SIZE_ANCHOR in _base_src, (
+    # Anchor 2: get_head_size (vLLM 0.9+, base class).
+    assert hasattr(_ConvertorBase, "get_head_size"), (
         "ModelArchConfigConvertorBase.get_head_size no longer exists at "
         "vllm.transformers_utils.model_arch_config_convertor. "
         "_make_convertor callers call .get_head_size() on the returned "
         "convertor instance (allocate_kv_from_hf_config L190). "
         "Find the replacement API and update the call site."
     )
-    # Anchor 3: get_num_hidden_layers signature (vLLM 0.9+, base class L36).
-    _NUM_LAYERS_ANCHOR = "def get_num_hidden_layers(self) -> int:"
-    assert _NUM_LAYERS_ANCHOR in _base_src, (
+    # Anchor 3: get_num_hidden_layers (vLLM 0.9+, base class).
+    assert hasattr(_ConvertorBase, "get_num_hidden_layers"), (
         "ModelArchConfigConvertorBase.get_num_hidden_layers no longer "
         "exists at vllm.transformers_utils.model_arch_config_convertor. "
         "_make_convertor callers call .get_num_hidden_layers() on the "
         "returned convertor instance (allocate_kv_from_hf_config L194). "
         "Find the replacement API and update the call site."
     )
-    del _KV_HEADS_ANCHOR, _HEAD_SIZE_ANCHOR, _NUM_LAYERS_ANCHOR
-    del _inspect, _CONVERTORS, _ConvertorBase, _base_src
-except (ImportError, OSError):
-    pass
+    del _CONVERTORS, _ConvertorBase
+except ImportError as _e:
+    logger.warning(
+        "kv_utils: could not import MODEL_ARCH_CONFIG_CONVERTORS from "
+        "vllm.transformers_utils.model_arch_config_convertor (%s). "
+        "API-compatibility guards are disabled; a vLLM version mismatch "
+        "may not be caught until runtime.",
+        _e,
+    )
+    del _e
 
 
 def _make_convertor(hf_cfg):
