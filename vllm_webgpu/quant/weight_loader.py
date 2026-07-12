@@ -375,27 +375,6 @@ def load_safetensors_weights_sharded(
         n_remapped = _apply_multimodal_remap(weights)
         logger.info("Added %d remapped language_model keys", n_remapped)
 
-    # Apply compressed-tensors quant_meta to any weight layers not already tagged
-    # (I8 dtype handling in _upload_plain already sets fmt="int8_gpu" for those layers).
-    if ct_meta and "__global__" in ct_meta:
-        global_ct = ct_meta["__global__"]
-        qmeta = weights.setdefault("__quant_meta__", {})
-        applied = 0
-        for wkey in list(weights.keys()):
-            if wkey.endswith(".weight") and not wkey.startswith("__"):
-                buf = weights.get(wkey)
-                if buf is not None and getattr(buf, "dtype", None) == "f16":
-                    continue
-                base = wkey.removesuffix(".weight")
-                if base not in qmeta:
-                    entry: dict = {"fmt": global_ct["fmt"]}
-                    if global_ct.get("group_size") is not None:
-                        entry["group_size"] = global_ct["group_size"]
-                    qmeta[base] = entry
-                    applied += 1
-        if applied:
-            logger.info("compressed-tensors: applied quant_meta to %d weight layers", applied)
-
     logger.info("Loaded %d tensors from %d shards in %s", len(weights), len(shard_files), model_dir)
     return weights
 
