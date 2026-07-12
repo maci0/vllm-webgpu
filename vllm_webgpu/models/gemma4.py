@@ -122,6 +122,8 @@ def _build_layer_params_from_config(
     defaults as vLLM's constructors) and delegates to _gemma4_layer_params for
     the actual formula application.
     """
+    from vllm.model_executor.models.gemma4 import _get_text_config
+    model_config = _get_text_config(model_config)
     num_q_heads       = model_config.num_attention_heads
     intermediate_size = model_config.intermediate_size
     layer_types       = model_config.layer_types
@@ -199,6 +201,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     _PREFILL_CHUNK: int = 4
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
+        from vllm.model_executor.models.gemma4 import _get_text_config
+        model_config = _get_text_config(model_config)
         _ple = getattr(model_config, 'hidden_size_per_layer_input', None)
         if _ple is not None and _ple > 0:
             raise ValueError(

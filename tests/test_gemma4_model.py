@@ -18,6 +18,9 @@ def make_tiny_gemma4_config():
     cfg.ple_layer_indices = []
     cfg.max_position_embeddings = 128
     cfg.hidden_size_per_layer_input = 0
+    # MagicMock auto-creates cfg.text_config as a sub-mock; point it back to cfg
+    # so _get_text_config() returns the same configured object unchanged.
+    cfg.text_config = cfg
     return cfg
 
 

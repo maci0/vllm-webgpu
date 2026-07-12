@@ -49,6 +49,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
+        from vllm.model_executor.models.gemma4 import _get_text_config
+        model_config = _get_text_config(model_config)
         # Set moe_intermediate_size before super().__init__ because Gemma4.__init__
         # calls _init_scratch_buffers which dispatches to _scratch_inter_size().
         _enable_moe = (

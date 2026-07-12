@@ -29,6 +29,9 @@ def make_diffusion_gemma_config():
     # (sized at intermediate_size) can safely hold expert projections too.
     cfg.moe_intermediate_size = 128
     cfg.canvas_length = 1
+    # MagicMock auto-creates cfg.text_config as a sub-mock; point it back to cfg
+    # so _get_text_config() returns the same configured object unchanged.
+    cfg.text_config = cfg
     return cfg
 
 
