@@ -345,6 +345,8 @@ def load_safetensors_weights_sharded(
     if has_biases:
         if f32_keys:
             raise ValueError("f32_keys is not supported for mlx_int4 format")
+        if scale_transforms:
+            raise ValueError("scale_transforms is not supported for mlx_int4 format")
         return load_mlx_weights(model_dir, wgpu_device, weight_map=weight_map,
                                 weight_transforms=weight_transforms,
                                 skip_prefixes=skip_prefixes)
