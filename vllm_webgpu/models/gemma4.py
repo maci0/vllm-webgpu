@@ -300,6 +300,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 }
                 for e in raw_lp
             ]
+            for i, entry in enumerate(self._lp):
+                if entry['is_kv_shared'] and entry['kv_shared_target'] < 0:
+                    raise ValueError(
+                        f'GGUF layer {i} has is_kv_shared=True but kv_shared_target is '
+                        f'missing or negative. The GGUF metadata must include kv_shared_target.'
+                    )
         elif layer_types and len(layer_types) == self.num_layers:
             # Build per-layer params from layer_types list (Gemma4 safetensors config).
             # sliding_attention: local GQA, head_dim=default_hd, has_v_proj=True
