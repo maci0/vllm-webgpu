@@ -317,12 +317,16 @@ class WebGPUModelRunner:
             # gets a .mixer suffix, so non-attention layers (Mamba, MLP) would
             # receive spurious KV cache entries.  A mismatched layer_types list
             # is a configuration error, not a safe fallback.
-            if _is_nemotron_h and _layer_types is not None:
-                raise ValueError(
-                    f"layer_types length ({len(_layer_types)}) does not match "
-                    f"num_hidden_layers ({num_hidden_layers}) for NemotronH — "
-                    "KV spec cannot be determined safely"
+            if _is_nemotron_h:
+                msg = (
+                    "layer_types is missing for NemotronH"
+                    if _layer_types is None
+                    else (
+                        f"layer_types length ({len(_layer_types)}) does not match "
+                        f"num_hidden_layers ({num_hidden_layers}) for NemotronH"
+                    )
                 )
+                raise ValueError(msg + " — KV spec cannot be determined safely")
             # Only trust layer_types when it covers every layer; a partial or
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
