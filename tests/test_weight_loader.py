@@ -474,3 +474,30 @@ def test_detect_mx_quant_non_dict_quantization(tmp_path):
     }))
     # Neither mxfp4 nor mxfp8 should be detected.
     assert _detect_mx_quant(tmp_path) == ""
+
+
+def test_detect_mx_quant_null_quantization(tmp_path):
+    """quantization key present with null value: key-presence vs falsy check parity.
+
+    vLLM uses 'if "quantization" in hf_quant_cfg:' (key-presence), so a JSON
+    {"quantization": null} enters the quantization branch and returns None for
+    quant_algo. Our inline copy must use the same key-presence check so behavior
+    is identical. This test catches any regression to cfg.get("quantization") which
+    would silently skip the null value and fall through to the top-level quant_algo.
+    If this test fails after a vLLM bump, re-audit the inline block against
+    ModelOptFp8Config._extract_modelopt_quant_algo in modelopt.py.
+    """
+    import json
+    from vllm_webgpu.quant.weight_loader import _detect_mx_quant
+    hf_quant = tmp_path / "hf_quant_config.json"
+    # "quantization": null with a top-level quant_algo that would be detected if
+    # the null value were skipped (falsy path). The key-presence path enters the
+    # quantization branch, gets quant_algo=None from a non-dict, and returns "".
+    hf_quant.write_text(json.dumps({
+        "quant_method": "modelopt",
+        "quantization": None,
+        "quant_algo": "MXFP4",
+    }))
+    # With key-presence check: quantization branch entered, quant_algo=None -> "".
+    # With falsy check (bug): quantization branch skipped, top-level quant_algo="MXFP4" -> "mxfp4".
+    assert _detect_mx_quant(tmp_path) == ""

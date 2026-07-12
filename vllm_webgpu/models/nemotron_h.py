@@ -140,10 +140,11 @@ if _resolve_intermediate_size([1024], 5) != 1024:
 # entry. This is equivalent to checking the upstream mlp_index formula without
 # touching vLLM module namespaces or importing test infrastructure.
 for _i, _expected in enumerate([1024, 2048, 4096]):
-    if _resolve_intermediate_size([1024, 2048, 4096], _i) != _expected:
+    _got = _resolve_intermediate_size([1024, 2048, 4096], _i)
+    if _got != _expected:
         raise AssertionError(
             f"_resolve_intermediate_size([1024, 2048, 4096], {_i}) returned "
-            f"{_resolve_intermediate_size([1024, 2048, 4096], _i)!r}, expected {_expected}. "
+            f"{_got!r}, expected {_expected}. "
             "The multi-element list branch of NemotronHMLPDecoderLayer.__init__ has changed; "
             "update _resolve_intermediate_size to match."
         )

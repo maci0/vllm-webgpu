@@ -58,38 +58,20 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
-def _load_yarn_defaults() -> dict:
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
-    )
-    kw = YaRNScalingRotaryEmbedding.__init__.__kwdefaults__
-    return dict(kw) if kw else {}
-
-_YARN_DEFAULTS: dict = _load_yarn_defaults()
-
-def _rotary_dim_from_scaling(head_dim: int, rope_scaling: dict) -> int:
-    """Derive the rotary dimension from rope_scaling config fields.
-
-    Mirrors the two-branch logic in vllm/model_executor/layers/rotary_embedding/
-    __init__.py get_rope() L66-72 (vLLM 0.24).
-
-    On each vLLM bump, diff these three fields against get_rope():
-      rope_scaling["rope_dim"]               (branch 1)
-      rope_scaling["partial_rotary_factor"]  (branch 2, default 1.0)
-      int() cast on the result              (added here vs. vLLM's bare assignment)
-
-    get_rope() cannot be called directly because it allocates an expensive
-    cos/sin cache (orig_ctx * factor rows x rotary_dim floats) that is not
-    needed for frequency extraction alone.
-    """
-    if rd := rope_scaling.get("rope_dim", None):
-        return int(rd)
-    partial_rotary_factor = float(rope_scaling.get("partial_rotary_factor", 1.0))
-    if not (0.0 < partial_rotary_factor <= 1.0):
-        raise ValueError(
-            f"partial_rotary_factor must be in (0, 1], got {partial_rotary_factor}"
-        )
-    return int(head_dim * partial_rotary_factor)
+# YaRN paper constants from YaRNScalingRotaryEmbedding.__init__.__kwdefaults__.
+# Stable across all checked vLLM releases. On each vLLM bump, verify against
+# YaRNScalingRotaryEmbedding.__init__.__kwdefaults__ in
+# vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py.
+# Inlined to avoid importing the full rotary embedding infrastructure at module
+# load time for every model type, including those with no YaRN RoPE.
+_YARN_DEFAULTS: dict = {
+    "extrapolation_factor": 1.0,
+    "attn_factor": 1.0,
+    "beta_fast": 32,
+    "beta_slow": 1,
+    "apply_yarn_scaling": True,
+    "truncate": True,
+}
 
 
 def compute_yarn_freqs(
@@ -111,9 +93,11 @@ def compute_yarn_freqs(
         rope_theta:  RoPE base frequency (e.g. 10000.0).
         rope_scaling: rope_scaling config dict from the model config.
         rotary_dim:  Number of head dimensions that receive RoPE. When None,
-                     derived via _rotary_dim_from_scaling, which mirrors the
-                     rope_dim / partial_rotary_factor logic in
+                     derived from rope_scaling["rope_dim"] (branch 1) or
+                     head_dim * rope_scaling.get("partial_rotary_factor", 1.0)
+                     (branch 2). Mirrors get_rope() in
                      vllm/model_executor/layers/rotary_embedding/__init__.py:66-72.
+                     On each vLLM bump, verify those two branches against get_rope().
 
     Returns:
         freqs:  [rotary_dim // 2] float32 array of scaled inv_freq values.
@@ -122,9 +106,20 @@ def compute_yarn_freqs(
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    assert yarn_get_mscale.__module__ == "vllm.model_executor.layers.rotary_embedding.common", (
+        "yarn_get_mscale moved; update the import path above and this assertion."
+    )
 
     if rotary_dim is None:
-        rotary_dim = _rotary_dim_from_scaling(head_dim, rope_scaling)
+        if rd := rope_scaling.get("rope_dim", None):
+            rotary_dim = int(rd)
+        else:
+            partial_rotary_factor = float(rope_scaling.get("partial_rotary_factor", 1.0))
+            if not (0.0 < partial_rotary_factor <= 1.0):
+                raise ValueError(
+                    f"partial_rotary_factor must be in (0, 1], got {partial_rotary_factor}"
+                )
+            rotary_dim = int(head_dim * partial_rotary_factor)
 
     if "factor" not in rope_scaling:
         raise ValueError("YaRN rope_scaling must include 'factor'")

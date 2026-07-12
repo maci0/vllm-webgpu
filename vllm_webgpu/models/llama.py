@@ -671,12 +671,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         dev.queue.write_buffer(self._pre["bt"].buf, 0, bt_bytes)
 
-        # x_buf is updated inside the loop; initialize here so the final-norm
-        # dispatch is always bound even if T were ever 0.
-        # In practice T >= 1 (enforced by _prefill_batch_forward callers), but
-        # Python would raise UnboundLocalError without this pre-assignment.
-        x_buf = self._pre["x"]
-
+        # All callers enforce T >= 2 (forward() line 377, MixtralWebGPUModel.forward()
+        # line 167, _prefill_batch_forward lines 432/442), so the loop always executes
+        # and x_buf is guaranteed to be bound by the loop body on every code path.
         for t in range(T):
             self._hstate = 0
             tok_pos   = int(positions[t])

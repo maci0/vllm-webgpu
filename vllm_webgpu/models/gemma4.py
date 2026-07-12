@@ -165,10 +165,8 @@ def _build_layer_params_from_config(
     # default_kv heads (not global_kv), so the check would spuriously fail there.
     if "full_attention" in layer_types and k_eq_v:
         expected_fa_kv_dim = global_hd * global_kv
-        actual_fa_kv_dims = {
-            p["kv_dim"] for p, lt in zip(lp, layer_types) if lt == "full_attention"
-        }
-        if expected_fa_kv_dim not in actual_fa_kv_dims:
+        if not any(p["kv_dim"] == expected_fa_kv_dim for p, lt in zip(lp, layer_types) if lt == "full_attention"):
+            actual_fa_kv_dims = {p["kv_dim"] for p, lt in zip(lp, layer_types) if lt == "full_attention"}
             raise ValueError(
                 f"full_attention kv_dim mismatch: expected {expected_fa_kv_dim} "
                 f"(global_head_dim={getattr(model_config, 'global_head_dim', default_hd)!r} "
@@ -486,14 +484,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         Avoids 48 GPU→CPU readbacks per token (each to_numpy() is a blocking ~100µs sync).
         Subclasses with a different key scheme should override _layer_key_prefix instead.
         """
-        self._layer_scales: list[float] = []
-        for i in range(self.num_layers):
-            p = self._layer_key_prefix(i)
-            ls_buf = self.weights.get(f"{p}.layer_scalar")
-            if ls_buf is not None:
-                self._layer_scales.append(self._buf_to_numpy(ls_buf).item())
-            else:
-                self._layer_scales.append(1.0)
+        self._layer_scales: list[float] = [
+            self._buf_to_numpy(buf).item()
+            if (buf := self.weights.get(f"{self._layer_key_prefix(i)}.layer_scalar")) is not None
+            else 1.0
+            for i in range(self.num_layers)
+        ]
 
     def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
                      skip_prefixes: "frozenset[str] | None" = None) -> None:

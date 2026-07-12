@@ -102,6 +102,10 @@ def allocate_kv_from_tensors(
             raise NotImplementedError(
                 f"Packed KV cache layout (block_stride={tensor.block_stride}) is not supported by the WebGPU backend"
             )
+        if tensor.offset != 0:
+            raise NotImplementedError(
+                f"KVCacheTensor with non-zero offset ({tensor.offset}) is not supported by the WebGPU backend"
+            )
         if not tensor.shared_by:
             raise NotImplementedError(
                 "KVCacheTensor with empty shared_by is not supported by the WebGPU backend"

@@ -224,27 +224,22 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # ── Weight loading ───────────────────────────────────────────────────────
 
     def _load_layer_scales(self) -> None:
-        """Override to cache layer_scalar and per_expert_scale in one O(num_layers) pass.
+        """Override to populate _layer_scales via super() then cache per_expert_scale.
 
-        Gemma4WebGPUModel._load_layer_scales iterates over all layers for layer_scalar.
-        DiffusionGemma also needs to cache per_expert_scale. Combining both into a single
-        loop here avoids the redundant traversal that would result from a separate pass
-        in load_weights when is_moe=True.
+        Delegates layer_scalar accumulation to the base class so future base-class
+        changes (e.g. new per-layer scalars) are picked up automatically. The
+        per_expert_scale pass runs separately; the two-pass O(num_layers) cost is
+        negligible at load time.
         """
-        self._layer_scales = []
-        for i in range(self.num_layers):
-            p = self._layer_key_prefix(i)
-            ls_buf = self.weights.get(f"{p}.layer_scalar")
-            self._layer_scales.append(
-                self._buf_to_numpy(ls_buf).item() if ls_buf is not None else 1.0
-            )
-            if self.is_moe:
+        super()._load_layer_scales()
+        if self.is_moe:
+            for i in range(self.num_layers):
+                p = self._layer_key_prefix(i)
                 pes_w = self.weights.get(f"{p}.router.per_expert_scale")
                 if pes_w is None:
                     pes_w = self.weights.get(f"{p}.moe.per_expert_scale")
                 if pes_w is not None:
                     self._pes_cache[i] = self._buf_to_numpy(pes_w).astype(np.float32)
-        if self.is_moe:
             self._validate_expert_weights()
 
     def _validate_expert_weights(self) -> None:

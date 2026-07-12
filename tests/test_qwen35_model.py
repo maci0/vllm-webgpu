@@ -285,18 +285,20 @@ def test_mlx_dequant_correctness():
     from vllm_webgpu.quant.weight_loader import _dequant_mlx_int4
 
     # All-zero weights + bias of 3.0 -> every output = 3.0
+    # group_size derived from shapes: 2 packed cols * 8 // 1 scale group = 16
     w = np.zeros((2, 2), dtype=np.uint32)    # 2 rows, 16 input cols
     s = np.ones((2, 1), dtype=np.float32)
     b = np.full((2, 1), 3.0, dtype=np.float32)
-    result = _dequant_mlx_int4(w, s, b, group_size=16)
+    result = _dequant_mlx_int4(w, s, b)
     assert result.shape == (2, 16)
     assert np.allclose(result, 3.0), f"Expected all 3.0, got {result}"
 
     # Nibble ordering: 0x12345678 should unpack to [8,7,6,5,4,3,2,1]
+    # group_size derived from shapes: 1 packed col * 8 // 1 scale group = 8
     w2 = np.array([[0x12345678]], dtype=np.uint32)
     s2 = np.ones((1, 1), dtype=np.float32)
     b2 = np.zeros((1, 1), dtype=np.float32)
-    result2 = _dequant_mlx_int4(w2, s2, b2, group_size=8)
+    result2 = _dequant_mlx_int4(w2, s2, b2)
     assert list(result2[0].astype(int)) == [8, 7, 6, 5, 4, 3, 2, 1], (
         f"Wrong nibble order: {list(result2[0])}"
     )

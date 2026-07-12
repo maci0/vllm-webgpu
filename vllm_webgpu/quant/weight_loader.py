@@ -540,14 +540,16 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
             with open(hf_quant) as f:
                 cfg = json.load(f)
             if cfg.get('quant_method', '').lower().startswith('modelopt'):
-                # Duplicate of ModelOptFp8Config._extract_modelopt_quant_algo
+                # Mirrors ModelOptFp8Config._extract_modelopt_quant_algo
                 # (vllm/model_executor/layers/quantization/modelopt.py).
                 # modelopt.py has top-level CUDA imports that crash on WebGPU,
                 # making ModelOptFp8Config permanently unimportable here.
                 # On each vLLM bump, diff _extract_modelopt_quant_algo against
                 # this block and update if the hf_quant_config.json parsing changes.
-                quant_section = cfg.get('quantization')
-                if quant_section is not None:
+                # Key-presence check ("quantization" in cfg) matches vLLM's logic
+                # exactly; cfg.get("quantization") would silently skip null values.
+                if "quantization" in cfg:
+                    quant_section = cfg["quantization"]
                     quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
                 else:
                     quant_algo = cfg.get('quant_algo', '')
@@ -1492,7 +1494,6 @@ def _dequant_mlx_int4(
     weight_u32: "np.ndarray",
     scales_f32: "np.ndarray",
     biases_f32: "np.ndarray",
-    group_size: int = 64,
 ) -> "np.ndarray":
     """Dequantize MLX affine int4 weights to float32.
 
@@ -1501,10 +1502,14 @@ def _dequant_mlx_int4(
     biases_f32: [out_rows, in_cols/group_size]
     Returns float32 [out_rows, in_cols].
 
+    group_size is derived from tensor shapes: weight_u32.shape[1] * 8 // scales_f32.shape[1].
+    This handles any MLX group size without caller-supplied constants.
+
     Uses mlx.core.dequantize when mlx is available (avoids the numpy nibble
     unpacking loop). Falls back to numpy when mlx is not installed, keeping
     mlx optional and avoiding the Metal-device init it triggers on import.
     """
+    group_size = weight_u32.shape[1] * 8 // scales_f32.shape[1]
     try:
         import mlx.core as mx
         w_mlx = mx.array(weight_u32)
@@ -1525,16 +1530,14 @@ def _dequant_mlx_int4(
 
 def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = None,
                      weight_transforms: "dict | None" = None,
-                     skip_prefixes: "frozenset[str] | None" = None,
-                     group_size: int = 64) -> dict:
+                     skip_prefixes: "frozenset[str] | None" = None) -> dict:
     """Load MLX affine int4 safetensors weights, dequantize to f16, upload to GPU.
 
     weight_map: when supplied by the caller (e.g. load_safetensors_weights_sharded
     which has already parsed the index), the index file is not re-read from disk.
 
-    group_size: quantization group size. Callers that already know this value pass
-    it directly. Must be a positive integer; passing 0 causes a ZeroDivisionError
-    in the numpy dequant path and a runtime error in the MLX path.
+    group_size is derived from tensor shapes inside _dequant_mlx_int4 and does not
+    need to be supplied by the caller.
     """
     import torch as _torch
 
@@ -1628,7 +1631,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 w_u32 = t.numpy()
                 scales_f32 = s_t.to(_torch.float32).numpy()
                 biases_f32 = b_t.to(_torch.float32).numpy()
-                dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32, group_size)
+                dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32)
                 arr = np.clip(dequant, -_F16_MAX, _F16_MAX).astype(np.float16)
                 if weight_transforms and wk in weight_transforms:
                     arr = weight_transforms[wk](arr.astype(np.float32)).astype(np.float16)

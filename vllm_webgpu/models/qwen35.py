@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched, chain
+from itertools import batched
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -299,8 +299,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         identically for both [CONV_DIM, 1, KERNEL] and [CONV_DIM, KERNEL], so no
         reshape is needed.
         """
-        dev = self.wgpu_device.wgpu_device
-
         # Use MambaStateShapeCalculator so the formula stays in one canonical place
         # and any upstream change to the shape definition is automatically reflected here.
         conv_shape, ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
@@ -328,8 +326,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         for i in range(self.num_layers):
             if self._is_full_attn(i):
                 continue
-            self._ssm_gpu[i]  = WebGPUBuffer.empty(dev, max(ssm_bytes, 8))
-            self._conv_gpu[i] = WebGPUBuffer.empty(dev, max(conv_bytes, 8))
+            self._ssm_gpu[i]  = self._make_buf(ssm_bytes)
+            self._conv_gpu[i] = self._make_buf(conv_bytes)
 
     def load_weights(self, path: str, *, num_spec: int = 0) -> None:
         # A_log and dt_bias are small per-head arrays originally in bf16 but stored
@@ -410,10 +408,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         matching gated_delta_net_state_shape. The shader stores state in the same
         layout, so no transposition is needed on readback.
         """
-        bufs = list(chain(
-            (("conv", i, b) for i, b in self._conv_gpu.items()),
-            (("ssm",  i, b) for i, b in self._ssm_gpu.items()),
-        ))
+        bufs = [("conv", i, b) for i, b in self._conv_gpu.items()] + [("ssm", i, b) for i, b in self._ssm_gpu.items()]
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:
