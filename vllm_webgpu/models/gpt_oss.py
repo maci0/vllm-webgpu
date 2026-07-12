@@ -78,6 +78,77 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # would have no observable effect. Restore it alongside a forward() override if
         # batch-prefill support is added for GptOss.
 
+    def load_weights(
+        self,
+        path: str,
+        f32_keys: "frozenset[str] | None" = None,
+        skip_prefixes: "frozenset[str] | None" = None,
+        scale_transforms: "dict | None" = None,
+    ) -> None:
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
+                             scale_transforms=scale_transforms)
+        self._split_expert_biases()
+
+    def _split_expert_biases(self) -> None:
+        """Expand fused per-layer expert bias tensors into per-expert GPU buffers.
+
+        The GPT-OSS HF checkpoint stores MoE biases as two fused tensors per
+        transformer layer rather than one tensor per expert:
+          model.layers.{i}.mlp.experts.gate_up_proj_bias  shape [E, 2*inter]
+          model.layers.{i}.mlp.experts.down_proj_bias     shape [E, hidden]
+
+        The dispatch methods (_dispatch_expert_gate_up, _dispatch_expert_down)
+        look up biases under per-expert dot-separated keys:
+          model.layers.{i}.mlp.experts.{j}.w1.bias   (gate, shape [inter])
+          model.layers.{i}.mlp.experts.{j}.w3.bias   (up,   shape [inter])
+          model.layers.{i}.mlp.experts.{j}.w2.bias   (down, shape [hidden])
+
+        This method reads each fused tensor back from the GPU once per layer,
+        slices row {j} for each expert, uploads the slice as a new GPU buffer,
+        and removes the fused tensor from self.weights. The fused tensors are
+        small (float16, at most 8 experts * 2 * 2048 = 32K elements ~= 64 KB),
+        so the readback overhead is negligible compared to overall model load.
+        """
+        import numpy as np
+        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+        num_experts = self._num_experts
+        inter = self._moe_inter
+        hidden = self.hidden_size
+        wgpu_dev = self.wgpu_device.wgpu_device
+
+        to_add: dict = {}
+        to_remove: list = []
+
+        for i in range(self.num_layers):
+            p = f"model.layers.{i}.mlp.experts"
+
+            gu_key = f"{p}.gate_up_proj_bias"
+            if gu_key in self.weights:
+                raw = self.weights[gu_key].to_numpy()
+                arr = raw.view(np.float16).reshape(num_experts, 2 * inter)
+                for j in range(num_experts):
+                    ep = f"{p}.{j}"
+                    to_add[f"{ep}.w1.bias"] = WebGPUBuffer.from_numpy(
+                        wgpu_dev, arr[j, :inter].copy())
+                    to_add[f"{ep}.w3.bias"] = WebGPUBuffer.from_numpy(
+                        wgpu_dev, arr[j, inter:].copy())
+                to_remove.append(gu_key)
+
+            d_key = f"{p}.down_proj_bias"
+            if d_key in self.weights:
+                raw = self.weights[d_key].to_numpy()
+                arr = raw.view(np.float16).reshape(num_experts, hidden)
+                for j in range(num_experts):
+                    ep = f"{p}.{j}"
+                    to_add[f"{ep}.w2.bias"] = WebGPUBuffer.from_numpy(
+                        wgpu_dev, arr[j].copy())
+                to_remove.append(d_key)
+
+        for k in to_remove:
+            del self.weights[k]
+        self.weights.update(to_add)
+
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
 
