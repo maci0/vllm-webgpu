@@ -12,7 +12,6 @@ from __future__ import annotations
 import torch
 from vllm.logger import init_logger
 from vllm.utils.mem_constants import MiB_bytes
-from vllm.utils.torch_utils import get_dtype_size
 
 from vllm_webgpu.v1.cache_policy import (
     MIN_WEBGPU_BUFFER_BYTES,
@@ -135,9 +134,8 @@ def _allocate_kv_pool_hybrid(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
-    dtype_bytes = get_dtype_size(dtype)
-    k_bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * dtype_bytes
-    v_bytes_per_layer = num_blocks * block_size * num_kv_heads * (head_dim_v or head_dim) * dtype_bytes
+    k_bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2
+    v_bytes_per_layer = num_blocks * block_size * num_kv_heads * (head_dim_v or head_dim) * 2
 
     if layer_types is not None and len(layer_types) != num_layers:
         raise ValueError(
@@ -203,8 +201,8 @@ def _allocate_kv_pool_per_layer(
             raise ValueError(
                 f"num_kv_heads={lp['num_kv_heads']} but head_dim=0; invalid KV spec"
             )
-        k_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * get_dtype_size(dtype)
-        v_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp.get("head_dim_v", lp["head_dim"]) * get_dtype_size(dtype)
+        k_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2
+        v_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp.get("head_dim_v", lp["head_dim"]) * 2
         model.kv_pool.append((
             WebGPUBuffer.empty(dev, k_bytes),
             WebGPUBuffer.empty(dev, v_bytes),

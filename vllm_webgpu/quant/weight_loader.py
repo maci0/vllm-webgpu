@@ -453,16 +453,16 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
         try:
             import torch as _torch
             from auto_awq.utils.packing_utils import dequantize_gemm as _awq_dq
-            t_qw = _torch.from_numpy(qweight.astype(np.int32))
-            t_qz = _torch.from_numpy(qzeros.astype(np.int32))
-            t_sc = _torch.from_numpy(scales.astype(np.float16))
+            t_qw = _torch.from_numpy(qweight.astype(np.int32, copy=False))
+            t_qz = _torch.from_numpy(qzeros.astype(np.int32, copy=False))
+            t_sc = _torch.from_numpy(scales.astype(np.float16, copy=False))
             out = _awq_dq(t_qw, t_qz, t_sc, bits=4, group_size=group_size)
             return out.numpy().T.astype(np.float16)
         except Exception as _e:
             logger.debug("auto_awq dequantize_gemm failed, using numpy fallback: %s", _e)
 
-    qw = qweight.astype(np.int32)            # (K, N//8)
-    qz = qzeros.astype(np.int32)             # (G, N//8)
+    qw = qweight.astype(np.int32, copy=False)  # (K, N//8)
+    qz = qzeros.astype(np.int32, copy=False)   # (G, N//8)
     sc = scales.astype(np.float32)           # (G, N)
 
     # Unpack 8 nibbles per int32 → (K, N) uint8

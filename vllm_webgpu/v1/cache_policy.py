@@ -243,9 +243,9 @@ def allocate_kv_from_tensors(
                 # layer names (e.g. "model.layers.3.self_attn"). If a future model
                 # uses two integers in its layer names, extract_layer_index would
                 # raise AssertionError here and the error block below would surface it.
-                # The return value is discarded here; the index-to-bytes mapping is
-                # built after the loop with an explicit duplicate-index check.
-                extract_layer_index(layer_name)
+                # The return value is stored in the tuple below to avoid a second
+                # extract_layer_index call in the resolution loop.
+                _idx = extract_layer_index(layer_name)
             except (AssertionError, ValueError, IndexError) as exc:
                 # extract_layer_index uses bare assert statements; IndexError fires
                 # when -O disables asserts and int_vals ends up empty (bare [0] access
@@ -262,7 +262,7 @@ def allocate_kv_from_tensors(
                     exc,
                 )
                 raise
-            layer_kv_bytes[layer_name] = (k_bytes, v_bytes)
+            layer_kv_bytes[layer_name] = (_idx, k_bytes, v_bytes)
 
     # Resolve layer names to integer indices once, after the loop, with an explicit
     # collision check. Two distinct layer names that map to the same integer (e.g.
@@ -270,14 +270,13 @@ def allocate_kv_from_tensors(
     # multi-attention-per-layer model) would otherwise silently overwrite each other's
     # buffer sizes, producing wrong K/V allocations with no error at runtime.
     layer_idx_kv: dict[int, tuple[int, int]] = {}
-    for _lname, _sizes in layer_kv_bytes.items():
-        _idx = extract_layer_index(_lname)
+    for _lname, (_idx, _k, _v) in layer_kv_bytes.items():
         if _idx in layer_idx_kv:
             raise RuntimeError(
                 f"Two layer names resolve to the same index {_idx}: "
                 f"{_lname!r} and a previous entry. This is a model configuration bug."
             )
-        layer_idx_kv[_idx] = _sizes
+        layer_idx_kv[_idx] = (_k, _v)
 
     # Sliding-attention layers in supported models always receive FullAttentionSpec(sliding_window=None)
     # from get_kv_cache_spec; the SlidingWindowSpec/FullAttentionSpec(sliding_window!=None) rejections

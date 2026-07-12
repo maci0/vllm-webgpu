@@ -39,6 +39,9 @@ def _get_wgpu_adapter():
     except ImportError:
         return None
     except ValueError:
+        # Re-raise config validation errors (ValueError from WebGPUConfig.__post_init__)
+        # so they propagate to the caller rather than being swallowed by the broad
+        # Exception handler below.
         raise
     except Exception as exc:
         logger.debug("WebGPU adapter probe failed: %s", exc)

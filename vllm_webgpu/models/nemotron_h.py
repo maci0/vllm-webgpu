@@ -596,11 +596,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     # ── Weight loading ────────────────────────────────────────────────────────
 
-    # Use the upstream mapper directly. The assertion below catches any upstream
-    # changes at import time so weight-key mangling is caught early rather than
-    # silently producing wrong inference results.
-    _hf_to_vllm_mapper = _NemotronHForCausalLM.hf_to_vllm_mapper
-
     def load_weights(self, path: str, *, num_spec: int = 0) -> None:
         """Load weights with key remapping and Mamba-specific postprocessing."""
         # D, dt_bias, and A_log are F32 in the checkpoint and are read as array<f32>
@@ -633,13 +628,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 f"skipped prefix ({skip_prefixes}) and the transform registration needs "
                 f"to be guarded accordingly."
             )
-        self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
+        self.weights = _NemotronHForCausalLM.hf_to_vllm_mapper.apply_dict(self.weights)
         # self.weight_meta was populated by super().load_weights() with HF-prefixed
         # keys (e.g. 'backbone.layers.0.mixer.in_proj'). Remap those keys to match
         # the vLLM key space that the rest of the model uses ('model.*'), then drop
         # entries whose weight was filtered out before loading (e.g. mtp.*).
         if self.weight_meta:
-            self.weight_meta = self._hf_to_vllm_mapper.apply_dict(self.weight_meta)
+            self.weight_meta = _NemotronHForCausalLM.hf_to_vllm_mapper.apply_dict(self.weight_meta)
             self.weight_meta = {
                 k: v for k, v in self.weight_meta.items()
                 if (k + ".weight") in self.weights

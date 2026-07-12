@@ -117,11 +117,17 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # conv_dim = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads
-        # Verbatim from vllm/model_executor/layers/mamba/mamba_utils.py L223 (tp=1,
-        # extra_groups_for_head_shards=0). _alloc_lin_states uses MambaStateShapeCalculator
-        # directly when the full shape (including state_len) is needed.
-        self._lin_conv_dim: int = self._lin_k_dim * self._lin_k_heads * 2 + self._lin_v_dim * self._lin_v_heads
+        # conv_dim is derived from MambaStateShapeCalculator so the formula stays canonical.
+        # gated_delta_net_state_shape returns (conv_shape, ssm_shape); with SD layout
+        # (is_conv_state_dim_first() == False), conv_shape is (state_len, dim), so index 1
+        # is the conv_dim. DS layout is rejected in _alloc_lin_states (raises NotImplementedError).
+        _conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel, num_spec=0,
+        )
+        self._lin_conv_dim: int = _conv_shape[1]  # SD layout: (state_len, dim) → dim at index 1
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         self._gdn_k_base: int = self._lin_k_heads * self._lin_k_dim

@@ -379,6 +379,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         The final gelu_mul always writes to msc["expert_act"] so callers are
         unaffected.
         """
+        _validate_gate_consts(extra_gate_consts)
+
         gb_key = gw_key.removesuffix(".weight") + ".bias"
         ub_key = uw_key.removesuffix(".weight") + ".bias"
         g_bias = self.weights.get(gb_key)
@@ -387,8 +389,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         if g_bias is None and u_bias is None:
             super()._dispatch_expert_gate_up(normed_x, gw_key, uw_key, inter, extra_gate_consts)
             return
-
-        _validate_gate_consts(extra_gate_consts)
 
         if inter % 4 != 0:
             raise ValueError(
@@ -448,7 +448,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         sequence (bypassing the fused moe_expert_down_accum shader which has no bias
         binding) and uses expert_tmp as the staging buffer for the biased output.
         """
-        w2_bias = self.weights.get(f"{ep}.{down_key_name}.bias")
+        base_key = w2_key.removesuffix('.weight')
+        w2_bias = self.weights.get(f"{base_key}.bias")
         if w2_bias is None:
             super()._dispatch_expert_down(ep, down_key_name, w2_key, k_idx, inter)
             return
@@ -460,7 +461,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         msc = self._moe_sc
         hidden = self.hidden_size
         uq_d = self._uq_for_key(w2_key)
-        qi_d = self._quant_extra(f"{ep}.{down_key_name}", uq_d)
+        qi_d = self._quant_extra(base_key, uq_d)
 
         # Down GEMV with fused bias (HAS_BIAS=1) → expert_tmp.
         # Avoids a separate add dispatch by fusing the bias into matmul_quant,

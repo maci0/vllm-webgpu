@@ -42,11 +42,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
 # to 1e-5 if the private name moves in a future vLLM release.
 try:
     from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
+    if GREEDY_TEMP != 1e-5:
+        logger.warning('_SAMPLING_EPS changed to %s; verify greedy-threshold behaviour and update the fallback constant', GREEDY_TEMP)
 except ImportError:
     logger.warning('_SAMPLING_EPS not found in vllm.v1.sample.sampler; using hardcoded fallback 1e-5')
     GREEDY_TEMP = 1e-5
-if GREEDY_TEMP != 1e-5:
-    logger.warning('_SAMPLING_EPS changed to %s; verify greedy-threshold behaviour and update the fallback constant', GREEDY_TEMP)
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

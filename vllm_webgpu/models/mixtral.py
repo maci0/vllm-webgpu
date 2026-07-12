@@ -1,5 +1,4 @@
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -289,6 +288,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         keys (ending in '.weight'); the quant-extra prefix is derived by
         stripping the suffix.
         """
+        _validate_gate_consts(extra_gate_consts)
         msc = self._moe_sc
         hidden = self.hidden_size
         uq_g = self._uq_for_key(gw_key)
@@ -354,6 +354,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """
         msc = self._moe_sc
         hidden = self.hidden_size
+        base_key = w2_key.removesuffix('.weight')
         uq_d = self._uq_for_key(w2_key)
         if uq_d == 0:
             self._dispatch(
@@ -365,7 +366,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             )
         else:
             self._ensure_expert_tmp()
-            qi_d = self._quant_extra(f"{ep}.{down_key_name}", uq_d)
+            qi_d = self._quant_extra(base_key, uq_d)
             self._dispatch(
                 "matmul_quant",
                 [msc["expert_act"], self.weights[w2_key],
@@ -440,7 +441,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """
         if extra_gate_consts is None:
             extra_gate_consts = {}
-        _validate_gate_consts(extra_gate_consts)
         import wgpu as _wgpu_lib
         dev = self.wgpu_device.wgpu_device
         msc = self._moe_sc
@@ -480,7 +480,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(logging.DEBUG)
+        _debug_weights = logger.isEnabledFor(10)  # logging.DEBUG == 10
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

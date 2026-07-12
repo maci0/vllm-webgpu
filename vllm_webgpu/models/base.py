@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -87,7 +86,9 @@ def compute_yarn_freqs(
                      head_dim * rope_scaling.get("partial_rotary_factor", 1.0)
                      (branch 2). Mirrors get_rope() in
                      vllm/model_executor/layers/rotary_embedding/__init__.py:66-72.
-                     On each vLLM bump, verify those two branches against get_rope().
+                     On each vLLM bump, verify those two branches against get_rope() and
+                     re-check the inline inv_freq formula against YaRNScalingRotaryEmbedding
+                     ._compute_inv_freq (yarn_scaling_rope.py:49-73) to catch silent drift.
 
     Returns:
         freqs:  [rotary_dim // 2] float32 array of scaled inv_freq values.
@@ -123,6 +124,7 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
+    import torch
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
     mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
