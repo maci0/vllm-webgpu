@@ -196,18 +196,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.n_groups: int = model_config.n_groups
         self.ssm_state_size: int = model_config.ssm_state_size
         self.conv_kernel: int = model_config.conv_kernel
-        # conv_dim mirrors mamba_mixer2.py L313:
-        #   conv_dim = intermediate_size + 2 * n_groups * state_size
+        # conv_dim mirrors mamba_mixer2.py L312-313:
+        #   self.groups_ssm_state_size = self.n_groups * self.ssm_state_size
+        #   self.conv_dim = intermediate_size + 2 * self.groups_ssm_state_size
         # where intermediate_size == mamba_int (num_heads * head_dim).
         # tp=1 assumption: extra_groups_for_head_shards(n_groups, 1) is always 0
         # because n_groups % 1 == 0, so n_groups is unchanged.
-        # Calling through the public classmethod ties this formula to the vLLM API;
-        # a signature or semantics change surfaces on import rather than silently
-        # diverging. On each vLLM bump, diff mamba_mixer2.py L313 and L328-355
-        # against these two lines. The _validate_mamba_weights runtime check is
-        # the primary guard and must remain.
-        # conv_dim mirrors mamba_mixer2.py L313 (tp=1: no extra groups).
-        # On each vLLM bump, diff mamba_mixer2.py L313 against this line.
+        # On each vLLM bump, diff mamba_mixer2.py L300-320 against this line.
+        # _validate_mamba_weights is the primary runtime guard and must remain.
         self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
