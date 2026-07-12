@@ -1,28 +1,18 @@
-"""Parity tests for compute_yarn_freqs against vLLM's YaRN implementation.
+"""Smoke tests for compute_yarn_freqs against vLLM's YaRN implementation.
 
-compute_yarn_freqs inlines the arithmetic from
-YaRNScalingRotaryEmbedding._compute_inv_freq using only public vLLM helpers,
-because calling _compute_inv_freq directly requires a fully constructed instance
-whose __init__ allocates a potentially hundreds-of-MB cos/sin cache.
+compute_yarn_freqs delegates directly to
+YaRNScalingRotaryEmbedding._compute_inv_freq via a minimal stub built with
+object.__new__, so it tracks vLLM's implementation automatically. These tests
+verify that the delegation and parameter mapping are correct.
 
-The reference helper _vllm_yarn_freqs below uses object.__new__ to build a
-minimal stub and calls _compute_inv_freq on it, equivalent to reading the
-inv_freq that __init__ would have stored, without paying for the cache.
-
-Version pin: validated against vLLM 0.24.0. Run these tests after each vLLM
-bump to catch formula drift in yarn_scaling_rope.py::_compute_inv_freq.
-When vLLM exports a standalone public inv_freq helper, replace compute_yarn_freqs
-with that call and simplify this test accordingly.
+The reference helper _vllm_yarn_freqs below calls _compute_inv_freq via the
+same stub pattern; it exists as an independent cross-check so that any mistake
+in the attribute mapping inside compute_yarn_freqs surfaces as a test failure.
 """
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 import pytest
-
-# vLLM version this test was validated against.
-_VALIDATED_VLLM_VERSION = "0.24.0"
 
 
 _ROPE_THETA = 10000.0
@@ -87,17 +77,13 @@ def _vllm_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> "t
     reason="vllm not installed",
 )
 def test_yarn_freqs_matches_vllm():
-    """compute_yarn_freqs must produce the same output as the vLLM reference."""
-    import vllm
-    if vllm.__version__ != _VALIDATED_VLLM_VERSION:
-        warnings.warn(
-            f"test_yarn_freqs_matches_vllm was validated against vLLM "
-            f"{_VALIDATED_VLLM_VERSION}; running against {vllm.__version__}. "
-            "If the test fails, check yarn_scaling_rope.py::_compute_inv_freq for "
-            "formula changes and update compute_yarn_freqs in vllm_webgpu/models/base.py.",
-            stacklevel=1,
-        )
+    """compute_yarn_freqs must produce the same output as the independent reference.
 
+    Both sides call _compute_inv_freq via the same object.__new__ stub pattern,
+    but compute_yarn_freqs goes through the public wrapper while _vllm_yarn_freqs
+    calls the method directly. Any attribute-mapping mistake in the wrapper will
+    surface here.
+    """
     from vllm_webgpu.models.base import compute_yarn_freqs
 
     freqs_ours, mscale_ours = compute_yarn_freqs(
@@ -110,8 +96,8 @@ def test_yarn_freqs_matches_vllm():
     np.testing.assert_allclose(
         freqs_ours, freqs_vllm, rtol=1e-5, atol=1e-7,
         err_msg=(
-            "compute_yarn_freqs diverged from vLLM's _compute_inv_freq. "
-            "Check if vLLM bumped the YaRN formula and update base.py accordingly."
+            "compute_yarn_freqs attribute mapping diverged from _vllm_yarn_freqs. "
+            "Check the stub attribute assignments in base.py::compute_yarn_freqs."
         ),
     )
     assert abs(mscale_ours - mscale_vllm) < 1e-6, (

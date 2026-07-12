@@ -66,13 +66,11 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Uses inline arithmetic with the public vLLM helpers yarn_find_correction_range,
-    yarn_linear_ramp_mask, and yarn_get_mscale imported from
-    vllm.model_executor.layers.rotary_embedding.common. The implementation does
-    NOT delegate to YaRNScalingRotaryEmbedding._compute_inv_freq and does NOT
-    automatically track upstream changes to that private method; run
-    tests/test_yarn_freqs.py::test_yarn_freqs_matches_vllm after each vLLM bump
-    to catch any numerical divergence.
+    Delegates directly to YaRNScalingRotaryEmbedding._compute_inv_freq via a
+    minimal stub instance built with object.__new__, mirroring what get_rope()
+    does in vllm/model_executor/layers/rotary_embedding/__init__.py. The stub
+    avoids triggering the full __init__ (which allocates the entire cos/sin
+    cache); only the six attributes read by _compute_inv_freq are set.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -112,7 +110,7 @@ def compute_yarn_freqs(
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
     # Defaults match YaRNScalingRotaryEmbedding.__init__ keyword defaults exactly
-    # (verified vLLM 0.24, rotary_embedding/__init__.py:250-256).
+    # (see rotary_embedding/__init__.py for the get_rope() call site).
     beta_fast            = int(rope_scaling.get("beta_fast", 32))
     beta_slow            = int(rope_scaling.get("beta_slow", 1))
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
@@ -120,31 +118,25 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
     )
 
-    # Replicate _compute_inv_freq arithmetic inline using the two public
-    # vLLM helpers — avoids the __new__ stub and the private-API dependency
-    # on YaRNScalingRotaryEmbedding._compute_inv_freq.
-    import torch as _torch
-    pos_freqs = rope_theta ** (
-        _torch.arange(0, rotary_dim, 2, dtype=_torch.float) / rotary_dim
-    )
-    inv_freq_extrapolation = 1.0 / pos_freqs
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    inv_freq_mask = (
-        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=_torch.float)
-    ) * extrapolation_factor
-    inv_freq = (
-        inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
-    ).numpy()
+    # Build a minimal stub to call _compute_inv_freq without triggering the
+    # full __init__ (which allocates the entire cos/sin cache). The method only
+    # reads base, rotary_dim, max_position_embeddings, beta_fast, beta_slow,
+    # extrapolation_factor, and truncate — all set below.
+    yarn_emb = object.__new__(YaRNScalingRotaryEmbedding)
+    yarn_emb.base                    = rope_theta
+    yarn_emb.rotary_dim              = rotary_dim
+    yarn_emb.max_position_embeddings = orig_ctx
+    yarn_emb.beta_fast               = beta_fast
+    yarn_emb.beta_slow               = beta_slow
+    yarn_emb.extrapolation_factor    = extrapolation_factor
+    yarn_emb.truncate                = truncate
+    inv_freq = yarn_emb._compute_inv_freq(factor).numpy()
 
-    # mscale uses the public yarn_get_mscale — keep inline so it stays bound
-    # to the imported function, not a stub attribute.
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
