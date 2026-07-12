@@ -451,7 +451,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
             t_qz = _torch.from_numpy(qzeros.astype(np.int32))
             t_sc = _torch.from_numpy(scales.astype(np.float16))
             out = _awq_dq(t_qw, t_qz, t_sc, bits=4, group_size=group_size)
-            return np.ascontiguousarray(out.numpy().astype(np.float16))
+            return np.ascontiguousarray(out.numpy().T.astype(np.float16))
         except Exception as _e:
             logger.debug("auto_awq dequantize_gemm failed, using numpy fallback: %s", _e)
 
