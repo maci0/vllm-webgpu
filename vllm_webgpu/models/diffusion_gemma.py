@@ -310,14 +310,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 f"max_position_embeddings in the model config is too small for this sequence"
             )
 
+        self._write_pre_inputs(input_ids, positions, attn_metadata)
         pre = self._pre
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
-        dev.queue.write_buffer(
-            pre["slot_map"].buf, 0,
-            np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = self._bt_arr(attn_metadata)
-        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         ids_buf = pre["ids"]
         pos_buf = pre["pos"]

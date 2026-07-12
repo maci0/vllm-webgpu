@@ -226,9 +226,9 @@ class WebGPUModelRunner:
 
         Returns None when no per-layer params exist. Falls back to the HF
         config attribute only when the model has not set _lp at all (None),
-        not when it is explicitly set to [] — an empty list means the model
+        not when it is explicitly set to [] (an empty list means the model
         has confirmed there are no heterogeneous layers, and that signal must
-        not be overridden by a stale HF config attribute.
+        not be overridden by a stale HF config attribute).
 
         Note: when self.model is None (always the case on the first call, since
         vLLM calls get_kv_cache_spec before load_model), falls back to
@@ -269,7 +269,7 @@ class WebGPUModelRunner:
         #
         # Only layers whose type appears in ATTN_TYPES get a KV cache entry.
         # Mamba, MLP, and linear-attention layers carry no KV state and must be
-        # excluded — emitting a FullAttentionSpec for them over-reports KV memory.
+        # excluded; emitting a FullAttentionSpec for them over-reports KV memory.
         # NemotronH attention layers live under .mixer, not .self_attn.
         _is_nemotron_h = ARCH_MAP.get(self.vllm_config.model_config.architecture) == "nemotron_h"
         _attn_suffix = ".mixer" if _is_nemotron_h else ".self_attn"
@@ -326,7 +326,7 @@ class WebGPUModelRunner:
                         f"num_hidden_layers ({num_hidden_layers}) for NemotronH"
                     )
                 )
-                raise ValueError(msg + " — KV spec cannot be determined safely")
+                raise ValueError(msg + ": KV spec cannot be determined safely")
             # Only trust layer_types when it covers every layer; a partial or
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
@@ -690,7 +690,7 @@ class WebGPUModelRunner:
         # Multi-sequence batching is not supported: one forward() call per request.
         # Why true batching can't be done without architecture changes:
         #   - queue.write_buffer() executes before submit, so all N writes to the
-        #     same pre-allocated buffers would alias — only the last request's data
+        #     same pre-allocated buffers would alias; only the last request's data
         #     would survive into the encoder.
         #   - Pre-allocated scratch buffers (_pre/_sc) are sized for T=1.
         #   - Attention shaders accept one block table, so cross-request KV attention
@@ -826,7 +826,7 @@ class WebGPUModelRunner:
                 # Compute logprobs if requested for this request.
                 lp_data = self._extract_logprob_data(logits, 0, stok, num_logprobs, rid)
 
-                # Commit state after a successful forward — don't mutate on failure.
+                # Commit state after a successful forward: don't mutate on failure.
                 # rng is a stateful object; storing the same reference is sufficient.
                 # Extend token_history with the newly generated token so that
                 # replay_prefix_for_ssm has the full sequence if this request is

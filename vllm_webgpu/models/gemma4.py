@@ -701,6 +701,27 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         if not self._skip_mr4_scan:
             self._mr4_ok: bool = self._mr4_quant_supported()
 
+    def _write_pre_inputs(
+        self,
+        input_ids: np.ndarray,
+        positions: np.ndarray,
+        attn_metadata: object,
+    ) -> None:
+        """Upload ids/positions/slot_map/block_table into pre-allocated buffers.
+
+        Called at the start of every decode forward pass. No GPU allocation;
+        write_buffer enqueues the writes without blocking.
+        """
+        dev = self.wgpu_device.wgpu_device
+        pre = self._pre
+        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(
+            pre["slot_map"].buf, 0,
+            np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
+        bt_arr = self._bt_arr(attn_metadata)
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+
     def forward(
         self,
         input_ids: np.ndarray,
@@ -722,15 +743,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         ctx_len = int(attn_metadata.max_decode_seq_len)
 
-        # Update pre-allocated buffers via write_buffer — no GPU allocation per step.
+        # Update pre-allocated buffers; no GPU allocation per step.
+        self._write_pre_inputs(input_ids, positions, attn_metadata)
         pre = self._pre
-        dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
-        dev.queue.write_buffer(pre["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
-        dev.queue.write_buffer(
-            pre["slot_map"].buf, 0,
-            np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
-        bt_arr = self._bt_arr(attn_metadata)
-        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         ids_buf    = pre["ids"]
         pos_buf    = pre["pos"]

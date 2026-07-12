@@ -1,5 +1,5 @@
 from __future__ import annotations
-from itertools import batched
+from itertools import batched, chain
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -107,6 +107,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # transform registered in load_weights; the gate half is stored under
         # self_attn.q_gate_proj.weight.
         self._attn_output_gate: bool = getattr(model_config, "attn_output_gate", True)
+
+        # Reject DS layout immediately: _alloc_lin_states raises NotImplementedError for it,
+        # but by then several buffers are already allocated with wrong sizes. Fail early
+        # before any GDN-related allocation.
+        if is_conv_state_dim_first():
+            raise NotImplementedError(
+                "VLLM_SSM_CONV_STATE_LAYOUT=DS is not supported by the WebGPU backend. "
+                "Use the default SD layout (VLLM_SSM_CONV_STATE_LAYOUT=SD or unset)."
+            )
 
         # GDN (linear-attention) architecture dimensions from config.
         # Fall back to Qwen3.5-9B defaults if not present.
@@ -437,7 +446,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         matching gated_delta_net_state_shape. The shader stores state in the same
         layout, so no transposition is needed on readback.
         """
-        bufs = [("conv", i, b) for i, b in self._conv_gpu.items()] + [("ssm", i, b) for i, b in self._ssm_gpu.items()]
+        bufs = [*chain(
+            (("conv", i, b) for i, b in self._conv_gpu.items()),
+            (("ssm", i, b) for i, b in self._ssm_gpu.items()),
+        )]
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:
