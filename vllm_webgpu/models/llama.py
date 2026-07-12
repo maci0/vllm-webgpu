@@ -945,18 +945,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self._hstate = (self._hstate + 2) % 3
         return normed_out, out
 
-    def _effective_ctx_len(self, ctx_len: int) -> int:
-        """Effective context length for flash_attn_decode. Subclasses may cap (e.g. SWA)."""
-        return ctx_len
-
-    def _start_block(self, ctx_len: int) -> int:
-        """Block table offset for flash_attn_decode. Default is 0 (full attention).
-
-        Subclasses with sliding-window attention override this to skip old blocks
-        so the shader reads the most-recent window blocks instead of block 0.
-        """
-        return 0
-
     def _ctx_window(self, ctx_len: int) -> "tuple[int, int]":
         """Return (start_block, effective_ctx_len) for flash_attn_decode in one call.
 

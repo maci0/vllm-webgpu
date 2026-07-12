@@ -351,7 +351,6 @@ class BaseWebGPUModel(ABC):
         remap ``self.weight_meta`` before calling any method that relies on ``_quant_info()``.
         """
         from vllm_webgpu.quant.weight_loader import (
-            _check_unsupported_quant,
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded,
         )
@@ -363,7 +362,6 @@ class BaseWebGPUModel(ABC):
         transforms = self._weight_transforms
         _path = Path(path)
         _quant_cfg = getattr(self.model_config, 'quantization_config', None)
-        _check_unsupported_quant(quant_cfg=_quant_cfg if isinstance(_quant_cfg, dict) else {})
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             actual = str(_path / "model.safetensors") if _path.is_dir() else path

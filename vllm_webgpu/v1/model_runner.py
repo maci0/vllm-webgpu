@@ -9,7 +9,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
-    from vllm.v1.outputs import AsyncModelRunnerOutput, LogprobsLists
+    from vllm.v1.outputs import AsyncModelRunnerOutput
 
 logger = init_logger(__name__)
 
@@ -102,18 +102,18 @@ def _build_model(arch: str, family: "str | None", model_config: Any, wgpu_device
 def _stack(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
     """Cat a list of LogprobsTensors along the batch dimension and convert to lists.
 
-    cu_num_generated_tokens is intentionally left as None (tolists() default).
-    WebGPU produces exactly one output row per request, so
-    LogprobsLists.slice_request(i, n) uses i directly as the row index when
-    cu_num_generated_tokens is None (see vllm/v1/outputs.py:41-42).
+    cu_num_generated_tokens defaults to None: WebGPU produces exactly one output
+    row per request, so LogprobsLists.slice_request(i, n) uses i directly as the
+    row index when cu_num_generated_tokens is None (see vllm/v1/outputs.py:41-42).
 
     WebGPU tensors are already on CPU, so .cpu() inside tolists() is a no-op.
+    The intermediate LogprobsTensors object is avoided by calling numpy() directly.
     """
-    return LogprobsTensors(
-        torch.cat([x.logprob_token_ids for x in items]),
-        torch.cat([x.logprobs for x in items]),
-        torch.cat([x.selected_token_ranks for x in items]),
-    ).tolists()
+    return LogprobsLists(
+        torch.cat([x.logprob_token_ids for x in items]).numpy(),
+        torch.cat([x.logprobs for x in items]).numpy(),
+        torch.cat([x.selected_token_ranks for x in items]).numpy(),
+    )
 
 
 
@@ -435,16 +435,12 @@ class WebGPUModelRunner:
             if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
                 built_logprobs = _stack(cast("list[LogprobsTensors]", logprobs_data))
             else:
-                # Derive the dtype of selected_token_ranks from the first real
-                # entry. batched_count_greater_than returns (bool).sum(-1),
-                # which is currently int64, but vLLM's empty_cpu allocates
-                # int32. Pinning to whatever the real data carries avoids a
-                # torch.cat dtype mismatch if vLLM ever changes that.
-                rank_dtype = next(
-                    d.selected_token_ranks.dtype
-                    for d in logprobs_data
-                    if d is not None
-                )
+                # Pin rank dtype to int32, matching LogprobsTensors.empty_cpu.
+                # gather_logprobs currently returns int64 for selected_token_ranks
+                # (batched_count_greater_than returns a bool sum), so cast explicitly.
+                # If vLLM fixes gather_logprobs to return int32, the cast becomes
+                # a no-op; if empty_cpu ever changes to int64, update both here
+                # and the dummy row below.
                 pieces = []
                 for d in logprobs_data:
                     if d is not None:
@@ -452,13 +448,13 @@ class WebGPUModelRunner:
                         pieces.append(LogprobsTensors(
                             pad(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
                             pad(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
-                            d.selected_token_ranks,
+                            d.selected_token_ranks.to(torch.int32),
                         ))
                     else:
                         pieces.append(LogprobsTensors(
                             torch.zeros(1, max_k, dtype=torch.int32),
                             torch.full((1, max_k), -float("inf"), dtype=torch.float32),
-                            torch.zeros(1, dtype=rank_dtype),
+                            torch.zeros(1, dtype=torch.int32),
                         ))
                 built_logprobs = _stack(pieces)
 

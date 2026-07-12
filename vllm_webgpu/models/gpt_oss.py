@@ -98,10 +98,12 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         def _make_stash(k: str, pending: dict = _bias_pending):
             def _stash(arr):
                 pending[k] = arr
-                # Return a 1-element placeholder so the base loader has a non-None
-                # value to upload. The resulting tiny GPU buffer is deleted immediately
-                # after super().load_weights() returns (lines below), so we avoid
-                # uploading the full fused bias tensor only to discard it.
+                # Return a minimum-size (2-element, 4-byte) placeholder so the base
+                # loader has a non-None value to upload. WebGPU requires STORAGE buffers
+                # to be at least 4 bytes; a single float16 (2 bytes) would be rejected.
+                # The resulting tiny GPU buffer is deleted immediately after
+                # super().load_weights() returns (lines below), so we avoid uploading
+                # the full fused bias tensor only to discard it.
                 return np.zeros(2, dtype=np.float16)
             return _stash
 

@@ -147,15 +147,18 @@ class WebGPUPlatform(Platform):
 
     @classmethod
     def update_block_size_for_backend(cls, vllm_config: VllmConfig) -> None:
-        # Delegate to CpuPlatform which has the identical override: skip Phase 1
-        # (backend-driven block_size selection) and run only Phase 2 (hybrid
-        # mamba/attention alignment). Both helpers (_find_non_ssm_backend,
-        # _align_hybrid_block_size) are inherited from the base Platform class and
-        # behave the same regardless of which subclass calls them.
+        # Skip Phase 1 (backend-driven block_size selection) and run only
+        # Phase 2 (hybrid mamba/attention alignment). Dispatch through cls so
+        # any WebGPUPlatform override of the helpers takes effect via normal MRO.
         # If vLLM ever adds a Platform.update_block_size_skip_backend_preference()
-        # hook or a flag to suppress Phase 1, both overrides can be deleted.
-        from vllm.platforms.cpu import CpuPlatform
-        CpuPlatform.update_block_size_for_backend(vllm_config)
+        # hook or a flag to suppress Phase 1, this override can be deleted.
+        model_config = vllm_config.model_config
+        if model_config is None or not model_config.is_hybrid:
+            return
+        backend_cls = cls._find_non_ssm_backend(vllm_config)
+        if backend_cls is None:
+            return
+        cls._align_hybrid_block_size(vllm_config, backend_cls)
 
     @classmethod
     def get_attn_backend_cls(

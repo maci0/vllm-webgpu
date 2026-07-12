@@ -5,7 +5,6 @@ from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
-from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (FullAttentionSpec,
                                          KVQuantMode,
                                          MLAAttentionSpec,

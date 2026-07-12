@@ -84,11 +84,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 f"for vec4<f16> shaders"
             )
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-        # V-norm is always applied by _decoder_layer in this subclass, regardless of
-        # model_type. The parent __init__ may have set _apply_v_norm=False when
-        # model_type != 'gemma4'. Override it here as an instance attribute so the
-        # correct value is visible at all read sites.
-        self._apply_v_norm = True
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
@@ -157,6 +152,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         T * (max_q_dim + 2 * max_kv_dim) * 2 bytes (4+ MB at canvas_length=256)
         that is immediately freed. This override replicates only what _decoder_layer
         actually uses.
+
+        DIVERGENCE TRACKING: when Gemma4WebGPUModel._init_scratch_buffers gains new
+        buffers that _decoder_layer here would also need, this method must be updated
+        to include them. The DiffusionGemma-specific additions are: scores_buf, sm_buf,
+        moe_ffn_in, router_in (see comments below).
         """
         T = self._scratch_token_count()
         H = self.hidden_size
