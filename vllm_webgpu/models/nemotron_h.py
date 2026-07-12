@@ -236,14 +236,22 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.n_groups: int = model_config.n_groups
         self.ssm_state_size: int = model_config.ssm_state_size
         self.conv_kernel: int = model_config.conv_kernel
-        # conv_dim from MambaMixer2 L313: intermediate_size + 2 * n_groups * ssm_state_size
-        # (tp=1, extra_groups_for_head_shards returns 0).
-        # Direct formula: mamba2_state_shape returns conv_dim//tp_world_size at an
-        # orientation-dependent index in the shape tuple; reverse-extraction is fragile.
-        # The formula matches MambaMixer2 L313 for tp=1 (extra_groups_for_head_shards returns 0).
-        # Cross-reference: vllm/model_executor/models/mamba_utils.py
-        # MambaStateShapeCalculator.mamba2_state_shape — verify here on each vLLM bump.
-        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
+        # conv_dim mirrors mamba_mixer2.py L313:
+        #   conv_dim = intermediate_size + 2 * n_groups * state_size
+        # where intermediate_size == mamba_int (num_heads * head_dim).
+        # tp=1 assumption: extra_groups_for_head_shards(n_groups, 1) is always 0
+        # because n_groups % 1 == 0, so n_groups is unchanged.
+        # Calling through the public classmethod ties this formula to the vLLM API;
+        # a signature or semantics change surfaces on import rather than silently
+        # diverging. On each vLLM bump, diff mamba_mixer2.py L313 and L328-355
+        # against these two lines. The _validate_mamba_weights runtime check is
+        # the primary guard and must remain.
+        _extra_groups: int = MambaStateShapeCalculator.extra_groups_for_head_shards(
+            self.n_groups, 1
+        )  # always 0 for tp=1; kept to stay aligned with the vLLM formula
+        self.conv_dim: int = (
+            self.mamba_int + 2 * (self.n_groups + _extra_groups) * self.ssm_state_size
+        )
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # MambaMixer2 in_proj output_sizes (tp=1), mamba_mixer2.py L328-340
         # (MergedColumnParallelLinear branch; the ColumnParallelLinear branch at L353
