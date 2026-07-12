@@ -178,25 +178,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self.n_groups: int = model_config.n_groups
         self.ssm_state_size: int = model_config.ssm_state_size
         self.conv_kernel: int = model_config.conv_kernel
-        # conv_dim is extracted from MambaStateShapeCalculator so any upstream
-        # change to the formula (e.g. the extra_groups_for_head_shards adjustment
-        # for non-trivial TP) is picked up automatically. For tp=1 this produces
-        # the same value as the previous inline formula. On each vLLM bump,
-        # verify that mamba2_state_shape still derives conv_dim from
-        # intermediate_size + 2 * n_groups * state_size (mamba_mixer2.py L313).
+        # conv_dim uses the same formula as MambaMixer2 (mamba_mixer2.py L313):
+        # conv_dim = intermediate_size + 2 * n_groups * state_size.
+        # For tp=1 extra_groups_for_head_shards returns 0, so this is exact.
+        # On each vLLM bump, verify the formula against mamba_mixer2.py L313.
         # _validate_mamba_weights is the primary runtime guard and must remain.
-        _conv_state_shape, _ = MambaStateShapeCalculator.mamba2_state_shape(
-            tp_world_size=1,
-            intermediate_size=self.mamba_int,
-            n_groups=self.n_groups,
-            num_heads=self.mamba_num_heads,
-            head_dim=self.mamba_head_dim,
-            state_size=self.ssm_state_size,
-            conv_kernel=self.conv_kernel,
-            num_spec=0,
-        )
-        # SD layout: _orient_conv_shape returns (state_len, conv_dim); index [1].
-        self.conv_dim: int = _conv_state_shape[1]
+        self.conv_dim: int = self.mamba_int + 2 * self.n_groups * self.ssm_state_size
         # in_proj output: [gate (mamba_int) | x_B_C (conv_dim) | dt (mamba_num_heads)]
         # Derived from MambaMixer2's two in_proj branches (both produce the same total
         # for tp=1; WebGPU never runs tp>1):

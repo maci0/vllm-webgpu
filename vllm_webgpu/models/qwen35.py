@@ -122,7 +122,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # canonical place. Layout (DS vs SD) only controls which tuple index holds the
         # value; extract the dim via is_conv_state_dim_first().
         # _alloc_lin_states calls MambaStateShapeCalculator again when the full shape
-        # (including state_len) is needed, and asserts this value matches.
+        # (including state_len) is needed.
         _conv_shape_init, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
             tp_world_size=1,
             num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,

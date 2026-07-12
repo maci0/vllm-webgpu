@@ -1469,12 +1469,7 @@ def load_safetensors_weights(
 
         elif fmt == "plain":
             # Plain BF16/F16/F32
-            for name, meta in header.items():
-                if name in _i8_companion_skip:
-                    continue
-                if not _upload_plain(name):
-                    logger.warning("Unsupported dtype %s for %s, skipping",
-                                    meta.get("dtype", "?"), name)
+            _upload_non_quant(header, _i8_companion_skip, _upload_plain)
 
         # Multimodal remapping for single-file models (same patterns as sharded loader).
         # Gemma4 unified: model.language_model.X → model.X

@@ -1,5 +1,4 @@
 from __future__ import annotations
-import gc
 import time
 from typing import TYPE_CHECKING
 
@@ -195,5 +194,4 @@ class WebGPUWorker(WorkerBase):
         if self.model_runner is not None:
             self.model_runner.wgpu_device = None
         self.wgpu_device = None
-        gc.collect()
         logger.info("WebGPU worker shutdown complete")

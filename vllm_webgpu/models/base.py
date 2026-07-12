@@ -178,15 +178,14 @@ class BaseWebGPUModel(ABC):
         # Used for the matmul_quant bias slot (HAS_BIAS=0) and the scales slot
         # (USE_QUANT=0). WebGPU permits the same buffer at multiple read-only
         # STORAGE slots in one bind group, so a single allocation suffices.
-        self._dummy_buf = WebGPUBuffer.empty(wgpu_device.wgpu_device, 4)
+        self._dummy_buf = self._make_buf(4)
         # Precomputed RoPE inverse frequencies for USE_FREQ_BUF=1 (YaRN and similar).
         # All rope/fused-rope shaders declare an inv_freq_buf binding unconditionally
         # (wgpu-native does not eliminate dead bindings even at USE_FREQ_BUF=0), so
         # every dispatch must provide a buffer at the slot. Initialised here as a
         # 1-element dummy; LlamaWebGPUModel._init_rope_freq_buf() replaces it with
         # actual YaRN frequencies when rope_scaling.rope_type == "yarn".
-        self._rope_freq_buf: "WebGPUBuffer" = WebGPUBuffer.empty(
-            wgpu_device.wgpu_device, 4)  # 1-element f32 placeholder
+        self._rope_freq_buf: "WebGPUBuffer" = self._make_buf(4)  # 1-element f32 placeholder
         self._use_freq_buf: bool = False
         self._yarn_mscale: float = 1.0  # set to mscale when rope_type='yarn'
         # Greedy-decode flag: True means forward() returns a (1,1) int32 token
@@ -368,8 +367,8 @@ class BaseWebGPUModel(ABC):
             )
         transforms = self._weight_transforms
         _path = Path(path)
-        _hf_cfg = getattr(self.model_config, 'hf_config', None)
-        _quant_cfg = getattr(_hf_cfg, 'quantization_config', None) if _hf_cfg is not None else None
+        _hf_cfg = self.model_config.hf_config
+        _quant_cfg = getattr(_hf_cfg, 'quantization_config', None)
         if fmt == "safetensors":
             # If path is a directory, the actual file is model.safetensors inside it.
             actual = str(_path / "model.safetensors") if _path.is_dir() else path

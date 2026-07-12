@@ -44,7 +44,7 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.num_logprobs if sp is not None else None
+    num_logprobs = sp.logprobs if sp is not None else None
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -138,7 +138,7 @@ def _compute_prompt_logprobs(
 
     lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
     lp = Sampler.gather_logprobs(lp_t, k, torch.tensor(tok_ids[1:], dtype=torch.int64))
-    return LogprobsTensors(lp.logprob_token_ids, lp.logprobs, lp.selected_token_ranks.to(torch.int32))
+    return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
 
 
 class WebGPUModelRunner:

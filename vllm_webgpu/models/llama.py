@@ -89,13 +89,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # weights at upload time, avoiding a GPU roundtrip (to_numpy → tile → re-upload).
         # Qwen3 checkpoints store shared norm as (head_dim,); the shader expects
         # (num_heads * head_dim,) with each head using the same values.
-        def _head_xform(n):
-            return lambda a: np.tile(a, n) if a.shape == (self.head_dim,) else a
-
+        hd = self.head_dim
         self._weight_transforms.update({
-            f"model.layers.{i}.self_attn.{k}.weight": xf
+            f"model.layers.{i}.self_attn.{k}.weight":
+                (lambda a, n=num: np.tile(a, n) if a.shape == (hd,) else a)
             for i in range(self.num_layers)
-            for k, xf in (("q_norm", _head_xform(self.num_q_heads)), ("k_norm", _head_xform(self.num_kv_heads)))
+            for k, num in (("q_norm", self.num_q_heads), ("k_norm", self.num_kv_heads))
         })
         # Cached after load_weights: True iff all *_proj weights are USE_QUANT=0 or 3.
         # None means not yet computed (weights not yet loaded).
@@ -229,7 +228,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             proj_keys = [
                 k for k in self.weights
                 if k.endswith('.weight') and 'model.layers.' in k
-                and k.split('.')[-2] in _proj_suffixes
+                and k.removesuffix('.weight').rsplit('.', 1)[-1] in _proj_suffixes
             ]
             self._batch_matmul_supported = bool(proj_keys) and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
 
