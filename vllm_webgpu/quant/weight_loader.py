@@ -553,9 +553,12 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                 except ImportError:
                     # modelopt.py has top-level CUDA imports (mxfp8_utils,
                     # marlin_utils, flashinfer_utils, fused_moe) that crash on
-                    # WebGPU, so the import fails at runtime. Keep a fallback
-                    # copy of the logic here; on each vLLM bump, diff
-                    # _extract_modelopt_quant_algo against this block.
+                    # WebGPU. Fallback inlines the body of the upstream method.
+                    # sync from modelopt.py _extract_modelopt_quant_algo @ b13d666ea04f (vllm 0.24.0)
+                    # On each vLLM bump verify the hash still matches:
+                    #   sed -n '244,265p' .venv/lib/python*/site-packages/vllm/\
+                    #     model_executor/layers/quantization/modelopt.py | sha256sum
+                    # If it changed, diff the method body against this block.
                     if "quantization" in cfg:
                         quant_section = cfg["quantization"]
                         quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
