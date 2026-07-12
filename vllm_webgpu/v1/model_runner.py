@@ -838,7 +838,11 @@ class WebGPUModelRunner:
                                 # request so that all chunks accumulate correctly.
                                 existing = prompt_logprobs_dict.get(rid)
                                 if existing is not None:
-                                    prompt_logprobs_dict[rid] = existing + pt
+                                    prompt_logprobs_dict[rid] = LogprobsTensors(
+                                        torch.cat([existing.logprob_token_ids, pt.logprob_token_ids]),
+                                        torch.cat([existing.logprobs, pt.logprobs]),
+                                        torch.cat([existing.selected_token_ranks, pt.selected_token_ranks]),
+                                    )
                                 else:
                                     prompt_logprobs_dict[rid] = pt
                         else:
