@@ -58,17 +58,12 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
-_YARN_KEYS = frozenset(
-    {"beta_fast", "beta_slow", "extrapolation_factor", "attn_factor",
-     "apply_yarn_scaling", "truncate"}
-)
-
 def _load_yarn_defaults() -> dict:
     from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
         YaRNScalingRotaryEmbedding,
     )
-    kw = YaRNScalingRotaryEmbedding.__init__.__kwdefaults__ or {}
-    return {k: kw[k] for k in _YARN_KEYS if k in kw}
+    kw = YaRNScalingRotaryEmbedding.__init__.__kwdefaults__
+    return dict(kw) if kw else {}
 
 _YARN_DEFAULTS: dict = _load_yarn_defaults()
 

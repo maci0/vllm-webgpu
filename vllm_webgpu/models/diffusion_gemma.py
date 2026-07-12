@@ -50,6 +50,11 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         from vllm.model_executor.models.gemma4 import _get_text_config
+        # _get_text_config is called here before super().__init__ because we need
+        # enable_moe_block and moe_intermediate_size before Gemma4.__init__ runs
+        # _init_scratch_buffers. The parent __init__ calls _get_text_config again
+        # on the already-extracted config; _get_text_config is idempotent (returns
+        # its input unchanged when text_config is absent), so the double call is safe.
         model_config = _get_text_config(model_config)
         # Set moe_intermediate_size before super().__init__ because Gemma4.__init__
         # calls _init_scratch_buffers which dispatches to _scratch_inter_size().

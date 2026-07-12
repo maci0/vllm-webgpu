@@ -424,9 +424,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             return
 
         msc = self._moe_sc
-        # expert_tmp is allocated by _ensure_moe_expert_bufs() when the biased
-        # gate/up path runs. This guard only fires on the f16 non-bias gate/up +
-        # biased-down combination, where _ensure_moe_expert_bufs() was not called.
+        # expert_tmp is allocated by _ensure_moe_expert_bufs() (mixtral.py:L301,
+        # size=hidden_size*2) when the biased gate/up path runs. This guard only
+        # fires on the f16 non-bias gate/up + biased-down combination, where
+        # _ensure_moe_expert_bufs() was not called. If the size in
+        # _ensure_moe_expert_bufs changes, update the allocation here too.
         if "expert_tmp" not in msc:
             msc["expert_tmp"] = self._make_buf(self.hidden_size * 2)
         hidden = self.hidden_size

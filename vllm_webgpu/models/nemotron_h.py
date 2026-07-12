@@ -76,8 +76,9 @@ if _mapper.apply_list(["backbone.embed_tokens.weight"]) != ["model.embed_tokens.
     )
 del _mapper
 
-# Import-time sentinel: confirm MambaMixer2's in_proj layout still matches the
-# formula used by in_proj_dim (mamba_int + conv_dim + mamba_num_heads).
+# Layout invariant (enforced at runtime by _validate_mamba_weights): confirm
+# MambaMixer2's in_proj layout still matches the formula used by in_proj_dim
+# (mamba_int + conv_dim + mamba_num_heads).
 # WebGPU always uses tp=1, so the active branch is always MergedColumnParallelLinear
 # (mamba_mixer2.py L328-340), with output_sizes=[intermediate_size, intermediate_size,
 # groups_ssm_state_size, groups_ssm_state_size, num_heads] (5 entries summing to
@@ -1157,7 +1158,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     layer_idx, normed_x, slot_map, bt_buf, ctx_len, num_tokens
                 )
             elif lt == "mlp":
-                self._mlp_layer(layer_idx, normed_x, num_tokens)
+                self._mlp_layer(layer_idx, normed_x)
             else:
                 raise NotImplementedError(
                     f"Layer type {lt!r} at index {layer_idx} not implemented"
@@ -1381,7 +1382,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self,
         layer_idx: int,
         normed_x: "WebGPUBuffer",
-        num_tokens: int,
     ) -> None:
         """MLP-only layer with squared-ReLU activation (no gate projection).
 

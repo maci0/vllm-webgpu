@@ -158,8 +158,9 @@ class WebGPUPlatform(Platform):
         if model_config is None or not model_config.is_hybrid:
             return
         backend_cls = cls._find_non_ssm_backend(vllm_config)
-        if backend_cls is not None:
-            cls._align_hybrid_block_size(vllm_config, backend_cls)
+        if backend_cls is None:
+            return
+        cls._align_hybrid_block_size(vllm_config, backend_cls)
 
     @classmethod
     def get_attn_backend_cls(

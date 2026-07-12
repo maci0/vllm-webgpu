@@ -924,7 +924,6 @@ def load_safetensors_weights(
                             if sc_dtype not in ("F32", "F16", "BF16"):
                                 logger.warning("Int8 scale %s has unsupported dtype %s",
                                                sc_key, sc_dtype)
-                                _i8_companion_skip.add(sc_key)  # guard before break
                                 break
                             sc_arr = _load_raw(sc_key).ravel().astype(np.float32)
                             _upload(sc_arr, np.float32, 'f32', f"{name}.scales", weights)
@@ -932,7 +931,8 @@ def load_safetensors_weights(
                             logger.debug("Int8 per-channel: %s scale n=%d", base_key, sc_arr.size)
                         except Exception as exc:
                             logger.warning("Int8 scale load failed for %s: %s", base_key, exc)
-                        _i8_companion_skip.add(sc_key)
+                        finally:
+                            _i8_companion_skip.add(sc_key)
                         break
                 else:
                     logger.warning(

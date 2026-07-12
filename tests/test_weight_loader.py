@@ -411,3 +411,66 @@ def test_awq_identified_by_shape(wgpu_device, tmp_path):
     assert entry.get("fmt") in ("awq_sym", "awq"), (
         f"AWQ model not identified correctly: fmt={entry.get('fmt')!r}"
     )
+
+
+# --- _detect_mx_quant parity tests ----------------------------------------
+# _detect_mx_quant duplicates ModelOptFp8Config._extract_modelopt_quant_algo
+# from vllm/model_executor/layers/quantization/modelopt.py because that class
+# has top-level CUDA imports that crash on WebGPU. These tests guard against
+# drift with vLLM's parsing logic. On each vLLM bump, diff
+# _extract_modelopt_quant_algo against the inline block in _detect_mx_quant
+# and update if the hf_quant_config.json parsing changes.
+
+def test_detect_mx_quant_mxfp4(tmp_path):
+    """MXFP4 quant_algo recognized from hf_quant_config.json."""
+    import json
+    from vllm_webgpu.quant.weight_loader import _detect_mx_quant
+    hf_quant = tmp_path / "hf_quant_config.json"
+    hf_quant.write_text(json.dumps({
+        "quant_method": "modelopt",
+        "quantization": {"quant_algo": "MXFP4"},
+    }))
+    assert _detect_mx_quant(tmp_path) == "mxfp4"
+
+
+def test_detect_mx_quant_mxfp8(tmp_path):
+    """MXFP8 quant_algo recognized from hf_quant_config.json."""
+    import json
+    from vllm_webgpu.quant.weight_loader import _detect_mx_quant
+    hf_quant = tmp_path / "hf_quant_config.json"
+    hf_quant.write_text(json.dumps({
+        "quant_method": "modelopt",
+        "quantization": {"quant_algo": "MXFP8"},
+    }))
+    assert _detect_mx_quant(tmp_path) == "mxfp8"
+
+
+def test_detect_mx_quant_top_level_algo(tmp_path):
+    """quant_algo at the top level (no nested quantization key) is recognized."""
+    import json
+    from vllm_webgpu.quant.weight_loader import _detect_mx_quant
+    hf_quant = tmp_path / "hf_quant_config.json"
+    hf_quant.write_text(json.dumps({
+        "quant_method": "modelopt",
+        "quant_algo": "MXFP4",
+    }))
+    assert _detect_mx_quant(tmp_path) == "mxfp4"
+
+
+def test_detect_mx_quant_non_dict_quantization(tmp_path):
+    """quantization key present but not a dict: quant_algo falls back to None.
+
+    vLLM's _extract_modelopt_quant_algo returns None early in this case.
+    Our inline copy sets quant_algo=None and falls through to the config.json
+    fallback path. Both produce no MX detection when no config.json is present.
+    If this test fails after a vLLM bump, re-audit the inline block.
+    """
+    import json
+    from vllm_webgpu.quant.weight_loader import _detect_mx_quant
+    hf_quant = tmp_path / "hf_quant_config.json"
+    hf_quant.write_text(json.dumps({
+        "quant_method": "modelopt",
+        "quantization": "not_a_dict",
+    }))
+    # Neither mxfp4 nor mxfp8 should be detected.
+    assert _detect_mx_quant(tmp_path) == ""

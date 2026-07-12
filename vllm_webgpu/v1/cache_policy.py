@@ -267,10 +267,12 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     # attn_type_list lives on the outer hf_config for multimodal models where
     # hf_text_config (passed as hf_config here) differs from the outer config.
     _outer = hf_outer_config if hf_outer_config is not None else hf_config
+    # Priority order matches vLLM's ModelConfig.get_num_layers_by_block_type
+    # (model.py:1327-1362): layers_block_type > attn_type_list > layer_types.
     _probes = [
-        (hf_config, "layer_types"),
         (hf_config, "layers_block_type"),
         (_outer,    "attn_type_list"),
+        (hf_config, "layer_types"),
     ]
     if _outer is not hf_config:
         _probes.append((_outer, "layer_types"))  # fallback for outer-only configs
