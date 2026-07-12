@@ -148,7 +148,7 @@ def allocate_kv_from_tensors(
                 # dimensions (e.g. MLA-style models where head_size != head_size_v)
                 # get correctly sized buffers instead of an averaged size.
                 k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
-                v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * get_dtype_size(spec.dtype)
+                v_bytes = num_blocks * spec.real_page_size_bytes - k_bytes
                 # k_bytes + v_bytes == real_page_size_bytes * num_blocks by construction:
                 # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes.
             elif isinstance(spec, SlidingWindowMLASpec):
@@ -226,11 +226,11 @@ def allocate_kv_from_tensors(
     )
 
 
-def get_layer_types(model, hf_config, hf_outer_config=None) -> list | None:
-    """Return the layer-type list for a model, using a canonical three-way fallback.
+def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
+    """Return the layer-type list from hf_config, using a canonical fallback chain.
 
-    Priority: model._layer_types (set at load time) > hf_config.layers_block_type
-    (NemotronH/Falcon) > hf_config.layer_types (Gemma4 and similar) >
+    Priority: hf_config.layers_block_type (NemotronH/Falcon) >
+    hf_config.layer_types (Gemma4 and similar) >
     hf_outer_config.attn_type_list (Minimax).
 
     Returns None when none of the attributes is present.
@@ -243,15 +243,10 @@ def get_layer_types(model, hf_config, hf_outer_config=None) -> list | None:
     hf_text_config != hf_config, attn_type_list lives on the outer config.
     Defaults to hf_config when not provided (single-config models).
 
-    Note: the model._layer_types probe is only exercised by scripts/kv_utils.py,
-    which passes a fully loaded model object. The vLLM engine path always calls
-    this function with model=None (before weight loading), so the first probe is
-    a permanent no-op in the engine code path.
+    Callers with a fully-loaded model object should check model._layer_types before
+    calling this function and use that value if present. This function only inspects
+    hf_config; the vLLM engine always calls it before weight loading (model=None).
     """
-    if model is not None:
-        v = getattr(model, "_layer_types", None)
-        if v is not None:
-            return v
     v = getattr(hf_config, "layers_block_type", None)
     if v is None:
         v = getattr(hf_config, "layer_types", None)

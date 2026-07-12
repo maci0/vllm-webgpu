@@ -224,7 +224,7 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = new_pfx + k.removeprefix(old_pfx)
+                new_k = k.replace(old_pfx, new_pfx, 1)
                 if new_k not in d:
                     to_add[new_k] = v
                 break
@@ -537,8 +537,11 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
         try:
             with open(hf_quant) as f:
                 cfg = json.load(f)
-            from vllm.model_executor.layers.quantization.modelopt import ModelOptQuantConfigBase
-            algo = ModelOptQuantConfigBase._extract_modelopt_quant_algo(cfg) or ""
+            if cfg.get('quant_method', '').lower().startswith('modelopt'):
+                _q = cfg.get('quantization') or {}
+                algo = str(_q.get('quant_algo') or cfg.get('quant_algo') or '').upper()
+            else:
+                algo = ''
             if "MXFP4" in algo:
                 return "mxfp4"
             if "MXFP8" in algo:
@@ -601,10 +604,11 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
         return {"__global__": {"fmt": "fp8_gpu", "group_size": None}}
     if w_args.num_bits == 4 and w_args.type == _QuantizationType.INT and w_args.strategy == _QuantizationStrategy.GROUP:
         return {"__global__": {"fmt": "gptq_gpu", "group_size": w_args.group_size}}
-    logger.warning(
-        "compressed-tensors: unsupported format (num_bits=%d, type=%s, strategy=%s), "
-        "no quant_meta applied", w_args.num_bits, w_args.type, w_args.strategy)
-    return {}
+    raise ValueError(
+        f"compressed-tensors: unsupported format (num_bits={w_args.num_bits}, "
+        f"type={w_args.type}, strategy={w_args.strategy}). "
+        "Add an explicit branch to detect_compressed_tensors_fmt to handle this format."
+    )
 
 
 
@@ -862,7 +866,7 @@ def load_safetensors_weights(
 
         # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
         _gdn_bf16 = _webgpu_envs.GDN_BF16  # read once; constant during weight loading
-        def _upload_plain(name: str, weights: dict) -> bool:  # noqa: E501
+        def _upload_plain(name: str) -> bool:  # noqa: E501
             meta = header.get(name)
             if meta is None:
                 return False
@@ -972,7 +976,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         quant_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, quant_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
+            _upload_non_quant(header, quant_set, _i8_companion_skip, _upload_plain)
 
             for base in quant_bases:
                 try:
@@ -1070,7 +1074,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         nvfp4_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, nvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
+            _upload_non_quant(header, nvfp4_set, _i8_companion_skip, _upload_plain)
 
             for base in nvfp4_bases:
                 try:
@@ -1110,7 +1114,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         dnvfp4_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, dnvfp4_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
+            _upload_non_quant(header, dnvfp4_set, _i8_companion_skip, _upload_plain)
 
             for base in dnvfp4_bases:
                 try:
@@ -1146,7 +1150,7 @@ def load_safetensors_weights(
             }
             fp8_set = fp8_names | fp8_scale_names | fp8_scale_inv_names
 
-            _upload_non_quant(header, fp8_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
+            _upload_non_quant(header, fp8_set, _i8_companion_skip, _upload_plain)
 
             for wname in fp8_names:
                 base = wname.removesuffix(".weight")
@@ -1222,7 +1226,7 @@ def load_safetensors_weights(
                     mx_bases_set.append(base)
             mx_bases = sorted(mx_bases_set)
             mx_set: set = {f"{b}.weight" for b in mx_bases} | {f"{b}.weight_scale" for b in mx_bases}
-            _upload_non_quant(header, mx_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
+            _upload_non_quant(header, mx_set, _i8_companion_skip, _upload_plain)
 
             if fmt == "mxfp4":
                 # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
@@ -1316,7 +1320,7 @@ def load_safetensors_weights(
                             bnb_set.add(absmax_k)
 
             # Upload all non-BnB tensors normally.
-            _upload_non_quant(header, bnb_set, _i8_companion_skip, lambda n: _upload_plain(n, weights))
+            _upload_non_quant(header, bnb_set, _i8_companion_skip, _upload_plain)
 
             for base in sorted(bnb_bases):
                 try:
@@ -1411,7 +1415,7 @@ def load_safetensors_weights(
                 if f"{_b}.weight_zero_point" in header:
                     ct_reserved.add(f"{_b}.weight_zero_point")
 
-            _upload_non_quant(header, ct_reserved, _i8_companion_skip, lambda n: _upload_plain(n, weights))
+            _upload_non_quant(header, ct_reserved, _i8_companion_skip, _upload_plain)
 
             weights.setdefault("__quant_meta__", {})
             for base in ct_bases:
@@ -1454,7 +1458,7 @@ def load_safetensors_weights(
             for name, meta in header.items():
                 if name in _i8_companion_skip:
                     continue
-                if not _upload_plain(name, weights):
+                if not _upload_plain(name):
                     logger.warning("Unsupported dtype %s for %s, skipping",
                                     meta.get("dtype", "?"), name)
 

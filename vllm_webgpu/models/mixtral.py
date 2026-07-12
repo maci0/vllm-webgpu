@@ -224,6 +224,19 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         return self._finish_forward(greedy)
 
+    @staticmethod
+    def _validate_gate_consts(extra_gate_consts: dict) -> None:
+        """Raise if extra_gate_consts reserves the K or N shader constants.
+
+        Both the base _dispatch_expert_gate_up and the bias override in
+        GptOssWebGPUModel inject K and N themselves; callers must not pre-fill them.
+        """
+        if "K" in extra_gate_consts or "N" in extra_gate_consts:
+            raise ValueError(
+                f"extra_gate_consts must not contain 'K' or 'N'; "
+                f"got {list(extra_gate_consts.keys())}"
+            )
+
     def _dispatch_expert_gate_up(
         self,
         normed_x: "WebGPUBuffer",
@@ -239,11 +252,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         keys (ending in '.weight'); the quant-extra prefix is derived by
         stripping the suffix.
         """
-        if "K" in extra_gate_consts or "N" in extra_gate_consts:
-            raise ValueError(
-                f"extra_gate_consts must not contain 'K' or 'N'; "
-                f"got {list(extra_gate_consts.keys())}"
-            )
+        self._validate_gate_consts(extra_gate_consts)
         msc = self._moe_sc
         hidden = self.hidden_size
         uq_g = self._uq_for_key(gw_key)

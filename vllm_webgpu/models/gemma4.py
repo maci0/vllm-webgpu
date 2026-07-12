@@ -282,6 +282,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         _use_freq = int(self._use_freq_buf)
         self._rope_consts: list[_RopeConsts] = []
         for _i, _lp_e in enumerate(self._lp):
+            # layer_types may be non-None but shorter than num_layers in the fallback branch; guard prevents IndexError
             _lt = layer_types[_i] if (layer_types and _i < len(layer_types)) else None
             _rp: dict = _rope_params_map.get(_lt, {}) if _lt else {}
             # Flat-format legacy configs (no layer-type keys) return {} for any layer type.
@@ -1111,9 +1112,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 _use_fused_qkv = False
 
-            # _use_fused_qkv is already False when is_kv_shared=True (see lines above
-            # that set _use_fused_qkv = False in the else branch covering both
-            # not has_v and is_kv_shared=True), so the second condition is redundant.
+            # _use_fused_qkv is already False when is_kv_shared=True because the else
+            # branch sets it False for both not-has_v and is_kv_shared cases.
             if _use_fused_qkv:
                 # All f16, non-shared: single fused_qkv dispatch → sc["qkv_buf"] laid out as [Q | K | V].
                 self._dispatch("fused_qkv",

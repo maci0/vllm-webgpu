@@ -32,6 +32,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
+from vllm.v1.sample.sampler import _SAMPLING_EPS
 
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
@@ -48,11 +49,11 @@ def sample_token(
 
     Applies (in order): temperature scaling, top-k filtering, top-p nucleus
     filtering, then draws from the resulting categorical distribution.
-    Returns argmax when temperature < 1e-5.
+    Returns argmax when temperature < _SAMPLING_EPS.
 
     Args:
         logits_1d: 1-D float32 logit vector of length vocab_size.
-        temperature: Softmax temperature. Values < 1e-5 produce greedy argmax.
+        temperature: Softmax temperature. Values < _SAMPLING_EPS produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
         top_k: Keep at most top_k tokens. 0 disables.
         generator: Optional per-request torch.Generator. The caller is
@@ -62,7 +63,7 @@ def sample_token(
         use_fp64_gumbel: When True, Gumbel noise is sampled in fp64 for
             higher numerical precision. Mirrors ModelConfig.use_fp64_gumbel.
     """
-    if temperature < 1e-5:
+    if temperature < _SAMPLING_EPS:
         return logits_1d.argmax().item()
 
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)

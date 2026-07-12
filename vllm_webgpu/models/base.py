@@ -188,6 +188,9 @@ class BaseWebGPUModel(ABC):
         # Populated by subclasses (e.g. LlamaWebGPUModel tiles shared norm weights)
         # to avoid a GPU roundtrip (to_numpy → tile → re-upload) in _postprocess_weights.
         self._weight_transforms: dict = {}
+        # Zero-buffer cache for reset_recurrent_states. Reuses the same bytes object
+        # across resets to avoid repeated heap allocation for large state buffers.
+        self._zero_buf_cache: dict[int, bytes] = {}
 
     def _make_buf(self, n: int) -> "WebGPUBuffer":
         """Allocate an empty WebGPU buffer of at least 4 bytes.
@@ -198,6 +201,19 @@ class BaseWebGPUModel(ABC):
         Zero-byte buffers are forbidden by the spec.
         """
         return WebGPUBuffer.empty(self.wgpu_device.wgpu_device, max(n, 4))
+
+    def _zero_write(self, buf: "WebGPUBuffer") -> None:
+        """Write zeros into buf, reusing a cached bytes object of that size.
+
+        Avoids allocating a new Python bytes object on every reset_recurrent_states
+        call. The cache is keyed by byte length so different-sized buffers each get
+        their own zero block allocated once.
+        """
+        zeros = self._zero_buf_cache.get(buf.nbytes)
+        if zeros is None:
+            zeros = bytes(buf.nbytes)
+            self._zero_buf_cache[buf.nbytes] = zeros
+        self.wgpu_device.wgpu_device.queue.write_buffer(buf.buf, 0, zeros)
 
     def _buf_to_numpy(self, buf: "WebGPUBuffer") -> "np.ndarray":
         """Read a GPU buffer as a numpy array with the correct element dtype.

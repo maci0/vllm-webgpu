@@ -414,16 +414,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._layer_int_size: list[int] = _layer_int_sizes
         # Cache the maximum intermediate size once so _init_scratch_buffers does
         # not re-derive it (and re-read model_config.intermediate_size) on every call.
-        self._max_int_size: int = max(_layer_int_sizes, default=0)
+        self._max_int_size: int = max(_layer_int_sizes)
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
         self._conv_states: dict[int, "WebGPUBuffer"] = {}
         self._ssm_states: dict[int, "WebGPUBuffer"] = {}
-        # Reusable zero-byte buffers for reset_recurrent_states, keyed by size.
-        # Avoids repeated allocation of the same zero buffer on every decode step.
-        self._zero_buf_cache: dict[int, bytes] = {}  # amortizes zero-byte alloc for Mamba state zeroing; see also WebGPUModelRunner._zeros_cache for the analogous KV-block cache
-
         self._rms_base: dict = {
             "HIDDEN_DIM": self.hidden_size,
             "VALS_PER_THREAD": _vals_per_thread(self.hidden_size),
@@ -547,13 +543,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def reset_recurrent_states(self) -> None:
         """Zero all Mamba conv and SSM states. Call before each new request."""
-        dev = self.wgpu_device.wgpu_device
         for buf in (*self._conv_states.values(), *self._ssm_states.values()):
-            zeros = self._zero_buf_cache.get(buf.nbytes)
-            if zeros is None:
-                zeros = bytes(buf.nbytes)
-                self._zero_buf_cache[buf.nbytes] = zeros
-            dev.queue.write_buffer(buf.buf, 0, zeros)
+            self._zero_write(buf)
 
     def save_recurrent_states(self) -> dict:
         """Snapshot all Mamba conv/SSM state buffers to CPU in one GPU readback.
@@ -1107,6 +1098,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         ctx_len = int(attn_metadata.max_decode_seq_len)
 
         pre = self._pre
+        sc = self._sc
         dev.queue.write_buffer(pre["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(
             pre["slot_map"].buf, 0,
@@ -1129,12 +1121,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 "rms_norm",
                 [pre["x"],
                  self._norm0_w,
-                 self._sc["normed"]],
+                 sc["normed"]],
                 self._rms_base,
                 (num_tokens, 1, 1),
             )
 
-            normed_x = self._sc["normed"]
+            normed_x = sc["normed"]
             x_buf    = pre["x"]  # initial residual = embedding
 
             # normed_x is stale (points to sc["normed"] from the last iteration,

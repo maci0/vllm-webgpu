@@ -253,9 +253,9 @@ def allocate_kv_from_hf_config(
     # wrapper's count, which may differ from the text model. Use the
     # convertor (which reads from _hf_text) to get the correct value.
     _num_layers = _conv.get_num_hidden_layers()
-    # model._layer_types wins; fall back to hf_config fields used by different
-    # architectures (Gemma4 uses "layer_types", Falcon uses "layers_block_type").
-    layer_types = get_layer_types(model, hf_config)
+    # model._layer_types wins when set (scripts path, model is fully loaded);
+    # fall back to hf_config fields used by different architectures.
+    layer_types = getattr(model, "_layer_types", None) or get_layer_types(hf_config)
     # Treat uniform full-attention lists the same as None (avoids tiny buffers).
     if layer_types and all(is_attn_layer(lt) for lt in layer_types):
         layer_types = None

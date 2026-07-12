@@ -126,6 +126,9 @@ class WebGPUPlatform(Platform):
         parallel_config.distributed_executor_backend = "uni"
         vllm_config.scheduler_config.enable_chunked_prefill = False
         if vllm_config.model_config is not None:
+            # Re-validate after disabling chunked prefill: a model whose
+            # max_model_len > max_num_batched_tokens would have passed __post_init__
+            # when enable_chunked_prefill was True, but is unsupported on WebGPU.
             vllm_config.scheduler_config.verify_max_model_len(
                 vllm_config.model_config.max_model_len
             )

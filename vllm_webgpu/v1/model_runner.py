@@ -2,7 +2,7 @@ from __future__ import annotations
 from functools import cached_property
 from itertools import chain
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 import torch
@@ -253,11 +253,9 @@ class WebGPUModelRunner:
         # NemotronH attention layers live under .mixer, not .self_attn.
         _archs = self.vllm_config.model_config.architectures or []
         _attn_suffix = ".mixer" if _archs and ARCH_MAP.get(_archs[0]) == "nemotron_h" else ".self_attn"
-        # model=None: the vLLM engine always calls get_kv_cache_spec before weight
-        # loading, so the model object is never available here. The first probe in
-        # get_layer_types (model._layer_types) is always a no-op on this path.
+        # The vLLM engine always calls get_kv_cache_spec before weight loading,
+        # so no model object is available here; get_layer_types probes hf_config only.
         _layer_types = get_layer_types(
-            None,
             self.vllm_config.model_config.hf_text_config,
             hf_outer_config=self.vllm_config.model_config.hf_config,
         )
@@ -377,9 +375,11 @@ class WebGPUModelRunner:
         self,
         req_ids: list[str],
         sampled: list[int],
-        logprobs_data: "list[LogprobsTensors | None]" = (),
+        logprobs_data: "Sequence[LogprobsTensors | None] | None" = None,
         prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
     ) -> Any:
+        if logprobs_data is None:
+            logprobs_data = ()
         if prompt_logprobs_dict is None:
             prompt_logprobs_dict = {}
         if not req_ids:
@@ -829,7 +829,7 @@ class WebGPUModelRunner:
             all_req_ids, all_sampled, all_logprobs_data, prompt_logprobs_dict
         )
 
-    def sample_tokens(self, grammar_output: "GrammarOutput") -> Any:
+    def sample_tokens(self, grammar_output: "GrammarOutput | None") -> Any:
         raise NotImplementedError(
             "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
             "is not supported on the WebGPU backend. The GPU argmax path discards "
