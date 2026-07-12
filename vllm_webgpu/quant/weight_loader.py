@@ -680,7 +680,12 @@ def load_safetensors_weights(
         # re-reading config.json (the single-file caller reads it once in load_weights
         # and passes it here; the sharded caller passes ct_meta per shard).
         _config_json = Path(path).parent / "config.json"
-        _raw_quant_cfg = quant_cfg if quant_cfg is not None else (
+        # quant_cfg must be a plain dict (loaded from config.json). If the caller
+        # passes a vLLM QuantizationConfigArgs pydantic model (set when --quantization
+        # is given as an online-quant shorthand), it has no .get() method and will
+        # crash below. Fall through to the config.json path in that case.
+        _effective_quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else None
+        _raw_quant_cfg = _effective_quant_cfg if _effective_quant_cfg is not None else (
             _load_quant_cfg(_config_json) if _config_json.exists() else {}
         )
         if not _already_checked:
