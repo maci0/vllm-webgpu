@@ -121,6 +121,7 @@ def test_gpt_oss_forward(wgpu_device):
             model.weights[f"{ep}.w2.weight"] = _f16(dev, rng, (hidden, inter))
 
     _kv_pool(model, dev, layers, num_blocks, block_size, kv_heads, head_dim)
+    model._batch_matmul_supported = False  # set by load_weights() for MoE models
 
     result = model.forward(
         np.array([1], dtype=np.uint32),
@@ -288,6 +289,7 @@ def test_gpt_oss_expert_bias(wgpu_device):
                     model.weights[f"{ep}.w3.bias"] = _f16(dev, rng, (inter,))
                     model.weights[f"{ep}.w2.bias"] = _f16(dev, rng, (hidden,))
         _kv_pool(model, dev, layers, num_blocks, block_size, kv_heads, head_dim)
+        model._batch_matmul_supported = False  # set by load_weights() for MoE models
         return model
 
     input_ids = np.array([1], dtype=np.uint32)

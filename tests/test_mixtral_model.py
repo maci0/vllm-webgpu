@@ -183,6 +183,7 @@ def test_mixtral_moe_forward(wgpu_device):
             model.weights[f"{ep}.w2.weight"] = _f16(dev, rng, (hidden, inter))
 
     _kv_pool(model, dev, layers, num_blocks, block_size, kv_heads, head_dim)
+    model._batch_matmul_supported = False  # set by load_weights() for MoE models
 
     result = model.forward(
         np.array([1], dtype=np.uint32),

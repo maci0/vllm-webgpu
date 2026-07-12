@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging
+from logging import DEBUG
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -167,7 +167,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 return self._prefill_sequential_fallback(
                     input_ids, positions, attn_metadata, len(input_ids)
                 )
-            if not self.weights:
+            if self._batch_matmul_supported is None:
                 raise RuntimeError("load_weights() must be called before forward()")
             return self._moe_decode_forward(input_ids, positions, attn_metadata)
         # Mistral dense (SWA, _is_moe=False): delegate to LlamaWebGPUModel.forward().
@@ -450,7 +450,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(logging.DEBUG)
+        _debug_weights = logger.isEnabledFor(DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

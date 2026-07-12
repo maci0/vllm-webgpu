@@ -2,7 +2,7 @@ from __future__ import annotations
 from functools import cached_property
 from itertools import chain
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -21,6 +21,7 @@ from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 
 if TYPE_CHECKING:
+    from typing import Sequence
     from vllm.tasks import SupportedTask
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -500,6 +501,7 @@ class WebGPUModelRunner:
         _has_reset = hasattr(self.model, "reset_recurrent_states")
         _has_save = hasattr(self.model, "save_recurrent_states")
         _has_replay = hasattr(self.model, "replay_prefix_for_ssm")
+        _has_restore = hasattr(self.model, "restore_recurrent_states")
         for req in new_reqs:
             rid = req.req_id
             tok_ids = req.prompt_token_ids
@@ -683,13 +685,6 @@ class WebGPUModelRunner:
         if cached.req_ids:
             new_block_ids = cached.new_block_ids
             resumed_req_ids = cached.resumed_req_ids
-
-            # Hoist attribute presence checks: the model object is fixed after
-            # load_model() and these attributes do not change between requests.
-            _has_restore = hasattr(self.model, "restore_recurrent_states")
-            _has_reset = hasattr(self.model, "reset_recurrent_states")
-            _has_replay = hasattr(self.model, "replay_prefix_for_ssm")
-            _has_save = hasattr(self.model, "save_recurrent_states")
 
             for i, rid in enumerate(cached.req_ids):
                 state = self._req_state.get(rid)

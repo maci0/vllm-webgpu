@@ -436,6 +436,7 @@ def test_qwen36_moe_forward(wgpu_device):
     model._postprocess_weights()
     # _alloc_lin_states initialises SSM/conv state lists (all None for full-attn layers).
     model._alloc_lin_states()
+    model._batch_matmul_supported = False  # set by load_weights() for MoE models
 
     # KV cache — required by _full_attn_layer
     kv_bytes = n_blocks * block_sz * kv_heads * head_dim * 2  # f16 bytes

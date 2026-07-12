@@ -65,10 +65,6 @@ del _mapper
 # 2*intermediate_size + 2*groups_ssm_state_size + num_heads).
 # NOTE: _validate_mamba_weights is the authoritative runtime guard. It checks
 # the actual in_proj.weight shape from the loaded checkpoint against in_proj_dim.
-# No import-time assertion on MambaMixer2.__init__ is made: the check
-# `hasattr(cls, '__init__') and callable(cls.__init__)` is trivially True for
-# any Python class (inherited from object) and provides zero protection against
-# formula changes in the method body.
 
 # Import-time guard: verify that NemotronHMLPDecoderLayer.__init__ still contains
 # the list/scalar intermediate_size resolution logic that _resolve_intermediate_size() mirrors,
@@ -1430,7 +1426,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # WG_SIZE=256 matches the divisor below; (cdiv(N, WG_SIZE), 1, 1) is the
         # correct formula per the shader comment. _rows_wg has the same formula
         # numerically, but its semantic label ("row-parallel matmul") is wrong here.
-        relu_n = num_tokens * I
+        relu_n = I
         self._dispatch(
             "relu_sq",
             [sc["up_buf"], sc["ffn_act"]],

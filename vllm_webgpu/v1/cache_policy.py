@@ -148,9 +148,7 @@ def allocate_kv_from_tensors(
                 # dimensions (e.g. MLA-style models where head_size != head_size_v)
                 # get correctly sized buffers instead of an averaged size.
                 k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * get_dtype_size(spec.dtype)
-                v_bytes = num_blocks * spec.real_page_size_bytes - k_bytes
-                # k_bytes + v_bytes == real_page_size_bytes * num_blocks by construction:
-                # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes.
+                v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * get_dtype_size(spec.dtype)
             elif isinstance(spec, SlidingWindowMLASpec):
                 raise NotImplementedError(
                     f"SlidingWindowMLASpec KV cache is not supported by the WebGPU backend. "
