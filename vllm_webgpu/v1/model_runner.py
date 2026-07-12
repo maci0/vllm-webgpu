@@ -9,7 +9,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
+    from vllm.v1.outputs import LogprobsLists
 
 logger = init_logger(__name__)
 
@@ -81,19 +82,23 @@ def _build_model(arch: str, family: "str | None", model_config: Any, wgpu_device
     )
 
 
-def _stack(items: list[LogprobsTensors]) -> LogprobsLists:
+def _stack(items: list[LogprobsTensors]) -> "LogprobsLists":
     """Cat a list of LogprobsTensors along the batch dimension and convert to lists.
 
     cu_num_generated_tokens is intentionally left as None. WebGPU produces
     exactly one output row per request, so LogprobsLists.slice_request(i, n)
     uses i directly as the row index when cu_num_generated_tokens is None
     (see vllm/v1/outputs.py:41-42).
+
+    WebGPU tensors are already on CPU, so .cpu() inside tolists() is a no-op.
+    Build LogprobsLists directly to avoid the intermediate LogprobsTensors allocation.
     """
-    return LogprobsTensors(
-        torch.cat([x.logprob_token_ids for x in items]),
-        torch.cat([x.logprobs for x in items]),
-        torch.cat([x.selected_token_ranks for x in items]),
-    ).tolists()
+    from vllm.v1.outputs import LogprobsLists as _LogprobsLists
+    return _LogprobsLists(
+        torch.cat([x.logprob_token_ids for x in items]).numpy(),
+        torch.cat([x.logprobs for x in items]).numpy(),
+        torch.cat([x.selected_token_ranks for x in items]).numpy(),
+    )
 
 
 
@@ -397,12 +402,11 @@ class WebGPUModelRunner:
         # never exposed to callers because the scheduler guards slice_request on
         # num_logprobs.
         built_logprobs = None
-        has_topk = any(d is not None for d in logprobs_data)
-        if has_topk:
-            widths = [d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None]
+        widths = [d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None]
+        if widths:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
-            if all(d is not None for d in logprobs_data) and len(set(widths)) == 1:
+            if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
                 built_logprobs = _stack(logprobs_data)
             else:
                 # Derive the dtype of selected_token_ranks from the first real

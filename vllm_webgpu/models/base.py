@@ -1,4 +1,5 @@
 from __future__ import annotations
+import functools
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -146,12 +147,12 @@ def compute_yarn_freqs(
 
 
 
+@functools.lru_cache(maxsize=None)
+def _zeros(n: int) -> bytes:
+    return bytes(n)
+
+
 class BaseWebGPUModel(ABC):
-    # Declare whether forward() can return a (1, 1) int32 token ID instead of
-    # full (1, vocab) float32 logits. Subclasses that implement logit_readback()
-    # and GPU argmax set this to True so the runner can rely on a stable contract
-    # rather than testing for the existence of the logit_readback method.
-    logit_returns_token_id: bool = False
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
         self.model_config = model_config
@@ -195,9 +196,6 @@ class BaseWebGPUModel(ABC):
         # Populated by subclasses (e.g. LlamaWebGPUModel tiles shared norm weights)
         # to avoid a GPU roundtrip (to_numpy → tile → re-upload) in _postprocess_weights.
         self._weight_transforms: dict = {}
-        # Zero-buffer cache for reset_recurrent_states. Reuses the same bytes object
-        # across resets to avoid repeated heap allocation for large state buffers.
-        self._zero_buf_cache: dict[int, bytes] = {}
 
     def _make_buf(self, n: int) -> "WebGPUBuffer":
         """Allocate an empty WebGPU buffer of at least 4 bytes.
@@ -210,17 +208,8 @@ class BaseWebGPUModel(ABC):
         return WebGPUBuffer.empty(self.wgpu_device.wgpu_device, max(n, 4))
 
     def _zero_write(self, buf: "WebGPUBuffer") -> None:
-        """Write zeros into buf, reusing a cached bytes object of that size.
-
-        Avoids allocating a new Python bytes object on every reset_recurrent_states
-        call. The cache is keyed by byte length so different-sized buffers each get
-        their own zero block allocated once.
-        """
-        zeros = self._zero_buf_cache.get(buf.nbytes)
-        if zeros is None:
-            zeros = bytes(buf.nbytes)
-            self._zero_buf_cache[buf.nbytes] = zeros
-        self.wgpu_device.wgpu_device.queue.write_buffer(buf.buf, 0, zeros)
+        """Write zeros into buf, reusing a module-level cached bytes object of that size."""
+        self.wgpu_device.wgpu_device.queue.write_buffer(buf.buf, 0, _zeros(buf.nbytes))
 
     def _buf_to_numpy(self, buf: "WebGPUBuffer") -> "np.ndarray":
         """Read a GPU buffer as a numpy array with the correct element dtype.
@@ -623,8 +612,8 @@ class BaseWebGPUModel(ABC):
     ) -> np.ndarray:
         """Run one forward pass and return output as a numpy array.
 
-        When logit_returns_token_id is False: returns float32 [num_tokens, vocab_size] logits.
-        When logit_returns_token_id is True:  returns int32 [1, 1] with the GPU-argmax token id.
+        Returns float32 [num_tokens, vocab_size] logits, or int32 [1, 1] with
+        the GPU-argmax token id when the model uses GPU sampling (shape[-1] == 1).
         """
         ...
 

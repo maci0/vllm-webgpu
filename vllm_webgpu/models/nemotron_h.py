@@ -86,16 +86,17 @@ try:
     # variable name, the running counter would silently produce wrong indices for
     # every MLP layer.
     _MLP_INDEX_ANCHOR = 'mlp_index = hybrid_override_pattern[: layer_idx + 1].count("-") - 1'
-    assert _MLP_INDEX_ANCHOR in _mlp_init_src, (
-        "NemotronHMLPDecoderLayer.__init__ mlp_index computation has changed "
-        "upstream (vLLM 0.24 L280). The running counter (_mlp_count) in "
-        "NemotronHWebGPUModel.__init__ is the O(n) equivalent of "
-        "`hybrid_override_pattern[:layer_idx+1].count('-') - 1` and would "
-        "silently produce wrong intermediate sizes if the upstream formula "
-        "changes (different character, reverse count, or renamed variable). "
-        "Review the _mlp_count loop and update it to match the new upstream "
-        "logic, then update this anchor string before removing this assertion."
-    )
+    if _MLP_INDEX_ANCHOR not in _mlp_init_src:
+        raise AssertionError(
+            "NemotronHMLPDecoderLayer.__init__ mlp_index computation has changed "
+            "upstream (vLLM 0.24 L280). The running counter (_mlp_count) in "
+            "NemotronHWebGPUModel.__init__ is the O(n) equivalent of "
+            "`hybrid_override_pattern[:layer_idx+1].count('-') - 1` and would "
+            "silently produce wrong intermediate sizes if the upstream formula "
+            "changes (different character, reverse count, or renamed variable). "
+            "Review the _mlp_count loop and update it to match the new upstream "
+            "logic, then update this anchor string before removing this assertion."
+        )
     del _MLP_INDEX_ANCHOR
     # Anchor 2: the 7-line list/scalar resolution block (vLLM 0.24, L286-292).
     # Catches any new branch (e.g. per-head lists) or index-variable rename
@@ -109,14 +110,15 @@ try:
         "        else:\n"
         "            intermediate_size = config.intermediate_size"
     )
-    assert _MLP_INTERMEDIATE_SIZE_ANCHOR in _mlp_init_src, (
-        "NemotronHMLPDecoderLayer.__init__ intermediate_size resolution block "
-        "no longer matches the snapshot used by _resolve_intermediate_size() (vLLM 0.24 L286-292). "
-        "The upstream formula has changed (new branch, renamed index variable, or "
-        "restructured logic). Review _resolve_intermediate_size() in NemotronHWebGPUModel.__init__, "
-        "update it to match the new upstream logic, then update this anchor string "
-        "before removing this assertion."
-    )
+    if _MLP_INTERMEDIATE_SIZE_ANCHOR not in _mlp_init_src:
+        raise AssertionError(
+            "NemotronHMLPDecoderLayer.__init__ intermediate_size resolution block "
+            "no longer matches the snapshot used by _resolve_intermediate_size() (vLLM 0.24 L286-292). "
+            "The upstream formula has changed (new branch, renamed index variable, or "
+            "restructured logic). Review _resolve_intermediate_size() in NemotronHWebGPUModel.__init__, "
+            "update it to match the new upstream logic, then update this anchor string "
+            "before removing this assertion."
+        )
     del _MLP_INTERMEDIATE_SIZE_ANCHOR
     del _inspect, _NemotronHMLPDecoder, _mlp_init_src
 except OSError:
@@ -129,11 +131,12 @@ except OSError:
 # the local copy becomes dead weight. Kept outside the OSError guard above so it always
 # runs when the module can be imported, regardless of whether getsource() succeeded.
 import vllm.model_executor.models.nemotron_h as _nem_mod
-assert not hasattr(_nem_mod, "_resolve_intermediate_size"), (
-    "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'. "
-    "Remove the local copy in this file and import it from there instead. "
-    "See vllm/model_executor/models/nemotron_h.py for the authoritative implementation."
-)
+if hasattr(_nem_mod, "_resolve_intermediate_size"):
+    raise AssertionError(
+        "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'. "
+        "Remove the local copy in this file and import it from there instead. "
+        "See vllm/model_executor/models/nemotron_h.py for the authoritative implementation."
+    )
 del _nem_mod
 
 # conv_dim is computed here from config params using the same formula as MambaMixer2
@@ -204,8 +207,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     store all mixer weights under '.mixer.' regardless of block type. Keys are
     remapped to the vLLM-canonical 'model.' prefix; no per-type renaming is needed.
     """
-
-    logit_returns_token_id: bool = True
 
     def __init__(
         self,
@@ -552,7 +553,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
         """
-        bufs = [("conv", i, b) for i, b in self._conv_states.items()] + [("ssm", i, b) for i, b in self._ssm_states.items()]
+        bufs = (
+            [("conv", i, b) for i, b in self._conv_states.items()] +
+            [("ssm",  i, b) for i, b in self._ssm_states.items()]
+        )
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:
@@ -664,12 +668,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if k not in self.weights
             and not any(k.startswith(p) for p in skip_prefixes)
         ]
-        assert not _missing_transforms, (
-            f"Registered weight transforms not consumed: {_missing_transforms}. "
-            f"Either the checkpoint key format changed, or the key falls under a "
-            f"skipped prefix ({skip_prefixes}) and the transform registration needs "
-            f"to be guarded accordingly."
-        )
+        if _missing_transforms:
+            raise AssertionError(
+                f"Registered weight transforms not consumed: {_missing_transforms}. "
+                f"Either the checkpoint key format changed, or the key falls under a "
+                f"skipped prefix ({skip_prefixes}) and the transform registration needs "
+                f"to be guarded accordingly."
+            )
         self.weights = self._hf_to_vllm_mapper.apply_dict(self.weights)
         qmeta = self.weights.get("__quant_meta__")
         if qmeta:
@@ -934,14 +939,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         The A_log to -exp(A) transform is a CPU-side weight_transform applied
         before GPU upload, so no GPU round-trip is needed here.
         """
-        _checked_inproj = False
         for i, lt in enumerate(self._layer_types):
             if lt != "mamba":
                 continue
             p = f"model.layers.{i}.mixer"
 
             # in_proj.weight: machine-check in_proj_dim formula against the
-            # actual checkpoint (first Mamba layer only). The formula mirrors
+            # actual checkpoint for every Mamba layer. The formula mirrors
             # MambaMixer2.__init__ in mamba_mixer2.py:
             #   L313: self.conv_dim = intermediate_size + 2*groups_ssm_state_size
             #   MergedColumnParallelLinear branch (L328-339, n_groups%tp==0):
@@ -954,38 +958,36 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # + num_heads, mapped here as mamba_int + conv_dim + mamba_num_heads.
             # A vLLM bump that changes conv_dim or adds an extra output group
             # would silently mis-size mamba_inproj / mamba_conv_in / mamba_dt.
+            # Checked for every Mamba layer to catch puzzle-model heterogeneity.
             inproj_key = f"{p}.in_proj.weight"
             if inproj_key not in self.weights:
                 raise ValueError(f"{inproj_key} missing from loaded weights")
-            if not _checked_inproj:
-                # AWQ stores in_proj.weight as [K, N//8]; all other formats
-                # (F16, GPTQ, FP8, INT8, NF4, NVFP4) store shape[0] == N.
-                if self._uq_for_key(inproj_key) == 4:  # AWQ: shape[0]=K, shape[1]=N//8
-                    actual = self.weights[inproj_key].shape[1] * 8
-                    if actual != self.in_proj_dim:
-                        raise ValueError(
-                            f"{inproj_key} AWQ shape[1]*8={actual} does not "
-                            f"match computed in_proj_dim={self.in_proj_dim} "
-                            f"(mamba_int={self.mamba_int} + "
-                            f"conv_dim={self.conv_dim} + "
-                            f"mamba_num_heads={self.mamba_num_heads}). "
-                            f"Recheck MambaMixer2Tp output_sizes in "
-                            f"mamba_mixer2.py L328-355 against this vLLM version."
-                        )
-                    _checked_inproj = True
-                else:
-                    actual_inproj_dim = self.weights[inproj_key].shape[0]
-                    if actual_inproj_dim != self.in_proj_dim:
-                        raise ValueError(
-                            f"{inproj_key} shape[0]={actual_inproj_dim} does not "
-                            f"match computed in_proj_dim={self.in_proj_dim} "
-                            f"(mamba_int={self.mamba_int} + "
-                            f"conv_dim={self.conv_dim} + "
-                            f"mamba_num_heads={self.mamba_num_heads}). "
-                            f"Recheck MambaMixer2Tp output_sizes in "
-                            f"mamba_mixer2.py L328-355 against this vLLM version."
-                        )
-                    _checked_inproj = True
+            # AWQ stores in_proj.weight as [K, N//8]; all other formats
+            # (F16, GPTQ, FP8, INT8, NF4, NVFP4) store shape[0] == N.
+            if self._uq_for_key(inproj_key) == 4:  # AWQ: shape[0]=K, shape[1]=N//8
+                actual = self.weights[inproj_key].shape[1] * 8
+                if actual != self.in_proj_dim:
+                    raise ValueError(
+                        f"{inproj_key} AWQ shape[1]*8={actual} does not "
+                        f"match computed in_proj_dim={self.in_proj_dim} "
+                        f"(mamba_int={self.mamba_int} + "
+                        f"conv_dim={self.conv_dim} + "
+                        f"mamba_num_heads={self.mamba_num_heads}). "
+                        f"Recheck MambaMixer2Tp output_sizes in "
+                        f"mamba_mixer2.py L328-355 against this vLLM version."
+                    )
+            else:
+                actual_inproj_dim = self.weights[inproj_key].shape[0]
+                if actual_inproj_dim != self.in_proj_dim:
+                    raise ValueError(
+                        f"{inproj_key} shape[0]={actual_inproj_dim} does not "
+                        f"match computed in_proj_dim={self.in_proj_dim} "
+                        f"(mamba_int={self.mamba_int} + "
+                        f"conv_dim={self.conv_dim} + "
+                        f"mamba_num_heads={self.mamba_num_heads}). "
+                        f"Recheck MambaMixer2Tp output_sizes in "
+                        f"mamba_mixer2.py L328-355 against this vLLM version."
+                    )
 
             # conv1d.weight: validate element count.
             # Shape may be [conv_dim, 1, kernel] or [conv_dim, kernel]; elements

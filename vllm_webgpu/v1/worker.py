@@ -73,7 +73,6 @@ class WebGPUWorker(WorkerBase):
         set_random_seed(self.model_config.seed)
 
         self.model_runner = WebGPUModelRunner(self.vllm_config, self.wgpu_device)
-        ensure_ec_transfer_initialized(self.vllm_config)
 
     def load_model(self, *, load_dummy_weights: bool = False) -> None:
         if load_dummy_weights:

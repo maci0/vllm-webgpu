@@ -1084,7 +1084,7 @@ def load_safetensors_weights(
                     # GPU NVFP4: upload raw weight_packed + F32-converted block scales.
                     # The shader uses GLOBAL_SCALE as an override constant and
                     # reads F8_E4M3 scales via the standard f32 scales binding.
-                    ws_f32 = np.ascontiguousarray(ws)
+                    ws_f32 = ws
                     _upload_u8(wp, f"{base}.weight", weights)
                     _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {
@@ -1121,7 +1121,7 @@ def load_safetensors_weights(
                     wgs = float(_load_raw(wgs_key).ravel()[0]) if wgs_key in header else 1.0
                     _, K2_ = wp.shape
                     K_ = K2_ * 2
-                    ws_f32 = np.ascontiguousarray(ws)
+                    ws_f32 = ws
                     _upload_u8(wp, f"{base}.weight", weights)
                     _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
                     weights.setdefault("__quant_meta__", {})[base] = {

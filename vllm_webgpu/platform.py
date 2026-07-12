@@ -144,12 +144,11 @@ class WebGPUPlatform(Platform):
 
     @classmethod
     def update_block_size_for_backend(cls, vllm_config: "VllmConfig") -> None:
-        # Block size is set from VLLM_WEBGPU_BLOCK_SIZE in check_and_update_config.
-        # WebGPU models do not register nn.Module layers in static_forward_context,
-        # so the base-class implementation is always a no-op for this platform;
-        # override explicitly to avoid relying on that implementation detail.
-        if not vllm_config.cache_config.user_specified_block_size:
-            vllm_config.cache_config.block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
+        # Block size is already set in check_and_update_config (line 142-143).
+        # The base-class path is always a no-op here: _find_non_ssm_backend returns
+        # None because WebGPU models do not register nn.Module layers in
+        # static_forward_context, so it returns early without touching block_size.
+        pass
 
     @classmethod
     def get_attn_backend_cls(

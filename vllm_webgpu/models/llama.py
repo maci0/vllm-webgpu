@@ -29,9 +29,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
       -> rms_norm -> matmul_quant(lm_head) -> argmax_f16
     """
 
-    # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
-    logit_returns_token_id: bool = True
-
     # Sliding-window size (set by MixtralWebGPUModel); None means full attention.
     _sw: int | None = None
     # MoE flag (set by subclasses such as MixtralWebGPUModel); False in base class.

@@ -38,8 +38,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
       - Self-conditioning (self_conditioning.* weights)
     """
 
-    # forward() returns full float32 logits [num_tokens, vocab], not a (1,1) token ID.
-    logit_returns_token_id: bool = False
     # forward() and _decoder_layer() are fully overridden; lp["scale"] is never read.
     # Suppresses the O(num_layers) scale computation in the parent __init__.
     _skip_attn_scale: bool = True
@@ -399,7 +397,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         _rms = self._rms_consts
         is_kv_shared    = lp["is_kv_shared"]
         kv_shared_target = lp["kv_shared_target"]
-        _kv_layer = kv_shared_target if is_kv_shared else layer_idx
+        _kv_layer = kv_shared_target if (is_kv_shared and kv_shared_target >= 0) else layer_idx
 
         k_cache, v_cache = self.kv_pool[_kv_layer]
 

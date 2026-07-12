@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from vllm_webgpu.models.base import _rows_wg, _vec4_wg
-from vllm_webgpu.models.mixtral import MixtralWebGPUModel
+from vllm_webgpu.models.mixtral import MixtralWebGPUModel, _validate_gate_consts
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
@@ -114,35 +114,28 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         hidden = self.hidden_size
         wgpu_dev = self.wgpu_device.wgpu_device
 
-        to_add: dict = {}
-        to_remove: list = []
-
         for i in range(self.num_layers):
             p = f"model.layers.{i}.mlp.experts"
 
             gu_key = f"{p}.gate_up_proj_bias"
             if gu_key in self.weights:
                 arr = self._buf_to_numpy(self.weights[gu_key]).reshape(num_experts, 2 * inter)
+                del self.weights[gu_key]
                 for j in range(num_experts):
                     ep = f"{p}.{j}"
-                    to_add[f"{ep}.w1.bias"] = WebGPUBuffer.from_numpy(
+                    self.weights[f"{ep}.w1.bias"] = WebGPUBuffer.from_numpy(
                         wgpu_dev, arr[j, :inter].copy())
-                    to_add[f"{ep}.w3.bias"] = WebGPUBuffer.from_numpy(
+                    self.weights[f"{ep}.w3.bias"] = WebGPUBuffer.from_numpy(
                         wgpu_dev, arr[j, inter:].copy())
-                to_remove.append(gu_key)
 
             d_key = f"{p}.down_proj_bias"
             if d_key in self.weights:
                 arr = self._buf_to_numpy(self.weights[d_key]).reshape(num_experts, hidden)
+                del self.weights[d_key]
                 for j in range(num_experts):
                     ep = f"{p}.{j}"
-                    to_add[f"{ep}.w2.bias"] = WebGPUBuffer.from_numpy(
+                    self.weights[f"{ep}.w2.bias"] = WebGPUBuffer.from_numpy(
                         wgpu_dev, arr[j].copy())
-                to_remove.append(d_key)
-
-        for k in to_remove:
-            del self.weights[k]
-        self.weights.update(to_add)
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
@@ -360,7 +353,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             super()._dispatch_expert_gate_up(normed_x, gw_key, uw_key, inter, extra_gate_consts)
             return
 
-        self._validate_gate_consts(extra_gate_consts)
+        _validate_gate_consts(extra_gate_consts)
 
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
         # Allocate expert_gate, expert_up, and expert_tmp together to maintain the three-buffer

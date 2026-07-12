@@ -224,9 +224,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     # to skip the O(num_layers) scale computation in __init__.
     _skip_attn_scale: bool = False
 
-    # GPU argmax path returns (1,1) int32; logit_readback() provides full logits.
-    logit_returns_token_id: bool = True
-
     # Number of transformer layers per GPU command-buffer chunk in prefill paths.
     # Chunking prevents Metal from timing out on very long prefill sequences.
     # Referenced by both _prefill_batch_forward and _prefill_sequential_fallback
@@ -270,13 +267,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # applies V-norm unconditionally there, so this flag is not consulted for that subclass.
         # Prefer an explicit config field so future variants (e.g. gemma4_moe) can opt in/out
         # without this string comparison silently diverging from the DiffusionGemma path.
+        _model_type = getattr(model_config, "model_type", "")
         self._apply_v_norm = getattr(
             model_config, "apply_v_norm",
-            getattr(model_config, "model_type", "") == "gemma4",
+            _model_type == "gemma4",
         )
         # Gemma3 trains norm weights as deviations from zero (GemmaRMSNorm), so the shader
         # must compute (1+w)*x. Gemma4 uses plain RMSNorm; weights are actual scale values.
-        self._GEMMA_NORM = 1 if getattr(model_config, "model_type", "") == "gemma3" else 0
+        self._GEMMA_NORM = 1 if _model_type == "gemma3" else 0
         if raw_lp and len(raw_lp) == self.num_layers:
             # Shallow-copy each entry before adding defaults so the config object
             # is not mutated. A second instantiation from the same config would
