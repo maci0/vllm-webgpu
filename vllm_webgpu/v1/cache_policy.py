@@ -270,21 +270,32 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     # hf_text_config (passed as hf_config here) differs from the outer config.
     _outer = hf_outer_config if hf_outer_config is not None else hf_config
     # Priority order mirrors vLLM's ModelConfig.get_num_layers_by_block_type
-    # (config/model.py:1327-1362 as of vLLM 0.24):
-    #   probe 1 (L1330): layers_block_type  — NemotronH / Falcon
-    #   probe 2 (L1334): attn_type_list     — Minimax (truthiness, not is-not-None)
-    #   probe 3 (L1345): layer_types        — Gemma4 / Qwen3.5
-    # VERSION SYNC: on each vLLM bump, diff get_num_layers_by_block_type against
-    # this probe list. If a 4th probe is added, add it here too.
-    # attn_type_list uses a truthiness check (matching vLLM L1334) so an empty
-    # list falls through to layer_types rather than short-circuiting the chain.
-    # The 4th probe below (outer-config layer_types) is not present in vLLM and
-    # is used as a fallback for multimodal models where layer_types lives only on
-    # the outer config.
+    # (config/model.py:1327-1362 as of the installed vLLM):
+    #   probe 1 (L1330): layers_block_type  -- NemotronH / Falcon
+    #   probe 2 (L1340): attn_type_list     -- Minimax (truthiness, not is-not-None)
+    #   probe 3 (L1348): layer_types        -- Gemma4 / Qwen3.5
+    #
+    # NOTE -- Jamba (has_noops / block_configs) is intentionally NOT supported here.
+    # vLLM's has_noops path (config/model.py:1322-1324) uses hf_config.block_configs,
+    # a list of structured config objects (bc.attention.no_op), not a flat list of
+    # type strings.  This function returns a flat list, so the block_configs format
+    # is incompatible with that contract.  Jamba models will fall through to returning
+    # None, which causes all layers to be treated as attention layers -- incorrect for
+    # Jamba but safe to fail loudly rather than silently misclassify.  If Jamba support
+    # is needed: convert block_configs to a flat string list and return it here.
+    #
+    # VERSION SYNC: on each vLLM bump, diff get_num_layers_by_block_type against this
+    # probe list.  The block_configs / has_noops path is the known gap; check whether
+    # vLLM has added any further probes beyond the three below.
+    #
+    # attn_type_list uses a truthiness check (matching vLLM) so an empty list falls
+    # through to layer_types rather than short-circuiting the chain.
+    # The 4th probe below (outer-config layer_types) is not present in vLLM and is used
+    # as a fallback for multimodal models where layer_types lives only on the outer config.
     _probes = [
         (hf_config, "layers_block_type", False),   # vLLM config/model.py:1330
-        (_outer,    "attn_type_list",    True),    # vLLM config/model.py:1334 (truthiness)
-        (hf_config, "layer_types",       False),   # vLLM config/model.py:1345
+        (_outer,    "attn_type_list",    True),    # vLLM config/model.py:1340 (truthiness)
+        (hf_config, "layer_types",       False),   # vLLM config/model.py:1348
     ]
     if _outer is not hf_config:
         _probes.append((_outer, "layer_types", False))  # fallback for outer-only configs (not in vLLM)
