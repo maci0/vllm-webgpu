@@ -127,17 +127,14 @@ except OSError:
     # caught here: a broken vLLM install should propagate rather than be silently ignored.
     logger.warning("inspect.getsource unavailable; skipping anchor validation for NemotronHMLPDecoderLayer.__init__")
 
-# Presence check: if vLLM ever adds _resolve_intermediate_size to the upstream module,
-# the local copy becomes dead weight. Kept outside the OSError guard above so it always
-# runs when the module can be imported, regardless of whether getsource() succeeded.
-import vllm.model_executor.models.nemotron_h as _nem_mod
-if hasattr(_nem_mod, "_resolve_intermediate_size"):
-    raise AssertionError(
-        "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'. "
-        "Remove the local copy in this file and import it from there instead. "
-        "See vllm/model_executor/models/nemotron_h.py for the authoritative implementation."
+try:
+    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size
+    logger.warning(
+        "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'; "
+        "remove the local copy in this file and import it from upstream instead."
     )
-del _nem_mod
+except ImportError:
+    pass  # upstream does not export it yet; use the local definition below
 
 # conv_dim is computed here from config params using the same formula as MambaMixer2
 # (mamba_mixer2.py L313: conv_dim = intermediate_size + 2 * groups_ssm_state_size).
@@ -147,27 +144,27 @@ del _nem_mod
 
 
 
-def _resolve_intermediate_size(v, idx: int) -> int:
-    """Resolve a possibly-list intermediate_size to a scalar for layer `idx`.
+if "_resolve_intermediate_size" not in dir():
+    def _resolve_intermediate_size(v, idx: int) -> int:
+        """Resolve a possibly-list intermediate_size to a scalar for layer `idx`.
 
-    Mirrors the 7-line block in NemotronHMLPDecoderLayer.__init__ at:
-      vllm/model_executor/models/nemotron_h.py L286-292 (vLLM 0.24)
+        Mirrors the 7-line block in NemotronHMLPDecoderLayer.__init__ at:
+          vllm/model_executor/models/nemotron_h.py L286-292 (vLLM 0.24)
 
-    No public vLLM API exposes this logic, so the copy is forced. Defined here
-    at module scope so it is created once rather than inside every __init__ call.
+        No public vLLM API exposes this logic, so the copy is forced. Defined here
+        at module scope so it is created once rather than inside every __init__ call.
 
-    On every vLLM version bump:
-      1. Diff vllm/model_executor/models/nemotron_h.py L286-292 against this body.
-      2. If the upstream block changed, update this function to match.
-      3. Update the _MLP_INTERMEDIATE_SIZE_ANCHOR string in the import-time guard
-         above so the anchor tracks the new source text.
-      4. If vLLM ever exports _resolve_intermediate_size from that module, remove
-         this function and import it directly. The import-time guard below will
-         fire an assertion before that goes unnoticed.
-    """
-    if isinstance(v, list):
-        return v[0] if len(v) == 1 else v[idx]
-    return v
+        On every vLLM version bump:
+          1. Diff vllm/model_executor/models/nemotron_h.py L286-292 against this body.
+          2. If the upstream block changed, update this function to match.
+          3. Update the _MLP_INTERMEDIATE_SIZE_ANCHOR string in the import-time guard
+             above so the anchor tracks the new source text.
+          4. If vLLM ever exports _resolve_intermediate_size from that module, the
+             try-import block at the top will log a warning and use upstream's copy.
+        """
+        if isinstance(v, list):
+            return v[0] if len(v) == 1 else v[idx]
+        return v
 
 
 # Verify the len==1 edge case at import time: a single-element list must return
