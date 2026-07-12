@@ -37,7 +37,7 @@ logger = init_logger(__name__)
 # is_attn_layer() rather than direct `in KV_ATTN_TYPES` checks to handle both
 # string and integer encodings at every call site.
 KV_ATTN_TYPES: frozenset[str] = frozenset(
-    {"attention", "full_attention", "sliding_attention"}
+    {"attention", "full_attention", "sliding_attention", "hybrid"}
 )
 
 
@@ -46,6 +46,9 @@ def is_attn_layer(lt: "str | int") -> bool:
 
     Handles both string layer types (in KV_ATTN_TYPES) and the Minimax integer
     encoding where 1 means attention and 0 means non-attention (Mamba/MLP).
+    The "hybrid" type is used by Zamba2-family models, where layers alternate
+    between Mamba SSM and full attention; vLLM counts hybrid layers as
+    attention-bearing in its block-type accounting.
     Use this instead of bare `lt in KV_ATTN_TYPES` everywhere so that the
     integer sentinel never needs to be repeated at individual call sites.
     """
