@@ -68,10 +68,10 @@ if _mapper.apply_list(["backbone.layers.0.mixer.A_log"]) != ["model.layers.0.mix
         "for 'backbone.layers.0.mixer.A_log'. A new mapping rule may have been added. "
         "Review load_weights and update this assertion."
     )
-if _mapper.apply_list(["backbone.embed_tokens.weight"]) != ["model.embed_tokens.weight"]:
+if _mapper.apply_list(["backbone.embeddings.weight"]) != ["model.embed_tokens.weight"]:
     raise AssertionError(
         "NemotronHForCausalLM.hf_to_vllm_mapper no longer produces the expected key "
-        "for 'backbone.embed_tokens.weight'. A new mapping rule may have been added. "
+        "for 'backbone.embeddings.weight'. A new mapping rule may have been added. "
         "Review load_weights and update this assertion."
     )
 del _mapper

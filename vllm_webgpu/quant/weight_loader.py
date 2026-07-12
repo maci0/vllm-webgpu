@@ -14,7 +14,6 @@ from compressed_tensors.quantization import QuantizationStrategy as _Quantizatio
 from compressed_tensors.utils.safetensors_load import (
     get_quantization_config as _ct_get_quant_cfg,
     find_safetensors_index_path as _ct_find_index,
-    get_safetensors_header as _ct_get_safetensors_header,
 )
 
 
@@ -694,17 +693,17 @@ def load_safetensors_weights(
     import torch
     import wgpu as wgpu_lib
 
-    # Read the safetensors header before opening the file a second time.
-    # _ct_get_safetensors_header does a single binary read of the header
-    # (one syscall) rather than O(n) per-tensor slice calls.
-    _raw_hdr = _ct_get_safetensors_header(path)
-    header = {
-        k: v for k, v in _raw_hdr.items()
-        if k != "__metadata__"
-        and not (skip_prefixes and k.startswith(tuple(skip_prefixes)))
-    }
-
     with sft.safe_open(path, framework="pt") as sf:
+        # Build dtype/shape header from the open context. sf.get_slice() lookups
+        # are in-memory dict accesses (the Rust library caches the header on open),
+        # so this is cheaper than a separate _ct_get_safetensors_header call, which
+        # always performs a disk read.
+        header = {
+            k: {"dtype": sf.get_slice(k).get_dtype(), "shape": list(sf.get_slice(k).get_shape())}
+            for k in sf.keys()
+            if k != "__metadata__"
+            and not (skip_prefixes and k.startswith(tuple(skip_prefixes)))
+        }
         usage = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
 
         # Detect compressed-tensors config from the model directory (needed for

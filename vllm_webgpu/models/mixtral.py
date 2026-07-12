@@ -1,5 +1,5 @@
 from __future__ import annotations
-from logging import DEBUG
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -256,6 +256,33 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             (inter, 1, 1),
         )
 
+    def _dispatch_expert_projections(
+        self,
+        normed_x: "WebGPUBuffer",
+        gw_key: str,
+        uw_key: str,
+        inter: int,
+    ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
+        """Run gate and up expert matmuls into msc['expert_gate'] and msc['expert_up'].
+
+        Handles the quantized matmul path only (the fused f16 path uses
+        fused_gate_act directly in _dispatch_expert_gate_up). Callers are
+        responsible for any activation dispatch after the projections.
+
+        Returns the (gate, up) output buffers so callers can decide how to
+        combine them (gelu_mul, bias injection, etc.) without duplicating the
+        _ensure_moe_expert_bufs + _quant_extra + _matmul_expert sequence.
+        """
+        self._ensure_moe_expert_bufs()
+        msc = self._moe_sc
+        uq_g = self._uq_for_key(gw_key)
+        uq_u = self._uq_for_key(uw_key)
+        qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
+        qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
+        self._matmul_expert(normed_x, gw_key, uq_g, qi_g, msc["expert_gate"], inter)
+        self._matmul_expert(normed_x, uw_key, uq_u, qi_u, msc["expert_up"], inter)
+        return msc["expert_gate"], msc["expert_up"]
+
     def _dispatch_expert_gate_up(
         self,
         normed_x: "WebGPUBuffer",
@@ -288,11 +315,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 raise ValueError(
                     f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
                 )
-            self._ensure_moe_expert_bufs()
-            qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
-            qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
-            self._matmul_expert(normed_x, gw_key, uq_g, qi_g, msc["expert_gate"], inter)
-            self._matmul_expert(normed_x, uw_key, uq_u, qi_u, msc["expert_up"], inter)
+            self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter)
             self._dispatch(
                 "gelu_mul",
                 [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
@@ -466,7 +489,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(DEBUG)
+        _debug_weights = logger.isEnabledFor(logging.DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

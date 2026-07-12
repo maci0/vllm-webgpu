@@ -186,7 +186,7 @@ class WebGPUModelRunner:
         self._has_replay = False
         self._has_restore = False
         mc = self.vllm_config.model_config
-        arch = (mc.architectures or ["LlamaForCausalLM"])[0]
+        arch = mc.architecture
         hf_config = mc.hf_config
 
         block_size = self._block_size
@@ -293,8 +293,7 @@ class WebGPUModelRunner:
         # Mamba, MLP, and linear-attention layers carry no KV state and must be
         # excluded — emitting a FullAttentionSpec for them over-reports KV memory.
         # NemotronH attention layers live under .mixer, not .self_attn.
-        _archs = self.vllm_config.model_config.architectures or []
-        _is_nemotron_h = bool(_archs) and ARCH_MAP.get(_archs[0]) == "nemotron_h"
+        _is_nemotron_h = ARCH_MAP.get(self.vllm_config.model_config.architecture) == "nemotron_h"
         _attn_suffix = ".mixer" if _is_nemotron_h else ".self_attn"
         # The vLLM engine always calls get_kv_cache_spec before weight loading,
         # so no model object is available here; get_layer_types probes hf_config only.

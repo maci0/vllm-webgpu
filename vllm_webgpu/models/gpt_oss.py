@@ -383,30 +383,22 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             )
 
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
-        # Allocate expert_gate, expert_up, and expert_tmp together to maintain the three-buffer
-        # invariant expected by _ensure_moe_expert_bufs and the quantized _dispatch_expert_down path.
+        # _dispatch_expert_projections handles _ensure_moe_expert_bufs + quant_extra + both matmuls.
         # Note: _ensure_moe_expert_bufs also allocates expert_tmp as a side effect (via
         # _ensure_expert_tmp). expert_tmp is not used here; it is consumed by _dispatch_expert_down.
-        self._ensure_moe_expert_bufs()
+        gate_buf, up_buf = self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter)
         msc = self._moe_sc
         if "expert_gate_biased" not in msc:
             msc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
-        uq_g = self._uq_for_key(gw_key)
-        uq_u = self._uq_for_key(uw_key)
-        qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
-        qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
-
-        self._matmul_expert(normed_x, gw_key, uq_g, qi_g, msc["expert_gate"], inter)
-        self._matmul_expert(normed_x, uw_key, uq_u, qi_u, msc["expert_up"], inter)
 
         # Inject gate bias: expert_gate → expert_gate_biased (different src/dst: no alias).
         # When g_bias is absent use expert_gate directly as the gate source for gelu_mul.
         if g_bias is not None:
-            self._dispatch("add", [msc["expert_gate"], g_bias, msc["expert_gate_biased"]],
+            self._dispatch("add", [gate_buf, g_bias, msc["expert_gate_biased"]],
                            {"N": inter}, _vec4_wg(inter))
             gate_src = msc["expert_gate_biased"]
         else:
-            gate_src = msc["expert_gate"]
+            gate_src = gate_buf
 
         # Inject up bias.
         # When both biases are present: write biased up to expert_gate (now free because
@@ -414,12 +406,12 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         # When only up bias is present: write to expert_gate_biased (gate is read from
         #   expert_gate, which must not be overwritten before gelu_mul).
         if u_bias is not None:
-            up_dst = msc["expert_gate"] if g_bias is not None else msc["expert_gate_biased"]
-            self._dispatch("add", [msc["expert_up"], u_bias, up_dst],
+            up_dst = gate_buf if g_bias is not None else msc["expert_gate_biased"]
+            self._dispatch("add", [up_buf, u_bias, up_dst],
                            {"N": inter}, _vec4_wg(inter))
             up_src = up_dst
         else:
-            up_src = msc["expert_up"]
+            up_src = up_buf
 
         self._dispatch(
             "gelu_mul",

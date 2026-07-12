@@ -312,6 +312,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             conv_kernel_size=self._lin_conv_kernel,
             num_spec=num_spec,
         )
+        assert self._lin_conv_dim == max(conv_shape), (
+            f"_lin_conv_dim={self._lin_conv_dim} diverged from gated_delta_net_state_shape "
+            f"conv_dim={max(conv_shape)}: vLLM changed the conv_dim formula — update qwen35.py"
+        )
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
 

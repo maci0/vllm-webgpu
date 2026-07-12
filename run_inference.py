@@ -21,18 +21,12 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # Use vLLM's config loader so Mistral-format repos (params.json) are handled correctly.
     from transformers import AutoTokenizer
-    from vllm.transformers_utils.config import get_config as _vllm_get_config
+    from vllm.transformers_utils.config import get_config as _vllm_get_config, get_hf_text_config
     _GREEDY_TEMP = 1e-5  # greedy-detection threshold; stable semantic constant
     cfg = _vllm_get_config(model_dir, trust_remote_code=True)
 
     arch = (cfg.architectures or ["LlamaForCausalLM"])[0]
     print(f"Architecture: {arch}")
-    from vllm_webgpu.scripts.kv_utils import _make_convertor
-    # For multimodal wrapper configs cfg.num_hidden_layers is the outer wrapper's
-    # count; the convertor reads from hf_text_config and returns the correct value.
-    _num_layers = _make_convertor(cfg).get_num_hidden_layers()
-    print(f"  hidden={cfg.hidden_size}, layers={_num_layers}, "
-          f"heads={cfg.num_attention_heads}, kv_heads={getattr(cfg, 'num_key_value_heads', cfg.num_attention_heads)}")
 
     # AutoTokenizer handles chat templates, special tokens, and all tokenizer variants.
     print("\nLoading tokenizer...")
@@ -69,6 +63,10 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
     family = ARCH_MAP.get(arch)
     model = _build_model(arch, family, cfg, device, pipeline_cache, block_size)
+    _text_cfg = get_hf_text_config(cfg)
+    print(f"  hidden={_text_cfg.hidden_size}, layers={model.num_layers}, "
+          f"heads={_text_cfg.num_attention_heads}, "
+          f"kv_heads={getattr(_text_cfg, 'num_key_value_heads', _text_cfg.num_attention_heads)}")
 
     # Load weights
     print("\nLoading weights (this may take a while)...")

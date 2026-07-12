@@ -1040,7 +1040,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                             {"N": add_n}, _vec4_wg(add_n))
 
                     # Apply layer_scalar to the full f32 residual (matches vLLM).
-                    if _ls != 1.0:
+                    if abs(_ls - 1.0) > 1e-6:
                         self._dispatch(
                             "f32_scale_inplace", [out_h],
                             {"N": add_n, "SCALE": _ls},
@@ -1495,7 +1495,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Apply layer_scalar to the full residual once per decoder layer.
             # Matches vLLM: hidden_states = hidden_states * self.layer_scalar,
             # which scales (x + delta_attn + delta_ffn), not just the deltas.
-            if _ls != 1.0:
+            if abs(_ls - 1.0) > 1e-6:
                 self._dispatch("f32_scale_inplace", [out],
                                {"N": add_n, "SCALE": _ls},
                                (cdiv(add_n, 256), 1, 1))
