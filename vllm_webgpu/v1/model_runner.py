@@ -395,7 +395,7 @@ class WebGPUModelRunner:
         if widths:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
-            if len(widths) == len(logprobs_data) and len(set(widths)) == 1:
+            if len(widths) == len(logprobs_data) and min(widths) == max_k:
                 built_logprobs = _stack(logprobs_data)
             else:
                 # Derive the dtype of selected_token_ranks from the first real

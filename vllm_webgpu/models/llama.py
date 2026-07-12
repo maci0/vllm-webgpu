@@ -591,7 +591,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                         self._dispatch("add_rms_norm",
                                        [residual, b["ffn_out"], next_w, out_h, b["normed"]],
                                        rms_base, (T, 1, 1))
-                        # normed_x stays as b["normed"] — set once before the loop
                     else:
                         add_n = T * hidden
                         self._dispatch("add",

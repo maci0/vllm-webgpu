@@ -29,6 +29,13 @@ _GPTQ_NIBBLE_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = float(np.finfo(np.float16).max)  # 65504.0
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
+_SYM_ZERO_SENTINEL: "np.int32" = np.int32(-2004318072)
+# Flush every 512 MB of pending write_buffer calls. Metal silently drops
+# write_buffer operations when the GPU staging buffer queue is saturated
+# (~1-2 GB). Periodic flushes prevent this for large single-file models.
+_FLUSH_THRESHOLD = 512 * 1024 * 1024
+# BitsAndBytes NF4 quantization block size (fixed by the BnB format spec).
+_BNB_GROUP_K = 64
 
 
 def _unpack_nibbles_std4(packed: "np.ndarray", out_rows: int, in_cols: int) -> "np.ndarray":
@@ -53,8 +60,8 @@ def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
     """
     if qz is None:
         return True
-    if qz.itemsize != 4:
-        # Unexpected dtype (e.g. I16, F16): cannot safely view as int32.
+    if qz.dtype.kind not in ('i', 'u'):
+        # Non-integer dtype (e.g. F16, F32): cannot safely view as int32.
         # Treat as asymmetric so callers fall through to CPU dequant.
         return False
     v = qz.view(np.int32)
@@ -81,16 +88,6 @@ def _is_gdn_weight_key(key: str) -> bool:
     )
 
 logger = init_logger(__name__)
-
-# Flush every 512 MB of pending write_buffer calls. Metal silently drops
-# write_buffer operations when the GPU staging buffer queue is saturated
-# (~1-2 GB). Periodic flushes prevent this for large single-file models.
-_FLUSH_THRESHOLD = 512 * 1024 * 1024
-# BitsAndBytes NF4 quantization block size (fixed by the BnB format spec).
-_BNB_GROUP_K = 64
-# 0x88888888 viewed as int32 = -2004318072 (all eight nibbles = 8, symmetric zero-point).
-_SYM_ZERO_SENTINEL: "np.int32" = np.int32(-2004318072)
-
 
 
 _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})

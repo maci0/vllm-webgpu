@@ -58,6 +58,16 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
+# YaRN RoPE defaults from YaRNScalingRotaryEmbedding.__init__ kwargs
+# (yarn_scaling_rope.py:26-31, vLLM 0.24). Verify on each vLLM bump:
+#   grep -n "beta_fast\|beta_slow\|extrapolation_factor\|attn_factor\|apply_yarn\|truncate" \
+#     .venv/lib/*/site-packages/vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
+_YARN_DEFAULTS: dict = {
+    "beta_fast": 32, "beta_slow": 1,
+    "extrapolation_factor": 1.0, "attn_factor": 1.0,
+    "apply_yarn_scaling": True, "truncate": True,
+}
+
 def compute_yarn_freqs(
     head_dim: int,
     rope_theta: float,
@@ -111,16 +121,7 @@ def compute_yarn_freqs(
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
     # Accepted key set: rotary_embedding/__init__.py:250-256 (vLLM 0.24).
-    # Defaults: YaRNScalingRotaryEmbedding.__init__ kwargs at yarn_scaling_rope.py:26-31 (vLLM 0.24).
-    # Verify both on each vLLM bump:
-    #   grep -n "beta_fast\|beta_slow\|extrapolation_factor\|attn_factor\|apply_yarn\|truncate" \
-    #     .venv/lib/*/site-packages/vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py
-    # All six keys are grouped here so a vLLM bump only requires editing this one dict.
-    _YARN_DEFAULTS: dict = {
-        "beta_fast": 32, "beta_slow": 1,
-        "extrapolation_factor": 1.0, "attn_factor": 1.0,
-        "apply_yarn_scaling": True, "truncate": True,
-    }
+    # All six default keys live in the module-level _YARN_DEFAULTS constant.
     _yarn = {k: rope_scaling.get(k, d) for k, d in _YARN_DEFAULTS.items()}
     beta_fast            = int(_yarn["beta_fast"])
     beta_slow            = int(_yarn["beta_slow"])

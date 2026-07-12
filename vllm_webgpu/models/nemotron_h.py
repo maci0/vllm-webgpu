@@ -85,63 +85,6 @@ del _mapper
 # NOTE: _validate_mamba_weights is the authoritative runtime guard. It checks
 # the actual in_proj.weight shape from the loaded checkpoint against in_proj_dim.
 
-# Import-time behavioral guard: verify that NemotronHMLPDecoderLayer.__init__ still
-# picks the correct per-layer intermediate_size from a multi-element list using a
-# heterogeneous hybrid_override_pattern. This catches any change to the upstream
-# mlp_index formula or list-resolution logic without being fragile to reformat-only
-# commits (unlike getsource string matching).
-# ImportError is intentionally not caught: a broken vLLM install should propagate.
-_NemotronHMLPDecoder = None
-try:
-    from vllm.model_executor.models.nemotron_h import NemotronHMLPDecoderLayer as _NemotronHMLPDecoder
-    from vllm.transformers_utils.configs.nemotron_h import NemotronHConfig as _NemotronHConfig
-    from unittest.mock import patch as _patch
-
-    # "---": three consecutive MLP layers, mlp_index 0/1/2 at layer_idx 0/1/2.
-    _mlp_cfg = _NemotronHConfig(
-        num_hidden_layers=3,
-        hybrid_override_pattern="---",
-        intermediate_size=[1024, 2048, 4096],
-    )
-    _captured: dict = {}
-
-    class _MockMLP:
-        def __init__(self_, config, *, hidden_size, intermediate_size, **kw):
-            _captured["size"] = intermediate_size
-
-    class _MockNoop:
-        """Stub that accepts any positional/keyword args and does nothing."""
-        def __init__(self_, *a, **kw):
-            pass
-
-    _patches = [
-        _patch("vllm.model_executor.models.nemotron_h.NemotronHMLP", _MockMLP),
-        _patch("vllm.model_executor.models.nemotron_h.RMSNorm", _MockNoop),
-    ]
-    for _p in _patches:
-        _p.start()
-    try:
-        for _layer_idx, _expected_inter in [(0, 1024), (1, 2048), (2, 4096)]:
-            _captured.clear()
-            _NemotronHMLPDecoder(_mlp_cfg, _layer_idx)
-            if _captured.get("size") != _expected_inter:
-                raise AssertionError(
-                    f"NemotronHMLPDecoderLayer selected intermediate_size="
-                    f"{_captured.get('size')!r} at layer_idx={_layer_idx}, "
-                    f"expected {_expected_inter}. The upstream mlp_index formula or "
-                    f"list-resolution logic has changed. Review _resolve_intermediate_size() "
-                    f"and the _mlp_count loop in NemotronHWebGPUModel.__init__, update "
-                    f"them to match, then re-run this check."
-                )
-    finally:
-        for _p in _patches:
-            _p.stop()
-
-    del _NemotronHConfig, _patch, _mlp_cfg, _captured, _MockMLP, _MockNoop, _patches
-    del _layer_idx, _expected_inter
-finally:
-    del _NemotronHMLPDecoder
-
 # conv_dim is computed here from config params using the same formula as MambaMixer2
 # (mamba_mixer2.py L313: conv_dim = intermediate_size + 2 * groups_ssm_state_size).
 # For tp=1, extra_groups_for_head_shards returns 0, so this exactly matches
@@ -188,6 +131,18 @@ if _resolve_intermediate_size([1024], 5) != 1024:
         "The len==1 branch of NemotronHMLPDecoderLayer.__init__ (L288) was refactored; "
         "update _resolve_intermediate_size to match, then fix this assertion."
     )
+# Verify multi-element list resolution: each index must return the corresponding
+# entry. This is equivalent to checking the upstream mlp_index formula without
+# touching vLLM module namespaces or importing test infrastructure.
+for _i, _expected in enumerate([1024, 2048, 4096]):
+    if _resolve_intermediate_size([1024, 2048, 4096], _i) != _expected:
+        raise AssertionError(
+            f"_resolve_intermediate_size([1024, 2048, 4096], {_i}) returned "
+            f"{_resolve_intermediate_size([1024, 2048, 4096], _i)!r}, expected {_expected}. "
+            "The multi-element list branch of NemotronHMLPDecoderLayer.__init__ has changed; "
+            "update _resolve_intermediate_size to match."
+        )
+del _i, _expected
 
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.

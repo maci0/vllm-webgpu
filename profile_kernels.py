@@ -87,10 +87,8 @@ def main() -> None:
     _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
     logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
-    def _next_tok(lg):
-        return int(lg[0, 0])
-
-    decode_tok = _next_tok(logits)
+    assert logits.shape == (1, 1), logits.shape
+    decode_tok = int(logits[0, 0])
     pos = len(tok_ids)
     print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")
 
@@ -100,7 +98,7 @@ def main() -> None:
         t_start = time.perf_counter()
         lg = model.forward(np.array([token_id], dtype=np.uint32), np.array([p], dtype=np.uint32), _dm)
         elapsed = (time.perf_counter() - t_start) * 1000
-        return _next_tok(lg), elapsed
+        return int(lg[0, 0]), elapsed
 
     # ── Decode warmup + production timing ─────────────────────────────────────────
     print(f"Warming up ({args.warmup_steps} steps), then timing {args.decode_steps} production steps...")
@@ -111,11 +109,9 @@ def main() -> None:
         if step >= args.warmup_steps:
             prod_times.append(elapsed_ms)
 
-    if not prod_times:
-        print("No production steps measured")
-    else:
-        prod_avg_ms = np.mean(prod_times)
-        print(f"Production throughput: {prod_avg_ms:.1f} ms/tok = {1000/prod_avg_ms:.1f} tok/s")
+    assert prod_times, "No production steps measured (--decode-steps must be > 0)"
+    prod_avg_ms = np.mean(prod_times)
+    print(f"Production throughput: {prod_avg_ms:.1f} ms/tok = {1000/prod_avg_ms:.1f} tok/s")
 
     # ── Profiled decode steps ──────────────────────────────────────────────────────
     print(f"Profiling {args.decode_steps} decode steps...")
@@ -129,12 +125,10 @@ def main() -> None:
             pos += 1
     finally:
         model.profiling = False
-    avg_step_ms = np.mean(decode_times) if decode_times else 0.0
-    if not decode_times:
-        print("\nNo profiled decode steps measured")
-    else:
-        tok_s = f"  ({1000/avg_step_ms:.1f} tok/s)" if avg_step_ms > 0 else ""
-        print(f"\nAverage decode step: {avg_step_ms:.1f} ms{tok_s}")
+    assert decode_times, "No profiled decode steps measured (--decode-steps must be > 0)"
+    avg_step_ms = np.mean(decode_times)
+    tok_s = f"  ({1000/avg_step_ms:.1f} tok/s)" if avg_step_ms > 0 else ""
+    print(f"\nAverage decode step: {avg_step_ms:.1f} ms{tok_s}")
     print()
     print(model.profile_report())
     print()
