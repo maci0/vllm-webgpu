@@ -66,12 +66,14 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via a minimal
-    __new__ stub so any future changes to that private method (new correction
-    terms, changed blend weights, etc.) are inherited automatically without
-    silent numerical divergence.  The stub sets only the seven instance
-    attributes the method reads; super().__init__() is never called so the
-    expensive cos/sin cache build is skipped.
+    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via a __new__
+    stub.  The stub sets only the seven instance attributes the method reads
+    (base, rotary_dim, max_position_embeddings, beta_fast, beta_slow,
+    extrapolation_factor, truncate); __init__ is never called so the expensive
+    cos/sin cache build is skipped.  Any future change to _compute_inv_freq
+    (new correction terms, changed blend weights, etc.) is inherited
+    automatically.  If vLLM adds new required attributes the AttributeError
+    will surface immediately rather than silently diverging.
 
     tests/test_yarn_freqs.py::test_yarn_freqs_matches_vllm asserts numerical
     parity against get_rope() output; run it after each vLLM bump to catch
@@ -123,18 +125,24 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    import torch
-    from vllm.model_executor.layers.rotary_embedding.common import (
-        yarn_find_correction_range,
-        yarn_get_mscale,
-        yarn_linear_ramp_mask,
+    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+        YaRNScalingRotaryEmbedding,
     )
 
-    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    inv_freq_mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
-    inv_freq_tensor = (1.0 / (factor * pos_freqs)) * (1 - inv_freq_mask) + (1.0 / pos_freqs) * inv_freq_mask
-    inv_freq = inv_freq_tensor.numpy()
+    # Construct a stub via __new__ so __init__ (and the expensive cos/sin cache
+    # build it triggers) is never called.  Set only the seven attributes that
+    # _compute_inv_freq reads; if vLLM adds new ones the AttributeError will
+    # surface immediately rather than silently diverging.
+    stub = YaRNScalingRotaryEmbedding.__new__(YaRNScalingRotaryEmbedding)
+    stub.base = rope_theta
+    stub.rotary_dim = rotary_dim
+    stub.max_position_embeddings = orig_ctx
+    stub.beta_fast = beta_fast
+    stub.beta_slow = beta_slow
+    stub.extrapolation_factor = extrapolation_factor
+    stub.truncate = truncate
+    inv_freq = stub._compute_inv_freq(factor).numpy()
 
     # mscale uses the public yarn_get_mscale — keep inline so it stays bound
     # to the imported function, not a stub attribute.
