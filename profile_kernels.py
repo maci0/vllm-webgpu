@@ -45,11 +45,12 @@ def main() -> None:
     num_layers = hf_cfg.num_hidden_layers
     print(f"Architecture: {arch}")
 
-    from vllm_webgpu.v1.model_runner import _build_model
+    from vllm_webgpu.v1.model_runner import _build_model, ARCH_MAP
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
     import vllm_webgpu.envs as _envs
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
-    model = _build_model(arch, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
+    family = ARCH_MAP.get(arch)
+    model = _build_model(arch, family, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
 
     print("Loading weights...")
     t0 = time.perf_counter()
