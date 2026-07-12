@@ -72,7 +72,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             # in shader bodies, so it is intentionally excluded to keep the pipeline cache key minimal.
             "LN_ROPE_BASE": math.log(self.rope_theta),
             "USE_FREQ_BUF": int(self._use_freq_buf),
-            "ATTN_SCALE": self._yarn_mscale,
+            # YaRN post-rope multiplier applied to both Q and K inside the rope shader.
+            # Net effective attention scale = YARN_MSCALE^2 * _attn_scale
+            # = mscale^2 / sqrt(head_dim), matching vLLM's YaRNScalingRotaryEmbedding
+            # which bakes mscale into cos/sin (scaling both Q and K by mscale each).
+            # For non-YaRN models _yarn_mscale == 1.0, so this is a no-op.
+            # Not to be confused with _attn_scale (= 1/sqrt(head_dim)), the flash-attn
+            # scale passed as "SCALE" in flash_attn_decode/prefill dispatches.
+            "YARN_MSCALE": self._yarn_mscale,
         }
         # Pre-register norm tiling transforms so load_weights can tile q_norm/k_norm
         # weights at upload time, avoiding a GPU roundtrip (to_numpy → tile → re-upload).

@@ -7,9 +7,9 @@ override LN_ROPE_BASE: f32  = 9.210340372;  // = log(ROPE_BASE); host sets this
 // USE_FREQ_BUF=1: read precomputed inv_freq from binding 3 instead of computing inline.
 // Enables YaRN and other scaled RoPE variants via CPU-side frequency precomputation.
 override USE_FREQ_BUF: u32  = 0u;
-// ATTN_SCALE: applied as (ATTN_SCALE * cos(angle), ATTN_SCALE * sin(angle)).
-// Set to YaRN mscale (0.1 * ln(factor) + 1.0) when USE_FREQ_BUF=1; leave at 1.0 otherwise.
-override ATTN_SCALE: f32    = 1.0;
+// YARN_MSCALE: YaRN post-rope multiplier applied to both Q and K.
+// Set to mscale (0.1 * ln(factor) + 1.0) when USE_FREQ_BUF=1; leave at 1.0 otherwise.
+override YARN_MSCALE: f32   = 1.0;
 // INPUT_OFFSET: element offset into the input buffer. Set to Q_DIM when reading K
 // from a fused QKV buffer, 0 for standalone Q or K buffers.
 override INPUT_OFFSET: u32  = 0u;
@@ -50,8 +50,8 @@ fn main(
             theta_i = exp(-f32(i * 2u) / f32(HEAD_DIM) * LN_ROPE_BASE);
         }
         let angle   = pos * theta_i;
-        let cos_v   = ATTN_SCALE * cos(angle);
-        let sin_v   = ATTN_SCALE * sin(angle);
+        let cos_v   = YARN_MSCALE * cos(angle);
+        let sin_v   = YARN_MSCALE * sin(angle);
 
         let x1 = f32(input[in_base + i]);
         let x2 = f32(input[in_base + half + i]);
