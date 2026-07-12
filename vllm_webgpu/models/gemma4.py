@@ -99,7 +99,7 @@ def _gemma4_layer_params(
         if is_kv_shared:
             _prev = layer_types[:first_kv_shared]
             kv_shared_target = next(
-                (idx for idx, x in reversed(list(enumerate(_prev))) if x == lt), None
+                (i for i in range(len(_prev) - 1, -1, -1) if _prev[i] == lt), None
             )
             if kv_shared_target is None:
                 raise ValueError(

@@ -180,7 +180,9 @@ def allocate_kv_from_tensors(
             try:
                 idx = extract_layer_index(layer_name)
                 layer_kv_bytes[idx] = (k_bytes, v_bytes)
-            except AssertionError as exc:
+            except (AssertionError, ValueError) as exc:
+                # extract_layer_index currently uses bare assert statements; catch
+                # ValueError too so logging fires if vLLM converts those to ValueError.
                 logger.error(
                     "Cannot parse layer index from KVCacheTensor.shared_by entry %r "
                     "(spec=%s, k=%d, v=%d bytes lost): %s",
@@ -266,16 +268,22 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     # attn_type_list lives on the outer hf_config for multimodal models where
     # hf_text_config (passed as hf_config here) differs from the outer config.
     _outer = hf_outer_config if hf_outer_config is not None else hf_config
-    # Priority order approximates vLLM's ModelConfig.get_num_layers_by_block_type
-    # (config/model.py:1327-1362): layers_block_type > attn_type_list > layer_types.
-    # attn_type_list uses a truthiness check (matching vLLM) so an empty list falls
-    # through to layer_types rather than short-circuiting the probe chain.
-    # The 4th probe below (outer-config layer_types) is not present in vLLM and is used
-    # as a fallback for multimodal models where layer_types lives only on the outer config.
+    # Priority order mirrors vLLM's ModelConfig.get_num_layers_by_block_type
+    # (config/model.py:1327-1362 as of vLLM 0.24):
+    #   probe 1 (L1330): layers_block_type  — NemotronH / Falcon
+    #   probe 2 (L1334): attn_type_list     — Minimax (truthiness, not is-not-None)
+    #   probe 3 (L1345): layer_types        — Gemma4 / Qwen3.5
+    # VERSION SYNC: on each vLLM bump, diff get_num_layers_by_block_type against
+    # this probe list. If a 4th probe is added, add it here too.
+    # attn_type_list uses a truthiness check (matching vLLM L1334) so an empty
+    # list falls through to layer_types rather than short-circuiting the chain.
+    # The 4th probe below (outer-config layer_types) is not present in vLLM and
+    # is used as a fallback for multimodal models where layer_types lives only on
+    # the outer config.
     _probes = [
-        (hf_config, "layers_block_type", False),
-        (_outer,    "attn_type_list",    True),   # truthiness check: mirrors vLLM's `if attn_type_list:`
-        (hf_config, "layer_types",       False),
+        (hf_config, "layers_block_type", False),   # vLLM config/model.py:1330
+        (_outer,    "attn_type_list",    True),    # vLLM config/model.py:1334 (truthiness)
+        (hf_config, "layer_types",       False),   # vLLM config/model.py:1345
     ]
     if _outer is not hf_config:
         _probes.append((_outer, "layer_types", False))  # fallback for outer-only configs (not in vLLM)
@@ -304,7 +312,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     if (explicit := worker.cache_config.kv_cache_memory_bytes) is not None:
         return explicit
 
-    _model = worker.model_runner.model if worker.model_runner is not None else None
+    _model = getattr(worker.model_runner, 'model', None)
     model_mem = (
         sum(buf.nbytes for buf in _model.weights.values())
         if _model is not None else 0

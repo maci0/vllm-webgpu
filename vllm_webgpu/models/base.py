@@ -113,13 +113,9 @@ def compute_yarn_freqs(
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
     # Accepted key set: rotary_embedding/__init__.py:250-256 (vLLM 0.24).
-    # Defaults come directly from YaRNScalingRotaryEmbedding so they track
-    # any upstream changes automatically instead of drifting on each vLLM bump.
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding as _YaRNRoPE,
-    )
-    _yarn_defaults = _YaRNRoPE.__init__.__kwdefaults__ or {}
-    _yarn = {k: rope_scaling.get(k, _yarn_defaults.get(k, d))
+    # Hardcoded defaults match YaRNScalingRotaryEmbedding.__init__.__kwdefaults__
+    # exactly (verified vLLM 0.24). On each vLLM bump, re-check those defaults.
+    _yarn = {k: rope_scaling.get(k, d)
              for k, d in {
                  "extrapolation_factor": 1.0, "attn_factor": 1.0,
                  "beta_fast": 32, "beta_slow": 1,

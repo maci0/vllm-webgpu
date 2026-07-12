@@ -239,12 +239,13 @@ def _remap_prefixes(d: dict) -> None:
     d.update(to_add)
 
 
-def _upload_non_quant(header, reserved, i8_skip, upload_fn):
+def _upload_non_quant(header, skip: set, upload_fn):
     """Upload all tensors in header that are not part of the quantized set.
 
-    Skips names in `reserved` (the quantized-weight keys) and `i8_skip` (int8
-    companion keys). For tensors that _upload_plain cannot handle, warns unless
-    the dtype is U8 or I32 (known dtypes that are intentionally skipped).
+    Skips names in `skip` (union of quantized-weight keys and int8 companion
+    keys; callers pass quant_set | _i8_companion_skip). For tensors that
+    _upload_plain cannot handle, warns unless the dtype is U8 or I32 (known
+    dtypes that are intentionally skipped).
 
     F8_E4M3 is NOT silently skipped: every F8_E4M3 weight key is captured in
     the format-specific reserved set (fp8_set for the fp8 path, nvfp4_set for
@@ -252,7 +253,7 @@ def _upload_non_quant(header, reserved, i8_skip, upload_fn):
     function. An unexpected F8_E4M3 key warrants a warning.
     """
     for name in header:
-        if name in reserved or name in i8_skip:
+        if name in skip:
             continue
         if not upload_fn(name):
             dt = header[name].get("dtype", "?")
@@ -1005,7 +1006,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         quant_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, quant_set, _i8_companion_skip, _upload_plain)
+            _upload_non_quant(header, quant_set | _i8_companion_skip, _upload_plain)
 
             for base in quant_bases:
                 try:
@@ -1102,7 +1103,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         nvfp4_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, nvfp4_set, _i8_companion_skip, _upload_plain)
+            _upload_non_quant(header, nvfp4_set | _i8_companion_skip, _upload_plain)
 
             for base in nvfp4_bases:
                 try:
@@ -1141,7 +1142,7 @@ def load_safetensors_weights(
                     if f"{base}{suf}" in header:
                         dnvfp4_set.add(f"{base}{suf}")
 
-            _upload_non_quant(header, dnvfp4_set, _i8_companion_skip, _upload_plain)
+            _upload_non_quant(header, dnvfp4_set | _i8_companion_skip, _upload_plain)
 
             for base in dnvfp4_bases:
                 try:
@@ -1176,7 +1177,7 @@ def load_safetensors_weights(
             }
             fp8_set = fp8_names | fp8_scale_names | fp8_scale_inv_names
 
-            _upload_non_quant(header, fp8_set, _i8_companion_skip, _upload_plain)
+            _upload_non_quant(header, fp8_set | _i8_companion_skip, _upload_plain)
 
             for wname in fp8_names:
                 base = wname.removesuffix(".weight")
@@ -1222,10 +1223,10 @@ def load_safetensors_weights(
                             else:
                                 # Per-channel inverse scales: invert element-wise.
                                 scale_inv_f32 = scale_inv_arr.ravel().astype(np.float32)
-                                scale_f32 = np.where(
-                                    scale_inv_f32 != 0.0,
-                                    1.0 / scale_inv_f32,
-                                    np.float32(1.0))
+                                scale_f32 = np.divide(
+                                    1.0, scale_inv_f32,
+                                    where=scale_inv_f32 != 0.0,
+                                    out=np.ones_like(scale_inv_f32))
                                 scale_f32 = np.ascontiguousarray(scale_f32)
                                 _upload(scale_f32, np.float32, 'f32', wname + ".scales", weights)
                                 weights["__quant_meta__"][base] = {
@@ -1248,7 +1249,7 @@ def load_safetensors_weights(
                 and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
             )
             mx_set: set = {f"{b}.weight" for b in mx_bases} | {f"{b}.weight_scale" for b in mx_bases}
-            _upload_non_quant(header, mx_set, _i8_companion_skip, _upload_plain)
+            _upload_non_quant(header, mx_set | _i8_companion_skip, _upload_plain)
 
             if fmt == "mxfp4":
                 # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
@@ -1343,7 +1344,7 @@ def load_safetensors_weights(
                             bnb_set.add(absmax_k)
 
             # Upload all non-BnB tensors normally.
-            _upload_non_quant(header, bnb_set, _i8_companion_skip, _upload_plain)
+            _upload_non_quant(header, bnb_set | _i8_companion_skip, _upload_plain)
 
             for base in sorted(bnb_bases):
                 try:
@@ -1444,7 +1445,7 @@ def load_safetensors_weights(
                 if f"{_b}.weight_zero_point" in header:
                     ct_reserved.add(f"{_b}.weight_zero_point")
 
-            _upload_non_quant(header, ct_reserved, _i8_companion_skip, _upload_plain)
+            _upload_non_quant(header, ct_reserved | _i8_companion_skip, _upload_plain)
 
             weights.setdefault("__quant_meta__", {})
             for base in ct_bases:

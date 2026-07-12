@@ -163,6 +163,14 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # self._init_rope_freq_buf().
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
+        # Verify layer_types length matches num_layers (set by super().__init__).
+        # A mismatch surfaces at inference time as ValueError from _is_full_attn()
+        # rather than at construction time; catch it here instead.
+        assert len(self._layer_types) == self.num_layers, (
+            f"layer_types has {len(self._layer_types)} entries but model has "
+            f"{self.num_layers} layers"
+        )
+
         # Seed _rms_consts with GEMMA_NORM so all add_rms_norm dispatches (including
         # GDN layers, which read _rms_consts directly) have the constant from the moment
         # the object is constructed. GEMMA_NORM is fixed from model_config.rms_norm_type
@@ -556,7 +564,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                            _rms_h, (1, 1, 1))
 
             # 10. FFN (MoE or dense)
-            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx, 1)
+            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx)
 
             if layer_idx < self.num_layers - 1:
                 next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]

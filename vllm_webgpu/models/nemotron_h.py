@@ -356,6 +356,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                         f"Implement bias-add dispatches before using a puzzle "
                         f"checkpoint with per-layer mlp_bias=True."
                     )
+                _lact = getattr(_lcfg, 'mlp_hidden_act', model_config.mlp_hidden_act)
+                if _lact not in ('relu2', 'squared_relu'):
+                    raise NotImplementedError(
+                        f"Layer {_li} mlp_hidden_act={_lact!r}; "
+                        f"relu_sq.wgsl hard-codes relu^2."
+                    )
                 # Do not silently fall back to the global intermediate_size
                 # when a per-layer config exists but omits the attribute.
                 # vLLM accesses config.intermediate_size directly (AttributeError
@@ -638,7 +644,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         _missing_transforms = [
             k for k in self._weight_transforms
             if k not in self.weights
-            and not any(k.startswith(p) for p in skip_prefixes)
+            and not k.startswith(tuple(skip_prefixes))
         ]
         if _missing_transforms:
             raise AssertionError(

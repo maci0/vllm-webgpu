@@ -75,11 +75,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # weights at upload time, avoiding a GPU roundtrip (to_numpy → tile → re-upload).
         # Qwen3 checkpoints store shared norm as (head_dim,); the shader expects
         # (num_heads * head_dim,) with each head using the same values.
-        def _norm_xform(n_heads: int):
-            hd = self.head_dim
-            return lambda a: np.tile(a, n_heads) if a.shape == (hd,) else a
-        _q_xform = _norm_xform(self.num_q_heads)
-        _k_xform = _norm_xform(self.num_kv_heads)
+        _q_xform = lambda a, n=self.num_q_heads, hd=self.head_dim: np.tile(a, n) if a.shape == (hd,) else a  # noqa: E731
+        _k_xform = lambda a, n=self.num_kv_heads, hd=self.head_dim: np.tile(a, n) if a.shape == (hd,) else a  # noqa: E731
         self._weight_transforms.update({
             f"model.layers.{i}.self_attn.{k}.weight": xf
             for i in range(self.num_layers)
@@ -678,6 +675,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # All callers enforce T >= 2 (forward() line 377, MixtralWebGPUModel.forward()
         # line 167, _prefill_batch_forward lines 432/442), so the loop always executes
         # and x_buf is guaranteed to be bound by the loop body on every code path.
+        assert T >= 2, f"_prefill_sequential_fallback requires T >= 2, got T={T}"
         for t in range(T):
             self._hstate = 0
             tok_pos   = int(positions[t])
@@ -920,7 +918,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             residual, sc["ffn_normed"]],
                            _rms_c, (num_tokens, 1, 1))
 
-            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx, num_tokens)
+            ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx)
 
             # Final residual add: fuse with next layer's pre-norm when possible.
             # Last layer: plain add; intermediate layers: add_rms_norm saves 1 dispatch.
@@ -956,7 +954,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         self,
         normed_x: "WebGPUBuffer",
         layer_idx: int,
-        num_tokens: int,
     ) -> "WebGPUBuffer":
         """Dense SiLU FFN (gate_proj + up_proj + SiLU + down_proj).
 
@@ -978,7 +975,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            [normed_x, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
                            {"K": hidden, "N": inter}, (inter, 1, 1))
         else:
-            gelu_n = num_tokens * inter
             for out_b, w_k, uq2, mlp_proj in [
                     (sc["gate_buf"], gw_k, uq_g, "gate_proj"),
                     (sc["up_buf"],  uw_k, uq_u, "up_proj")]:
@@ -989,7 +985,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                {"K": hidden, "N": inter, "USE_QUANT": uq2, **qi2},
                                (inter, 1, 1))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                           {"N": gelu_n}, _vec4_wg(gelu_n))
+                           {"N": inter}, _vec4_wg(inter))
 
         # Down projection
         w_k = f"{p}.mlp.down_proj.weight"

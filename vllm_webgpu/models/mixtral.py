@@ -147,13 +147,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         self,
         normed_x: "WebGPUBuffer",
         layer_idx: int,
-        num_tokens: int,
     ) -> "WebGPUBuffer":
         """MoE FFN for Mixtral; falls back to dense FFN for non-MoE (Mistral) models."""
         if self._is_moe:
             self._moe_ffn_layer(normed_x, layer_idx)
             return self._moe_sc["expert_out"]
-        return super()._ffn_dispatch(normed_x, layer_idx, num_tokens)
+        return super()._ffn_dispatch(normed_x, layer_idx)
 
     def forward(
         self,

@@ -143,7 +143,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 "If the model stores canvas_length on the outer config, pass the outer config "
                 "as model_config so the attribute is visible here."
             )
-        return _cl or 256
+        return _cl if _cl is not None else 256
 
     def _scratch_inter_size(self) -> int:
         return max(super()._scratch_inter_size(), self.moe_intermediate_size)

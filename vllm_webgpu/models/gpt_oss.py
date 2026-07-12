@@ -298,7 +298,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         self,
         normed_x: "WebGPUBuffer",
         layer_idx: int,
-        num_tokens: int,
     ) -> "WebGPUBuffer":
         """GPT-OSS FFN dispatch. GPT-OSS is always MoE; raise if that invariant breaks.
 
@@ -313,7 +312,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 "outputs (standard SiLU instead of SwigluOAI). Check the "
                 "model config (num_local_experts, num_experts_per_tok)."
             )
-        return super()._ffn_dispatch(normed_x, layer_idx, num_tokens)
+        return super()._ffn_dispatch(normed_x, layer_idx)
 
     def _dispatch_expert_gate_up(
         self,
