@@ -847,7 +847,7 @@ class WebGPUModelRunner:
             all_req_ids, all_sampled, all_logprobs_data, prompt_logprobs_dict
         )
 
-    def sample_tokens(self, grammar_output: "GrammarOutput | None") -> "ModelRunnerOutput | AsyncModelRunnerOutput":
+    def sample_tokens(self, grammar_output: "GrammarOutput") -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         raise NotImplementedError(
             "Guided/constrained decoding (guided_json, guided_regex, guided_grammar) "
             "is not supported on the WebGPU backend. The GPU argmax path discards "
