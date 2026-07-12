@@ -1,6 +1,6 @@
 """Utility helpers for vllm-webgpu."""
 from __future__ import annotations
-from functools import cache
+from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -36,13 +36,17 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
-@cache
+@lru_cache(maxsize=16)
 def zero_bytes(n: int) -> bytes:
     """Return a cached immutable bytes object of n zero bytes.
 
     Used to zero-initialise GPU buffers without allocating a new object on
     every call. The cache is keyed by byte count, so each unique size is
     allocated exactly once for the lifetime of the process.
+
+    maxsize=16 bounds memory: fixed callers in model_runner/base use 2-4
+    distinct sizes; variable callers (e.g. diffusion_gemma per-request) are
+    bounded by LRU eviction rather than accumulating stale entries forever.
     """
     return bytes(n)
 
