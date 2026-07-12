@@ -200,7 +200,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         """
         is_full = (layer_idx < len(self._layer_types)
                    and self._layer_types[layer_idx] == "full_attention")
-        eff = ctx_len if is_full else self._effective_ctx_len(ctx_len)
+        _sb, eff = (0, ctx_len) if is_full else self._ctx_window(ctx_len)
 
         sc = self._sc
         hidden = self.hidden_size
@@ -283,7 +283,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
              "NUM_KV_HEADS": self.num_kv_heads,
              "HEAD_DIM": self.head_dim,
              "CTX_LEN": eff,
-             "START_BLOCK": 0 if is_full else self._start_block(ctx_len),
+             "START_BLOCK": _sb,
              "SCALE": self._attn_scale},
             (self.num_q_heads, 1, 1),
         )
