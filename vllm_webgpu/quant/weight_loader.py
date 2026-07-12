@@ -336,7 +336,12 @@ def load_safetensors_weights_sharded(
     # Detect compressed-tensors quantization format before loading shards.
     # The I8 and F8_E4M3 dtypes are already handled per-shard inside load_safetensors_weights,
     # but we apply comprehensive quant_meta here for any layers not caught by dtype detection.
-    ct_meta = detect_compressed_tensors_fmt(Path(model_dir) / "config.json", quant_cfg=quant_cfg)
+    try:
+        ct_meta = detect_compressed_tensors_fmt(Path(model_dir) / "config.json", quant_cfg=quant_cfg)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Unsupported compressed-tensors quantization format in {model_dir}: {exc}"
+        ) from exc
     if ct_meta:
         logger.info("compressed-tensors format detected: %s", ct_meta.get("__global__", {}))
 
@@ -555,7 +560,8 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
       8-bit int  + channel        -> fmt='int8_gpu'
       8-bit float + tensor/channel -> fmt='fp8_gpu'
       4-bit int  + group          -> fmt='gptq_gpu'
-      other                       -> empty dict with a logged warning
+      other                       -> raises ValueError; callers catch and surface
+                                     a user-facing unsupported-format RuntimeError
 
     Limitation: only the first config group that carries a weights spec is used;
     the result is applied as a single global descriptor to all weight layers. Models
@@ -655,7 +661,12 @@ def load_safetensors_weights(
         if not _already_checked:
             _check_unsupported_quant(_raw_quant_cfg)
         if ct_meta is None:
-            ct_meta = detect_compressed_tensors_fmt(_config_json, quant_cfg=_raw_quant_cfg)
+            try:
+                ct_meta = detect_compressed_tensors_fmt(_config_json, quant_cfg=_raw_quant_cfg)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"Unsupported compressed-tensors quantization format in {_config_json.parent}: {exc}"
+                ) from exc
 
         # Detect quantization format from header in a single O(n) pass.
         # NOTE: detection is file-level, not per-layer. A checkpoint that mixes
