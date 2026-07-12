@@ -235,9 +235,13 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Run gate and up expert matmuls into msc['expert_gate'] and msc['expert_up'].
 
-        Handles the quantized matmul path only (the fused f16 path uses
-        fused_gate_act directly in _dispatch_expert_gate_up). Callers are
-        responsible for any activation dispatch after the projections.
+        Handles separate gate/up matmul projections into msc['expert_gate'] and
+        msc['expert_up']. Used when at least one projection is quantized (from
+        _dispatch_expert_gate_up) or when bias injection requires separate
+        intermediate buffers before the activation (from
+        GptOssWebGPUModel._dispatch_expert_gate_up, which calls this even for
+        f16 weights). Callers are responsible for any activation dispatch after
+        the projections.
 
         uq_g and uq_u may be passed in by _dispatch_expert_gate_up, which
         already holds both values, to avoid duplicate _uq_for_key lookups.

@@ -182,8 +182,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         """
         super()._init_scratch_buffers(max_ctx)
         if self._attn_bias:
-            Q      = self.num_q_heads  * self.head_dim
-            KV     = self.num_kv_heads * self.head_dim
+            Q      = self.q_dim
+            KV     = self.kv_dim
             hidden = self.hidden_size
             self._sc["q_bias_tmp"]  = self._make_buf(Q      * 2)   # [Q]      f16
             self._sc["k_bias_tmp"]  = self._make_buf(KV     * 2)   # [KV]     f16
@@ -216,8 +216,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         sc = self._sc
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}"
-        q_dim = self.num_q_heads * self.head_dim
-        kv_dim = self.num_kv_heads * self.head_dim
+        q_dim = self.q_dim
+        kv_dim = self.kv_dim
 
         k_cache, v_cache = self.kv_pool[layer_idx]
 

@@ -220,8 +220,8 @@ def _build_layer_params_from_config(
         if expected_fa_kv_dim not in fa_kv_dims:
             raise ValueError(
                 f"full_attention kv_dim mismatch: expected {expected_fa_kv_dim} "
-                f"(global_head_dim={getattr(model_config, 'global_head_dim', default_hd)!r} "
-                f"* num_global_key_value_heads={getattr(model_config, 'num_global_key_value_heads', default_kv)!r}) "
+                f"(global_head_dim={global_hd!r} "
+                f"* num_global_key_value_heads={global_kv!r}) "
                 f"but full_attention layers produced {fa_kv_dims}. "
                 "Check whether vLLM renamed global attention config attributes, or "
                 "whether the k_eq_v branch in formula (3) is misapplied."

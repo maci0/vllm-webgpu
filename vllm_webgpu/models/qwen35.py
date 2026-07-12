@@ -243,7 +243,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # directly, avoiding an allocate-then-discard cycle on every instantiation.
         super()._init_scratch_buffers(max_ctx, qkv_size=self._lin_conv_dim * 2)
 
-        Q = self.num_q_heads * self.head_dim
+        Q = self.q_dim
 
         # Attention output gate: silu(gate)*attn_out before o_proj.
         # Only allocated for models with attn_output_gate=True; no shader dispatch
@@ -282,7 +282,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         all checkpoint formats. No GPU readback happens here for correctly split fp16 weights.
         """
         if self._attn_output_gate:
-            q_dim = self.num_q_heads * self.head_dim
+            q_dim = self.q_dim
             for i in range(self.num_layers):
                 if not self._is_full_attn(i):
                     continue
@@ -801,7 +801,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         sc = self._sc
         hidden = self.hidden_size
         p = f"model.layers.{layer_idx}"
-        q_dim = self.num_q_heads * self.head_dim
+        q_dim = self.q_dim
 
         _uq = self._uq_for_key
         k_cache, v_cache = self.kv_pool[layer_idx]

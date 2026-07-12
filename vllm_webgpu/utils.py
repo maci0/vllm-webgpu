@@ -34,9 +34,12 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     random_sample,
 )
 # Greedy-temperature threshold below which sampling is treated as greedy.
-# Hardcoded to match vllm.v1.sample.sampler._SAMPLING_EPS = 1e-5 (vllm>=0.24).
-# mirrors vllm.v1.sample.sampler._SAMPLING_EPS; verify on each vLLM version bump
-GREEDY_TEMP = 1e-5
+# Imported from vllm.v1.sample.sampler._SAMPLING_EPS (vllm>=0.24). Falls back
+# to 1e-5 if the private name moves in a future vLLM release.
+try:
+    from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
+except ImportError:
+    GREEDY_TEMP = 1e-5
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
