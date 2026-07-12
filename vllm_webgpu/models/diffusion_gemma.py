@@ -88,6 +88,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         self.top_k_experts: int = getattr(model_config, "top_k_experts", 8)
         self.is_moe: bool = _enable_moe
 
+        if self.is_moe and self.num_experts <= 0:
+            raise ValueError(
+                f"DiffusionGemma: enable_moe_block=True but num_experts={self.num_experts!r} "
+                f"is not set or zero in model_config. Cannot dispatch router projection."
+            )
+
         if self.is_moe:
             # _pes_cache is populated by load_weights(); initialize here so that
             # forward() is safe when weights are injected directly (e.g. in tests).
