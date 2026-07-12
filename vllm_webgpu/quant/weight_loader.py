@@ -65,6 +65,8 @@ def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
         # Treat as asymmetric so callers fall through to CPU dequant.
         return False
     v = qz.view(np.int32)
+    if v.size == 0:
+        return False
     if v.flat[0] != _SYM_ZERO_SENTINEL:
         return False
     return bool(np.all(v == _SYM_ZERO_SENTINEL))
