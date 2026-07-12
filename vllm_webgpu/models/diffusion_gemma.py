@@ -5,7 +5,8 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import _vec4_wg, _rows_wg, _H_NAMES, _zeros
+from vllm_webgpu.models.base import _vec4_wg, _rows_wg, _H_NAMES
+from vllm_webgpu.utils import zero_bytes
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel
 
 if TYPE_CHECKING:
@@ -751,7 +752,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             moe_acc = self._moe_acc_buf
             # Zero-initialize the accumulation buffer before the expert loop so
             # moe_accumulate_batched can do in-place += without a ping-pong buffer.
-            dev.queue.write_buffer(moe_acc.buf, 0, _zeros(num_tokens * self.hidden_size * 2))
+            dev.queue.write_buffer(moe_acc.buf, 0, zero_bytes(num_tokens * self.hidden_size * 2))
 
             # Pre-pack all unique experts' per-token weights into the GPU buffer as a
             # [num_unique_experts, T] f32 array. A single write_buffer here is correct:

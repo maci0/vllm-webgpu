@@ -31,12 +31,16 @@ _F16_MAX: float = float(np.finfo(np.float16).max)  # 65504.0
 # bit pattern 0x88888888.
 
 
-def _unpack_nibbles_gptq(packed: "np.ndarray", out_rows: int, in_cols: int) -> "np.ndarray":
+def _unpack_nibbles_std4(packed: "np.ndarray", out_rows: int, in_cols: int) -> "np.ndarray":
     """Unpack 8 uint4 nibbles per int32 into a 2-D int32 array [out_rows, in_cols].
+
+    Handles any standard 4-bit packing where nibbles live at bit offsets
+    [0, 4, 8, ..., 28] inside each int32. Used by both GPTQ (via _dequant_gptq)
+    and MLX affine int4 (via the numpy fallback in _dequant_mlx_int4). Both
+    formats use identical nibble layout, so one function covers both.
 
     packed: shape (out_rows, in_cols // 8), dtype int32 or uint32.
     Returns int32 array of shape (out_rows, in_cols) with values in [0, 15].
-    Used by _dequant_gptq and the numpy fallback in _dequant_mlx_int4.
     """
     return ((packed[:, :, np.newaxis].astype(np.int32) >> _GPTQ_NIBBLE_SHIFTS) & 0xF).reshape(out_rows, in_cols)
 
@@ -212,7 +216,7 @@ def _remap_prefixes(d: dict) -> None:
     for k, v in d.items():
         for old_pfx, new_pfx in (("model.language_model.", "model."), ("language_model.", "")):
             if k.startswith(old_pfx):
-                new_k = new_pfx + k.removeprefix(old_pfx)
+                new_k = new_pfx + k[len(old_pfx):]
                 if new_k not in d:
                     to_add[new_k] = v
                 break
@@ -509,13 +513,18 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     # Unpack 8 nibbles per int32.
     # qweight (K//8, N): packed along K axis → transpose to (N, K//8) then unpack to (N, K) → T to (K, N).
     # qzeros  (G, N//8): packed along N axis → unpack to (G, N).
-    w_int4 = _unpack_nibbles_gptq(qweight.T, N, K).T.astype(np.int8)  # (K, N)
-    z_int4 = _unpack_nibbles_gptq(qzeros, G, N).astype(np.int8)       # (G, N)
+    w_int4 = _unpack_nibbles_std4(qweight.T, N, K).T.astype(np.int8)  # (K, N)
+    z_int4 = _unpack_nibbles_std4(qzeros, G, N).astype(np.int8)       # (G, N)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
     return w_f32.T.astype(np.float16)  # (N, K)
 
 
+# NOTE: This function intentionally duplicates detection logic from
+# ModelOptFp8Config._extract_modelopt_quant_algo (vllm/model_executor/layers/
+# quantization/modelopt.py). Importing that class is unsafe on WebGPU because
+# modelopt.py has top-level CUDA kernel imports (mxfp8_utils, marlin_utils,
+# flashinfer_utils, fused_moe). Do not replace this with a direct import.
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
 
@@ -1467,7 +1476,7 @@ def load_safetensors_weights(
         # the combined remap once after all shards are merged.
         if not skip_remap:
             keys = list(weights.keys())
-            if any(k.startswith("model.language_model.") or k.startswith("language_model.") for k in keys):
+            if any(k.startswith(("model.language_model.", "language_model.")) for k in keys):
                 n_remapped = _apply_multimodal_remap(weights)
                 if n_remapped:
                     logger.info("Remapped %d language_model.* keys", n_remapped)
@@ -1506,7 +1515,7 @@ def _dequant_mlx_int4(
     except (ImportError, RuntimeError):
         out_rows, packed_cols = weight_u32.shape
         in_cols = packed_cols * 8
-        nibbles = _unpack_nibbles_gptq(weight_u32, out_rows, in_cols).astype(np.float32)
+        nibbles = _unpack_nibbles_std4(weight_u32, out_rows, in_cols).astype(np.float32)
         n_groups = in_cols // group_size
         scales_bc = np.repeat(scales_f32.reshape(out_rows, n_groups), group_size, axis=1)
         biases_bc = np.repeat(biases_f32.reshape(out_rows, n_groups), group_size, axis=1)

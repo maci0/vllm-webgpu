@@ -163,7 +163,7 @@ def main() -> None:
         _PEAK_BW_GBS = 300  # M3 Max mid-range estimate; adjust for your hardware
         if total > 0:
             bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
-            print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (M3 Peak: ~200-400 GB/s)")
+            print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (peak estimate: {_PEAK_BW_GBS} GB/s)")
             print(f"  BW utilization: {bw_util_gb_s / _PEAK_BW_GBS * 100:.1f}%")
 
 

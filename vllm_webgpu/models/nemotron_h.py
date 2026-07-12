@@ -433,8 +433,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             "HIDDEN_DIM": self.hidden_size,
             "VALS_PER_THREAD": _vals_per_thread(self.hidden_size),
         }
-        # Cached layer-0 pre-norm weight. Set by load_weights; None until then
-        # (tests that inject weights directly use the lazy fallback in forward).
+        # Cached per-layer pre-norm weights. Set by load_weights; empty list until then.
+        # _layer_norm_weights[i] is used in _layer_dispatch to avoid per-step dict lookups.
+        # _layer0_norm_w is a convenience alias to [0] also used by _norm0_w property.
+        self._layer_norm_weights: "list" = []
         self._layer0_norm_w: "WebGPUBuffer | None" = None
         self._hstate: int = 0
         # Set True during replay_prefix_for_ssm so _attn_layer skips KV writes.
@@ -694,10 +696,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self._scale_transforms.clear()
         self._validate_mamba_weights()
         self._init_mamba_states(num_spec)
-        # Cache the layer-0 pre-norm weight buffer. It is accessed on every
+        # Cache all per-layer pre-norm weight buffers. They are accessed on every
         # forward call (decode, prefill, and replay_prefix_for_ssm); caching
-        # it here avoids three repeated dict lookups per step.
-        self._layer0_norm_w = self.weights["model.layers.0.norm.weight"]
+        # avoids repeated dict lookups per step.
+        self._layer_norm_weights = [
+            self.weights[f"model.layers.{i}.norm.weight"] for i in range(self.num_layers)
+        ]
+        self._layer0_norm_w = self._layer_norm_weights[0]
         logger.info(
             "NemotronH: loaded %d weight tensors (%d Mamba layers, %d attn layers)",
             len(self.weights),
@@ -1195,9 +1200,12 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # Fuse add + pre-norm for the next layer (saves one dispatch per layer).
             # For the last layer: plain add; norm_f applied in forward() after the loop.
             if layer_idx < self.num_layers - 1:
-                next_norm_w = self.weights[
-                    f"model.layers.{layer_idx + 1}.norm.weight"
-                ]
+                # _layer_norm_weights is populated by load_weights; fall back to
+                # dict lookup for test paths that inject weights directly.
+                if self._layer_norm_weights:
+                    next_norm_w = self._layer_norm_weights[layer_idx + 1]
+                else:
+                    next_norm_w = self.weights[f"model.layers.{layer_idx + 1}.norm.weight"]
                 self._dispatch(
                     "add_rms_norm",
                     [x_buf, mixer_out, next_norm_w, out, sc["normed"]],

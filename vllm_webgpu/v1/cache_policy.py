@@ -272,6 +272,7 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
         (hf_config, "layers_block_type"),
         (_outer,    "attn_type_list"),
         (hf_config, "layer_types"),
+        (_outer,    "layer_types"),    # fallback for outer-only configs
     ]:
         v = getattr(cfg, attr, None)
         if v is not None:
@@ -299,7 +300,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
 
     _model = getattr(worker.model_runner, "model", None)
     model_mem = (
-        sum(buf.nbytes for buf in _model.weights.values() if isinstance(buf, WebGPUBuffer))
+        sum(buf.nbytes for buf in _model.weights.values())
         if _model is not None else 0
     )
 

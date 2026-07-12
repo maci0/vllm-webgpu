@@ -9,13 +9,12 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, AsyncModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import _zeros
-from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token
+from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token, zero_bytes
 from vllm_webgpu.v1.cache_policy import MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types, is_attn_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -28,7 +27,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
-    from vllm.v1.outputs import LogprobsLists
+    from vllm.v1.outputs import AsyncModelRunnerOutput, LogprobsLists
 
 logger = init_logger(__name__)
 
@@ -353,9 +352,9 @@ class WebGPUModelRunner:
                 # 16-byte placeholder for non-attention layers (Mamba, MLP-only, etc.)
                 continue
             bpb = k_buf.nbytes // self._num_kv_blocks
-            zeros = _zeros(bpb)
+            zeros = zero_bytes(bpb)
             bpb_v = v_buf.nbytes // self._num_kv_blocks
-            zeros_v = zeros if bpb_v == bpb else _zeros(bpb_v)
+            zeros_v = zeros if bpb_v == bpb else zero_bytes(bpb_v)
             for block_id in block_ids:
                 queue.write_buffer(k_buf.buf, block_id * bpb, zeros)
                 queue.write_buffer(v_buf.buf, block_id * bpb_v, zeros_v)

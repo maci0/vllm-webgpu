@@ -1,5 +1,4 @@
 from __future__ import annotations
-from functools import cache
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -13,6 +12,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
+from vllm_webgpu.utils import zero_bytes
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
@@ -154,11 +154,6 @@ def compute_yarn_freqs(
 
 
 
-@cache
-def _zeros(n: int) -> bytes:
-    return bytes(n)
-
-
 class BaseWebGPUModel(ABC):
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
@@ -166,6 +161,7 @@ class BaseWebGPUModel(ABC):
         self.wgpu_device = wgpu_device
         self.pipeline_cache = pipeline_cache
         self.weights: dict[str, "WebGPUBuffer"] = {}
+        self.weight_meta: dict = {}
         self.kv_pool: list[tuple["WebGPUBuffer", "WebGPUBuffer"]] = []
         self._active_encoder = None  # set when inside a _batched_dispatch() context
         # Profiling
@@ -216,7 +212,7 @@ class BaseWebGPUModel(ABC):
 
     def _zero_write(self, buf: "WebGPUBuffer") -> None:
         """Write zeros into buf, reusing a module-level cached bytes object of that size."""
-        self.wgpu_device.wgpu_device.queue.write_buffer(buf.buf, 0, _zeros(buf.nbytes))
+        self.wgpu_device.wgpu_device.queue.write_buffer(buf.buf, 0, zero_bytes(buf.nbytes))
 
     def _buf_to_numpy(self, buf: "WebGPUBuffer") -> "np.ndarray":
         """Read a GPU buffer as a numpy array with the correct element dtype.
@@ -388,13 +384,16 @@ class BaseWebGPUModel(ABC):
                 index_path=_index_path)
         else:
             raise ValueError(f"Unknown weight format for {path}")
+        # Move quant metadata out of the weights dict so that weights contains
+        # only WebGPUBuffer values (no plain dict), keeping the type annotation
+        # accurate and removing the need for isinstance guards in callers.
+        self.weight_meta = self.weights.pop("__quant_meta__", {})
         logger.info("Loaded %d weight tensors (%s format)", len(self.weights), fmt)
 
 
     def _quant_info(self, base_key: str) -> dict:
         """Return quantization metadata for a weight base key, or empty dict."""
-        meta = self.weights.get("__quant_meta__")
-        return meta.get(base_key, {}) if meta is not None else {}
+        return self.weight_meta.get(base_key, {})
 
     def _readback_recurrent_states(
         self, bufs: "list[tuple[str, int, object]]"
