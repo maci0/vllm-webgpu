@@ -2,11 +2,13 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 from vllm_webgpu.models.base import _rows_wg, _vec4_wg
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -109,9 +111,6 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         small (float16, at most 8 experts * 2 * 2048 = 32K elements ~= 64 KB),
         so the readback overhead is negligible compared to overall model load.
         """
-        import numpy as np
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         num_experts = self._num_experts
         inter = self._moe_inter
         hidden = self.hidden_size
@@ -125,8 +124,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
             gu_key = f"{p}.gate_up_proj_bias"
             if gu_key in self.weights:
-                raw = self.weights[gu_key].to_numpy()
-                arr = raw.view(np.float16).reshape(num_experts, 2 * inter)
+                arr = self._buf_to_numpy(self.weights[gu_key]).reshape(num_experts, 2 * inter)
                 for j in range(num_experts):
                     ep = f"{p}.{j}"
                     to_add[f"{ep}.w1.bias"] = WebGPUBuffer.from_numpy(
@@ -137,8 +135,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
             d_key = f"{p}.down_proj_bias"
             if d_key in self.weights:
-                raw = self.weights[d_key].to_numpy()
-                arr = raw.view(np.float16).reshape(num_experts, hidden)
+                arr = self._buf_to_numpy(self.weights[d_key]).reshape(num_experts, hidden)
                 for j in range(num_experts):
                     ep = f"{p}.{j}"
                     to_add[f"{ep}.w2.bias"] = WebGPUBuffer.from_numpy(

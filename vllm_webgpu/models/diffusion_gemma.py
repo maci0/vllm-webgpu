@@ -87,7 +87,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Extra scratch buffer: shared-expert residual (F16; unlike h0/h1/h2 which are F32).
             # Needed because the 3-buffer h-rotation doesn't accommodate 4 distinct
             # tensor states (x_buf, post-attn, post-shared-expert, post-moe).
-            _dev = wgpu_device.wgpu_device
             # canvas_length is the max batch size during diffusion inference (default 256).
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
@@ -95,18 +94,17 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Pre-allocated row-index array for vectorized MoE scatter; avoids
             # allocating a new array on every _decoder_layer call.
             self._token_arange = np.arange(max_canvas_len, dtype=np.int32)
-            self._shared_res_buf = WebGPUBuffer.empty(_dev, max_canvas_len * self.hidden_size * 2)  # F16
+            self._shared_res_buf = self._make_buf(max_canvas_len * self.hidden_size * 2)  # F16
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
-            self._topk_idx_buf     = WebGPUBuffer.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
-            self._topk_weight_buf  = WebGPUBuffer.empty(_dev, max_canvas_len * self.top_k_experts * 4)  # [T, K] f32
-            self._router_logit_buf     = WebGPUBuffer.empty(_dev, max_canvas_len * self.num_experts * 4)  # [T, E] f32
-            self._router_logit_f16_buf = WebGPUBuffer.empty(_dev, max_canvas_len * self.num_experts * 2)  # [T, E] f16 matmul scratch
-            self._moe_acc_buf      = WebGPUBuffer.empty(_dev, max_canvas_len * self.hidden_size * 2)    # [T, H] f16
+            self._topk_idx_buf     = self._make_buf(max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
+            self._topk_weight_buf  = self._make_buf(max_canvas_len * self.top_k_experts * 4)  # [T, K] f32
+            self._router_logit_buf     = self._make_buf(max_canvas_len * self.num_experts * 4)  # [T, E] f32
+            self._router_logit_f16_buf = self._make_buf(max_canvas_len * self.num_experts * 2)  # [T, E] f16 matmul scratch
+            self._moe_acc_buf      = self._make_buf(max_canvas_len * self.hidden_size * 2)    # [T, H] f16
             # Packed routing weights: [num_unique_experts, T] f32, pre-filled before the
             # expert loop so a single write_buffer covers all experts. Sized for worst
             # case: all num_experts active across max_canvas_len tokens.
-            self._moe_per_expert_weight_buf = WebGPUBuffer.empty(
-                _dev, self.num_experts * max_canvas_len * 4)
+            self._moe_per_expert_weight_buf = self._make_buf(self.num_experts * max_canvas_len * 4)
             # Pre-allocated dense routing weight matrix: [num_experts, max_canvas_len] f32.
             # Reused across all _decoder_layer calls; only active token columns are zeroed.
             self._dense_w = np.zeros((self.num_experts, max_canvas_len), dtype=np.float32)
@@ -114,7 +112,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # is bound but the result is discarded by select when NO_SCALE=1.
             # Sized to hidden_size elements so the binding covers the full scale
             # array the shader declares, avoiding reliance on OOB robustness.
-            self._router_dummy_buf = WebGPUBuffer.empty(_dev, self.hidden_size * 2)  # hidden_size x f16
+            self._router_dummy_buf = self._make_buf(self.hidden_size * 2)  # hidden_size x f16
 
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
@@ -211,10 +209,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         # DiffusionGemmaWebGPUModel.forward() fully overrides the batch-prefill
         # path that reads _mr4_ok, so the scan is never useful here.
         return False
-
-    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
-                     skip_prefixes: "frozenset[str] | None" = None) -> None:
-        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
 
     def _load_layer_scales(self) -> None:
         """Override to cache layer_scalar and per_expert_scale in one O(num_layers) pass.

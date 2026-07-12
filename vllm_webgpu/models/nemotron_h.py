@@ -123,7 +123,7 @@ except OSError:
     # OSError: source not available (e.g. stripped install, .pyc-only). Skip anchor
     # checks but still run the presence check below. ImportError is intentionally not
     # caught here: a broken vLLM install should propagate rather than be silently ignored.
-    pass
+    logger.warning("inspect.getsource unavailable; skipping anchor validation for NemotronHMLPDecoderLayer.__init__")
 
 # Presence check: if vLLM ever adds _resolve_intermediate_size to the upstream module,
 # the local copy becomes dead weight. Kept outside the OSError guard above so it always
@@ -1167,12 +1167,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         sc = self._sc
         lt = self._layer_types[layer_idx]
         out = sc[_H_NAMES[(self._hstate + 2) % 3]]
-        # num_tokens is always 1 at every call site (decode step and per-token
-        # prefill loop), so the multiplication is a no-op. Replace with the
-        # constant to make the invariant explicit. If multi-token dispatch is
-        # ever added, update slot_map buffer sizing and downstream shaders first.
-        add_n = self.hidden_size
-
         with self._batched_dispatch(label=f"L{layer_idx:02d}"):
             # _active_encoder is guaranteed non-None by the outer _batched_dispatch() context.
             if lt == "mamba":
@@ -1208,8 +1202,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 self._dispatch(
                     "add",
                     [x_buf, mixer_out, out],
-                    {"N": add_n},
-                    _vec4_wg(add_n),
+                    {"N": self.hidden_size},
+                    _vec4_wg(self.hidden_size),
                 )
                 normed_out = None  # stale after last layer; norm_f applied in forward()
 

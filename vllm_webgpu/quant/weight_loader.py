@@ -148,8 +148,6 @@ def _load_quant_cfg(config_path: Path) -> dict:
         return _ct_get_quant_cfg(str(config_path)) or {}
     except FileNotFoundError:
         return {}
-    except json.JSONDecodeError:
-        raise
 
 
 def _check_unsupported_quant(quant_cfg: dict) -> None:
@@ -1199,16 +1197,12 @@ def load_safetensors_weights(
 
         elif fmt in ("mxfp4", "mxfp8"):
             # Both formats identify bases by U8 weight + U8 weight_scale; collect once.
-            mx_bases_set = []
-            for k in header:
-                if not k.endswith(".weight"):
-                    continue
-                if header[k].get("dtype") != "U8":
-                    continue
-                base = k.removesuffix(".weight")
-                if header.get(base + ".weight_scale", {}).get("dtype") == "U8":
-                    mx_bases_set.append(base)
-            mx_bases = sorted(mx_bases_set)
+            mx_bases = sorted(
+                k.removesuffix(".weight") for k in header
+                if k.endswith(".weight")
+                and header[k].get("dtype") == "U8"
+                and header.get(k.removesuffix(".weight") + ".weight_scale", {}).get("dtype") == "U8"
+            )
             mx_set: set = {f"{b}.weight" for b in mx_bases} | {f"{b}.weight_scale" for b in mx_bases}
             _upload_non_quant(header, mx_set, _i8_companion_skip, _upload_plain)
 
