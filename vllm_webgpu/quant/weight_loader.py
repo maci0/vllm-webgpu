@@ -81,9 +81,15 @@ def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
 
 
 def _torch_to_f16_numpy(t: "torch.Tensor") -> "np.ndarray":
-    """Convert a BF16, F32, or F16 torch tensor to a float16 numpy array."""
+    """Convert a BF16, F32, or F16 torch tensor to a float16 numpy array.
+
+    Clips to the float16 representable range before casting so that BF16
+    values whose magnitude exceeds 65504 (possible given BF16's 8-bit
+    exponent) become ±65504 rather than ±inf, matching the F32 path in
+    _upload_plain.
+    """
     import torch as _torch
-    return t.to(_torch.float16).numpy()
+    return t.to(_torch.float32).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
 
 
 logger = init_logger(__name__)
@@ -965,15 +971,25 @@ def load_safetensors_weights(
                 # shape even though the underlying storage is u32 (packed u16 pairs).
                 # t_bf16 is always bound here: this branch is only entered when
                 # dtype_str == 'BF16', which is the same condition that bound t_bf16 above.
-                u16 = t_bf16.view(torch.uint16).numpy()
-                if u16.shape != arr.shape:
-                    u16 = u16.reshape(arr.shape)
-                u16_flat = np.ascontiguousarray(u16.ravel())
-                if u16_flat.size % 2 != 0:
-                    u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
-                arr_u32 = u16_flat.view(np.uint32)
-                _upload(arr_u32, np.uint32, "u32", name + "__bf16", weights,
-                        logical_shape=arr.shape)
+                # Skip companion when a value-changing transform was applied: arr and t_bf16
+                # would then hold different numeric values, causing the shader to read
+                # stale pre-transform BF16 data from the companion buffer.
+                if weight_transforms and name in weight_transforms:
+                    logger.warning(
+                        "BF16 companion skipped for %s (value transform present); "
+                        "the __bf16 buffer would diverge from the transformed f16 buffer",
+                        name,
+                    )
+                else:
+                    u16 = t_bf16.view(torch.uint16).numpy()
+                    if u16.shape != arr.shape:
+                        u16 = u16.reshape(arr.shape)
+                    u16_flat = np.ascontiguousarray(u16.ravel())
+                    if u16_flat.size % 2 != 0:
+                        u16_flat = np.concatenate([u16_flat, np.zeros(1, dtype=np.uint16)])
+                    arr_u32 = u16_flat.view(np.uint32)
+                    _upload(arr_u32, np.uint32, "u32", name + "__bf16", weights,
+                            logical_shape=arr.shape)
             _upload(arr, np.float16, "f16", name, weights)
             return True
 

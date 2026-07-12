@@ -47,7 +47,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nInitializing WebGPU device...")
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.utils import SHADERS_DIR, sample_token, _GREEDY_TEMP
+    from vllm_webgpu.utils import SHADERS_DIR, sample_token, GREEDY_TEMP
     from vllm_webgpu.config import get_config
     from vllm.utils.math_utils import cdiv
 
@@ -91,7 +91,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_table = np.arange(num_blocks, dtype=np.uint32)
     slots = list(range(T))
 
-    model._greedy_decode = (temperature < _GREEDY_TEMP)
+    model._greedy_decode = (temperature < GREEDY_TEMP)
 
     batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)
     logits = model.forward(
@@ -100,7 +100,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         batch_meta,
     )
 
-    if temperature < _GREEDY_TEMP:
+    if temperature < GREEDY_TEMP:
         last_token = int(logits[-1, 0])
         print(f"  Last prefill logit: argmax={last_token}")
     else:
@@ -133,7 +133,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             meta,
         )
 
-        if temperature < _GREEDY_TEMP:
+        if temperature < GREEDY_TEMP:
             last_token = int(logits[0, 0])
         else:
             # _greedy_decode=False: forward() already returned full (1, vocab) logits.

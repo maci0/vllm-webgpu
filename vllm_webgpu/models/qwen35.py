@@ -325,7 +325,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             conv_kernel_size=self._lin_conv_kernel,
             num_spec=num_spec,
         )
-        _conv_dim = conv_shape[0] if is_conv_state_dim_first() else conv_shape[1]
+        _conv_dim = conv_shape[1]  # DS layout is blocked above; SD layout always uses index 1
         assert self._lin_conv_dim == _conv_dim, (
             f"_lin_conv_dim={self._lin_conv_dim} diverged from gated_delta_net_state_shape "
             f"conv_dim={_conv_dim}: vLLM changed the conv_dim formula -- update qwen35.py"

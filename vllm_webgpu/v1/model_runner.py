@@ -99,28 +99,6 @@ def _build_model(arch: str, family: "str | None", model_config: Any, wgpu_device
     return cls(model_config, wgpu_device, pipeline_cache, block_size=block_size)
 
 
-def _stack(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
-    """Cat a list of LogprobsTensors along the batch dimension and convert to lists.
-
-    cu_num_generated_tokens defaults to None: WebGPU produces exactly one output
-    row per request, so LogprobsLists.slice_request(i, n) uses i directly as the
-    row index when cu_num_generated_tokens is None (see vllm/v1/outputs.py:41-42).
-
-    WebGPU tensors are already on CPU, so .cpu() inside tolists() is a no-op.
-    selected_token_ranks is cast to int32: gather_logprobs returns int64 (bool
-    sum) as of vLLM 0.24, but LogprobsTensors.empty_cpu uses int32. The padded
-    path in _make_model_output also casts to int32 explicitly so both paths are
-    consistent. If gather_logprobs is changed to return int32 in a future vLLM
-    version, remove the .to(torch.int32) cast here and in the padding path.
-    """
-    return LogprobsTensors(
-        torch.cat([x.logprob_token_ids for x in items]),
-        torch.cat([x.logprobs for x in items]),
-        torch.cat([x.selected_token_ranks for x in items]).to(torch.int32),
-    ).tolists()
-
-
-
 def _compute_prompt_logprobs(
     full_logits: "np.ndarray",
     tok_ids: "list[int]",
@@ -182,7 +160,10 @@ class WebGPUModelRunner:
         self._has_reset = self._has_save = self._has_replay = self._has_restore = False
 
     def load_model(self) -> None:
-        self.__dict__.pop('kv_cache_spec', None)
+        try:
+            del self.kv_cache_spec
+        except AttributeError:
+            pass
         # Reset capability flags before model is assigned; a reload clears stale values.
         self._has_reset = False
         self._has_save = False
@@ -421,6 +402,23 @@ class WebGPUModelRunner:
         if not req_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
+        def _stack(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
+            # Cat a list of LogprobsTensors along the batch dimension and convert to lists.
+            # cu_num_generated_tokens defaults to None: WebGPU produces exactly one output
+            # row per request, so LogprobsLists.slice_request(i, n) uses i directly as the
+            # row index when cu_num_generated_tokens is None (see vllm/v1/outputs.py:41-42).
+            # WebGPU tensors are already on CPU, so .cpu() inside tolists() is a no-op.
+            # selected_token_ranks is cast to int32: gather_logprobs returns int64 for
+            # selected_token_ranks (via batched_count_greater_than) but int32 for
+            # logprob_token_ids (indices). The cast normalises selected_token_ranks.
+            # If a future vLLM release casts token_ranks to int32 in gather_logprobs,
+            # only the selected_token_ranks casts here and at line 431 can be removed.
+            return LogprobsTensors(
+                torch.cat([x.logprob_token_ids for x in items]),
+                torch.cat([x.logprobs for x in items]),
+                torch.cat([x.selected_token_ranks for x in items]).to(torch.int32),
+            ).tolists()
+
         # Build LogprobsLists for top-k sampled-token logprob entries.
         # One row per request in the batch (matching req_id_to_index), so that
         # LogprobsLists.slice_request(i, n) works with cu_num_generated_tokens=None
@@ -434,7 +432,7 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all entries are present and share the same width.
             all_present = all(d is not None for d in logprobs_data)
-            if all_present and len(set(widths)) <= 1:
+            if all_present and len(set(widths)) == 1:
                 built_logprobs = _stack(cast("list[LogprobsTensors]", logprobs_data))
             else:
                 # Pin rank dtype to int32, matching LogprobsTensors.empty_cpu.

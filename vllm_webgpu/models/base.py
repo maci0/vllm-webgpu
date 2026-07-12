@@ -125,24 +125,28 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
     )
 
-    # Construct a stub via __new__ so __init__ (and the expensive cos/sin cache
-    # build it triggers) is never called.  Set only the seven attributes that
-    # _compute_inv_freq reads; if vLLM adds new ones the AttributeError will
-    # surface immediately rather than silently diverging.
-    stub = YaRNScalingRotaryEmbedding.__new__(YaRNScalingRotaryEmbedding)
-    stub.base = rope_theta
-    stub.rotary_dim = rotary_dim
-    stub.max_position_embeddings = orig_ctx
-    stub.beta_fast = beta_fast
-    stub.beta_slow = beta_slow
-    stub.extrapolation_factor = extrapolation_factor
-    stub.truncate = truncate
-    inv_freq = stub._compute_inv_freq(factor).numpy()
+    # Replicate _compute_inv_freq arithmetic inline using the two public
+    # vLLM helpers — avoids the __new__ stub and the private-API dependency
+    # on YaRNScalingRotaryEmbedding._compute_inv_freq.
+    import torch as _torch
+    pos_freqs = rope_theta ** (
+        _torch.arange(0, rotary_dim, 2, dtype=_torch.float) / rotary_dim
+    )
+    inv_freq_extrapolation = 1.0 / pos_freqs
+    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=_torch.float)
+    ) * extrapolation_factor
+    inv_freq = (
+        inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask
+    ).numpy()
 
     # mscale uses the public yarn_get_mscale — keep inline so it stays bound
     # to the imported function, not a stub attribute.

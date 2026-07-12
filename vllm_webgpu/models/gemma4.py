@@ -6,7 +6,23 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
+import vllm
 from vllm.utils.math_utils import cdiv
+
+# _gemma4_layer_params and _build_layer_params_from_config replicate three
+# per-layer constructor formulas from vllm/model_executor/models/gemma4.py.
+# They are pinned to the vLLM version below; re-audit the three source
+# locations and re-run tests/test_gemma4_layer_params.py after any bump.
+_EXPECTED_VLLM_VERSION = "0.24.0"
+if vllm.__version__ != _EXPECTED_VLLM_VERSION:
+    import warnings
+    warnings.warn(
+        f"vLLM {vllm.__version__!r} differs from pinned {_EXPECTED_VLLM_VERSION!r}. "
+        "Run tests/test_gemma4_layer_params.py and re-audit the three constructor "
+        "sites in vllm/model_executor/models/gemma4.py to verify _gemma4_layer_params "
+        "and _build_layer_params_from_config are still correct.",
+        stacklevel=2,
+    )
 from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -421,11 +437,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
                 partial(_tile_if_shared, expected_dim=_hd, n=_nkv)
             )
-        # Spot-check: verify the tiling factors produce the expected output dimensions
-        # for at least one layer. Catches cases where num_kv_heads for global layers
-        # diverges from what the per-layer lp entry records, which would silently
-        # produce wrongly shaped norm weights and GPU out-of-bounds reads.
-        if self._lp:
+        # Spot-check for the GGUF path only: values come from external metadata that
+        # can genuinely disagree with the per-layer formulas. The safetensors and
+        # uniform-fallback paths derive q_dim/kv_dim algebraically from num_*_heads
+        # and head_dim, so the check cannot fail there and would give a false sense
+        # of cross-validation.
+        if raw_lp and len(raw_lp) == self.num_layers and self._lp:
             _lp0 = self._lp[0]
             assert _lp0["num_q_heads"] * _lp0["head_dim"] == _lp0["q_dim"], (
                 f"q_norm tile shape mismatch at layer 0: "

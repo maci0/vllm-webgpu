@@ -5,7 +5,8 @@ from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.mem_utils import get_cpu_memory
-from vllm.v1.kv_cache_interface import (FullAttentionSpec,
+from vllm.v1.kv_cache_interface import (ChunkedLocalAttentionSpec,
+                                         FullAttentionSpec,
                                          KVQuantMode,
                                          MLAAttentionSpec,
                                          SinkFullAttentionSpec,
@@ -174,6 +175,13 @@ def allocate_kv_from_tensors(
             elif isinstance(spec, SlidingWindowSpec):
                 raise NotImplementedError(
                     "SlidingWindowSpec KV cache is not supported by the WebGPU backend."
+                )
+            elif isinstance(spec, ChunkedLocalAttentionSpec):
+                raise NotImplementedError(
+                    "ChunkedLocalAttentionSpec KV cache is not supported by the WebGPU backend. "
+                    "ChunkedLocalAttentionSpec is a direct AttentionSpec subclass (not FullAttentionSpec) "
+                    "used by hybrid KV cache managers for chunked local attention layers. "
+                    "The WebGPU flash_attn_decode kernel does not implement chunked local attention masking."
                 )
             elif isinstance(spec, FullAttentionSpec):
                 if spec.sliding_window is not None:
