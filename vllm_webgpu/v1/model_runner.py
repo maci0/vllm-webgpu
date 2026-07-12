@@ -2,7 +2,7 @@ from __future__ import annotations
 from functools import cached_property
 from itertools import chain
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Sequence, cast
 
 import numpy as np
 import torch
@@ -152,6 +152,11 @@ class WebGPUModelRunner:
 
     def load_model(self) -> None:
         self.__dict__.pop('kv_cache_spec', None)
+        # Reset capability flags before model is assigned; a reload clears stale values.
+        self._has_reset = False
+        self._has_save = False
+        self._has_replay = False
+        self._has_restore = False
         mc = self.vllm_config.model_config
         arch = (mc.architectures or ["LlamaForCausalLM"])[0]
         hf_config = mc.hf_config
@@ -189,6 +194,12 @@ class WebGPUModelRunner:
             self.model.load_weights(mc.model, num_spec=0)
         else:
             self.model.load_weights(mc.model)
+        # Cache model capability flags once here; self.model is fixed after load_model()
+        # and these attributes never change between inference steps.
+        self._has_reset = hasattr(self.model, "reset_recurrent_states")
+        self._has_save = hasattr(self.model, "save_recurrent_states")
+        self._has_replay = hasattr(self.model, "replay_prefix_for_ssm")
+        self._has_restore = hasattr(self.model, "restore_recurrent_states")
         logger.info("Model loaded: arch=%s", arch)
 
     def initialize_kv_cache(self, kv_cache_config: Any) -> None:
@@ -392,7 +403,7 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all real entries have the same width: skip padding.
             if len(widths) == len(logprobs_data) and len(set(widths)) <= 1:
-                built_logprobs = _stack(logprobs_data)
+                built_logprobs = _stack(cast(Sequence["LogprobsTensors"], logprobs_data))
             else:
                 # Derive the dtype of selected_token_ranks from the first real
                 # entry. batched_count_greater_than returns (bool).sum(-1),
@@ -487,12 +498,12 @@ class WebGPUModelRunner:
         prompt_logprobs_dict: dict[str, LogprobsTensors | None] = {}  # req_id -> LogprobsTensors for prefill
 
         # ── Prefill: new requests ──────────────────────────────────────────────
-        # Hoist model capability checks: the model object is fixed after load_model()
-        # and these attributes do not change between requests in the same step.
-        _has_reset = hasattr(self.model, "reset_recurrent_states")
-        _has_save = hasattr(self.model, "save_recurrent_states")
-        _has_replay = hasattr(self.model, "replay_prefix_for_ssm")
-        _has_restore = hasattr(self.model, "restore_recurrent_states")
+        # Model capability flags are cached as instance attributes in load_model();
+        # use the cached values directly instead of recomputing on every step.
+        _has_reset = self._has_reset
+        _has_save = self._has_save
+        _has_replay = self._has_replay
+        _has_restore = self._has_restore
         for req in new_reqs:
             rid = req.req_id
             tok_ids = req.prompt_token_ids
@@ -688,6 +699,11 @@ class WebGPUModelRunner:
                 pos = state["pos"]
                 blk_ids = list(state["block_ids"])
                 sp = state.get("sampling_params")
+                if sp is not None and sp.logprob_token_ids:
+                    raise NotImplementedError(
+                        f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
+                        "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
+                    )
                 num_logprobs = sp.num_logprobs if sp is not None else None
                 if num_logprobs == -1:
                     raise NotImplementedError(

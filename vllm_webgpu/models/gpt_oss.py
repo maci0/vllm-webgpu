@@ -366,26 +366,13 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         msc = self._moe_sc
         if "expert_gate_biased" not in msc:
             msc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
-        hidden = self.hidden_size
         uq_g = self._uq_for_key(gw_key)
         uq_u = self._uq_for_key(uw_key)
         qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
         qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
 
-        self._dispatch(
-            "matmul_quant",
-            [normed_x, self.weights[gw_key],
-             self._scales_buf(gw_key, uq_g, self._dummy_buf), msc["expert_gate"]],
-            {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
-            (inter, 1, 1),
-        )
-        self._dispatch(
-            "matmul_quant",
-            [normed_x, self.weights[uw_key],
-             self._scales_buf(uw_key, uq_u, self._dummy_buf), msc["expert_up"]],
-            {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
-            (inter, 1, 1),
-        )
+        self._matmul_expert(normed_x, gw_key, uq_g, qi_g, msc["expert_gate"], inter)
+        self._matmul_expert(normed_x, uw_key, uq_u, qi_u, msc["expert_up"], inter)
 
         # Inject gate bias: expert_gate → expert_gate_biased (different src/dst: no alias).
         # When g_bias is absent use expert_gate directly as the gate source for gelu_mul.

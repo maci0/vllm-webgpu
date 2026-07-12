@@ -1,5 +1,4 @@
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -230,6 +229,24 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         return self._finish_forward(greedy)
 
+    def _matmul_expert(
+        self,
+        normed_x: "WebGPUBuffer",
+        wk: str,
+        uq: int,
+        qi: dict,
+        out_buf: "WebGPUBuffer",
+        inter: int,
+    ) -> None:
+        """Dispatch a single matmul_quant for one expert projection (gate or up)."""
+        self._dispatch(
+            "matmul_quant",
+            [normed_x, self.weights[wk],
+             self._scales_buf(wk, uq, self._dummy_buf), out_buf],
+            {"K": self.hidden_size, "N": inter, "USE_QUANT": uq, **qi},
+            (inter, 1, 1),
+        )
+
     def _dispatch_expert_gate_up(
         self,
         normed_x: "WebGPUBuffer",
@@ -265,22 +282,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             self._ensure_moe_expert_bufs()
             qi_g = self._quant_extra(gw_key.removesuffix(".weight"), uq_g)
             qi_u = self._quant_extra(uw_key.removesuffix(".weight"), uq_u)
-            self._dispatch(
-                "matmul_quant",
-                [normed_x, self.weights[gw_key],
-                 self._scales_buf(gw_key, uq_g, self._dummy_buf),
-                 msc["expert_gate"]],
-                {"K": hidden, "N": inter, "USE_QUANT": uq_g, **qi_g},
-                (inter, 1, 1),
-            )
-            self._dispatch(
-                "matmul_quant",
-                [normed_x, self.weights[uw_key],
-                 self._scales_buf(uw_key, uq_u, self._dummy_buf),
-                 msc["expert_up"]],
-                {"K": hidden, "N": inter, "USE_QUANT": uq_u, **qi_u},
-                (inter, 1, 1),
-            )
+            self._matmul_expert(normed_x, gw_key, uq_g, qi_g, msc["expert_gate"], inter)
+            self._matmul_expert(normed_x, uw_key, uq_u, qi_u, msc["expert_up"], inter)
             self._dispatch(
                 "gelu_mul",
                 [msc["expert_gate"], msc["expert_up"], msc["expert_act"]],
@@ -444,7 +447,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(logging.DEBUG)
+        _debug_weights = logger.isEnabledFor(10)  # logging.DEBUG == 10
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

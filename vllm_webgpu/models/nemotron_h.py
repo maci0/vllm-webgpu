@@ -467,6 +467,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
     def _init_mamba_states(self, num_spec: int = 0) -> None:
         """Allocate zero-initialized GPU buffers for each Mamba layer's state.
 
+        num_spec must be 0: the mamba2_causal_conv WGSL shader operates on a
+        fixed ring of conv_kernel-1 slots and does not read the extra num_spec
+        slots that MambaStateShapeCalculator would add, so num_spec > 0 would
+        silently waste VRAM. The guard in model_runner.py enforces this at the
+        call site; the assert here makes the contract explicit at the model
+        boundary.
+
         Buffer dtypes are fixed by the WGSL shader precision and are NOT driven
         by ``vllm_config.cache_config.mamba_cache_dtype``:
 
@@ -479,6 +486,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         ``_ELEM_BYTES["f16"]`` guards against silent under-allocation if
         the byte-size table is ever refactored.
         """
+        assert num_spec == 0, (
+            "speculative decoding not yet supported on WebGPU "
+            "(mamba2_causal_conv shader uses KERNEL-1 slots)"
+        )
         conv_shape, ssm_shape = MambaStateShapeCalculator.mamba2_state_shape(
             tp_world_size=1,
             intermediate_size=self.mamba_int,

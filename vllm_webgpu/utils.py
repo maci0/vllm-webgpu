@@ -33,7 +33,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-from vllm.v1.sample.sampler import _SAMPLING_EPS
+_SAMPLING_EPS = 1e-5  # threshold matching vllm.v1.sample.sampler
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

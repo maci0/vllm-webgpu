@@ -34,9 +34,9 @@ logger = init_logger(__name__)
 #
 # Note: Minimax models encode layer type as an integer where 1 = attention and
 # 0 = non-attention. That integer sentinel is NOT in this frozenset. Use
-# is_attn_layer() rather than direct `in KV_ATTN_TYPES` checks to handle both
+# is_attn_layer() rather than direct `in _KV_ATTN_TYPES` checks to handle both
 # string and integer encodings at every call site.
-KV_ATTN_TYPES: frozenset[str] = frozenset(
+_KV_ATTN_TYPES: frozenset[str] = frozenset(
     {"attention", "full_attention", "sliding_attention", "hybrid"}
 )
 
@@ -44,15 +44,15 @@ KV_ATTN_TYPES: frozenset[str] = frozenset(
 def is_attn_layer(lt: "str | int") -> bool:
     """Return True when a layer-type value represents an attention layer.
 
-    Handles both string layer types (in KV_ATTN_TYPES) and the Minimax integer
+    Handles both string layer types (in _KV_ATTN_TYPES) and the Minimax integer
     encoding where 1 means attention and 0 means non-attention (Mamba/MLP).
     The "hybrid" type is used by Zamba2-family models, where layers alternate
     between Mamba SSM and full attention; vLLM counts hybrid layers as
     attention-bearing in its block-type accounting.
-    Use this instead of bare `lt in KV_ATTN_TYPES` everywhere so that the
+    Use this instead of bare `lt in _KV_ATTN_TYPES` everywhere so that the
     integer sentinel never needs to be repeated at individual call sites.
     """
-    return lt in KV_ATTN_TYPES or lt == 1
+    return lt in _KV_ATTN_TYPES or lt == 1
 
 
 def allocate_kv_from_tensors(
@@ -86,8 +86,7 @@ def allocate_kv_from_tensors(
         if isinstance(gs, UniformTypeKVCacheSpecs):
             layer_spec_map.update(gs.kv_cache_specs)
         else:
-            for name in group.layer_names:
-                layer_spec_map[name] = gs
+            layer_spec_map.update({name: gs for name in group.layer_names})
 
     # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
@@ -300,7 +299,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     if (explicit := worker.cache_config.kv_cache_memory_bytes) is not None:
         return explicit
 
-    _model = getattr(worker.model_runner, "model", None)
+    _model = worker.model_runner.model if worker.model_runner is not None else None
     model_mem = (
         sum(buf.nbytes for buf in _model.weights.values())
         if _model is not None else 0

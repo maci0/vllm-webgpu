@@ -26,7 +26,6 @@ def main() -> None:
     from huggingface_hub import snapshot_download
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.utils import SHADERS_DIR
     from vllm_webgpu.config import get_config
     from vllm.utils.math_utils import cdiv
@@ -103,10 +102,10 @@ def main() -> None:
     # ── Decode warmup + production timing ─────────────────────────────────────────
     print(f"Warming up ({args.warmup_steps} steps), then timing {args.decode_steps} production steps...")
     prod_times = []
-    for step in range(args.warmup_steps + args.decode_steps):  # decode_steps extra for production timing
+    for phase_step in range(args.warmup_steps + args.decode_steps):  # first warmup_steps are warmup; remaining decode_steps are production timing
         decode_tok, elapsed_ms = _run_decode_step(decode_tok, pos)
         pos += 1
-        if step >= args.warmup_steps:
+        if phase_step >= args.warmup_steps:
             prod_times.append(elapsed_ms)
 
     assert prod_times, "No production steps measured (--decode-steps must be > 0)"
@@ -148,10 +147,7 @@ def main() -> None:
         # _prof_stats, so including them in the numerator would overstate effective BW.
         # Scale tensors for quantized layers are included because they are read by the
         # shader on every quantized GEMV and '.layers.' appears in their key.
-        total_w_bytes = sum(
-            v.nbytes for k, v in model.weights.items()
-            if isinstance(v, WebGPUBuffer) and '.layers.' in k
-        )
+        total_w_bytes = sum(v.nbytes for k, v in model.weights.items() if '.layers.' in k)
         total_w_mb = total_w_bytes / 1e6
         print(f"  Weight data moved: {total_w_mb:.0f} MB  ({total_w_mb/num_layers:.1f} MB/layer avg)")
         _PEAK_BW_GBS = 300  # M3 Max mid-range estimate; adjust for your hardware

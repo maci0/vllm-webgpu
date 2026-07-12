@@ -374,6 +374,23 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
                 lambda a, hd=_hd, n=_nkv: np.tile(a, n) if a.shape == (hd,) else a
             )
+        # Spot-check: verify the tiling factors produce the expected output dimensions
+        # for at least one layer. Catches cases where num_kv_heads for global layers
+        # diverges from what the per-layer lp entry records, which would silently
+        # produce wrongly shaped norm weights and GPU out-of-bounds reads.
+        if self._lp:
+            _lp0 = self._lp[0]
+            assert _lp0["num_q_heads"] * _lp0["head_dim"] == _lp0["q_dim"], (
+                f"q_norm tile shape mismatch at layer 0: "
+                f"num_q_heads={_lp0['num_q_heads']} * head_dim={_lp0['head_dim']} "
+                f"!= q_dim={_lp0['q_dim']}"
+            )
+            assert _lp0["num_kv_heads"] * _lp0["head_dim"] == _lp0["kv_dim"], (
+                f"k_norm tile shape mismatch at layer 0: "
+                f"num_kv_heads={_lp0['num_kv_heads']} * head_dim={_lp0['head_dim']} "
+                f"!= kv_dim={_lp0['kv_dim']}"
+            )
+
         # Updated to True/False in load_weights() once weights are known.
         # Defaults to True so tests that bypass load_weights() reach the batch path.
         self._mr4_ok: bool = True

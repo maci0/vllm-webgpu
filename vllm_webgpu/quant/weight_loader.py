@@ -547,8 +547,11 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                 # On each vLLM bump, diff _extract_modelopt_quant_algo against
                 # this block and update if the hf_quant_config.json parsing changes.
                 quant_section = cfg.get('quantization')
-                quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
-                algo = str(quant_algo or cfg.get('quant_algo', '')).upper()
+                if quant_section is not None:
+                    quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
+                else:
+                    quant_algo = cfg.get('quant_algo', '')
+                algo = str(quant_algo or '').upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:

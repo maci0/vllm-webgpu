@@ -94,11 +94,18 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # conv_dim = 2 * key_total + val_total, matching the formula in
-        # MambaStateShapeCalculator.gated_delta_net_state_shape (mamba_utils.py).
-        # An assertion in _alloc_lin_states catches any future divergence from that
-        # canonical definition. Do not add a second reference here.
-        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
+        # Derive conv_dim from MambaStateShapeCalculator so it stays in sync with vLLM's
+        # canonical formula. With num_spec=0 the conv buffer is (conv_dim, kernel-1), so
+        # conv_dim = prod(conv_shape) // (kernel - 1). The assertion in _alloc_lin_states
+        # then becomes a pure consistency check rather than the only guard.
+        _conv_shape_init, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel,
+            num_spec=0,
+        )
+        self._lin_conv_dim: int = math.prod(_conv_shape_init) // (self._lin_conv_kernel - 1)
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         # _gdn_v_base derives from _lin_conv_dim (= 2*key_dim + val_dim per vLLM formula)

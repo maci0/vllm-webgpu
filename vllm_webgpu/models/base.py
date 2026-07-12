@@ -1,5 +1,4 @@
 from __future__ import annotations
-import inspect
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -68,13 +67,8 @@ def _load_yarn_defaults() -> dict:
     from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
         YaRNScalingRotaryEmbedding,
     )
-    return {
-        k: p.default
-        for k, p in inspect.signature(
-            YaRNScalingRotaryEmbedding.__init__
-        ).parameters.items()
-        if p.default is not inspect.Parameter.empty and k in _YARN_KEYS
-    }
+    kw = YaRNScalingRotaryEmbedding.__init__.__kwdefaults__ or {}
+    return {k: kw[k] for k in _YARN_KEYS if k in kw}
 
 _YARN_DEFAULTS: dict = _load_yarn_defaults()
 
@@ -648,7 +642,7 @@ class BaseWebGPUModel(ABC):
     ) -> np.ndarray:
         """Run one forward pass and return output as a numpy array.
 
-        Returns float32 [num_tokens, vocab_size] logits, or int32 [1, 1] with
+        Returns float32 [num_tokens, vocab_size] logits, or uint32 [1, 1] with
         the GPU-argmax token id when the model uses GPU sampling (shape[-1] == 1).
         """
         ...

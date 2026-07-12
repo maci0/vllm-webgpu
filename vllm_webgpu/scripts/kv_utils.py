@@ -124,9 +124,9 @@ def _allocate_kv_pool_hybrid(
 ) -> None:
     """Allocate KV pool for all layers.
 
-    When layer_types is None, or all entries are in KV_ATTN_TYPES, every layer
+    When layer_types is None, or all entries are in _KV_ATTN_TYPES, every layer
     gets a full KV cache buffer. When layer_types is provided, layers whose type
-    is not in KV_ATTN_TYPES get 16-byte placeholder buffers.
+    is not in _KV_ATTN_TYPES get 16-byte placeholder buffers.
 
     K and V buffers are allocated separately. When head_dim_v is provided, the V
     buffer uses that head dim instead of head_dim (for architectures with asymmetric
