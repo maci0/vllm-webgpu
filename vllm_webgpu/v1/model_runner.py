@@ -170,6 +170,7 @@ class WebGPUModelRunner:
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
         self._block_size: int = vllm_config.cache_config.block_size
+        self._use_fp64_gumbel: bool = vllm_config.model_config.use_fp64_gumbel
         # Capability flags: set False here so the attribute set is complete from
         # construction time. load_model() overwrites these with correct values once
         # the model is available. Without these defaults, any code path that reads
@@ -529,7 +530,6 @@ class WebGPUModelRunner:
         prompt_logprobs_dict: dict[str, LogprobsTensors | None] = {}  # req_id -> LogprobsTensors for prefill
 
         # ── Prefill: new requests ──────────────────────────────────────────────
-        _use_fp64_gumbel = self.vllm_config.model_config.use_fp64_gumbel
         for req in new_reqs:
             rid = req.req_id
             tok_ids = req.prompt_token_ids
@@ -641,7 +641,7 @@ class WebGPUModelRunner:
                 first_decode_tok = _sample_token(
                     last_logits[-1], temperature=sp.temperature,
                     top_p=sp.top_p, top_k=sp.top_k, generator=rng,
-                    use_fp64_gumbel=_use_fp64_gumbel,
+                    use_fp64_gumbel=self._use_fp64_gumbel,
                 )
 
             # Compute logprobs for this prefill token if the request asked for them.
@@ -819,7 +819,7 @@ class WebGPUModelRunner:
                     stok = _sample_token(
                         logits[0], temperature=sp.temperature,
                         top_p=sp.top_p, top_k=sp.top_k, generator=rng,
-                        use_fp64_gumbel=_use_fp64_gumbel,
+                        use_fp64_gumbel=self._use_fp64_gumbel,
                     )
 
                 # Compute logprobs if requested for this request.

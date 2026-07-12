@@ -22,7 +22,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Use vLLM's config loader so Mistral-format repos (params.json) are handled correctly.
     from transformers import AutoTokenizer
     from vllm.transformers_utils.config import get_config as _vllm_get_config
-    from vllm.v1.sample.sampler import _SAMPLING_EPS as _GREEDY_TEMP
+    _GREEDY_TEMP = 1e-5  # greedy-detection threshold; stable semantic constant
     cfg = _vllm_get_config(model_dir, trust_remote_code=True)
 
     arch = (cfg.architectures or ["LlamaForCausalLM"])[0]

@@ -25,8 +25,11 @@ import pytest
 _VALIDATED_VLLM_VERSION = "0.24.0"
 
 
+_ROPE_THETA = 10000.0
+
 _ROPE_SCALING = {
     "rope_type": "yarn",
+    "rope_theta": _ROPE_THETA,
     "factor": 4.0,
     "beta_fast": 32,
     "beta_slow": 1,
@@ -37,7 +40,6 @@ _ROPE_SCALING = {
     "truncate": True,
 }
 _HEAD_DIM = 128
-_ROPE_THETA = 10000.0
 
 
 def _vllm_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> "tuple[np.ndarray, float]":
@@ -99,7 +101,7 @@ def test_yarn_freqs_matches_vllm():
     from vllm_webgpu.models.base import compute_yarn_freqs
 
     freqs_ours, mscale_ours = compute_yarn_freqs(
-        _HEAD_DIM, _ROPE_THETA, _ROPE_SCALING
+        _HEAD_DIM, _ROPE_SCALING
     )
     freqs_vllm, mscale_vllm = _vllm_yarn_freqs(
         _HEAD_DIM, _ROPE_THETA, _ROPE_SCALING
@@ -127,7 +129,7 @@ def test_yarn_freqs_partial_rope():
 
     rotary_dim = 64  # half of head_dim=128
     freqs, _ = compute_yarn_freqs(
-        _HEAD_DIM, _ROPE_THETA, _ROPE_SCALING, rotary_dim=rotary_dim
+        _HEAD_DIM, _ROPE_SCALING, rotary_dim=rotary_dim
     )
     assert freqs.shape == (rotary_dim // 2,), (
         f"expected ({rotary_dim // 2},) freqs, got {freqs.shape}"

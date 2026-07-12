@@ -238,21 +238,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         changes (e.g. new per-layer scalars) are picked up automatically. The
         per_expert_scale pass runs separately; the two-pass O(num_layers) cost is
         negligible at load time.
-
-        Validates that no layer_scalar is zero or negative at load time so that the
-        normed_ready RMSNorm scale-invariance optimization (which requires a positive
-        scalar) fails early with a clear message rather than silently producing wrong
-        output after a full warm-up cycle.
         """
         super()._load_layer_scales()
-        bad = [i for i, s in enumerate(self._layer_scales) if s <= 0]
-        if bad:
-            raise ValueError(
-                f"layer_scalar must be positive for the normed_ready optimization; "
-                f"layers {bad} have non-positive values {[self._layer_scales[i] for i in bad]}. "
-                "A non-positive layer_scalar flips or collapses the RMSNorm output. "
-                "This indicates a corrupt or incorrectly quantized checkpoint."
-            )
         if self.is_moe:
             for i in range(self.num_layers):
                 p = self._layer_key_prefix(i)

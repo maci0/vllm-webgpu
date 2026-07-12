@@ -349,7 +349,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     if explicit := worker.cache_config.kv_cache_memory_bytes:
         return explicit
 
-    _model = getattr(worker.model_runner, 'model', None)
+    _model = worker.model_runner.model if worker.model_runner is not None else None
     model_mem = (
         sum(buf.nbytes for buf in _model.weights.values())
         if _model is not None else 0

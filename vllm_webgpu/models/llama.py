@@ -196,7 +196,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # sets rope_parameters["rope_theta"] to the model's actual theta before
         # any rope creation call, so the 10000 fallback never fires in production.
         # It is kept as a safety net for callers that bypass patching.
-        freqs, mscale = compute_yarn_freqs(self.head_dim, rope_scaling.get("rope_theta", 10000), rope_scaling)
+        freqs, mscale = compute_yarn_freqs(self.head_dim, rope_scaling)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale
         self._use_freq_buf = True
@@ -678,11 +678,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         dev.queue.write_buffer(self._pre["bt"].buf, 0, bt_bytes)
 
-        # All callers enforce T >= 2 (forward() line 377, MixtralWebGPUModel.forward()
-        # line 167, _prefill_batch_forward lines 432/442), so the loop always executes
-        # and x_buf is guaranteed to be bound by the loop body on every code path.
-        if T < 2:
-            raise RuntimeError(f"_prefill_sequential_fallback requires T >= 2, got T={T}")
+        # T=0 would leave x_buf unbound (the loop body never executes);
+        # callers pass T > 1 because forward() routes T=1 through the decode path.
+        if T < 1:
+            raise RuntimeError(f"_prefill_sequential_fallback requires T >= 1, got T={T}")
         for t in range(T):
             self._hstate = 0
             tok_pos   = int(positions[t])

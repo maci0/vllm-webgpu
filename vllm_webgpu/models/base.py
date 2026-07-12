@@ -63,7 +63,6 @@ logger = init_logger(__name__)
 
 def compute_yarn_freqs(
     head_dim: int,
-    rope_theta: float,
     rope_scaling: dict,
     rotary_dim: int | None = None,
 ) -> tuple[np.ndarray, float]:
@@ -78,8 +77,9 @@ def compute_yarn_freqs(
 
     Args:
         head_dim:    Full attention head dimension.
-        rope_theta:  RoPE base frequency (e.g. 10000.0).
-        rope_scaling: rope_scaling config dict from the model config.
+        rope_scaling: rope_scaling config dict from the model config. rope_theta
+                     is read from rope_scaling['rope_theta'] (default 10000.0),
+                     matching vLLM's get_rope() at rotary_embedding/__init__.py:64.
         rotary_dim:  Number of head dimensions that receive RoPE. When None,
                      derived from rope_scaling["rope_dim"] (branch 1) or
                      head_dim * rope_scaling.get("partial_rotary_factor", 1.0)
@@ -93,6 +93,8 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
+    rope_theta = float(rope_scaling.get("rope_theta", 10000.0))
+
     if rotary_dim is None:
         if rd := rope_scaling.get("rope_dim", None):
             rotary_dim = int(rd)

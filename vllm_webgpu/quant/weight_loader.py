@@ -1662,7 +1662,7 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                 dequant = _dequant_mlx_int4(w_u32, scales_f32, biases_f32)
                 arr = np.clip(dequant, -_F16_MAX, _F16_MAX).astype(np.float16)
                 if weight_transforms and wk in weight_transforms:
-                    arr = weight_transforms[wk](arr.astype(np.float32)).astype(np.float16)
+                    arr = weight_transforms[wk](arr)
                 _upload_f16(arr, wk)
 
     # Stream non-quantized tensors shard-by-shard.
