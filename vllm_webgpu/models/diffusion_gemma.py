@@ -42,6 +42,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # Suppresses the O(num_layers) scale computation in the parent __init__.
     _skip_attn_scale: bool = True
 
+    # _prefill_batch_forward() is unreachable from this class's forward(), so
+    # _mr4_ok is never consulted. Skip the scan in load_weights().
+    _skip_mr4_scan: bool = True
+
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         # Set moe_intermediate_size before super().__init__ because Gemma4.__init__
@@ -202,22 +206,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         )
 
     # ── Weight loading ───────────────────────────────────────────────────────
-
-    def _mr4_quant_supported(self) -> bool:
-        # DiffusionGemmaWebGPUModel.forward() fully overrides the batch-prefill
-        # path that reads _mr4_ok, so the scan is never useful here.
-        return False
-
-    def load_weights(self, path: str, f32_keys: "frozenset[str] | None" = None,
-                     skip_prefixes: "frozenset[str] | None" = None) -> None:
-        # Call super().load_weights() but skip the self._mr4_ok assignment.
-        # Gemma4WebGPUModel.load_weights() assigns self._mr4_ok = self._mr4_quant_supported()
-        # after loading, but _mr4_ok is only read by _prefill_batch_forward(), which is
-        # unreachable from DiffusionGemmaWebGPUModel.forward(). Overriding here avoids
-        # storing dead state on every instance.
-        from vllm_webgpu.models.base import BaseWebGPUModel
-        BaseWebGPUModel.load_weights(self, path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
-        self._load_layer_scales()
 
     def _load_layer_scales(self) -> None:
         """Override to cache layer_scalar and per_expert_scale in one O(num_layers) pass.

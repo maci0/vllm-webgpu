@@ -224,6 +224,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     # to skip the O(num_layers) scale computation in __init__.
     _skip_attn_scale: bool = False
 
+    # Subclasses whose load_weights() bypasses _prefill_batch_forward() (and
+    # therefore never reads _mr4_ok) set this to True so load_weights() skips
+    # the _mr4_quant_supported() scan entirely.
+    _skip_mr4_scan: bool = False
+
     # Number of transformer layers per GPU command-buffer chunk in prefill paths.
     # Chunking prevents Metal from timing out on very long prefill sequences.
     # Referenced by both _prefill_batch_forward and _prefill_sequential_fallback
@@ -500,7 +505,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                      skip_prefixes: "frozenset[str] | None" = None) -> None:
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes)
         self._load_layer_scales()
-        self._mr4_ok: bool = self._mr4_quant_supported()
+        if not self._skip_mr4_scan:
+            self._mr4_ok: bool = self._mr4_quant_supported()
 
     def forward(
         self,
