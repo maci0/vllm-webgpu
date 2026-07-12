@@ -1,14 +1,28 @@
-"""Regression tests for compute_yarn_freqs.
+"""Parity tests for compute_yarn_freqs against vLLM's YaRN implementation.
 
-compute_yarn_freqs now delegates to YaRNScalingRotaryEmbedding._compute_inv_freq
-via object.__new__ (bypassing the cos/sin cache build). The helper _vllm_yarn_freqs
-below uses the same delegation pattern as a reference so the comparison verifies
-that compute_yarn_freqs wires the attributes correctly and forwards the call.
+compute_yarn_freqs inlines the arithmetic from
+YaRNScalingRotaryEmbedding._compute_inv_freq using only public vLLM helpers,
+because calling _compute_inv_freq directly requires a fully constructed instance
+whose __init__ allocates a potentially hundreds-of-MB cos/sin cache.
+
+The reference helper _vllm_yarn_freqs below uses object.__new__ to build a
+minimal stub and calls _compute_inv_freq on it, equivalent to reading the
+inv_freq that __init__ would have stored, without paying for the cache.
+
+Version pin: validated against vLLM 0.24.0. Run these tests after each vLLM
+bump to catch formula drift in yarn_scaling_rope.py::_compute_inv_freq.
+When vLLM exports a standalone public inv_freq helper, replace compute_yarn_freqs
+with that call and simplify this test accordingly.
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
+
+# vLLM version this test was validated against.
+_VALIDATED_VLLM_VERSION = "0.24.0"
 
 
 _ROPE_SCALING = {
@@ -72,6 +86,16 @@ def _vllm_yarn_freqs(head_dim: int, rope_theta: float, rope_scaling: dict) -> "t
 )
 def test_yarn_freqs_matches_vllm():
     """compute_yarn_freqs must produce the same output as the vLLM reference."""
+    import vllm
+    if vllm.__version__ != _VALIDATED_VLLM_VERSION:
+        warnings.warn(
+            f"test_yarn_freqs_matches_vllm was validated against vLLM "
+            f"{_VALIDATED_VLLM_VERSION}; running against {vllm.__version__}. "
+            "If the test fails, check yarn_scaling_rope.py::_compute_inv_freq for "
+            "formula changes and update compute_yarn_freqs in vllm_webgpu/models/base.py.",
+            stacklevel=1,
+        )
+
     from vllm_webgpu.models.base import compute_yarn_freqs
 
     freqs_ours, mscale_ours = compute_yarn_freqs(

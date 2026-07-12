@@ -110,9 +110,10 @@ def compute_yarn_freqs(
         raise ValueError("YaRN rope_scaling must include 'original_max_position_embeddings'")
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
-    # Defaults match YaRNScalingRotaryEmbedding.__init__.__kwdefaults__ exactly
-    # (verified vLLM 0.24, rotary_embedding/__init__.py:250-256). On each vLLM bump,
-    # re-check those defaults.
+    # Defaults match YaRNScalingRotaryEmbedding.__init__ keyword defaults exactly
+    # (verified vLLM 0.24, rotary_embedding/__init__.py:250-256).
+    # tests/test_yarn_freqs.py::test_yarn_freqs_matches_vllm asserts numerical parity
+    # against _compute_inv_freq; run it after each vLLM bump to catch drift.
     beta_fast            = int(rope_scaling.get("beta_fast", 32))
     beta_slow            = int(rope_scaling.get("beta_slow", 1))
     extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
@@ -130,8 +131,10 @@ def compute_yarn_freqs(
     )
 
     # Inline the inv_freq formula from YaRNScalingRotaryEmbedding._compute_inv_freq
-    # using only public helpers, avoiding the private method and SimpleNamespace stub.
-    # vLLM bump: verify against yarn_scaling_rope.py::_compute_inv_freq.
+    # using only public helpers, avoiding the private method and the expensive
+    # cos/sin cache build in __init__ (allocates [orig_ctx * factor, rotary_dim]).
+    # No fully clean alternative exists until vLLM exports a standalone public function.
+    # Numerical parity is enforced by tests/test_yarn_freqs.py::test_yarn_freqs_matches_vllm.
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     inv_freq_extrapolation = 1.0 / pos_freqs
     inv_freq_interpolation = 1.0 / (factor * pos_freqs)
