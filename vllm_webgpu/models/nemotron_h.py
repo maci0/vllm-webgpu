@@ -1009,6 +1009,16 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 if key not in self.weights:
                     raise ValueError(f"{key} missing from loaded weights")
 
+        # Global weights: every forward call hits these unconditionally.
+        # A truncated checkpoint that passes all per-layer checks above can still
+        # crash with a bare KeyError on the first token if any of these are absent.
+        for key in ("model.norm_f.weight", "model.embed_tokens.weight"):
+            if key not in self.weights:
+                raise ValueError(f"{key} missing from loaded weights")
+        lm_key = self._lm_head_key()
+        if lm_key not in self.weights:
+            raise ValueError(f"{lm_key} missing from loaded weights")
+
     # ── Forward pass ──────────────────────────────────────────────────────────
 
     def _finalize_output(self) -> np.ndarray:
