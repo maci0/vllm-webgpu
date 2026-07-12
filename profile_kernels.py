@@ -20,6 +20,8 @@ def main() -> None:
                         help="Number of decode steps to profile (averaged)")
     parser.add_argument("--warmup-steps", type=int, default=2,
                         help="Warmup steps before profiling (not counted)")
+    parser.add_argument("--peak-bw", type=float, default=300.0,
+                        help="Peak memory bandwidth in GB/s for the target device (default: 300 for M3 Max)")
     args = parser.parse_args()
 
     # ── Setup device ──────────────────────────────────────────────────────────────
@@ -155,11 +157,10 @@ def main() -> None:
         total_w_bytes = sum(v.nbytes for k, v in model.weights.items() if '.layers.' in k)
         total_w_mb = total_w_bytes / 1e6
         print(f"  Weight data moved: {total_w_mb:.0f} MB  ({total_w_mb/num_layers:.1f} MB/layer avg)")
-        _PEAK_BW_GBS = 300  # M3 Max mid-range estimate; adjust for your hardware
         if total > 0:
             bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
-            print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (peak estimate: {_PEAK_BW_GBS} GB/s)")
-            print(f"  BW utilization: {bw_util_gb_s / _PEAK_BW_GBS * 100:.1f}%")
+            print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (peak estimate: {args.peak_bw} GB/s)")
+            print(f"  BW utilization: {bw_util_gb_s / args.peak_bw * 100:.1f}%")
 
 
 if __name__ == '__main__':
