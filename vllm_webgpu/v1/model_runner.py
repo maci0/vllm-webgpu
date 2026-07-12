@@ -612,7 +612,7 @@ class WebGPUModelRunner:
                 rng.manual_seed(sp.seed)
             else:
                 rng = None
-            if last_logits.shape[-1] == 1:
+            if sp is None or last_logits.shape[-1] == 1:
                 first_decode_tok = int(last_logits[-1, 0])
             else:
                 first_decode_tok = _sample_token(
@@ -791,7 +791,7 @@ class WebGPUModelRunner:
                 # Use the persisted per-request generator so the RNG state
                 # advances between steps (not reset to the same seed each step).
                 rng = state.get("rng")
-                if logits.shape[-1] == 1:
+                if sp is None or logits.shape[-1] == 1:
                     stok = int(logits[0, 0])
                 else:
                     stok = _sample_token(
