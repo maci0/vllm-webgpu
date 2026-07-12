@@ -54,8 +54,11 @@ def _gemma4_layer_params(
 
     Pinned to vLLM v0.24.0 (github.com/vllm-project/vllm/releases/tag/v0.24.0).
     Formula locations in vllm/model_executor/models/gemma4.py:
-      (1) first_kv_shared boundary + chained comparison guard: ~L601-602
-      (2) reversed-search KV-sharing target: ~L469-471
+      (1) first_kv_shared boundary: Gemma4Attention.__init__ ~L469 (guard)
+          NOTE: departs from Gemma4DecoderLayer.__init__ ~L601-602 which uses
+          a chained comparison that silently breaks when num_kv_shared_layers
+          equals num_hidden_layers. Gemma4Attention's guard is correct.
+      (2) reversed-search KV-sharing target: Gemma4Attention.__init__ ~L469-471
       (3) head_dim / num_kv_heads / has_v_proj by attention type: ~L561-577
 
     Tested directly in tests/test_gemma4_layer_params.py against the vLLM
@@ -63,15 +66,19 @@ def _gemma4_layer_params(
     """
     num_layers = len(layer_types)
 
-    # (1) first_kv_shared boundary (Gemma4DecoderLayer.__init__ ~L601)
-    # The > 0 guard in the chained comparison suppresses sharing when
-    # num_kv_shared_layers == num_hidden_layers (first_kv_shared would be 0).
+    # (1) first_kv_shared boundary (Gemma4Attention.__init__ ~L469)
+    # Guard uses num_kv_shared_layers > 0 (matching Gemma4Attention.__init__),
+    # NOT first_kv_shared > 0 (which Gemma4DecoderLayer.__init__ ~L601-602 uses).
+    # When num_kv_shared_layers == num_hidden_layers, first_kv_shared == 0,
+    # and the DecoderLayer chained comparison "i >= 0 > 0" evaluates to False,
+    # incorrectly suppressing all sharing. Gemma4Attention guards only on
+    # num_kv_shared_layers > 0, correctly enabling sharing for all layers.
     first_kv_shared = num_layers - num_kv_shared_layers
 
     lp: list[dict] = []
     for i, lt in enumerate(layer_types):
-        # Mirrors: is_kv_shared_layer = layer_idx >= first_kv_shared_layer_idx > 0
-        is_kv_shared = (first_kv_shared > 0) and (i >= first_kv_shared)
+        # Mirrors: Gemma4Attention.__init__ guard: num_kv_shared_layers > 0 and i >= first
+        is_kv_shared = (num_kv_shared_layers > 0) and (i >= first_kv_shared)
         inter_l = intermediate_size * (2 if use_dwm and is_kv_shared else 1)
 
         # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
