@@ -194,6 +194,10 @@ def allocate_kv_from_tensors(
                 )
                 raise
 
+    # Sliding-attention layers in supported models always receive FullAttentionSpec(sliding_window=None)
+    # from get_kv_cache_spec; the SlidingWindowSpec/FullAttentionSpec(sliding_window!=None) rejections
+    # above fire before this point for unsupported variants.
+
     # Verify that every attention layer in hybrid models got a real KV buffer.
     # Models with _layer_types (e.g. NemotronH) index kv_pool unconditionally in
     # _attn_layer; a 16-byte placeholder there silently corrupts kv_cache_store_both
