@@ -54,10 +54,13 @@ def _gemma4_layer_params(
 
     Pinned to vLLM v0.24.0 (github.com/vllm-project/vllm/releases/tag/v0.24.0).
     Formula locations in vllm/model_executor/models/gemma4.py:
-      (1) first_kv_shared boundary: Gemma4Attention.__init__ ~L469 (guard)
-          NOTE: departs from Gemma4DecoderLayer.__init__ ~L601-602 which uses
-          a chained comparison that silently breaks when num_kv_shared_layers
-          equals num_hidden_layers. Gemma4Attention's guard is correct.
+      (1a) KV-routing guard: Gemma4Attention.__init__ ~L462-464
+           "num_kv_shared_layers > 0 and layer_idx >= first_kv_shared_layer_idx"
+      (1b) MLP width guard: Gemma4DecoderLayer.__init__ ~L599-602
+           "layer_idx >= first_kv_shared_layer_idx > 0" (chained comparison)
+           These differ when num_kv_shared_layers == num_hidden_layers: DecoderLayer
+           evaluates False (no FFN doubling), Attention evaluates True. Checkpoint
+           weight shapes are determined by DecoderLayer, so inter_l must use (1b).
       (2) reversed-search KV-sharing target: Gemma4Attention.__init__ ~L469-471
       (3) head_dim / num_kv_heads / has_v_proj by attention type: ~L561-577
 
@@ -66,20 +69,31 @@ def _gemma4_layer_params(
     """
     num_layers = len(layer_types)
 
-    # (1) first_kv_shared boundary (Gemma4Attention.__init__ ~L469)
-    # Guard uses num_kv_shared_layers > 0 (matching Gemma4Attention.__init__),
-    # NOT first_kv_shared > 0 (which Gemma4DecoderLayer.__init__ ~L601-602 uses).
-    # When num_kv_shared_layers == num_hidden_layers, first_kv_shared == 0,
-    # and the DecoderLayer chained comparison "i >= 0 > 0" evaluates to False,
-    # incorrectly suppressing all sharing. Gemma4Attention guards only on
-    # num_kv_shared_layers > 0, correctly enabling sharing for all layers.
+    # (1) first_kv_shared boundary
+    # Two guards exist in vLLM with different semantics:
+    #   Gemma4Attention.__init__   ~L462-464: "num_kv_shared_layers > 0 and i >= first"
+    #   Gemma4DecoderLayer.__init__ ~L599-602: chained "i >= first > 0"
+    # They agree in the typical case but diverge when num_kv_shared_layers == num_hidden_layers:
+    #   first_kv_shared == 0 => DecoderLayer guard is False, Attention guard is True.
+    # KV-routing uses the Attention guard (is_kv_shared below).
+    # MLP width uses the DecoderLayer guard (is_kv_shared_mlp below) because checkpoint
+    # weight shapes are determined by Gemma4DecoderLayer, not Gemma4Attention.
     first_kv_shared = num_layers - num_kv_shared_layers
 
     lp: list[dict] = []
     for i, lt in enumerate(layer_types):
-        # Mirrors: Gemma4Attention.__init__ guard: num_kv_shared_layers > 0 and i >= first
+        # KV-routing guard (Gemma4Attention.__init__ ~L462-464): num_kv_shared_layers > 0
+        # controls whether KV caches are shared at all; i >= first_kv_shared routes the layer.
         is_kv_shared = (num_kv_shared_layers > 0) and (i >= first_kv_shared)
-        inter_l = intermediate_size * (2 if use_dwm and is_kv_shared else 1)
+
+        # MLP width guard (Gemma4DecoderLayer.__init__ ~L599-602): uses the chained comparison
+        # "layer_idx >= first_kv_shared_layer_idx > 0", which requires first_kv_shared > 0.
+        # When num_kv_shared_layers == num_hidden_layers, first_kv_shared == 0 and the
+        # DecoderLayer guard evaluates False (no FFN doubling). The Attention guard above
+        # evaluates True in that case, but checkpoint weights still have shape
+        # [intermediate_size, hidden] (not doubled), so inter_l must match DecoderLayer.
+        is_kv_shared_mlp = (first_kv_shared > 0) and (i >= first_kv_shared)
+        inter_l = intermediate_size * (2 if use_dwm and is_kv_shared_mlp else 1)
 
         # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
         if is_kv_shared:
