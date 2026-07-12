@@ -185,8 +185,13 @@ def _allocate_kv_pool_per_layer(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
+    if dtype != torch.float16:
+        raise ValueError(
+            f"_allocate_kv_pool_per_layer only supports float16; got {dtype}. "
+            "Buffer sizes hardcode 2 bytes/element."
+        )
     model.kv_pool.clear()
-    logger.info("KV cache (per-layer): %d layers, mixed dims", len(layer_params))
+    logger.info("KV cache (per-layer): %d layers, mixed dims (%s)", len(layer_params), dtype)
     for lp in layer_params:
         if lp["num_kv_heads"] == 0:
             # Non-attention layer (num_kv_heads == 0). A zero-byte buffer
