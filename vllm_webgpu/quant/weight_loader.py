@@ -537,20 +537,23 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
             with open(hf_quant) as f:
                 cfg = json.load(f)
             if cfg.get('quant_method', '').lower().startswith('modelopt'):
-                # Mirrors ModelOptFp8Config._extract_modelopt_quant_algo
-                # (vllm/model_executor/layers/quantization/modelopt.py).
-                # modelopt.py has top-level CUDA imports that crash on WebGPU,
-                # making ModelOptFp8Config permanently unimportable here.
-                # On each vLLM bump, diff _extract_modelopt_quant_algo against
-                # this block and update if the hf_quant_config.json parsing changes.
-                # Key-presence check ("quantization" in cfg) matches vLLM's logic
-                # exactly; cfg.get("quantization") would silently skip null values.
-                if "quantization" in cfg:
-                    quant_section = cfg["quantization"]
-                    quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
-                else:
-                    quant_algo = cfg.get('quant_algo', '')
-                algo = str(quant_algo or '').upper()
+                try:
+                    from vllm.model_executor.layers.quantization.modelopt import (
+                        ModelOptFp8Config,
+                    )
+                    algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
+                except ImportError:
+                    # modelopt.py has top-level CUDA imports (mxfp8_utils,
+                    # marlin_utils, flashinfer_utils, fused_moe) that crash on
+                    # WebGPU, so the import fails at runtime. Keep a fallback
+                    # copy of the logic here; on each vLLM bump, diff
+                    # _extract_modelopt_quant_algo against this block.
+                    if "quantization" in cfg:
+                        quant_section = cfg["quantization"]
+                        quant_algo = quant_section.get('quant_algo') if isinstance(quant_section, dict) else None
+                    else:
+                        quant_algo = cfg.get('quant_algo', '')
+                    algo = str(quant_algo or '').upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
