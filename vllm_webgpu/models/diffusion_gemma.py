@@ -225,6 +225,19 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "model.decoder.embed_tokens.weight", "model.embed_tokens.weight",
         )
 
+    def _expert_prefix(self, layer_prefix: str, eid: int) -> str:
+        """Return the weight prefix for expert eid.
+
+        Checkpoints processed through vLLM's standard Gemma4 weight loader use
+        '{p}.moe.experts.{eid}.*' (after _remap_gemma4_expert_weight_name).
+        Raw checkpoints or direct-upload paths use '{p}.experts.{eid}.*'.
+        Probe with gate_proj.weight (always present) and strip the suffix.
+        """
+        return self._first_weight_key(
+            f"{layer_prefix}.experts.{eid}.gate_proj.weight",
+            f"{layer_prefix}.moe.experts.{eid}.gate_proj.weight",
+        ).removesuffix(".gate_proj.weight")
+
     # ── Weight loading ───────────────────────────────────────────────────────
 
     def _load_layer_scales(self) -> None:
@@ -253,7 +266,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     f"L{layer_idx}: is_moe=True but router.proj.weight missing"
                 )
             for eid in range(self.num_experts):
-                ep = f"{p}.experts.{eid}"
+                ep = self._expert_prefix(p, eid)
                 if any(f"{ep}.{k}.weight" not in self.weights for k in ("gate_proj", "up_proj", "down_proj")):
                     raise RuntimeError(
                         f"L{layer_idx}: expert {eid} missing gate/up/down weights"
@@ -792,7 +805,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             dev.queue.write_buffer(self._moe_per_expert_weight_buf.buf, 0, packed_w.tobytes())
 
             for expert_slot, eid in enumerate(unique_eids):
-                ep = f"{p}.experts.{eid}"
+                ep = self._expert_prefix(p, eid)
 
                 uq_g  = self._uq_for_key(f"{ep}.gate_proj.weight")
                 uq_u  = self._uq_for_key(f"{ep}.up_proj.weight")
