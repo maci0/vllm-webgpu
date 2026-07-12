@@ -1190,6 +1190,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 # Separate projections (quantized weights, global attention, or KV-shared layer).
                 # KV-shared layers only need Q; K and V come from the target layer's KV cache.
+                # Initialize defaults so all three names are bound regardless of is_kv_shared.
+                _v_src_offset = 0
+                _v_src = sc["v_buf"]
+                _k_src = sc["k_buf"]
                 uq = uq_q
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[qw],
