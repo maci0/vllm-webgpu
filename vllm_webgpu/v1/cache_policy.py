@@ -15,7 +15,14 @@ from vllm.v1.kv_cache_interface import (FullAttentionSpec,
                                          TQFullAttentionSpec,
                                          UniformTypeKVCacheSpecs)
 
-OVERHEAD_BYTES = 512 * MiB_bytes  # driver overhead + activations
+# Minimum overhead budget: driver + runtime allocations for small models.
+# For large models activations scale with parameter count; see determine_available_memory.
+OVERHEAD_BYTES = 512 * MiB_bytes
+# Fraction of model weight bytes reserved as activation/overhead budget.
+# A 7B f16 model (~14 GiB) with a 2048-token batch generates 2-4 GiB of
+# intermediate activations; 15% of 14 GiB ~ 2.1 GiB covers that range.
+# This kicks in only when it exceeds the OVERHEAD_BYTES floor.
+_ACTIVATION_OVERHEAD_FRACTION = 0.15
 MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
 
 if TYPE_CHECKING:
@@ -342,6 +349,15 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     with a 4 GB maxBufferSize, subtracting from maxBufferSize yields negative available
     memory and clamps to 0 KV blocks.
 
+    Overhead budget: max(OVERHEAD_BYTES, model_mem * _ACTIVATION_OVERHEAD_FRACTION).
+    The fraction-based term accounts for activation memory scaling with model size.
+    For models up to ~3.4 GiB weights the 512 MiB floor applies; above that the
+    fraction dominates. A 7B f16 model (~14 GiB) gets ~2.1 GiB reserved, which
+    covers typical prefill activation peaks at batch sizes up to ~2048 tokens.
+
+    Safe range for the flat 512 MiB floor: models whose weights fit in <= 3.4 GiB
+    (e.g. 1B-2B f16 models). For anything larger the fraction term is used instead.
+
     """
     # NOTE: mirrors gpu_worker.py walrus+truthiness check (`if kv_cache_memory_bytes := ...`).
     # Treats 0 as not-set and falls through to the profiling path rather than returning
@@ -357,12 +373,14 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
 
     total: int = get_cpu_memory()
 
-    base = total - model_mem - OVERHEAD_BYTES
+    overhead = max(OVERHEAD_BYTES, int(model_mem * _ACTIVATION_OVERHEAD_FRACTION))
+    base = total - model_mem - overhead
     fraction = worker.cache_config.gpu_memory_utilization
     available = max(int(base * fraction), 0)
     logger.info(
-        "WebGPU memory: total=%dMiB model=%dMiB available=%dMiB",
-        total // MiB_bytes, model_mem // MiB_bytes, available // MiB_bytes,
+        "WebGPU memory: total=%dMiB model=%dMiB overhead=%dMiB available=%dMiB",
+        total // MiB_bytes, model_mem // MiB_bytes, overhead // MiB_bytes,
+        available // MiB_bytes,
     )
     return available
 
