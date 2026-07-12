@@ -136,32 +136,27 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(_yarn["apply_yarn_scaling"])
     truncate             = bool(_yarn["truncate"])
 
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-        YaRNScalingRotaryEmbedding,
+    import torch
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_linear_ramp_mask,
     )
 
-    # Call the real _compute_inv_freq via a SimpleNamespace mock instead of
-    # inlining the body. If vLLM ever adds a new self.* attribute to
-    # _compute_inv_freq, this raises AttributeError immediately rather than
-    # silently returning stale math from a diverged copy.
-    # Attributes required by yarn_scaling_rope.py:49-73 (verify on each vLLM bump):
-    #   self.base                  -> rope_theta
-    #   self.rotary_dim            -> rotary_dim
-    #   self.beta_fast             -> beta_fast
-    #   self.beta_slow             -> beta_slow
-    #   self.max_position_embeddings -> orig_ctx
-    #   self.truncate              -> truncate
-    #   self.extrapolation_factor  -> extrapolation_factor
-    ns = SimpleNamespace(
-        base=rope_theta,
-        rotary_dim=rotary_dim,
-        max_position_embeddings=orig_ctx,
-        beta_fast=beta_fast,
-        beta_slow=beta_slow,
-        truncate=truncate,
-        extrapolation_factor=extrapolation_factor,
+    # Inline of yarn_scaling_rope.py:49-73 using only public helpers.
+    # Verified against vLLM source (yarn_scaling_rope.py _compute_inv_freq).
+    pos_freqs = rope_theta ** (
+        torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim
     )
-    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(ns, factor)
+    low, high = yarn_find_correction_range(
+        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate,
+    )
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)
+    ) * extrapolation_factor
+    inv_freq = (
+        (1.0 / (factor * pos_freqs)) * (1 - inv_freq_mask)
+        + (1.0 / pos_freqs) * inv_freq_mask
+    )
 
     # mscale from yarn_scaling_rope.py:40-43 (verify on each vLLM bump).
     mscale = (
