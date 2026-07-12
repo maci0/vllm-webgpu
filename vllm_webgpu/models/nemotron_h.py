@@ -25,16 +25,18 @@ logger = init_logger(__name__)
 # is hard-coded to f16 because the WGSL shaders are compiled at a fixed precision
 # and cannot switch dtype at runtime. If _ELEM_BYTES is ever refactored, this
 # assertion fires immediately rather than silently under-allocating state buffers.
-assert _ELEM_BYTES["f16"] == 2, (
-    f"_ELEM_BYTES['f16'] is {_ELEM_BYTES['f16']!r}, expected 2; "
-    "_init_mamba_states conv state buffer sizing is wrong. "
-    "Review the conv_bytes formula before removing this assertion."
-)
-assert _ELEM_BYTES["f32"] == 4, (
-    f"_ELEM_BYTES['f32'] is {_ELEM_BYTES['f32']!r}, expected 4; "
-    "_init_mamba_states SSM state buffer sizing is wrong. "
-    "Review the ssm_bytes formula at _init_mamba_states before removing this assertion."
-)
+if _ELEM_BYTES["f16"] != 2:
+    raise AssertionError(
+        f"_ELEM_BYTES['f16'] is {_ELEM_BYTES['f16']!r}, expected 2; "
+        "_init_mamba_states conv state buffer sizing is wrong. "
+        "Review the conv_bytes formula before removing this assertion."
+    )
+if _ELEM_BYTES["f32"] != 4:
+    raise AssertionError(
+        f"_ELEM_BYTES['f32'] is {_ELEM_BYTES['f32']!r}, expected 4; "
+        "_init_mamba_states SSM state buffer sizing is wrong. "
+        "Review the ssm_bytes formula at _init_mamba_states before removing this assertion."
+    )
 
 # Shared transform for all Mamba A_log weights: -exp(A_log) converts the log-space
 # parameter to the negative-real value expected by the Mamba SSM kernel.
@@ -47,14 +49,16 @@ def _a_log_transform(arr: "np.ndarray") -> "np.ndarray":
 # Verify that the upstream mapper fields match the snapshot this code was written
 # against (vLLM 0.24.0). Catches upstream changes at import time.
 _mapper = _NemotronHForCausalLM.hf_to_vllm_mapper
-assert _mapper.orig_to_new_prefix == {"backbone": "model"}, (
-    f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_prefix changed upstream: "
-    f"{_mapper.orig_to_new_prefix!r}. Review load_weights before removing this assertion."
-)
-assert _mapper.orig_to_new_substr == {"A_log": "A", "embeddings": "embed_tokens"}, (
-    f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_substr changed upstream: "
-    f"{_mapper.orig_to_new_substr!r}. Review load_weights before removing this assertion."
-)
+if _mapper.orig_to_new_prefix != {"backbone": "model"}:
+    raise AssertionError(
+        f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_prefix changed upstream: "
+        f"{_mapper.orig_to_new_prefix!r}. Review load_weights before removing this assertion."
+    )
+if _mapper.orig_to_new_substr != {"A_log": "A", "embeddings": "embed_tokens"}:
+    raise AssertionError(
+        f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_substr changed upstream: "
+        f"{_mapper.orig_to_new_substr!r}. Review load_weights before removing this assertion."
+    )
 del _mapper
 
 # Import-time sentinel: confirm MambaMixer2's in_proj layout still matches the
@@ -167,11 +171,12 @@ def _resolve_intermediate_size(v, idx: int) -> int:
 # v[0] for any idx, not v[mlp_index % len(v)] or a similar fallback that a future
 # refactor might introduce. A wrong formula here would silently produce the correct
 # result only when idx==0, making the bug invisible in tests that use layer 0.
-assert _resolve_intermediate_size([1024], 5) == 1024, (
-    "_resolve_intermediate_size: single-element list must return v[0] for any idx. "
-    "The len==1 branch of NemotronHMLPDecoderLayer.__init__ (L288) was refactored; "
-    "update _resolve_intermediate_size to match, then fix this assertion."
-)
+if _resolve_intermediate_size([1024], 5) != 1024:
+    raise AssertionError(
+        "_resolve_intermediate_size: single-element list must return v[0] for any idx. "
+        "The len==1 branch of NemotronHMLPDecoderLayer.__init__ (L288) was refactored; "
+        "update _resolve_intermediate_size to match, then fix this assertion."
+    )
 
 
 # USE_QUANT values returned by _uq_for_key for each quantization scheme.
