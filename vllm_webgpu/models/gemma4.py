@@ -393,6 +393,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         # Updated to True/False in load_weights() once weights are known.
         # Defaults to True so tests that bypass load_weights() reach the batch path.
+        # Inert when _skip_mr4_scan=True (e.g. DiffusionGemmaWebGPUModel): load_weights()
+        # skips the scan and _prefill_batch_forward() is never called from that subclass's
+        # forward(), so this flag has no effect.
         self._mr4_ok: bool = True
 
     def _scratch_token_count(self) -> int:

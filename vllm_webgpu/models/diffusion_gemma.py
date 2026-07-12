@@ -47,6 +47,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # _mr4_ok is never consulted. Skip the scan in load_weights().
     _skip_mr4_scan: bool = True
 
+    # V-norm is always applied by _decoder_layer in this subclass, regardless
+    # of model_type. The parent's __init__ computes _apply_v_norm=False when
+    # model_type != 'gemma4', which misrepresents the actual behavior because
+    # the parent read sites (_prefill_batch_forward, _transformer_layer) are
+    # never called from this class's forward(). Override here so the class-level
+    # value is accurate; _decoder_layer is the authoritative source of V-norm behavior.
+    _apply_v_norm: bool = True
+
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         from vllm.model_executor.models.gemma4 import _get_text_config

@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from vllm_webgpu.utils import _SAMPLING_EPS
+
 
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
     print(f"\nLoading model from: {model_dir}")
@@ -91,7 +93,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_table[:n_blks] = np.arange(n_blks, dtype=np.uint32)
     slots = list(range(T))
 
-    model._greedy_decode = (temperature < 1e-5)
+    model._greedy_decode = (temperature < _SAMPLING_EPS)
 
     batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)
     logits = model.forward(
@@ -100,7 +102,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         batch_meta,
     )
 
-    if temperature < 1e-5:
+    if temperature < _SAMPLING_EPS:
         last_token = int(logits[-1, 0])
         print(f"  Last prefill logit: argmax={last_token}")
     else:
@@ -135,7 +137,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             meta,
         )
 
-        if temperature < 1e-5:
+        if temperature < _SAMPLING_EPS:
             last_token = int(logits[0, 0])
         else:
             # _greedy_decode=False: forward() already returned full (1, vocab) logits.

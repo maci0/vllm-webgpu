@@ -65,8 +65,14 @@ def allocate_kv_from_tensors(
 ) -> None:
     """Allocate KV cache buffers from vLLM's authoritative KVCacheTensor list.
 
-    Per-buffer bytes are derived from the spec's real_page_size_bytes (excludes
-    per-token-head quantization scale overhead) when kv_cache_groups is provided.
+    K and V byte counts are computed directly from spec fields
+    (block_size, num_kv_heads, dtype, head_size, head_size_v), equivalent to
+    FullAttentionSpec.real_page_size_bytes split per-half. Direct field access
+    is used instead of calling real_page_size_bytes because K and V must be
+    sized separately: head_size may differ from head_size_v (e.g. MLA-style
+    models), and real_page_size_bytes returns a single combined total that
+    cannot be split correctly without knowing which dimension differs.
+
     Dividing tensor.size by 2 would silently over-allocate when the KV cache
     dtype uses per-token-head scales, because page_size_bytes (and therefore
     tensor.size) includes those scale bytes but the WebGPU K/V shaders do not
@@ -267,15 +273,20 @@ def get_layer_types(hf_config, hf_outer_config=None) -> list | None:
     # attn_type_list lives on the outer hf_config for multimodal models where
     # hf_text_config (passed as hf_config here) differs from the outer config.
     _outer = hf_outer_config if hf_outer_config is not None else hf_config
-    # Priority order matches vLLM's ModelConfig.get_num_layers_by_block_type
-    # (model.py:1327-1362): layers_block_type > attn_type_list > layer_types.
+    # Priority order approximates vLLM's ModelConfig.get_num_layers_by_block_type
+    # (config/model.py:1327-1362): layers_block_type > attn_type_list > layer_types.
+    # Divergence: vLLM tests attn_type_list with a truthiness check (`if attn_type_list:`),
+    # so an empty list falls through to layer_types. This function uses `if v is not None:`
+    # so an empty attn_type_list terminates the probe chain and returns [] instead.
+    # The 4th probe below (outer-config layer_types) is not present in vLLM and is used
+    # as a fallback for multimodal models where layer_types lives only on the outer config.
     _probes = [
         (hf_config, "layers_block_type"),
         (_outer,    "attn_type_list"),
         (hf_config, "layer_types"),
     ]
     if _outer is not hf_config:
-        _probes.append((_outer, "layer_types"))  # fallback for outer-only configs
+        _probes.append((_outer, "layer_types"))  # fallback for outer-only configs (not in vLLM)
     for cfg, attr in _probes:
         v = getattr(cfg, attr, None)
         if v is not None:

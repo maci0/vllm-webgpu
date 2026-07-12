@@ -148,6 +148,12 @@ class WebGPUModelRunner:
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
         self._block_size: int = vllm_config.cache_config.block_size
+        # Capability flags: set False here so the attribute set is complete from
+        # construction time. load_model() overwrites these with correct values once
+        # the model is available. Without these defaults, any code path that reads
+        # a flag before load_model() completes (e.g. a unit test calling
+        # _execute_model_v2 directly) would raise AttributeError.
+        self._has_reset = self._has_save = self._has_replay = self._has_restore = False
 
     def load_model(self) -> None:
         self.__dict__.pop('kv_cache_spec', None)

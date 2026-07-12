@@ -67,6 +67,31 @@ def _load_yarn_defaults() -> dict:
 
 _YARN_DEFAULTS: dict = _load_yarn_defaults()
 
+def _rotary_dim_from_scaling(head_dim: int, rope_scaling: dict) -> int:
+    """Derive the rotary dimension from rope_scaling config fields.
+
+    Mirrors the two-branch logic in vllm/model_executor/layers/rotary_embedding/
+    __init__.py get_rope() L66-72 (vLLM 0.24).
+
+    On each vLLM bump, diff these three fields against get_rope():
+      rope_scaling["rope_dim"]               (branch 1)
+      rope_scaling["partial_rotary_factor"]  (branch 2, default 1.0)
+      int() cast on the result              (added here vs. vLLM's bare assignment)
+
+    get_rope() cannot be called directly because it allocates an expensive
+    cos/sin cache (orig_ctx * factor rows x rotary_dim floats) that is not
+    needed for frequency extraction alone.
+    """
+    if rd := rope_scaling.get("rope_dim", None):
+        return int(rd)
+    partial_rotary_factor = float(rope_scaling.get("partial_rotary_factor", 1.0))
+    if not (0.0 < partial_rotary_factor <= 1.0):
+        raise ValueError(
+            f"partial_rotary_factor must be in (0, 1], got {partial_rotary_factor}"
+        )
+    return int(head_dim * partial_rotary_factor)
+
+
 def compute_yarn_freqs(
     head_dim: int,
     rope_theta: float,
@@ -86,10 +111,9 @@ def compute_yarn_freqs(
         rope_theta:  RoPE base frequency (e.g. 10000.0).
         rope_scaling: rope_scaling config dict from the model config.
         rotary_dim:  Number of head dimensions that receive RoPE. When None,
-                     derived from rope_scaling["rope_dim"] if present, otherwise
-                     from rope_scaling["partial_rotary_factor"] * head_dim
-                     (defaulting to 1.0, i.e. full rotation). Mirrors the logic
-                     in vllm/model_executor/layers/rotary_embedding/__init__.py:66-72.
+                     derived via _rotary_dim_from_scaling, which mirrors the
+                     rope_dim / partial_rotary_factor logic in
+                     vllm/model_executor/layers/rotary_embedding/__init__.py:66-72.
 
     Returns:
         freqs:  [rotary_dim // 2] float32 array of scaled inv_freq values.
@@ -100,20 +124,7 @@ def compute_yarn_freqs(
     from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
 
     if rotary_dim is None:
-        # Mirrors vllm/model_executor/layers/rotary_embedding/__init__.py get_rope() L66-72
-        # (vLLM 0.24). Verify on each vLLM bump:
-        #   grep -n "rope_dim\|partial_rotary_factor" .venv/lib/*/site-packages/vllm/model_executor/layers/rotary_embedding/__init__.py
-        # get_rope() cannot be called directly: it allocates a full RoPE layer including
-        # an expensive cos/sin cache (orig_ctx * factor rows x rotary_dim floats).
-        if rd := rope_scaling.get("rope_dim", None):
-            rotary_dim = int(rd)
-        else:
-            partial_rotary_factor = float(rope_scaling.get("partial_rotary_factor", 1.0))
-            if not (0.0 < partial_rotary_factor <= 1.0):
-                raise ValueError(
-                    f"partial_rotary_factor must be in (0, 1], got {partial_rotary_factor}"
-                )
-            rotary_dim = int(head_dim * partial_rotary_factor)
+        rotary_dim = _rotary_dim_from_scaling(head_dim, rope_scaling)
 
     if "factor" not in rope_scaling:
         raise ValueError("YaRN rope_scaling must include 'factor'")

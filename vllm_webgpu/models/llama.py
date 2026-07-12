@@ -165,6 +165,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             else getattr(self.model_config, "rope_scaling", None)
             or {}
         )
+        # vLLM's patch_rope_parameters() normalizes the legacy "type" key to
+        # "rope_type" before __init__ runs, so rope_scaling.get("type", "")
+        # is a dead fallback for any model loaded through the standard vLLM
+        # config pipeline. It is kept here only as a safety net for callers
+        # that bypass vLLM's patching (e.g. run_inference.py calling _vllm_get_config
+        # directly without patch_rope_parameters).
         rope_type = rope_scaling.get("rope_type", "") or rope_scaling.get("type", "")
 
         if rope_type != "yarn":
@@ -177,9 +183,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return
 
         dev = self.wgpu_device.wgpu_device
-        # rotary_dim derivation is delegated to compute_yarn_freqs, which mirrors
-        # vllm/model_executor/layers/rotary_embedding/__init__.py:66-72.
-        freqs, mscale = compute_yarn_freqs(self.head_dim, rope_scaling.get("rope_theta", self.rope_theta), rope_scaling)
+        # rope_theta fallback matches vLLM's get_rope() at
+        # rotary_embedding/__init__.py:64 (vLLM 0.24): hardcoded 10000, not
+        # the model-level rope_theta. Using self.rope_theta here would diverge
+        # from vLLM for models that set a non-10000 global rope_theta but omit
+        # it from the rope_scaling dict.
+        freqs, mscale = compute_yarn_freqs(self.head_dim, rope_scaling.get("rope_theta", 10000), rope_scaling)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale
         self._use_freq_buf = True

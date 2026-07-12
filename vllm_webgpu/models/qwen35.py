@@ -94,8 +94,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # conv_dim from vLLM mamba_utils.py:223:
+        # conv_dim from vLLM mamba_utils.py:223 (MambaStateShapeCalculator.gated_delta_net_state_shape)
+        # and qwen_gdn_linear_attn.py:466 (self.conv_dim = self.key_dim * 2 + self.value_dim):
         #   conv_dim = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads
+        # On each vLLM bump, grep both files for 'conv_dim' and verify this formula matches.
         # The _alloc_lin_states assertion (conv_elems == expected_conv_elems) is
         # the authoritative guard against drift with future vLLM formula changes.
         self._lin_conv_dim: int = self._lin_k_dim * self._lin_k_heads * 2 + self._lin_v_dim * self._lin_v_heads
@@ -396,7 +398,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
     def reset_recurrent_states(self) -> None:
         """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
-        for buf in chain(self._ssm_gpu.values(), self._conv_gpu.values()):
+        for buf in (*self._ssm_gpu.values(), *self._conv_gpu.values()):
             self._zero_write(buf)
 
     def save_recurrent_states(self) -> dict:

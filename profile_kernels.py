@@ -84,9 +84,12 @@ def main() -> None:
     t0 = time.perf_counter()
     slots = list(range(len(tok_ids)))
     _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
+    model._greedy_decode = True  # forward() must return (1,1) argmax token, not (1,vocab) logits
     logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
-    assert logits.shape == (1, 1), logits.shape
+    assert logits.shape == (1, 1), (
+        f"expected greedy (1,1) logits, got {logits.shape}; is _greedy_decode=True?"
+    )
     decode_tok = int(logits[0, 0])
     pos = len(tok_ids)
     print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")

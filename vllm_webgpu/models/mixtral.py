@@ -1,5 +1,4 @@
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -89,7 +88,10 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         for Qwen35, which uses a different config key for its expert count).
         """
         import wgpu as _wgpu_lib
-        _staging_sz = max(self._top_k * 4, 8)
+        # Buffer holds top_k uint32 indices (4 bytes each). wgpu requires
+        # buffer sizes that are multiples of 4; top_k >= 1 always makes the
+        # size >= 4, so no minimum guard is needed beyond the 4-byte alignment.
+        _staging_sz = max(self._top_k * 4, 4)
         _staging_usage = _wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ
         self._topk_idx_staging = dev.create_buffer(
             size=_staging_sz,
@@ -448,7 +450,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(logging.DEBUG)
+        _debug_weights = logger.isEnabledFor(10)  # 10 == logging.DEBUG
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

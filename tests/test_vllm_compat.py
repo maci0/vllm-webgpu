@@ -20,6 +20,7 @@ Until then, the assertions below act as an early-warning system.
 """
 import importlib
 import importlib.util
+import inspect
 import pytest
 
 
@@ -58,3 +59,58 @@ def test_vllm_private_symbol_exists(module_path, symbol):
         f"current vLLM version. See the comment block at the top of utils.py "
         f"for the migration path."
     )
+
+
+def test_modelopt_extract_quant_algo_drift():
+    """Detect drift in _extract_modelopt_quant_algo (vllm 0.24).
+
+    vllm_webgpu/quant/weight_loader.py._detect_mx_quant contains a local
+    copy of the quant_method/quant_algo extraction logic from
+    ModelOptQuantConfigBase._extract_modelopt_quant_algo
+    (vllm/model_executor/layers/quantization/modelopt.py). That class imports
+    CUDA kernels at module scope, making it permanently unimportable on WebGPU.
+
+    This test imports modelopt under try/except (expected to fail on WebGPU),
+    and when it succeeds, compares the function's source lines against the
+    known-good two-branch pattern so a vLLM bump that changes the parsing
+    logic is caught by CI rather than silently diverging in the local copy.
+
+    Pinned against vLLM 0.24. When bumping, diff the two branches in
+    _extract_modelopt_quant_algo against _detect_mx_quant in weight_loader.py.
+    """
+    pytest.importorskip("vllm", reason="vllm not installed, skipping compat check")
+
+    try:
+        from vllm.model_executor.layers.quantization import modelopt as _modelopt_mod
+    except (ImportError, RuntimeError):
+        pytest.skip("modelopt not importable on this platform (expected on WebGPU/CPU)")
+
+    # Locate the extraction method on whichever base class vLLM 0.24 uses.
+    cls = None
+    for attr in ("ModelOptQuantConfigBase", "ModelOptFp8Config"):
+        cls = getattr(_modelopt_mod, attr, None)
+        if cls is not None:
+            break
+    assert cls is not None, (
+        "Could not find ModelOptQuantConfigBase or ModelOptFp8Config in "
+        "vllm.model_executor.layers.quantization.modelopt. "
+        "Diff _detect_mx_quant in weight_loader.py against the new upstream class."
+    )
+
+    method = getattr(cls, "_extract_modelopt_quant_algo", None)
+    assert method is not None, (
+        f"{cls.__name__} no longer has _extract_modelopt_quant_algo. "
+        "Diff _detect_mx_quant in weight_loader.py against the updated upstream."
+    )
+
+    src = inspect.getsource(method)
+    # The two-branch pattern: 'quantization' key present vs. top-level quant_algo.
+    # These string fragments are stable identifiers; a refactor that changes the
+    # branch structure will fail this check and require a manual diff.
+    for fragment in ('quantization', 'quant_algo'):
+        assert fragment in src, (
+            f"_extract_modelopt_quant_algo no longer references {fragment!r}. "
+            "The hf_quant_config.json parsing logic changed upstream. "
+            "Diff _detect_mx_quant in vllm_webgpu/quant/weight_loader.py "
+            "against the updated _extract_modelopt_quant_algo and update the copy."
+        )

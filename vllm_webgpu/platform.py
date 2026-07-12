@@ -147,6 +147,12 @@ class WebGPUPlatform(Platform):
 
     @classmethod
     def update_block_size_for_backend(cls, vllm_config: VllmConfig) -> None:
+        # Same override as vllm.platforms.cpu.CpuPlatform.update_block_size_for_backend;
+        # keep in sync. Both platforms skip Phase 1 (backend-driven block_size selection)
+        # and run only Phase 2 (hybrid mamba/attention alignment). If vLLM ever adds a
+        # Platform.update_block_size_skip_backend_preference() hook or a flag to suppress
+        # Phase 1, both overrides can be deleted.
+        #
         # The base class always derives block_size from
         # backend_cls.get_preferred_block_size(), which ignores
         # VLLM_WEBGPU_BLOCK_SIZE set in check_and_update_config above.

@@ -33,7 +33,10 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-_SAMPLING_EPS = 1e-5  # threshold matching vllm.v1.sample.sampler
+# _SAMPLING_EPS is the greedy-vs-stochastic temperature threshold from
+# vllm.v1.sample.sampler. Imported directly so any upstream value change
+# surfaces at import time rather than silently diverging.
+from vllm.v1.sample.sampler import _SAMPLING_EPS
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

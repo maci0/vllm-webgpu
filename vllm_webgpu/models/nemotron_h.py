@@ -116,6 +116,10 @@ except ImportError:
             return v[0] if len(v) == 1 else v[idx]
         return v
 else:
+    # Dead for vLLM 0.24: _resolve_intermediate_size is private and not exported
+    # from vllm.model_executor.models.nemotron_h, so the try branch always raises
+    # ImportError and this else block never executes. It fires when a future vLLM
+    # version exports the symbol, signaling that the local copy below can be deleted.
     logger.warning(
         "vllm.model_executor.models.nemotron_h now exports '_resolve_intermediate_size'; "
         "remove the local copy in this file and import it from upstream instead."
@@ -254,7 +258,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             if _lt == "mamba":
                 # -exp(A_log): transforms HF A_log checkpoint values before GPU upload.
                 self._weight_transforms[f"backbone.layers.{_i}.mixer.A_log"] = _a_log_transform
-            if _lt == "attention":
+            elif _lt == "attention":  # mutually exclusive with mamba; elif avoids redundant test
                 _acc: dict = {}
                 self._scale_acc[_i] = _acc
                 _hf_p = f"backbone.layers.{_i}.mixer"
