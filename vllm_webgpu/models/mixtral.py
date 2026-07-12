@@ -122,13 +122,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
     def _effective_ctx_len(self, ctx_len: int) -> int:
         """Number of KV pairs the shader reads, starting from START_BLOCK.
 
-        For SWA, ctx_len - START_BLOCK*block_size covers all stored tokens
-        from the first in-window block through the end of the context. The
-        first (ctx_len - sw) % block_size positions in that block fall outside
-        the window, but their attention scores are negligibly low.
+        For SWA, cap at the window size so the shader never attends to tokens
+        outside the window. The flash_attn_decode shader applies a causal mask
+        up to CTX_LEN from START_BLOCK, so CTX_LEN = min(ctx_len, sw) is exact.
         """
         if self._sw is not None and ctx_len > self._sw:
-            return self._sw + (ctx_len - self._sw) % self.block_size
+            return self._sw
         return ctx_len
 
     def _start_block(self, ctx_len: int) -> int:
