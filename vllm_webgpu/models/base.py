@@ -57,15 +57,6 @@ def _vals_per_thread(hidden_size: int) -> int:
 
 logger = init_logger(__name__)
 
-# Attributes that compute_yarn_freqs stubs out for YaRNScalingRotaryEmbedding._compute_inv_freq.
-# Defined at module level because this set is a pure constant; defining it inside
-# compute_yarn_freqs would construct a new frozenset on every call.
-_YARN_STUB_ATTRS = frozenset((
-    "base", "rotary_dim", "beta_fast", "beta_slow",
-    "max_position_embeddings", "extrapolation_factor", "truncate",
-))
-
-
 def compute_yarn_freqs(
     head_dim: int,
     rope_theta: float,
@@ -74,11 +65,10 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via a minimal
-    SimpleNamespace stub that carries only the seven instance attributes the
-    method reads. This avoids reimplementing the formula and sidesteps the
-    expensive _compute_cos_sin_cache call that the full constructor triggers
-    (it allocates a [max_position_embeddings * factor, rotary_dim] cache tensor).
+    Uses the public vLLM helpers yarn_find_correction_range, yarn_linear_ramp_mask,
+    and yarn_get_mscale from vllm.model_executor.layers.rotary_embedding.common.
+    Avoids constructing the full YaRNScalingRotaryEmbedding object, which would
+    allocate a [max_position_embeddings * factor, rotary_dim] cos/sin cache tensor.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -97,7 +87,11 @@ def compute_yarn_freqs(
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
     import torch
-    from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+    from vllm.model_executor.layers.rotary_embedding.common import (
+        yarn_find_correction_range,
+        yarn_get_mscale,
+        yarn_linear_ramp_mask,
+    )
 
     if rotary_dim is None:
         # Mirrors vllm/model_executor/layers/rotary_embedding/__init__.py get_rope() L66-72.
@@ -126,37 +120,15 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import YaRNScalingRotaryEmbedding
-    # Verify at model load time that the stub covers every self.xxx attribute read by
-    # _compute_inv_freq. If vLLM adds a new attribute (e.g. self.scaling_factor), the
-    # AttributeError fires here rather than silently at the first forward pass.
-    import ast as _ast, inspect as _inspect, textwrap as _textwrap
-    _src = _textwrap.dedent(_inspect.getsource(YaRNScalingRotaryEmbedding._compute_inv_freq))
-    _tree = _ast.parse(_src)
-    _used_attrs = {
-        node.attr
-        for node in _ast.walk(_tree)
-        if isinstance(node, _ast.Attribute)
-        and isinstance(node.value, _ast.Name)
-        and node.value.id == "self"
-    }
-    _uncovered = _used_attrs - _YARN_STUB_ATTRS
-    if _uncovered:
-        raise AttributeError(
-            f"YaRNScalingRotaryEmbedding._compute_inv_freq now reads "
-            f"{', '.join(f'self.{a}' for a in sorted(_uncovered))} "
-            f"which are absent from the stub in compute_yarn_freqs — update base.py"
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    inv_freq_mask = (
+        1 - yarn_linear_ramp_mask(
+            *yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate),
+            rotary_dim // 2,
+            dtype=torch.float,
         )
-    stub = SimpleNamespace(
-        base=rope_theta,
-        rotary_dim=rotary_dim,
-        beta_fast=beta_fast,
-        beta_slow=beta_slow,
-        max_position_embeddings=orig_ctx,
-        extrapolation_factor=extrapolation_factor,
-        truncate=truncate,
-    )
-    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(stub, factor)
+    ) * extrapolation_factor
+    inv_freq = 1 / (factor * pos_freqs) * (1 - inv_freq_mask) + 1 / pos_freqs * inv_freq_mask
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
