@@ -162,6 +162,7 @@ def _gemma4_layer_params(
             "intermediate_size": inter_l,
             "is_kv_shared":      is_kv_shared,
             "kv_shared_target":  kv_shared_target,
+            "is_sliding":        lt == "sliding_attention",
         })
 
     return lp
@@ -274,6 +275,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         self.softcap: float | None = getattr(model_config, "final_logit_softcapping", None)
         self.rope_theta: float = getattr(model_config, "rope_theta", 10000.0)
         self.block_size: int = block_size
+        self._sliding_window: int | None = getattr(model_config, "sliding_window", None)
 
         # Gemma3 vs Gemma4 capability flags:
         # - GEMMA_NORM=1: Gemma3 norms store weights as deviations from zero (GemmaRMSNorm, (1+w) formula).
@@ -314,6 +316,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     "is_kv_shared": e.get("is_kv_shared", False),
                     "kv_shared_target": e.get("kv_shared_target", -1),
                     "has_v_proj": e.get("has_v_proj", True),
+                    "is_sliding": e.get("is_sliding", False),
                 }
                 for e in raw_lp
             ]
@@ -348,6 +351,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 "intermediate_size": self.intermediate_size,
                 "is_kv_shared":     False,
                 "kv_shared_target": -1,
+                "is_sliding":       False,
             }
             self._lp = [uniform_lp.copy() for _ in range(self.num_layers)]
 
@@ -836,6 +840,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     inter           = lp["intermediate_size"]
                     is_kv_shared    = lp["is_kv_shared"]
                     kv_shared_target = lp["kv_shared_target"]
+                    is_sliding      = lp["is_sliding"]
                     add_n           = T * hidden
                     gelu_n          = T * inter
                     _ls             = self._layer_scales[i]
@@ -978,6 +983,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     # flash_attn_prefill applies causal masking: token t_q attends to [0, t_q].
                     # For KV-shared layers, b["k_rope"] and b["v_normed"] were loaded from
                     # the target layer's paged cache via kv_cache_load_dense above.
+                    _sw = self._sliding_window
                     self._dispatch(
                         "flash_attn_prefill",
                         [b["q_rope"], b["k_rope"], v_for_attn, b["attn_out"]],
@@ -985,7 +991,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                          "NUM_KV_HEADS": num_kv_heads,
                          "HEAD_DIM":     head_dim,
                          "NUM_T":        T,
-                         "SCALE":        lp["scale"]},
+                         "SCALE":        lp["scale"],
+                         "WINDOW_SIZE":  (_sw if _sw is not None else 0) if is_sliding else 0},
                         (self.num_q_heads, T, 1))
 
                     # Output projection (batch GEMM)
@@ -1224,6 +1231,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # KV-shared layers reuse the target layer's KV cache (mirrors vLLM is_kv_shared_layer).
         is_kv_shared    = lp["is_kv_shared"]
         kv_shared_target = lp["kv_shared_target"]
+        is_sliding       = lp["is_sliding"]
 
         residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
         out = sc[_H_NAMES[(self._hstate + 2) % 3]]
@@ -1408,11 +1416,19 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Always use flash_attn_decode for single-token decode.
             # The 65535 limit applied to attn_score's dispatch dimension; flash_attn_decode
             # loops internally and has no dispatch dimension limit.
+            _sw = self._sliding_window
+            if is_sliding and _sw is not None and ctx_len > _sw:
+                _start_block = (ctx_len - _sw) // self.block_size
+                _eff_ctx_len = ctx_len - _start_block * self.block_size
+            else:
+                _start_block = 0
+                _eff_ctx_len = ctx_len
             self._dispatch("flash_attn_decode",
                            [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
                            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
-                            "CTX_LEN": ctx_len,
+                            "CTX_LEN": _eff_ctx_len,
+                            "START_BLOCK": _start_block,
                             "SCALE": lp["scale"]},
                            (self.num_q_heads, 1, 1))
 
