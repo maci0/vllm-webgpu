@@ -1,4 +1,5 @@
 from __future__ import annotations
+import inspect as _inspect
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -16,6 +17,15 @@ from vllm.model_executor.layers.rotary_embedding.common import (
     yarn_get_mscale,
     yarn_linear_ramp_mask,
 )
+from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+    YaRNScalingRotaryEmbedding as _YaRN,
+)
+
+# Read YaRN parameter defaults directly from vLLM's class signature so any
+# upstream change raises AttributeError immediately rather than silently
+# producing wrong inv_freq values.
+_YARN_PARAMS = _inspect.signature(_YaRN.__init__).parameters
+
 from vllm_webgpu.utils import zero_bytes
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
@@ -116,17 +126,12 @@ def compute_yarn_freqs(
         raise ValueError("YaRN rope_scaling must include 'original_max_position_embeddings'")
     factor   = float(rope_scaling["factor"])
     orig_ctx = int(rope_scaling["original_max_position_embeddings"])
-    # Defaults copied from YaRNScalingRotaryEmbedding.__init__ keyword defaults
-    # (vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py:27-31, vLLM 0.24).
-    # On each vLLM bump, re-check those keyword defaults and re-run
-    # tests to catch any drift. There is no public constant to import; these
-    # must be kept in sync manually.
-    beta_fast            = int(rope_scaling.get("beta_fast", 32))
-    beta_slow            = int(rope_scaling.get("beta_slow", 1))
-    extrapolation_factor = float(rope_scaling.get("extrapolation_factor", 1.0))
-    attn_factor          = float(rope_scaling.get("attn_factor", 1.0))
-    apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
-    truncate             = bool(rope_scaling.get("truncate", True))
+    beta_fast            = int(rope_scaling.get("beta_fast",            _YARN_PARAMS["beta_fast"].default))
+    beta_slow            = int(rope_scaling.get("beta_slow",            _YARN_PARAMS["beta_slow"].default))
+    extrapolation_factor = float(rope_scaling.get("extrapolation_factor", _YARN_PARAMS["extrapolation_factor"].default))
+    attn_factor          = float(rope_scaling.get("attn_factor",          _YARN_PARAMS["attn_factor"].default))
+    apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   _YARN_PARAMS["apply_yarn_scaling"].default))
+    truncate             = bool(rope_scaling.get("truncate",             _YARN_PARAMS["truncate"].default))
 
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
