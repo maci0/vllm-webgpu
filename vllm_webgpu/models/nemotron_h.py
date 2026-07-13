@@ -1004,6 +1004,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         if lm_key not in self.weights:
             raise ValueError(f"{lm_key} missing from loaded weights")
 
+    def _lm_head_key(self) -> str:
+        return self._first_weight_key("model.lm_head.weight", "model.embed_tokens.weight")
+
     # ── Forward pass ──────────────────────────────────────────────────────────
 
     def _finalize_output(self) -> np.ndarray:
