@@ -9,7 +9,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
-    from vllm.v1.outputs import AsyncModelRunnerOutput, LogprobsLists
+    from vllm.v1.outputs import AsyncModelRunnerOutput
 
 logger = init_logger(__name__)
 
@@ -413,11 +413,11 @@ class WebGPUModelRunner:
             # passing it here, making the cast below a no-op in that branch.
             # If a future vLLM release casts token_ranks to int32 in gather_logprobs,
             # remove both casts (here and at the padded path) together.
-            return LogprobsTensors(
-                torch.cat([x.logprob_token_ids for x in items]),
-                torch.cat([x.logprobs for x in items]),
-                torch.cat([x.selected_token_ranks for x in items]).to(torch.int32),
-            ).tolists()
+            return LogprobsLists(
+                torch.cat([x.logprob_token_ids for x in items]).numpy(),
+                torch.cat([x.logprobs for x in items]).numpy(),
+                torch.cat([x.selected_token_ranks for x in items]).to(torch.int32).numpy(),
+            )
 
         # Build LogprobsLists for top-k sampled-token logprob entries.
         # One row per request in the batch (matching req_id_to_index), so that
@@ -714,17 +714,18 @@ class WebGPUModelRunner:
                 blk_ids = list(state["block_ids"])
                 sp = state.get("sampling_params")
                 num_logprobs = _resolve_num_logprobs(sp, rid)
+                is_resumed = rid in resumed_req_ids
 
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.
                 cur_new_bids = new_block_ids[i]
-                if rid in resumed_req_ids and cur_new_bids is None:
+                if is_resumed and cur_new_bids is None:
                     raise RuntimeError(
                         f"resumed req {rid} has no new_block_ids from scheduler"
                     )
                 if cur_new_bids is not None:
                     flat_new = list(chain.from_iterable(cur_new_bids))
-                    if rid in resumed_req_ids:
+                    if is_resumed:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.
                         # After preemption num_computed_tokens is often 0 (full
@@ -760,7 +761,7 @@ class WebGPUModelRunner:
                 # request beyond the first in a multi-sequence decode batch.
                 if self._has_restore:
                     saved_recurrent = state.get("recurrent_states")
-                    rolled_back = rid in resumed_req_ids and pos < state["pos"]
+                    rolled_back = is_resumed and pos < state["pos"]
                     if not rolled_back and saved_recurrent is not None:
                         self.model.restore_recurrent_states(saved_recurrent)
                     elif self._has_reset:

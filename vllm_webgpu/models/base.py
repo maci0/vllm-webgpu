@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -127,7 +128,6 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling", True))
     truncate             = bool(rope_scaling.get("truncate", True))
 
-    import torch
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
     mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
@@ -423,7 +423,7 @@ class BaseWebGPUModel(ABC):
         raw = bytes(staging.read_mapped())
         staging.unmap()
 
-        result: dict[str, dict] = {"conv": {}, "ssm": {}}
+        result: dict[str, dict] = defaultdict(dict)
         for (kind, i, buf), off in zip(bufs, offsets):
             result[kind][i] = raw[off : off + buf.nbytes]
         return result

@@ -134,6 +134,7 @@ def _allocate_kv_pool_hybrid(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
+    assert dtype == torch.float16, f"only float16 KV cache supported, got {dtype}"
     k_bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2
     v_bytes_per_layer = num_blocks * block_size * num_kv_heads * (head_dim_v or head_dim) * 2
 

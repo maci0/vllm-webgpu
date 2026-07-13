@@ -82,7 +82,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             self._init_moe_staging(dev)
 
     def _init_moe_staging(self, dev) -> None:
-        """Allocate MAP_READ staging buffers and the expert_out zero buffer.
+        """Allocate MAP_READ staging buffers for topk index and weight readback.
 
         Extracted from MixtralWebGPUModel.__init__ so Qwen35WebGPUModel can call
         it when Mixtral's __init__ skips staging allocation (num_local_experts=0
@@ -335,8 +335,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
     def _dispatch_expert_down(
         self,
-        ep: str,
-        down_key_name: str,
         w2_key: str,
         k_idx: int,
         inter: int,
@@ -347,11 +345,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         weighted accumulate.
 
         Args:
-            ep:            Full expert prefix (e.g. 'model.layers.0.mlp.experts.3').
-            down_key_name: Weight sub-key name (e.g. 'w2').
-            w2_key:        Full weight key (e.g. '{ep}.w2.weight').
-            k_idx:         Which top-k slot this expert occupies (used for K_IDX override).
-            inter:         Expert intermediate size (= K dimension of the down matmul).
+            w2_key: Full weight key (e.g. '{ep}.w2.weight').
+            k_idx:  Which top-k slot this expert occupies (used for K_IDX override).
+            inter:  Expert intermediate size (= K dimension of the down matmul).
         """
         msc = self._moe_sc
         hidden = self.hidden_size
@@ -602,4 +598,4 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 )
 
             self._dispatch_expert_gate_up(normed_x, w1_key, w3_key, inter, extra_gate_consts)
-            self._dispatch_expert_down(ep, down_key, w2_key, k_idx, inter)
+            self._dispatch_expert_down(w2_key, k_idx, inter)

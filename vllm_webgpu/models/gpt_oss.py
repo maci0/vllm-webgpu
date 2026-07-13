@@ -435,15 +435,13 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
 
     def _dispatch_expert_down(
         self,
-        ep: str,
-        down_key_name: str,
         w2_key: str,
         k_idx: int,
         inter: int,
     ) -> None:
         """Extend parent with per-expert down bias injection.
 
-        Derives the bias key as '{ep}.{down_key_name}.bias'. If absent, delegates
+        Derives the bias key as '{base_key}.bias'. If absent, delegates
         to the parent. When present, switches to the separate matmul + add + accumulate
         sequence (bypassing the fused moe_expert_down_accum shader which has no bias
         binding) and uses expert_tmp as the staging buffer for the biased output.
@@ -451,7 +449,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         base_key = w2_key.removesuffix('.weight')
         w2_bias = self.weights.get(f"{base_key}.bias")
         if w2_bias is None:
-            super()._dispatch_expert_down(ep, down_key_name, w2_key, k_idx, inter)
+            super()._dispatch_expert_down(w2_key, k_idx, inter)
             return
 
         # Only expert_tmp is needed on the biased-down path. Use the shared

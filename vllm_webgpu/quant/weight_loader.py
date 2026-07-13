@@ -49,7 +49,7 @@ def _unpack_nibbles_std4(packed: "np.ndarray") -> "np.ndarray":
     )
     from vllm.scalar_type import scalar_types as _scalar_types
     return _vllm_unpack(
-        _torch.from_numpy(np.ascontiguousarray(packed.astype(np.int32))),
+        _torch.from_numpy(np.ascontiguousarray(packed, dtype=np.int32)),
         _scalar_types.uint4,
         packed_dim=1,
     ).numpy()
@@ -932,8 +932,6 @@ def load_safetensors_weights(
                             logger.debug("Int8 per-channel: %s scale n=%d", base_key, sc_arr.size)
                         except Exception as exc:
                             logger.warning("Int8 scale load failed for %s: %s", base_key, exc)
-                        finally:
-                            _i8_companion_skip.add(sc_key)
                         break
                 else:
                     logger.warning(

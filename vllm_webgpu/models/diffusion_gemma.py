@@ -95,11 +95,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             )
 
         if self.is_moe:
-            # _pes_cache and _expert_prefix_cache are populated by load_weights();
-            # initialize here so that forward() is safe when weights are injected
-            # directly (e.g. in tests).
+            # _pes_cache is initialized here; _expert_prefix_cache is assigned by
+            # _validate_expert_weights() (called from load_weights()) before any
+            # forward pass that uses it.
             self._pes_cache: list[np.ndarray | None] = [None] * self.num_layers
-            self._expert_prefix_cache: dict[tuple[int, int], str] = {}
             logger.info("DiffusionGemma MoE: %d experts, top-%d, moe_inter=%d",
                         self.num_experts, self.top_k_experts, self.moe_intermediate_size)
             # Extra scratch buffer: shared-expert residual (F16; unlike h0/h1/h2 which are F32).

@@ -100,7 +100,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         batch_meta,
     )
 
-    if temperature < GREEDY_TEMP:
+    if model._greedy_decode:
         last_token = int(logits[-1, 0])
         print(f"  Last prefill logit: argmax={last_token}")
     else:
@@ -133,7 +133,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             meta,
         )
 
-        if temperature < GREEDY_TEMP:
+        if model._greedy_decode:
             last_token = int(logits[0, 0])
         else:
             # _greedy_decode=False: forward() already returned full (1, vocab) logits.
