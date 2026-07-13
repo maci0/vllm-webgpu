@@ -484,10 +484,12 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # K: norm+RoPE only for non-shared layers; shared layers read K from cache directly.
             _q_nw = self.weights.get(f"{p}.self_attn.q_norm.weight")
             _k_nw = self.weights.get(f"{p}.self_attn.k_norm.weight") if not is_kv_shared else None
-            # SCALE=1.0 is correct only when Q/K have been magnitude-normalized by
-            # fused_per_head_norm_rope (GEMMA_NORM=1). When the fallback plain rope
-            # path runs (q_norm/k_norm weights absent), magnitudes are uncontrolled
-            # and the standard 1/sqrt(head_dim) scale applies.
+            # SCALE=1.0 is correct when per-head RMS norm is applied to Q and K
+            # (HAS_WEIGHT=1 in fused_per_head_norm_rope) and V-norm is applied before
+            # caching. The norms collectively replace the standard 1/sqrt(head_dim)
+            # scale. When the fallback plain rope path runs (q_norm/k_norm weights
+            # absent), magnitudes are uncontrolled and the standard 1/sqrt(head_dim)
+            # scale applies.
             # Q-norm present but K-norm absent on a non-KV-shared layer is an
             # invariant violation: DiffusionGemma always loads both norms together.
             # Neither 1/sqrt(head_dim) nor 1.0 is clearly correct in this state,
