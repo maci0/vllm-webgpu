@@ -54,7 +54,7 @@ SHADERS_DIR = Path(__file__).parent / "shaders"
 # maxsize=16: fixed callers (model_runner/base) use 2-4 distinct sizes;
 # variable callers (e.g. diffusion_gemma per-request) are bounded by LRU
 # eviction rather than accumulating stale entries forever.
-zero_bytes: "Callable[[int], bytes]" = lru_cache(maxsize=16)(bytes)
+zero_bytes: Callable[[int], bytes] = lru_cache(maxsize=16)(bytes)
 
 
 def sample_token(

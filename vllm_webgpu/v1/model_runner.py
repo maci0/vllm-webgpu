@@ -226,11 +226,8 @@ class WebGPUModelRunner:
     def _get_lp_list(self) -> "list | None":
         """Return per-layer attention params, guarding against model=None.
 
-        Returns None when no per-layer params exist. Falls back to the HF
-        config attribute only when the model has not set _lp at all (None),
-        not when it is explicitly set to [] (an empty list means the model
-        has confirmed there are no heterogeneous layers, and that signal must
-        not be overridden by a stale HF config attribute).
+        Returns model._lp, or None when the model is not loaded or does not
+        expose _lp.
 
         Note: when self.model is None (always the case on the first call, since
         vLLM calls get_kv_cache_spec before load_model), returns None and lets
@@ -495,7 +492,7 @@ class WebGPUModelRunner:
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits[row_idx]).unsqueeze(0))
         k = min(num_logprobs, logits.shape[-1])
         # selected_token_ranks is cast to int32 in _stack so no explicit cast is needed
-        # here. The _replace at line 141 is needed because _compute_prompt_logprobs
+        # here. The _replace at line 144 is needed because _compute_prompt_logprobs
         # returns directly without going through _stack.
         return Sampler.gather_logprobs(lp_t, k, torch.tensor([tok], dtype=torch.int64))
 

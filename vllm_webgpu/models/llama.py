@@ -801,9 +801,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             sc["qkv_buf"]],
                            {"K": hidden, "Q_DIM": q_dim, "KV_DIM": kv_dim},
                            (q_dim + 2 * kv_dim, 1, 1))
-            _q_src = sc["qkv_buf"]
-            _k_src = sc["qkv_buf"]
-            _v_src = sc["qkv_buf"]
+            _q_src = _k_src = _v_src = sc["qkv_buf"]
             _v_offset = q_dim + kv_dim  # f16 elements before V section
         else:
             _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx, uq_q, uq_k, uq_v)

@@ -107,7 +107,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # canvas_length is the max batch size during diffusion inference (default 256).
             # All per-token scratch buffers must be sized for the full canvas to avoid
             # out-of-bounds writes when num_tokens > 1.
-            max_canvas_len = self._scratch_token_count()
+            max_canvas_len = self._canvas_length
             self._shared_res_buf = self._make_buf(max_canvas_len * self.hidden_size * 2)  # F16
             # Pre-allocated GPU top-K buffers — eliminates GPU→CPU router readback.
             self._topk_idx_buf     = self._make_buf(max_canvas_len * self.top_k_experts * 4)  # [T, K] u32
@@ -157,6 +157,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         moe_ffn_in, router_in (see comments below).
         """
         T = self._scratch_token_count()
+        self._canvas_length = T
         H = self.hidden_size
         I = self._max_inter
         NQ = self.num_q_heads

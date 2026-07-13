@@ -559,9 +559,9 @@ class BaseWebGPUModel(ABC):
     ) -> None:
         # matmul_quant always declares binding 4 (bias). Callers that don't set
         # HAS_BIAS=1 still need to provide a buffer so the bind group layout matches.
-        # The auto-append is an invariant of the dispatch protocol for this shader:
-        # all call sites pass exactly 4 bindings (HAS_BIAS=0 is always the default).
-        # The assertion guards against silent misuse if the binding count ever changes.
+        # Most call sites omit the bias buffer (HAS_BIAS=0); gpt_oss.py and mixtral.py
+        # pass 5 bindings with HAS_BIAS=1. The auto-append fills the slot for the
+        # 4-binding case so the bind group layout always matches.
         if shader_name == "matmul_quant":
             if len(bindings) not in (4, 5):
                 raise ValueError(f"matmul_quant expects 4 or 5 bindings, got {len(bindings)}")

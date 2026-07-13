@@ -548,7 +548,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
             logger.warning("Failed to read hf_quant_config.json in %s: %s", model_dir, exc)
     if quant_cfg is None:
         config_json = model_dir / "config.json"
-        quant_cfg = _ct_get_quant_cfg(str(config_json)) or {} if config_json.exists() else {}
+        quant_cfg = _ct_get_quant_cfg(config_json) or {} if config_json.exists() else {}
     qt = (quant_cfg.get("quant_type") or quant_cfg.get("quant_method") or "").lower()
     if qt == "mxfp4":
         return "mxfp4"
@@ -587,7 +587,7 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
     if quant_cfg is None:
         if not p.exists():
             return {}
-        quant_cfg = _ct_get_quant_cfg(str(p)) or {}
+        quant_cfg = _ct_get_quant_cfg(p) or {}
     if not quant_cfg.get("config_groups"):
         return {}
     try:
@@ -685,7 +685,7 @@ def load_safetensors_weights(
         # crash below. Fall through to the config.json path in that case.
         _effective_quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else None
         _raw_quant_cfg = _effective_quant_cfg if _effective_quant_cfg is not None else (
-            _ct_get_quant_cfg(str(_config_json)) or {} if _config_json.exists() else {}
+            _ct_get_quant_cfg(_config_json) or {} if _config_json.exists() else {}
         )
         if not _already_checked:
             _check_unsupported_quant(_raw_quant_cfg)

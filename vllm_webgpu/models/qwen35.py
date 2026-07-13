@@ -439,7 +439,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 _gu_buf = self.weights.pop(_gu_key)
                 _np_t = _WGPU_DTYPE_TO_NP.get(_gu_buf.dtype, np.uint8)
                 _elem_b = _ELEM_BYTES[_gu_buf.dtype]
-                _expected = int(np.prod(_gu_buf.shape)) * _elem_b
+                _expected = math.prod(_gu_buf.shape) * _elem_b
                 _gu_arr = _gu_buf.to_numpy()[:_expected].view(_np_t).reshape(_gu_buf.shape)
                 _n_exp, _two_inter, _hidden = _gu_arr.shape
                 _inter = _two_inter // 2
@@ -454,7 +454,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     _d_buf = self.weights.pop(_d_key)
                     _d_np_t = _WGPU_DTYPE_TO_NP.get(_d_buf.dtype, np.uint8)
                     _d_elem_b = _ELEM_BYTES[_d_buf.dtype]
-                    _d_expected = int(np.prod(_d_buf.shape)) * _d_elem_b
+                    _d_expected = math.prod(_d_buf.shape) * _d_elem_b
                     _d_arr = _d_buf.to_numpy()[:_d_expected].view(_d_np_t).reshape(_d_buf.shape)
                     for _j in range(_d_arr.shape[0]):
                         _ep = f"{_pfx}.{_j}"
