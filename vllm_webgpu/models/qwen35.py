@@ -11,7 +11,7 @@ from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
 
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES, _WGPU_DTYPE_TO_NP
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -414,6 +414,56 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             _dev = self.wgpu_device.wgpu_device
             for _gk, _gate_arr in _q_gate_pending.items():
                 self.weights[_gk] = WebGPUBuffer.from_numpy(_dev, _gate_arr)
+
+        # Unfuse Qwen3.5 MoE expert weights from the HF checkpoint format.
+        # The HF checkpoint stores all expert gate+up weights as a single fused
+        # tensor model.layers.{i}.mlp.experts.gate_up_proj of shape
+        # [num_experts, 2*inter, hidden], matching what vLLM does server-side in
+        # fused_moe_make_expert_params_mapping. The per-expert dispatcher in
+        # mixtral.py requires separate keys for each expert:
+        #   model.layers.{i}.mlp.experts.{j}.gate_proj.weight  shape [inter, hidden]
+        #   model.layers.{i}.mlp.experts.{j}.up_proj.weight    shape [inter, hidden]
+        #   model.layers.{i}.mlp.experts.{j}.down_proj.weight  shape [inter, hidden]
+        # Without this step self.weights holds only the fused keys, and every
+        # selected expert triggers the RuntimeError in mixtral.py at line 594.
+        if self._is_moe:
+            _dev = self.wgpu_device.wgpu_device
+            for _li in range(self.num_layers):
+                _pfx = f"model.layers.{_li}.mlp.experts"
+                _gu_key = f"{_pfx}.gate_up_proj"
+                _d_key  = f"{_pfx}.down_proj"
+                if _gu_key not in self.weights:
+                    continue
+                # Split gate_up_proj [num_experts, 2*inter, hidden] into per-expert slices.
+                _gu_buf = self.weights.pop(_gu_key)
+                _np_t = _WGPU_DTYPE_TO_NP.get(_gu_buf.dtype, np.uint8)
+                _elem_b = _ELEM_BYTES[_gu_buf.dtype]
+                _expected = int(np.prod(_gu_buf.shape)) * _elem_b
+                _gu_arr = _gu_buf.to_numpy()[:_expected].view(_np_t).reshape(_gu_buf.shape)
+                _n_exp, _two_inter, _hidden = _gu_arr.shape
+                _inter = _two_inter // 2
+                for _j in range(_n_exp):
+                    _ep = f"{_pfx}.{_j}"
+                    self.weights[f"{_ep}.gate_proj.weight"] = WebGPUBuffer.from_numpy(
+                        _dev, np.ascontiguousarray(_gu_arr[_j, :_inter, :]))
+                    self.weights[f"{_ep}.up_proj.weight"] = WebGPUBuffer.from_numpy(
+                        _dev, np.ascontiguousarray(_gu_arr[_j, _inter:, :]))
+                # Split down_proj [num_experts, inter, hidden] into per-expert slices.
+                if _d_key in self.weights:
+                    _d_buf = self.weights.pop(_d_key)
+                    _d_np_t = _WGPU_DTYPE_TO_NP.get(_d_buf.dtype, np.uint8)
+                    _d_elem_b = _ELEM_BYTES[_d_buf.dtype]
+                    _d_expected = int(np.prod(_d_buf.shape)) * _d_elem_b
+                    _d_arr = _d_buf.to_numpy()[:_d_expected].view(_d_np_t).reshape(_d_buf.shape)
+                    for _j in range(_d_arr.shape[0]):
+                        _ep = f"{_pfx}.{_j}"
+                        self.weights[f"{_ep}.down_proj.weight"] = WebGPUBuffer.from_numpy(
+                            _dev, np.ascontiguousarray(_d_arr[_j, :, :]))
+            logger.info(
+                "Unfused MoE expert weights into per-expert keys for %d layers",
+                self.num_layers,
+            )
+
         self._postprocess_weights()
         self._alloc_lin_states(num_spec=num_spec)
         # Confirm MoE detection against actual weight keys.
