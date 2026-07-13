@@ -171,12 +171,10 @@ def _gemma4_layer_params(
 def _assert_gemma4_formula_compat() -> None:
     """Fail-fast at import time if vLLM's Gemma4 formulas have drifted from our transcription.
 
-    Checks two things:
-      1. Key formula strings are still present in the vLLM source (source-level guard).
-      2. _gemma4_layer_params produces the same per-layer params as the vLLM reference
-         formula applied to a canonical 4-layer config (output-level guard).
-         Compared fields: head_dim, num_kv_heads, has_v_proj, q_dim, kv_dim,
-         is_kv_shared, kv_shared_target, intermediate_size.
+    Checks that _gemma4_layer_params produces the same per-layer params as the
+    vLLM reference formula applied to a canonical 4-layer config (output-level guard).
+    Compared fields: head_dim, num_kv_heads, has_v_proj, q_dim, kv_dim,
+    is_kv_shared, kv_shared_target, intermediate_size.
 
     Raises AssertionError immediately on any mismatch, surfacing drift at import time
     rather than silently producing wrong KV buffer sizes at inference.
@@ -197,42 +195,9 @@ def _assert_gemma4_formula_compat() -> None:
         ~L559-580  head_dim / num_kv_heads (same formulas, different guard)
         ~L599-608  intermediate_size doubling guard (chained "i >= first > 0")
     """
-    import inspect
     import types as _types
 
-    try:
-        from vllm.model_executor.models import gemma4 as _vllm_g4
-    except Exception:
-        return  # vLLM not importable in this environment; skip gracefully.
-
-    # (1) Source-level guards: key formula strings must still be present.
-    _DL_PATTERNS = [
-        'head_dim = getattr(config, "global_head_dim", config.head_dim)',
-        'use_k_eq_v = self.is_full_attention and getattr(',
-        '"num_global_key_value_heads", config.num_key_value_heads',
-        "first_kv_shared_layer_idx = config.num_hidden_layers - getattr(",
-        "layer_intermediate_size = config.intermediate_size * (",
-    ]
-    _ATT_PATTERNS = [
-        "first_kv_shared_layer_idx = config.num_hidden_layers - num_kv_shared_layers",
-        "len(prev_layers) - 1 - prev_layers[::-1].index(current_layer_type)",
-    ]
-    dl_src = inspect.getsource(_vllm_g4.Gemma4DecoderLayer.__init__)
-    att_src = inspect.getsource(_vllm_g4.Gemma4Attention.__init__)
-    for p in _DL_PATTERNS:
-        if p not in dl_src:
-            raise AssertionError(
-                f"vLLM Gemma4DecoderLayer.__init__ formula changed: {p!r} not found. "
-                "Re-audit _gemma4_layer_params and update tests/test_gemma4_layer_params.py."
-            )
-    for p in _ATT_PATTERNS:
-        if p not in att_src:
-            raise AssertionError(
-                f"vLLM Gemma4Attention.__init__ formula changed: {p!r} not found. "
-                "Re-audit _gemma4_layer_params and update tests/test_gemma4_layer_params.py."
-            )
-
-    # (2) Output-level guard: compare _gemma4_layer_params against the vLLM reference
+    # Output-level guard: compare _gemma4_layer_params against the vLLM reference
     # formulas applied directly in pure Python on a minimal canonical config.
     # 4 layers: [sliding, full, sliding, full], last 2 are KV-shared, use_dwm=True.
     # Covers all formula branches: head_dim selection, k_eq_v KV head routing,

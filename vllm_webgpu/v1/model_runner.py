@@ -40,12 +40,14 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
     backend cannot handle. Called from both the prefill and decode loops to
     avoid duplicating the validation block in each.
     """
-    if sp is not None and sp.logprob_token_ids:
+    if sp is None:
+        return None
+    if sp.logprob_token_ids:
         raise NotImplementedError(
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.logprobs if sp is not None else None
+    num_logprobs = sp.logprobs
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -231,12 +233,13 @@ class WebGPUModelRunner:
         not be overridden by a stale HF config attribute).
 
         Note: when self.model is None (always the case on the first call, since
-        vLLM calls get_kv_cache_spec before load_model), falls back to
-        hf_config._layer_attention_params, which is set by GGUF parsing for
-        Gemma4 checkpoints.
+        vLLM calls get_kv_cache_spec before load_model), returns None and lets
+        kv_cache_spec fall through to the get_layer_types path. If Gemma4 GGUF
+        support is added later, the GGUF loader should set _lp on the model
+        object directly (matching the getattr(self.model, '_lp', None) path).
         """
         lp = getattr(self.model, "_lp", None) if self.model is not None else None
-        return lp if lp is not None else getattr(self.vllm_config.model_config.hf_config, "_layer_attention_params", None)
+        return lp
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         return self.kv_cache_spec
@@ -589,7 +592,7 @@ class WebGPUModelRunner:
             abs_idx = np.arange(num_computed, num_computed + T)
             blk_idx = abs_idx // block_size
             oob = blk_idx >= len(blk_ids)
-            if np.any(oob):
+            if oob.any():
                 bad = int(abs_idx[oob][0])
                 raise RuntimeError(
                     f"block table too short for req {rid}: token {bad} needs block "

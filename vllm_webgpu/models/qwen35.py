@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from itertools import batched
 from typing import TYPE_CHECKING
 
@@ -348,8 +349,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             conv_kernel_size=self._lin_conv_kernel,
             num_spec=num_spec,
         )
-        conv_bytes = conv_shape[0] * conv_shape[1] * _ELEM_BYTES["f16"]
-        ssm_bytes  = ssm_shape[0] * ssm_shape[1] * ssm_shape[2] * _ELEM_BYTES["f32"]
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}
         self._conv_gpu = {}
@@ -545,11 +546,14 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         wk = f"{p}.{proj_name}.weight"
         w, bf16, uq = self._resolve_gdn_weight(wk)
         qi = self._quant_extra(f"{p}.{proj_name}", uq)
+        consts = {"K": K, "N": N, "USE_QUANT": uq, **qi}
+        if bf16:
+            consts["USE_BF16"] = 1
         self._dispatch("matmul_quant",
                        [in_buf, w,
                         self._scales_buf(wk, uq, self._dummy_buf),
                         out_buf],
-                       {"K": K, "N": N, "USE_QUANT": uq, "USE_BF16": bf16, **qi},
+                       consts,
                        (N, 1, 1))
 
     def _gdn_layer_gpu(
