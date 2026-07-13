@@ -603,6 +603,17 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
         return {"__global__": {"fmt": "fp8_gpu", "group_size": None}}
     if w_args.num_bits == 4 and w_args.type == _QuantizationType.INT and w_args.strategy == _QuantizationStrategy.GROUP:
         return {"__global__": {"fmt": "gptq_gpu", "group_size": w_args.group_size}}
+    # MXFP4: 4-bit FLOAT GROUP (group_size=32) or TENSOR_GROUP.
+    # The U8+U8 weight-pair signature is detected later in the tensor-header scan
+    # via has_mx_u8_pair, which routes to _detect_mx_quant. Return {} so that
+    # scan loop is reached; raising here would abort before it runs.
+    if w_args.num_bits == 4 and w_args.type == _QuantizationType.FLOAT and w_args.strategy in (
+        _QuantizationStrategy.GROUP, _QuantizationStrategy.TENSOR_GROUP
+    ):
+        return {}
+    # MXFP8: 8-bit FLOAT GROUP (group_size=32). Same reasoning as MXFP4 above.
+    if w_args.num_bits == 8 and w_args.type == _QuantizationType.FLOAT and w_args.strategy == _QuantizationStrategy.GROUP:
+        return {}
     raise ValueError(
         f"compressed-tensors: unsupported format (num_bits={w_args.num_bits}, "
         f"type={w_args.type}, strategy={w_args.strategy}). "
