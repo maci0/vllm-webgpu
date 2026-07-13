@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -97,6 +96,7 @@ def compute_yarn_freqs(
                 Must be applied to the output of cos/sin in the shader, NOT
                 folded into the frequencies (cos(pos * freq * mscale) is wrong).
     """
+    import torch  # noqa: PLC0415 — only needed here; all other code in base.py uses numpy
     rope_theta = float(rope_scaling.get("rope_theta", 10000.0))
 
     if rotary_dim is None:

@@ -43,16 +43,8 @@ def _unpack_nibbles_std4(packed: "np.ndarray") -> "np.ndarray":
     packed: shape (out_rows, in_cols // 8), dtype int32 or uint32.
     Returns int32 array of shape (out_rows, in_cols) with values in [0, 15].
     """
-    import torch as _torch
-    from vllm.model_executor.layers.quantization.utils.quant_utils import (
-        unpack_quantized_values_into_int32 as _vllm_unpack,
-    )
-    from vllm.scalar_type import scalar_types as _scalar_types
-    return _vllm_unpack(
-        _torch.from_numpy(np.ascontiguousarray(packed, dtype=np.int32)),
-        _scalar_types.uint4,
-        packed_dim=1,
-    ).numpy()
+    shifts = np.arange(8, dtype=np.int32) * 4
+    return ((packed[:, :, np.newaxis] >> shifts) & 0xF).reshape(packed.shape[0], -1)
 
 
 def _is_sym_zeros(qz: "np.ndarray | None") -> bool:

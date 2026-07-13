@@ -379,16 +379,17 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         The final gelu_mul always writes to msc["expert_act"] so callers are
         unaffected.
         """
-        _validate_gate_consts(extra_gate_consts)
-
         gb_key = gw_key.removesuffix(".weight") + ".bias"
         ub_key = uw_key.removesuffix(".weight") + ".bias"
         g_bias = self.weights.get(gb_key)
         u_bias = self.weights.get(ub_key)
 
         if g_bias is None and u_bias is None:
+            # Parent validates and handles the no-bias path (calls _validate_gate_consts internally).
             super()._dispatch_expert_gate_up(normed_x, gw_key, uw_key, inter, extra_gate_consts)
             return
+
+        _validate_gate_consts(extra_gate_consts)
 
         if inter % 4 != 0:
             raise ValueError(

@@ -226,8 +226,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             _proj_suffixes = {'q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'}
             proj_keys = [
                 k for k in self.weights
-                if k.endswith('.weight') and 'model.layers.' in k
-                and any(k.endswith(f'.{s}.weight') for s in _proj_suffixes)
+                if 'model.layers.' in k
+                and k.endswith(tuple(f'.{s}.weight' for s in _proj_suffixes))
             ]
             self._batch_matmul_supported = bool(proj_keys) and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
 

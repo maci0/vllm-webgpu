@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
-import vllm
+from vllm import __version__ as _vllm_version
 from vllm.utils.math_utils import cdiv
 
 # _gemma4_layer_params and _build_layer_params_from_config replicate three
@@ -14,10 +14,10 @@ from vllm.utils.math_utils import cdiv
 # They are pinned to the vLLM version below; re-audit the three source
 # locations and re-run tests/test_gemma4_layer_params.py after any bump.
 _EXPECTED_VLLM_VERSION = "0.24.0"
-if vllm.__version__ != _EXPECTED_VLLM_VERSION:
+if _vllm_version != _EXPECTED_VLLM_VERSION:
     import warnings
     warnings.warn(
-        f"vLLM {vllm.__version__!r} differs from pinned {_EXPECTED_VLLM_VERSION!r}. "
+        f"vLLM {_vllm_version!r} differs from pinned {_EXPECTED_VLLM_VERSION!r}. "
         "Run tests/test_gemma4_layer_params.py and re-audit the three constructor "
         "sites in vllm/model_executor/models/gemma4.py to verify _gemma4_layer_params "
         "and _build_layer_params_from_config are still correct.",

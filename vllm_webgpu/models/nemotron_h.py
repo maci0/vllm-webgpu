@@ -626,10 +626,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         skip_prefixes = frozenset({"mtp."})
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
                              scale_transforms=self._scale_transforms)
+        _sp = tuple(skip_prefixes)
         _missing_transforms = [
             k for k in self._weight_transforms
             if k not in self.weights
-            and not k.startswith(tuple(skip_prefixes))
+            and not k.startswith(_sp)
         ]
         if _missing_transforms:
             raise AssertionError(
