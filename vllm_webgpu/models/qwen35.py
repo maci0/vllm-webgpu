@@ -126,17 +126,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # conv_dim is derived from MambaStateShapeCalculator so the formula stays canonical.
-        # gated_delta_net_state_shape returns (conv_shape, ssm_shape); with SD layout
-        # (is_conv_state_dim_first() == False), conv_shape is (state_len, dim), so index 1
-        # is the conv_dim. DS layout is rejected in _alloc_lin_states (raises NotImplementedError).
-        _conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            tp_world_size=1,
-            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
-            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
-            conv_kernel_size=self._lin_conv_kernel, num_spec=0,
-        )
-        self._lin_conv_dim: int = _conv_shape[1]  # SD layout: (state_len, dim) → dim at index 1
+        # conv_dim: head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads.
+        # Matches the formula in MambaStateShapeCalculator.gated_delta_net_state_shape
+        # (vLLM mamba_utils.py) without relying on layout-specific indexing.
+        self._lin_conv_dim: int = self._lin_k_dim * self._lin_k_heads * 2 + self._lin_v_dim * self._lin_v_heads
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         self._gdn_k_base: int = self._lin_k_heads * self._lin_k_dim
@@ -367,7 +360,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             self._ssm_gpu[i]  = self._make_buf(ssm_bytes)
             self._conv_gpu[i] = self._make_buf(conv_bytes)
 
-    def load_weights(self, path: str, *, num_spec: int = 0) -> None:
+    def load_weights(self, path: str, *, num_spec: int = 0,
+                     skip_prefixes: "frozenset[str] | None" = None,
+                     scale_transforms: "dict | None" = None) -> None:
         # A_log and dt_bias are small per-head arrays originally in bf16 but stored
         # as f16. Keeping them as f32 avoids ~3-bit mantissa loss in the decay
         # computation. Pass their checkpoint key names so they are uploaded as f32
@@ -411,7 +406,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 _g_key = f"model.layers.{_i}.self_attn.q_gate_proj.weight"
                 self._weight_transforms[_q_key] = _make_split(_g_key)
 
-        super().load_weights(path, f32_keys=f32_keys)
+        super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
+                             scale_transforms=scale_transforms)
 
         # Upload gate halves that were split on CPU during the weight transforms above.
         if _q_gate_pending:

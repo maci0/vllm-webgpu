@@ -342,7 +342,7 @@ def _build_layer_params_from_config(
     num_q_heads       = model_config.num_attention_heads
     intermediate_size = model_config.intermediate_size
     layer_types       = model_config.layer_types
-    default_hd = model_config.head_dim
+    default_hd = getattr(model_config, 'head_dim', model_config.hidden_size // model_config.num_attention_heads)
     default_kv        = model_config.num_key_value_heads
     global_hd         = getattr(model_config, "global_head_dim", default_hd)
     global_kv         = getattr(model_config, "num_global_key_value_heads", default_kv)

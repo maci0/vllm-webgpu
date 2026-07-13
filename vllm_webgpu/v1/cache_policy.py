@@ -95,7 +95,7 @@ def allocate_kv_from_tensors(
     for group in kv_cache_groups:
         gs = group.kv_cache_spec
         if isinstance(gs, UniformTypeKVCacheSpecs):
-            if set(gs.kv_cache_specs.keys()) != set(group.layer_names):
+            if gs.kv_cache_specs.keys() != set(group.layer_names):
                 raise RuntimeError(
                     f"UniformTypeKVCacheSpecs keys {set(gs.kv_cache_specs.keys())} "
                     f"do not match group.layer_names {set(group.layer_names)}"

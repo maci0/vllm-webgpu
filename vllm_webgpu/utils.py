@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from typing import Callable
     import numpy as np
 import torch
 from vllm.logger import init_logger
@@ -50,19 +51,10 @@ except ImportError:
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
-@lru_cache(maxsize=16)
-def zero_bytes(n: int) -> bytes:
-    """Return a cached immutable bytes object of n zero bytes.
-
-    Used to zero-initialise GPU buffers without allocating a new object on
-    every call. The cache is keyed by byte count, so each unique size is
-    allocated exactly once for the lifetime of the process.
-
-    maxsize=16 bounds memory: fixed callers in model_runner/base use 2-4
-    distinct sizes; variable callers (e.g. diffusion_gemma per-request) are
-    bounded by LRU eviction rather than accumulating stale entries forever.
-    """
-    return bytes(n)
+# maxsize=16: fixed callers (model_runner/base) use 2-4 distinct sizes;
+# variable callers (e.g. diffusion_gemma per-request) are bounded by LRU
+# eviction rather than accumulating stale entries forever.
+zero_bytes: "Callable[[int], bytes]" = lru_cache(maxsize=16)(bytes)
 
 
 def sample_token(

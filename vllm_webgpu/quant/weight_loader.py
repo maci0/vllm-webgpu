@@ -25,6 +25,7 @@ from compressed_tensors.utils.safetensors_load import (
 # order [0,2,4,6,1,3,5,7] instead of natural order [0,1,2,3,4,5,6,7], which misaligns
 # (w-z) against the scales tensor.
 _AWQ_NIBBLE_SHIFTS: np.ndarray = np.array([0, 2, 4, 6, 1, 3, 5, 7], dtype=np.int32) * 4
+_STD4_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = float(np.finfo(np.float16).max)  # 65504.0
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
@@ -43,8 +44,7 @@ def _unpack_nibbles_std4(packed: "np.ndarray") -> "np.ndarray":
     packed: shape (out_rows, in_cols // 8), dtype int32 or uint32.
     Returns int32 array of shape (out_rows, in_cols) with values in [0, 15].
     """
-    shifts = np.arange(8, dtype=np.int32) * 4
-    return ((packed[:, :, np.newaxis] >> shifts) & 0xF).reshape(packed.shape[0], -1)
+    return ((packed[:, :, np.newaxis] >> _STD4_SHIFTS) & 0xF).reshape(packed.shape[0], -1)
 
 
 def _is_sym_zeros(qz: "np.ndarray | None") -> bool:

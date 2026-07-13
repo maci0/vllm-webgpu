@@ -9,7 +9,7 @@ import torch
 from torch.nn.functional import pad
 
 from vllm.v1.kv_cache_interface import FullAttentionSpec
-from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, LogprobsLists, EMPTY_MODEL_RUNNER_OUTPUT
+from vllm.v1.outputs import ModelRunnerOutput, LogprobsTensors, EMPTY_MODEL_RUNNER_OUTPUT
 from vllm.v1.sample.sampler import Sampler
 from vllm.sampling_params import SamplingType
 
@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
     from vllm.v1.kv_cache_interface import KVCacheSpec
-    from vllm.v1.outputs import AsyncModelRunnerOutput
+    from vllm.v1.outputs import AsyncModelRunnerOutput, LogprobsLists
 
 logger = init_logger(__name__)
 
@@ -792,11 +792,9 @@ class WebGPUModelRunner:
                                     f"Aborting to prevent corrupt output."
                                 )
                             prefix_offset = state.get("prefix_offset", 0)
-                            replay_len = pos - prefix_offset
                             self.model.replay_prefix_for_ssm(
                                 np.array(token_history[prefix_offset:pos], dtype=np.uint32),
                                 blk_ids,
-                                replay_len,
                                 start_pos=prefix_offset,
                             )
 

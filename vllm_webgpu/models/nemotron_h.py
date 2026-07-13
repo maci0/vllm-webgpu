@@ -533,10 +533,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         self,
         token_ids: np.ndarray,
         block_ids: list,
-        pos: int,
         start_pos: int = 0,
     ) -> None:
-        """Replay pos tokens to reconstruct Mamba SSM state after preemption.
+        """Replay tokens to reconstruct Mamba SSM state after preemption.
 
         When a request is preempted and resumed with prefix-cached KV, the attention
         KV cache already holds the correct K/V for positions 0..pos-1. The caller
@@ -551,9 +550,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         normal prefill of token_ids starting at sequence position start_pos.
 
         Args:
-            token_ids:  Tokens to replay (length == pos).
+            token_ids:  Tokens to replay.
             block_ids:  Block table for this request.
-            pos:        Number of tokens to replay (len(token_ids)).
             start_pos:  Sequence position of the first token in token_ids. When
                         prefix caching was active during the original prefill,
                         pass num_computed so that tok_ctx is correct for each
@@ -568,7 +566,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         self._replay_mode = True
         try:
-            for t in range(pos):
+            for t in range(len(token_ids)):
                 self._hstate = 0
                 tok_ctx = start_pos + t + 1
                 dev.queue.write_buffer(
