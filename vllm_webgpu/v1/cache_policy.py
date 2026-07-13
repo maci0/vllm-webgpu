@@ -41,7 +41,7 @@ logger = init_logger(__name__)
 # model_runner.py and kv_utils.py. A module-level constant makes it easy to
 # extend when a new layer type is added, without hunting for inline set literals.
 _ATTN_LAYER_TYPES: frozenset[str | int] = frozenset(
-    {"attention", "full_attention", "sliding_attention", 1}
+    {"attention", "full_attention", "sliding_attention", "hybrid", 1}
 )
 
 
@@ -49,7 +49,9 @@ def is_attn_layer(lt: "str | int") -> bool:
     """Return True when a layer-type value represents an attention layer.
 
     Handles both string layer types and the Minimax integer encoding where
-    1 means attention and 0 means non-attention (Mamba/MLP).
+    1 means attention and 0 means non-attention (Mamba/MLP). The "hybrid"
+    value is used by Zamba2-style models (see vLLM model.py:1331-1337 where
+    get_num_layers_by_block_type counts "hybrid" as an attention layer).
     Use this instead of bare string-set membership checks everywhere so that
     the integer sentinel never needs to be repeated at individual call sites.
     """
