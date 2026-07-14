@@ -13,9 +13,10 @@ import wgpu as wgpu_lib
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
 from vllm.model_executor.layers.rotary_embedding.common import (
-    yarn_find_correction_range,
     yarn_get_mscale,
-    yarn_linear_ramp_mask,
+)
+from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+    YaRNScalingRotaryEmbedding,
 )
 
 from vllm_webgpu.utils import zero_bytes
@@ -120,13 +121,16 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
-    import torch
-    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
-    inv_freq_extr = 1.0 / pos_freqs
-    inv_freq_intr = 1.0 / (factor * pos_freqs)
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
-    inv_freq = (inv_freq_intr * (1 - mask) + inv_freq_extr * mask).numpy()
+    _fake = SimpleNamespace(
+        base=rope_theta,
+        rotary_dim=rotary_dim,
+        max_position_embeddings=orig_ctx,
+        extrapolation_factor=extrapolation_factor,
+        beta_fast=beta_fast,
+        beta_slow=beta_slow,
+        truncate=truncate,
+    )
+    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(_fake, factor).numpy()
 
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
