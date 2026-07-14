@@ -195,12 +195,16 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             return
 
         dev = self.wgpu_device.wgpu_device
-        # rope_scaling.get("rope_theta", 10000) matches vLLM get_rope() line 64
-        # (rotary_embedding/__init__.py, vLLM 0.24). For vLLM-loaded models,
-        # patch_rope_parameters (transformers_utils/config.py:430-436) always
-        # sets rope_parameters["rope_theta"] to the model's actual theta before
-        # any rope creation call, so the 10000 fallback never fires in production.
-        # It is kept as a safety net for callers that bypass patching.
+        # Ensure rope_theta is present in rope_scaling before calling
+        # compute_yarn_freqs, which falls back to 10000.0 when the key is
+        # absent. self.rope_theta already holds the correct model-level value
+        # (line 60). This diverges for YaRN models where rope_theta lives at
+        # the top-level config but is not embedded inside rope_scaling.
+        # set_default_rope_theta (transformers_utils/config.py:430) injects
+        # rope_theta into rope_parameters for models that call it explicitly
+        # (Qwen2, Qwen3, etc.), but Llama and custom YaRN models may not.
+        # Using setdefault leaves an already-injected value untouched.
+        rope_scaling.setdefault("rope_theta", self.rope_theta)
         freqs, mscale = compute_yarn_freqs(self.head_dim, rope_scaling)
         self._rope_freq_buf = WebGPUBuffer.from_numpy(dev, freqs)
         self._yarn_mscale = mscale
