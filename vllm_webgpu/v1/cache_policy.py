@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-from vllm.utils.cpu_resource_utils import get_memory_node_info, get_allowed_cpu_list
+from vllm.utils.cpu_resource_utils import get_memory_node_info, get_visible_memory_node
 
 from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
@@ -436,8 +436,8 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
         if _model is not None else 0
     )
 
-    _allowed_cpus = get_allowed_cpu_list()
-    vmem = get_memory_node_info(_allowed_cpus[0].numa_node if _allowed_cpus else 0)
+    _nodes = get_visible_memory_node()
+    vmem = get_memory_node_info(_nodes[0] if _nodes else 0)
     overhead = max(OVERHEAD_BYTES, int(model_mem * _ACTIVATION_OVERHEAD_FRACTION))
     # vmem.available excludes memory held by other processes as well as by this
     # process (including model weights already uploaded), so there is no need to

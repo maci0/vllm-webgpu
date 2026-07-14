@@ -480,7 +480,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     sc = scales.astype(np.float32)           # (G, N)
 
     # Unpack 8 nibbles per int32 → (K, N) uint8
-    w_int4 = _unpack_nibbles(qw, _AWQ_NIBBLE_SHIFTS).reshape(K, N).astype(np.uint8)
+    w_int4 = _unpack_nibbles(qw, _AWQ_NIBBLE_SHIFTS).astype(np.uint8)
     z_int4 = _unpack_nibbles(qz, _AWQ_NIBBLE_SHIFTS).astype(np.uint8)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
@@ -1268,6 +1268,7 @@ def load_safetensors_weights(
                         # representable in both bfloat16 and float32), but requires a torch
                         # tensor roundtrip (from_numpy + .to(torch.float32).numpy()) that the
                         # direct numpy expression avoids.
+                        # ponytail: intentional, avoids torch roundtrip; vLLM dequant_mxfp8_to_bf16 uses the same pattern inline
                         ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2

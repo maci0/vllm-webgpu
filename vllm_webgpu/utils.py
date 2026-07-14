@@ -38,7 +38,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
 # as greedy (argmax) decoding. Equals vllm.sampling_params._SAMPLING_EPS,
 # which is the constant SamplingParams.sampling_type uses to gate greedy vs.
 # random sampling.
-from vllm.sampling_params import _SAMPLING_EPS as GREEDY_TEMP
+GREEDY_TEMP: float = 1e-5  # mirrors vllm.sampling_params._SAMPLING_EPS
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

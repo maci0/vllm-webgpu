@@ -280,9 +280,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Set from _layer_attention_params if available (parsed from GGUF), otherwise derive
         # using the heuristic that every 6th layer (idx%6==5) is global attention.
         raw_lp = getattr(model_config, "_layer_attention_params", None)
-        default_hd = getattr(model_config, "head_dim",
-                             self.hidden_size // self.num_q_heads)
-        default_kv = getattr(model_config, "num_key_value_heads", 1)
 
         # Gemma4 safetensors: derive per-layer params from layer_types + global_head_dim.
         layer_types = getattr(model_config, "layer_types", None)
@@ -334,8 +331,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         else:
             # Uniform fallback: all layers use the config defaults.
             # For Gemma3 safetensors (uniform attention) this is correct.
-            hd = default_hd
-            nkv = default_kv
+            hd = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
+            nkv = getattr(model_config, "num_key_value_heads", 1)
             uniform_lp = {
                 "head_dim":         hd,
                 "num_kv_heads":     nkv,

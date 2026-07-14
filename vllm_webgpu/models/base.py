@@ -75,7 +75,10 @@ def compute_yarn_freqs(
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
     WebGPU cannot call YaRNScalingRotaryEmbedding._compute_inv_freq directly
-    because it requires CUDA init; this is a direct numpy port of that method.
+    because _compute_inv_freq is a private bound method that requires instantiating
+    the full class with all constructor arguments (head_size, is_neox_style, dtype,
+    etc.) that are irrelevant to the frequency computation; this is a direct numpy
+    port of that method.
     Implements the same formula using the public vLLM utilities
     yarn_find_correction_range and yarn_linear_ramp_mask (both from
     vllm.model_executor.layers.rotary_embedding.common).
@@ -492,7 +495,7 @@ class BaseWebGPUModel(ABC):
             .astype(np.float32)
         )
 
-    def _scales_buf(self, w_key: str, uq: int, fallback: "object") -> "object":
+    def _scales_buf(self, w_key: str, uq: int, fallback: "WebGPUBuffer") -> "WebGPUBuffer":
         """Return the GPU scales buffer for any quant format.
 
         For GPU quants (USE_QUANT 3-8): scales live at w_key + '.scales'

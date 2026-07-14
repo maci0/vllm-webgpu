@@ -44,6 +44,7 @@ def main() -> None:
 
     from vllm_webgpu.v1.model_runner import _build_model, ARCH_MAP
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
+    from vllm.utils.math_utils import cdiv
     import vllm_webgpu.envs as _envs
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
     family = ARCH_MAP.get(arch)
@@ -74,7 +75,7 @@ def main() -> None:
     # Compute block count before allocating so the pool covers every block ID in bt.
     # Two separate decode_steps passes: production timing + profiling.
     total_toks = len(tok_ids) + args.warmup_steps + 2 * args.decode_steps
-    bt_blocks = -((-total_toks) // block_size)
+    bt_blocks = cdiv(total_toks, block_size)
     num_blocks = max(512, bt_blocks)
 
     allocate_kv_from_hf_config(wgpu_dev.wgpu_device, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
