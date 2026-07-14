@@ -53,20 +53,21 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         # find canvas_length even when it lives only on the outer Gemma4Config rather
         # than on the nested text_config.
         self._outer_config = model_config
-        # get_hf_text_config is called here before super().__init__ because we need
-        # enable_moe_block and moe_intermediate_size before Gemma4.__init__ runs
-        # _init_scratch_buffers. The parent __init__ calls get_hf_text_config again
-        # on the already-extracted config; get_text_config() on an already-extracted
-        # PretrainedConfig returns self, so the double call is safe.
-        model_config = get_hf_text_config(model_config)
+        # Extract the nested text config into a local variable. The MoE fields
+        # (enable_moe_block, moe_intermediate_size, etc.) live on the inner config,
+        # but we pass the original outer model_config to super().__init__() so the
+        # parent reads _outer_model_type from the correct outer config object. The
+        # parent calls get_hf_text_config() on it internally, so the double extraction
+        # is safe (get_text_config() on an already-extracted config returns self).
+        _inner_config = get_hf_text_config(model_config)
         # Set moe_intermediate_size before super().__init__ because Gemma4.__init__
         # calls _init_scratch_buffers which dispatches to _scratch_inter_size().
         _enable_moe = (
-            getattr(model_config, "enable_moe_block", False)
-            or getattr(model_config, "use_second_mlp_block", False)
+            getattr(_inner_config, "enable_moe_block", False)
+            or getattr(_inner_config, "use_second_mlp_block", False)
         )
-        _moe_inter = getattr(model_config, "moe_intermediate_size",
-                             getattr(model_config, "expert_intermediate_size", None))
+        _moe_inter = getattr(_inner_config, "moe_intermediate_size",
+                             getattr(_inner_config, "expert_intermediate_size", None))
         if _moe_inter is None:
             if _enable_moe:
                 raise ValueError(
@@ -75,29 +76,25 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     "in model_config. Cannot infer expert projection size."
                 )
             # No MoE block: falling back to shared-expert size is safe.
-            _moe_inter = model_config.intermediate_size
+            _moe_inter = _inner_config.intermediate_size
         self.moe_intermediate_size: int = _moe_inter
         if self.moe_intermediate_size % 4 != 0:
             raise ValueError(
                 f"moe_intermediate_size={self.moe_intermediate_size} must be divisible by 4 "
                 f"for vec4<f16> shaders"
             )
+        # Pass the outer config so the parent reads the correct outer model_type for
+        # _GEMMA_NORM and _apply_v_norm. If the inner config were passed instead,
+        # the parent's _outer_model_type check would see the inner model_type (e.g.
+        # "diffusion_gemma") which may start with "gemma3" for some inner configs,
+        # silently setting _GEMMA_NORM=1 until overridden post-super.
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
-        # DiffusionGemma always uses Gemma4 plain RMSNorm (no (1+w) additive bias),
-        # so GEMMA_NORM must be 0. The parent __init__ derives _GEMMA_NORM from
-        # _outer_model_type, but receives the inner text config's model_type because
-        # we extract it above with get_hf_text_config before calling super(). Force
-        # the correct value unconditionally to remove the dependence on that ordering.
-        self._GEMMA_NORM = 0
-        # _rms_consts is built by super().__init__() using the (possibly wrong)
-        # _GEMMA_NORM; update it to match the forced value above.
-        self._rms_consts["GEMMA_NORM"] = 0
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 
         # MoE configuration
-        self.num_experts: int = getattr(model_config, "num_experts", 0)
-        self.top_k_experts: int = getattr(model_config, "top_k_experts", 8)
+        self.num_experts: int = getattr(_inner_config, "num_experts", 0)
+        self.top_k_experts: int = getattr(_inner_config, "top_k_experts", 8)
         self.is_moe: bool = _enable_moe
 
         if self.is_moe and self.num_experts <= 0:
