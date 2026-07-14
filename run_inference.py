@@ -86,7 +86,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     T = len(input_ids_list)
     needed_blocks = min(cdiv(len(input_ids_list) + max_tokens, block_size), num_blocks)
     block_table = np.arange(needed_blocks, dtype=np.uint32)
-    slots = list(range(T))
+    blk_idx, within = np.divmod(np.arange(T), block_size)
+    slots = (block_table[blk_idx].astype(np.int64) * block_size + within).tolist()
 
     _greedy = temperature < GREEDY_TEMP
     model._greedy_decode = _greedy

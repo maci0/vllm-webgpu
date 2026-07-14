@@ -693,7 +693,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # failure would leave qkv_proj receiving _dummy_buf as its scale buffer.
         _incomplete_scale_layers = [
             i for i, acc in self._scale_acc.items()
-            if not all(proj in acc for proj in ("q", "k", "v"))
+            if not {"q", "k", "v"}.issubset(acc)
         ]
         if _incomplete_scale_layers:
             _any_hf_scale = any(k.endswith(".weight.scales") for k in self.weights)
@@ -775,7 +775,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # Scales may either be in the CPU accumulator (GPTQ/AWQ: suppressed
             # individual GPU uploads) or uploaded as individual GPU buffers.
             _sc_acc = self._scale_acc.get(i, {})
-            _have_cpu_scales = all(proj in _sc_acc for proj in ("q", "k", "v"))
+            _have_cpu_scales = {"q", "k", "v"}.issubset(_sc_acc)
             has_scales = (
                 _have_cpu_scales
                 or (q_s in self.weights and k_s in self.weights and v_s in self.weights)
@@ -904,9 +904,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             # authoritative store; __quant_meta__ no longer lives in self.weights.
             qmeta = self.weight_meta
             if qmeta:
-                q_base = q_key.removesuffix(".weight")
-                k_base = k_key.removesuffix(".weight")
-                v_base = v_key.removesuffix(".weight")
+                q_base = f"{p}.q_proj"
+                k_base = f"{p}.k_proj"
+                v_base = f"{p}.v_proj"
                 qkv_base = f"{p}.qkv_proj"
                 if q_base in qmeta:
                     q_meta_entry = qmeta[q_base]

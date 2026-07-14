@@ -277,7 +277,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 )
             for eid in range(self.num_experts):
                 ep = f"{p}.{expert_key_layout}.{eid}"
-                if any(f"{ep}.{k}.weight" not in self.weights for k in ("gate_proj", "up_proj", "down_proj")):
+                if not all(f"{ep}.{k}.weight" in self.weights for k in ("gate_proj", "up_proj", "down_proj")):
                     raise RuntimeError(
                         f"L{layer_idx}: expert {eid} missing gate/up/down weights"
                     )

@@ -455,7 +455,13 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     # cpu_resource_utils.py). The assert below is unreachable there but keeps
     # the guard valid on Linux where /proc/{pid}/status may lack Mems_allowed_list.
     _nodes = get_visible_memory_node()
-    assert _nodes, "No visible memory nodes"
+    if not _nodes:
+        import os
+        raise RuntimeError(
+            "get_visible_memory_node() returned an empty list — "
+            "/proc/{}/status may lack Mems_allowed_list or "
+            "CPU_VISIBLE_MEMORY_NODES is misconfigured".format(os.getpid())
+        )
     node_infos = [get_memory_node_info(n) for n in _nodes]
     total_memory = sum(i.total_memory for i in node_infos)
     total_available = sum(i.available_memory for i in node_infos)

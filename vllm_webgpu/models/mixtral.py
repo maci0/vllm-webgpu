@@ -6,7 +6,7 @@ import numpy as np
 import wgpu
 
 from vllm.logger import init_logger
-from vllm_webgpu.models.base import _rows_wg, _vec4_wg
+from vllm_webgpu.models.base import _rows_wg, _STAGING_USAGE, _vec4_wg
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 
 if TYPE_CHECKING:
@@ -15,8 +15,6 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
-
-_STAGING_USAGE = wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ
 
 
 def _validate_gate_consts(extra_gate_consts: dict) -> None:

@@ -117,15 +117,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # conv_dim via the canonical formula in MambaStateShapeCalculator. DS layout is
-        # rejected above, so conv_shape is always (state_len, conv_dim) and index 1 is safe.
-        _conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            tp_world_size=1,
-            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
-            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
-            conv_kernel_size=self._lin_conv_kernel, num_spec=0,
-        )
-        self._lin_conv_dim: int = _conv_shape[1]
+        # conv_dim = 2*k_heads*k_dim + v_heads*v_dim (matches the formula inside
+        # MambaStateShapeCalculator.gated_delta_net_state_shape, mamba_utils.py L223).
+        self._lin_conv_dim: int = 2 * self._lin_k_heads * self._lin_k_dim + self._lin_v_heads * self._lin_v_dim
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q (offset = K_heads * K_dim). V follows K+Q.
         self._gdn_k_offset: int = self._lin_k_heads * self._lin_k_dim
@@ -292,7 +286,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     # NF4/NVFP4:     (2*q_dim, hidden//2) → shape[0] == 2*q_dim
                     # AWQ:           (hidden, 2*q_dim//8) → shape[1] * 8 == 2*q_dim
                     uq = self._uq_for_key(q_key)
-                    shape0_unsplit = len(buf.shape) >= 1 and buf.shape[0] == 2 * q_dim
+                    shape0_unsplit = buf.shape[0] == 2 * q_dim
                     awq_unsplit    = uq == 4 and len(buf.shape) >= 2 and buf.shape[1] * 8 == 2 * q_dim
                     if shape0_unsplit or awq_unsplit:
                         # uq 5/6/7/8: weight is already quantized (fp8_gpu,

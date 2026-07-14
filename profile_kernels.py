@@ -88,7 +88,9 @@ def main() -> None:
 
     print("Running prefill...")
     t0 = time.perf_counter()
-    slots = (bt[np.arange(len(tok_ids)) // block_size].astype(np.int64) * block_size + np.arange(len(tok_ids)) % block_size).tolist()
+    idx = np.arange(len(tok_ids))
+    blk_idx, within = np.divmod(idx, block_size)
+    slots = (bt[blk_idx].astype(np.int64) * block_size + within).tolist()
     _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
     model._greedy_decode = True  # forward() must return (1,1) argmax token, not (1,vocab) logits
     logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
@@ -104,7 +106,7 @@ def main() -> None:
 
     def _run_decode_step(token_id, p):
         """Run one decode step; returns (next_tok, elapsed_ms)."""
-        _dm = SimpleNamespace(slot_mapping=[p], block_tables=[bt], max_decode_seq_len=p + 1)
+        _dm = SimpleNamespace(slot_mapping=[int(bt[p // block_size]) * block_size + p % block_size], block_tables=[bt], max_decode_seq_len=p + 1)
         t_start = time.perf_counter()
         lg = model.forward(np.array([token_id], dtype=np.uint32), np.array([p], dtype=np.uint32), _dm)
         if lg.shape != (1, 1):

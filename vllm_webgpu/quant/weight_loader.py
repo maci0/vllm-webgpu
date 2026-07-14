@@ -8,6 +8,7 @@ import vllm_webgpu.envs as _webgpu_envs
 from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 
 from vllm.logger import init_logger
+from vllm.model_executor.layers.quantization.utils.ocp_mx_utils import OCP_MX_BLOCK_SIZE as _MXFP4_BLOCK_SIZE
 
 from pydantic import ValidationError
 
@@ -40,7 +41,6 @@ _FLUSH_THRESHOLD = 512 * 1024 * 1024
 # checkpoint is stored in the per-layer quant_state JSON; 64 is used only as a
 # fallback when that metadata is absent.
 _BNB_GROUP_K = 64
-from vllm.model_executor.layers.quantization.utils.ocp_mx_utils import OCP_MX_BLOCK_SIZE as _MXFP4_BLOCK_SIZE
 # Companion key suffixes for AWQ/GPTQ and NVFP4 quantized layers. Defined at
 # module level so the skip-set comprehensions below don't reconstruct them on
 # every load_safetensors_weights call.
@@ -558,6 +558,12 @@ def _extract_modelopt_algo(cfg: dict) -> str:
 
     Returns the upper-cased algorithm string, or '' when the key is absent or
     the 'quantization' value is not a dict.
+
+    Type divergence from the vLLM version: the upstream staticmethod returns
+    str | None (returning None when cfg['quantization'] is not a dict), while
+    this copy always returns str (using '' as the sentinel). The caller uses
+    `or ''` for the vLLM branch but not here, so both paths are functionally
+    equivalent despite the type difference.
     """
     if 'quantization' in cfg:
         return str(cfg['quantization'].get('quant_algo', '')).upper() if isinstance(cfg['quantization'], dict) else ''

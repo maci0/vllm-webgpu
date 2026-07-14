@@ -84,6 +84,9 @@ def sample_token(
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)
     logits_t = logits_t / temperature
     if min_p > 0.0:
+        # Formula mirrors vllm.v1.worker.gpu.sample.min_p (Triton kernel, lines 35-44):
+        # threshold = max_logit/T + log(min_p) applied to temperature-scaled logits.
+        # Triton cannot run on CPU; this is the CPU reimplementation.
         threshold = logits_t.amax(dim=-1, keepdim=True) + math.log(min_p)
         logits_t = logits_t.masked_fill(logits_t < threshold, float('-inf'))
     k_t = torch.tensor([top_k]) if top_k > 0 else None

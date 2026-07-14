@@ -8,13 +8,15 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 import wgpu as wgpu_lib
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
-from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-    YaRNScalingRotaryEmbedding,
+from vllm.model_executor.layers.rotary_embedding.common import (
+    yarn_find_correction_range,
+    yarn_get_mscale,
+    yarn_linear_ramp_mask,
 )
 
 from vllm_webgpu.utils import zero_bytes
@@ -28,6 +30,9 @@ if TYPE_CHECKING:
 
 # Scratch buffer rotation names shared across models.
 _H_NAMES: tuple[str, str, str] = ("h0", "h1", "h2")
+# Shared MAP_READ staging buffer usage flags. Defined here so subclasses
+# (e.g. mixtral.py) can import rather than redefine the same bit combination.
+_STAGING_USAGE: int = wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ
 
 
 def _vec4_wg(N: int) -> tuple:
@@ -72,13 +77,15 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Calls YaRNScalingRotaryEmbedding._compute_inv_freq directly via a minimal
-    stub built with object.__new__, bypassing __init__ (which would build an
-    unneeded [max_pos * factor, rotary_dim] cos/sin cache). The mscale ternary
-    mirrors YaRNScalingRotaryEmbedding.__init__ (L40-43) using yarn_get_mscale.
+    Composes yarn_find_correction_range, yarn_linear_ramp_mask, and
+    yarn_get_mscale (all public helpers from vllm.model_executor.layers.
+    rotary_embedding.common) to reproduce the formula in
+    YaRNScalingRotaryEmbedding._compute_inv_freq without instantiating
+    that class (whose __init__ builds an unneeded cos/sin cache).
 
-    Any formula change in vLLM's _compute_inv_freq is picked up automatically.
-    tests/test_yarn_freqs.py cross-checks attribute mapping on every vLLM bump.
+    The public helper signatures are a stable vLLM contract. On each vLLM
+    bump, verify the formula in yarn_scaling_rope.py._compute_inv_freq
+    still matches the composition below.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -123,15 +130,10 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
-    inst = object.__new__(YaRNScalingRotaryEmbedding)
-    inst.base                    = rope_theta
-    inst.rotary_dim              = rotary_dim
-    inst.beta_fast               = beta_fast
-    inst.beta_slow               = beta_slow
-    inst.max_position_embeddings = orig_ctx
-    inst.truncate                = truncate
-    inst.extrapolation_factor    = extrapolation_factor
-    inv_freq = inst._compute_inv_freq(factor).numpy()
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    inv_freq = ((1.0 / (factor * pos_freqs)) * (1 - mask) + (1.0 / pos_freqs) * mask).numpy()
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
@@ -410,7 +412,7 @@ class BaseWebGPUModel(ABC):
 
         staging = dev.create_buffer(
             size=total,
-            usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ,
+            usage=_STAGING_USAGE,
         )
         enc = dev.create_command_encoder()
         for (_, _, buf), off in zip(bufs, offsets):
@@ -438,8 +440,10 @@ class BaseWebGPUModel(ABC):
         """
         if self._gpu_sample_staging is None or self._gpu_sample_tok is None:
             return
-        assert self._active_encoder is not None, \
-            "_copy_sample_to_staging must be called inside _batched_dispatch"
+        if self._active_encoder is None:
+            raise RuntimeError(
+                "_copy_sample_to_staging must be called inside _batched_dispatch"
+            )
         self._active_encoder.copy_buffer_to_buffer(
             self._gpu_sample_tok.buf, 0, self._gpu_sample_staging, 0, 4)
 
@@ -464,7 +468,7 @@ class BaseWebGPUModel(ABC):
             dev = self.wgpu_device.wgpu_device
             self._gpu_sample_staging = dev.create_buffer(
                 size=4,
-                usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
+                usage=_STAGING_USAGE)
         return self._gpu_sample_tok
 
     def _finish_forward(self, greedy: bool) -> "np.ndarray":

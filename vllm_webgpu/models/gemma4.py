@@ -357,7 +357,20 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 "kv_shared_target": -1,
                 "is_sliding":       False,
             }
-            self._lp = [uniform_lp.copy() for _ in range(self.num_layers)]
+            self._lp = [
+                {
+                    "head_dim":          hd,
+                    "num_kv_heads":      nkv,
+                    "q_dim":             self.num_q_heads * hd,
+                    "kv_dim":            nkv * hd,
+                    "has_v_proj":        True,
+                    "intermediate_size": self.intermediate_size,
+                    "is_kv_shared":      False,
+                    "kv_shared_target":  -1,
+                    "is_sliding":        False,
+                }
+                for _ in range(self.num_layers)
+            ]
 
         # Validate even dimensions required by WGSL shaders
         for name, val in [("hidden_size", self.hidden_size),
