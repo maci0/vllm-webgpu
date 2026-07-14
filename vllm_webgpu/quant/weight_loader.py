@@ -1270,10 +1270,11 @@ def load_safetensors_weights(
                         ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2
-                        assert ws_u8.ndim < 2 or ws_u8.shape[-1] == K_ // _MXFP4_BLOCK_SIZE, (
-                            f"MXFP4 scale shape {ws_u8.shape} does not match expected "
-                            f"K//_MXFP4_BLOCK_SIZE = {K_}//{_MXFP4_BLOCK_SIZE} = {K_ // _MXFP4_BLOCK_SIZE}"
-                        )
+                        if not (ws_u8.ndim < 2 or ws_u8.shape[-1] == K_ // _MXFP4_BLOCK_SIZE):
+                            raise ValueError(
+                                f"MXFP4 scale shape {ws_u8.shape} does not match expected "
+                                f"K//_MXFP4_BLOCK_SIZE = {K_}//{_MXFP4_BLOCK_SIZE} = {K_ // _MXFP4_BLOCK_SIZE}"
+                            )
                         _upload_u8(wp, f"{base}.weight", weights)
                         _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
                         weights.setdefault("__quant_meta__", {})[base] = {
