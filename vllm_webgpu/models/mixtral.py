@@ -1,5 +1,4 @@
 from __future__ import annotations
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -130,8 +129,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
           CTX_LEN = 21-12 = 9 (tokens 12-20, all 9 in range)
         """
         if self._sw is not None and ctx_len > self._sw:
+            rem = (ctx_len - self._sw) % self.block_size
             start_block = (ctx_len - self._sw) // self.block_size
-            return start_block, ctx_len - start_block * self.block_size
+            return start_block, self._sw + rem
         return 0, ctx_len
 
     def _ffn_dispatch(
@@ -273,6 +273,17 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         )
         return msc["expert_gate"], msc["expert_up"]
 
+    def _validate_inter_alignment(self, inter: int) -> None:
+        """Raise if inter is not a multiple of 4, as required by the gelu_mul dispatch.
+
+        Called from both the parent quantized gate/up path and the GPT-OSS bias path
+        so the identical guard is not duplicated across two methods.
+        """
+        if inter % 4 != 0:
+            raise ValueError(
+                f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
+            )
+
     def _dispatch_expert_gate_up(
         self,
         normed_x: "WebGPUBuffer",
@@ -301,10 +312,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 (inter, 1, 1),
             )
         else:
-            if inter % 4 != 0:
-                raise ValueError(
-                    f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
-                )
+            self._validate_inter_alignment(inter)
             gate_buf, up_buf = self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter, uq_g=uq_g, uq_u=uq_u)
             self._dispatch(
                 "gelu_mul",
@@ -476,7 +484,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             raise RuntimeError("_moe_ffn_layer must be called inside an active encoder context")
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(logging.DEBUG)
+        _debug_weights = logger.isEnabledFor(10)  # logging.DEBUG == 10
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

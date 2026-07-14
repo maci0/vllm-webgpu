@@ -37,6 +37,10 @@ _SYM_ZERO_SENTINEL: np.int32 = np.int32(-2004318072)
 _FLUSH_THRESHOLD = 512 * 1024 * 1024
 # BitsAndBytes NF4 quantization block size (fixed by the BnB format spec).
 _BNB_GROUP_K = 64
+# MXFP4 block size: 32 elements per scale group (matches vLLM's mxfp4.py inline value).
+# Defined here rather than imported from mxfp8_utils to avoid coupling the MXFP4
+# scale assertion to an unrelated format constant.
+_MXFP4_BLOCK_SIZE = 32
 
 
 def _normalize_quant_cfg(quant_cfg: object) -> dict | None:
@@ -1254,10 +1258,6 @@ def load_safetensors_weights(
                 # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
                 # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
                 # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-                # MXFP4 block size: 32 elements per scale group (matches vLLM's mxfp4.py inline value).
-                # Defined here rather than imported from mxfp8_utils to avoid coupling the MXFP4
-                # scale assertion to an unrelated format constant.
-                _MXFP4_BLOCK_SIZE = 32
                 for base in mx_bases:
                     try:
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4

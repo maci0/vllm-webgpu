@@ -42,12 +42,12 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
     """
     if sp is None:
         return None
-    if sp.logprob_token_ids:
+    if sp.logprob_token_ids is not None:
         raise NotImplementedError(
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.logprobs
+    num_logprobs = sp.num_logprobs
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "

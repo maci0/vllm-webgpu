@@ -35,10 +35,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     random_sample,
 )
 # Greedy-temperature threshold: temperatures at or below this value are treated
-# as greedy (argmax) decoding. Equals vllm.sampling_params._SAMPLING_EPS,
-# which is the constant SamplingParams.sampling_type uses to gate greedy vs.
-# random sampling.
-GREEDY_TEMP: float = 1e-5  # mirrors vllm.sampling_params._SAMPLING_EPS
+# as greedy (argmax) decoding. Imported from vllm.sampling_params so that
+# SamplingParams.sampling_type and sample_token use the identical threshold;
+# a version bump that changes _SAMPLING_EPS stays consistent automatically.
+# vLLM is version-pinned in pyproject.toml; accept the private-API dependency.
+from vllm.sampling_params import _SAMPLING_EPS as GREEDY_TEMP  # noqa: PLC2701
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

@@ -131,6 +131,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         # _greedy_decode, so check shape before trusting logits[0, 0] as a token ID.
         if _greedy and logits.shape[-1] == 1:
             last_token = int(logits[0, 0])
+        elif _greedy:
+            last_token = int(np.argmax(logits[0]))
         else:
             last_token = sample_token(logits[0], temperature=temperature, top_p=top_p)
 

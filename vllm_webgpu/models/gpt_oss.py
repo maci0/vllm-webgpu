@@ -390,17 +390,18 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             return
 
         _validate_gate_consts(extra_gate_consts)
+        self._validate_inter_alignment(inter)
 
-        if inter % 4 != 0:
-            raise ValueError(
-                f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
-            )
+        # Pre-compute quantization indices to avoid redundant _uq_for_key lookups
+        # inside _dispatch_expert_projections (see docstring for that method).
+        uq_g = self._uq_for_key(gw_key)
+        uq_u = self._uq_for_key(uw_key)
 
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
         # _dispatch_expert_projections handles _ensure_moe_expert_bufs + quant_extra + both matmuls.
         # Note: _ensure_moe_expert_bufs also allocates expert_tmp as a side effect (via
         # _ensure_expert_tmp). expert_tmp is not used here; it is consumed by _dispatch_expert_down.
-        gate_buf, up_buf = self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter)
+        gate_buf, up_buf = self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter, uq_g=uq_g, uq_u=uq_u)
         msc = self._moe_sc
         if "expert_gate_biased" not in msc:
             msc["expert_gate_biased"] = self._make_buf(inter * 2)
