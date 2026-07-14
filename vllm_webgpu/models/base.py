@@ -494,7 +494,7 @@ class BaseWebGPUModel(ABC):
         if self._last_logit_buf is None:
             raise RuntimeError("logit_readback() called before forward()")
         return (
-            self._last_logit_buf.to_numpy()
+            self._last_logit_buf.to_numpy()[: self._last_vocab * 2]
             .view(np.float16)
             .reshape(1, self._last_vocab)
             .astype(np.float32)
