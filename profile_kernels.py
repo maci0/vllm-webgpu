@@ -117,6 +117,7 @@ def main() -> None:
         _dm = SimpleNamespace(slot_mapping=[p], block_tables=[bt], max_decode_seq_len=p + 1)
         t_start = time.perf_counter()
         lg = model.forward(np.array([token_id], dtype=np.uint32), np.array([p], dtype=np.uint32), _dm)
+        assert lg.shape == (1, 1), f"expected greedy (1,1), got {lg.shape}"
         elapsed = (time.perf_counter() - t_start) * 1000
         return int(lg[0, 0]), elapsed
 
