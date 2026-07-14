@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -206,7 +205,7 @@ class BaseWebGPUModel(ABC):
         f16 arrays; buf.shape holds the original unpadded shape. Raises KeyError
         for any dtype not in _WGPU_DTYPE_TO_NP so unknown types fail immediately.
         """
-        expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
+        expected = int(np.prod(buf.shape)) * _ELEM_BYTES[buf.dtype]
         return buf.to_numpy()[:expected].view(_WGPU_DTYPE_TO_NP[buf.dtype])
 
     @contextmanager

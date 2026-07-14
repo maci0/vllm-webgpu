@@ -35,10 +35,10 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     random_sample,
 )
 # Greedy-temperature threshold: temperatures at or below this value are treated
-# as greedy (argmax) decoding. Imported from vLLM directly so this stays in sync
-# if vLLM ever changes the threshold. vllm.v1.spec_decode.llm_base_proposer uses
-# the same import path, establishing a cross-module precedent for the underscore.
-from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
+# as greedy (argmax) decoding. Matches vllm.v1.sample.sampler._SAMPLING_EPS = 1e-5
+# (also sampling_params.py, tpu_input_batch.py). Inlined here to avoid a fragile
+# cross-version dependency on a private vLLM symbol.
+_GREEDY_TEMP = 1e-5
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
@@ -62,11 +62,11 @@ def sample_token(
 
     Applies (in order): temperature scaling, top-k filtering, top-p nucleus
     filtering, then draws from the resulting categorical distribution.
-    Returns argmax when temperature < GREEDY_TEMP.
+    Returns argmax when temperature < _GREEDY_TEMP.
 
     Args:
         logits_1d: 1-D float32 logit vector of length vocab_size.
-        temperature: Softmax temperature. Values < GREEDY_TEMP produce greedy argmax.
+        temperature: Softmax temperature. Values < _GREEDY_TEMP produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
         top_k: Keep at most top_k tokens. 0 disables.
         generator: Optional per-request torch.Generator. The caller is
@@ -76,7 +76,7 @@ def sample_token(
         use_fp64_gumbel: When True, Gumbel noise is sampled in fp64 for
             higher numerical precision. Mirrors ModelConfig.use_fp64_gumbel.
     """
-    if temperature < GREEDY_TEMP:
+    if temperature < _GREEDY_TEMP:
         return logits_1d.argmax().item()
 
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)

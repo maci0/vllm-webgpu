@@ -238,9 +238,8 @@ def _make_gemma4_runner_pre_load(layer_types, default_hd=256, default_kv=8,
     runner.vllm_config = vllm_config
     runner.webgpu_config = _get_webgpu_config()
     runner._block_size = 16
-    # _get_lp_list() is called inside kv_cache_spec; return None to trigger
-    # the layer_types fallback path (model not yet loaded, no _layer_attention_params).
-    runner._get_lp_list.return_value = None
+    # runner.model is None (not yet loaded), so getattr(None, '_lp', None)
+    # returns None and kv_cache_spec falls through to the layer_types path.
     # kv_cache_spec is a cached_property. Evaluate it once here so the mock returns
     # the real spec when get_kv_cache_spec() (which reads self.kv_cache_spec) is called.
     runner.kv_cache_spec = WebGPUModelRunner.kv_cache_spec.func(runner)

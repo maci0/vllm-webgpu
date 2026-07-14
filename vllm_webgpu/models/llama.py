@@ -51,8 +51,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # so hidden//heads=80 but actual Q dim per head is 128). Mirrors vLLM llama.py:158-159:
         # `head_dim or hidden_size // total_num_heads` so that a present-but-None or zero
         # attribute falls back to the computed value instead of crashing on None ** -0.5.
-        _hd = getattr(model_config, "head_dim", None)
-        self.head_dim: int = _hd or (self.hidden_size // self.num_q_heads)
+        self.head_dim: int = getattr(model_config, 'head_dim', None) or (self.hidden_size // self.num_q_heads)
         self._attn_scale: float = self.head_dim ** -0.5
         # Cache head-dimension products; recomputing per call is redundant.
         # Same pattern as self.intermediate_size above.

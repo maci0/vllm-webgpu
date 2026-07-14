@@ -247,16 +247,6 @@ class WebGPUModelRunner:
             num_total_layers=self.vllm_config.model_config.get_total_num_hidden_layers(),
         )
 
-    def _get_lp_list(self) -> "list | None":
-        """Return per-layer attention params, or None when not available.
-
-        Returns model._lp, or None when the model is not loaded or does not
-        expose _lp. When self.model is None (always the case on the first call,
-        since vLLM calls get_kv_cache_spec before load_model), returns None and
-        lets kv_cache_spec fall through to the get_layer_types path.
-        """
-        return getattr(self.model, "_lp", None)
-
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         return self.kv_cache_spec
 
@@ -278,7 +268,9 @@ class WebGPUModelRunner:
         # Use per-layer params if available (Gemma4 heterogeneous layers).
         # Prefer the model object's _lp list (populated from layer_types config)
         # over the raw HF config attribute, which may not be set for safetensors.
-        lp_list = self._get_lp_list()
+        # Returns None when model is not yet loaded (vLLM calls get_kv_cache_spec
+        # before load_model), letting kv_cache_spec fall through to get_layer_types.
+        lp_list = getattr(self.model, "_lp", None)
 
         # Fallback: derive per-layer KV spec from layer_types + global_head_dim when
         # the model has not been loaded yet and hf_config lacks _layer_attention_params.
@@ -443,7 +435,14 @@ class WebGPUModelRunner:
                             d.selected_token_ranks,
                         ))
                     else:
-                        pieces.append(LogprobsTensors.empty_cpu(1, max_k))
+                        # Sentinel row for requests with no logprob data. Use
+                        # all-zero token IDs and -inf logprobs so any accidental
+                        # read produces a detectable value rather than random memory.
+                        pieces.append(LogprobsTensors(
+                            torch.zeros(1, max_k, dtype=torch.int32),
+                            torch.full((1, max_k), -float('inf')),
+                            torch.zeros(1, dtype=torch.int32),
+                        ))
                 built_logprobs = _stack_logprobs(pieces)
 
         return ModelRunnerOutput(

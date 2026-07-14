@@ -103,9 +103,10 @@ _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 def _flush_pending(wgpu_device) -> None:
     """Submit all pending GPU write_buffer operations and block until complete.
 
-    Callers must reset their _pending_bytes counter to 0 after this call.
-    Metal silently drops write_buffer operations when the GPU staging buffer
-    queue exceeds ~1-2 GB; periodic flushing prevents that for large models.
+    The primary caller is _FlushAccumulator.add, which tracks pending bytes and
+    resets its internal counter after calling this function. Metal silently drops
+    write_buffer operations when the GPU staging buffer queue exceeds ~1-2 GB;
+    periodic flushing prevents that for large models.
     """
     wgpu_device.queue.submit([wgpu_device.create_command_encoder().finish()])
     wgpu_device.queue.on_submitted_work_done_sync()
@@ -904,7 +905,9 @@ def load_safetensors_weights(
                 # __bf16 companion is created after weight_transforms below, so both
                 # the f16 buffer and the companion see the same (transformed) layout.
             elif dtype_str == "F32":
-                arr = _torch_to_f16_numpy(sf.get_tensor(name))
+                # Direct numpy path: avoids the identity f32→f32 cast inside
+                # _torch_to_f16_numpy (designed to bridge bf16, not f32).
+                arr = sf.get_tensor(name).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
             elif dtype_str == "I8":
                 # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
                 # Upload raw bytes; shader does sign extension via int8_to_f32().
@@ -1255,6 +1258,11 @@ def load_safetensors_weights(
                         ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2
+                        from vllm.model_executor.layers.quantization.utils.mxfp8_utils import MXFP8_BLOCK_SIZE
+                        assert ws_u8.ndim < 2 or ws_u8.shape[-1] == K_ // MXFP8_BLOCK_SIZE, (
+                            f"MXFP4 scale shape {ws_u8.shape} does not match expected "
+                            f"K//MXFP8_BLOCK_SIZE = {K_}//{MXFP8_BLOCK_SIZE} = {K_ // MXFP8_BLOCK_SIZE}"
+                        )
                         _upload_u8(wp, f"{base}.weight", weights)
                         _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)
                         weights.setdefault("__quant_meta__", {})[base] = {
