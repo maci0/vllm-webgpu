@@ -22,6 +22,7 @@ import importlib
 import importlib.util
 import inspect
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 import pytest
 
 
@@ -198,4 +199,104 @@ def test_get_layer_types_probe_order_matches_vllm(
         f"expected={attn_count}. "
         "get_layer_types and get_num_layers_by_block_type disagree on this fixture. "
         "Diff the probe order in cache_policy.py against the updated vLLM source."
+    )
+
+
+@pytest.mark.parametrize("arch,hf_text_attrs,hf_outer_attrs,num_layers,expected_attn", [
+    # NemotronH: layers_block_type probe (probe 1). 4 layers: mamba + mlp + 2 attention.
+    # KV entries use the .mixer suffix; mamba and mlp layers are excluded.
+    (
+        "NemotronHForCausalLM",
+        {"layers_block_type": ["mamba", "mlp", "attention", "attention"]},
+        {},
+        4,
+        2,
+    ),
+    # Gemma4: layer_types probe (probe 3). 6 layers: 5 sliding_attention + 1 full_attention.
+    # is_attn_layer returns True for both, so all 6 get KV entries.
+    (
+        "Gemma4ForCausalLM",
+        {"layer_types": ["sliding_attention"] * 5 + ["full_attention"]},
+        {},
+        6,
+        6,
+    ),
+    # Qwen3.5: layer_types probe (probe 3). 4 layers alternating full/linear.
+    # linear_attention carries no KV state (is_attn_layer returns False).
+    (
+        "Qwen3_5ForConditionalGeneration",
+        {"layer_types": ["full_attention", "linear_attention", "full_attention", "linear_attention"]},
+        {},
+        4,
+        2,
+    ),
+    # Minimax-style: attn_type_list probe (probe 2) on the outer config only.
+    # Integer encoding: 1 = attention, 0 = non-attention.
+    (
+        "MistralForCausalLM",
+        {},
+        {"attn_type_list": [1, 0, 1, 0]},
+        4,
+        2,
+    ),
+    # Llama: uniform path (no layer_types on either config). All layers get KV entries.
+    (
+        "LlamaForCausalLM",
+        {},
+        {},
+        4,
+        4,
+    ),
+])
+def test_kv_cache_spec_layer_count_per_arch(
+    arch, hf_text_attrs, hf_outer_attrs, num_layers, expected_attn
+):
+    """kv_cache_spec emits the correct number of KV-cache entries for each architecture.
+
+    Exercises the get_layer_types() probe chain (layers_block_type, attn_type_list,
+    layer_types) for each supported architecture family that uses mixed layers.
+    The model is not loaded (self.model is None), so the test drives only the
+    hf_config probe path, not the _lp per-layer-params path.
+
+    If vLLM adds a new probe to get_num_layers_by_block_type after a version bump
+    and get_layer_types() is not updated accordingly, this test will fail, turning
+    the VERSION SYNC comment in cache_policy.py into a mechanical CI gate.
+
+    VERSION SYNC: aligned with ModelConfig.get_num_layers_by_block_type in
+    vllm/config/model.py. Re-run after each vLLM bump and update the version
+    string in the cache_policy.py VERSION SYNC comment when the test still passes.
+    """
+    pytest.importorskip("vllm", reason="vllm not installed")
+
+    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
+
+    hf_text = SimpleNamespace(**hf_text_attrs)
+    hf_outer = SimpleNamespace(**{**hf_text_attrs, **hf_outer_attrs})
+
+    mc = SimpleNamespace(
+        architecture=arch,
+        hf_text_config=hf_text,
+        hf_config=hf_outer,
+        use_fp64_gumbel=False,
+        get_total_num_hidden_layers=lambda: num_layers,
+        get_head_size=lambda: 64,
+        get_total_num_kv_heads=lambda: 2,
+    )
+    vllm_config = SimpleNamespace(
+        model_config=mc,
+        cache_config=SimpleNamespace(block_size=16),
+        speculative_config=None,
+    )
+
+    with patch("vllm_webgpu.v1.model_runner.PipelineCache"):
+        runner = WebGPUModelRunner(vllm_config, MagicMock())
+
+    spec = runner.kv_cache_spec
+    assert len(spec) == expected_attn, (
+        f"arch={arch!r}: expected {expected_attn} KV-cache layers, got {len(spec)}. "
+        f"Keys: {sorted(spec)}. "
+        "After a vLLM bump, diff ModelConfig.get_num_layers_by_block_type "
+        "(vllm/config/model.py) against get_layer_types() in "
+        "vllm_webgpu/v1/cache_policy.py and update the probe list and the "
+        "VERSION SYNC comment."
     )
