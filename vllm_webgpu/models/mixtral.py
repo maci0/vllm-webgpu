@@ -67,15 +67,14 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             # Use the larger of intermediate_size and moe_intermediate_size so
             # subclasses that pass expert_inter > intermediate_size to _moe_ffn_layer
             # do not write past the buffer end.
-            _moe_act_sz = max(
+            self._moe_act_sz: int = max(
                 self.intermediate_size,
                 getattr(model_config, "moe_intermediate_size", 0),
             )
             # expert_gate and expert_up are only needed on the quantized path
             # (uq_g != 0 or uq_u != 0). Allocate lazily on first use in
             # _moe_ffn_layer to avoid wasting GPU memory for f16 MoE models.
-            self._moe_act_sz: int = _moe_act_sz
-            self._moe_sc = self._alloc_moe_sc(self._num_experts, self._top_k, _moe_act_sz)
+            self._moe_sc = self._alloc_moe_sc(self._num_experts, self._top_k, self._moe_act_sz)
             # Pre-allocated MAP_READ staging buffer for topk idx readback.
             # Copies are recorded into the Phase A encoder so no extra GPU submit
             # is needed after on_submitted_work_done_sync().
@@ -454,6 +453,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         p = f"model.layers.{layer_idx}.{bsm_prefix}"
 
         # ── Phase A: router + top-K (into current encoder) ───────────────────
+        if self._active_encoder is None:
+            raise RuntimeError("_moe_ffn_layer must be called inside an active encoder context")
         rw_k = f"{p}.{router_subkey}.weight"
         uq_r = self._uq_for_key(rw_k)
         qi_r = self._quant_extra(rw_k.removesuffix('.weight'), uq_r)
@@ -481,8 +482,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         # Copy topk results into pre-allocated staging buffers inside the Phase A
         # encoder so no extra GPU submit is needed for the readback.
-        if self._active_encoder is None:
-            raise RuntimeError("_moe_ffn_layer must be called inside an active encoder context")
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
         _debug_weights = logger.isEnabledFor(logging.DEBUG)

@@ -25,7 +25,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # ── Setup device ──────────────────────────────────────────────────────────────
-    from huggingface_hub import snapshot_download
+    from vllm_webgpu.scripts import resolve_model_path
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.config import get_config
@@ -33,7 +33,7 @@ def main() -> None:
     pipeline_cache = PipelineCache(wgpu_dev.wgpu_device)
 
     # ── Load model ────────────────────────────────────────────────────────────────
-    model_path = args.model if Path(args.model).is_dir() else snapshot_download(args.model)
+    model_path = resolve_model_path(args.model)
     print(f"Model: {model_path}")
 
     from transformers import AutoTokenizer

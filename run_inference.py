@@ -168,6 +168,6 @@ if __name__ == "__main__":
     if args.gdn_bf16:
         os.environ["GDN_BF16"] = "1"
 
-    from huggingface_hub import snapshot_download
-    model_path = args.model if Path(args.model).is_dir() else snapshot_download(args.model)
+    from vllm_webgpu.scripts import resolve_model_path
+    model_path = resolve_model_path(args.model)
     run(model_path, args.prompt, args.max_tokens, args.temperature, args.top_p)

@@ -121,6 +121,11 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
+    # Inlines YaRNScalingRotaryEmbedding._compute_inv_freq from
+    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py L49-73.
+    # Cannot call it directly: YaRNScalingRotaryEmbedding.__init__ triggers
+    # _compute_cos_sin_cache() which is CUDA-dependent. On each vLLM version bump,
+    # diff _compute_inv_freq against these four lines and update if the formula changes.
     pos_freqs = rope_theta ** (np.arange(0, rotary_dim, 2, dtype=np.float32) / rotary_dim)
     inv_freq_interp = 1.0 / (factor * pos_freqs)
     inv_freq_extrap = 1.0 / pos_freqs

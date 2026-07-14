@@ -41,6 +41,12 @@ _BNB_GROUP_K = 64
 # Defined here rather than imported from mxfp8_utils to avoid coupling the MXFP4
 # scale assertion to an unrelated format constant.
 _MXFP4_BLOCK_SIZE = 32
+# Companion key suffixes for AWQ/GPTQ and NVFP4 quantized layers. Defined at
+# module level so the skip-set comprehensions below don't reconstruct them on
+# every load_safetensors_weights call.
+_AWQ_GPTQ_SUFFIXES = (".qweight", ".scales", ".qzeros", ".g_idx")
+_NVFP4_SUFFIXES = (".weight_packed", ".weight_scale", ".weight_global_scale",
+                   ".input_global_scale")
 
 
 def _normalize_quant_cfg(quant_cfg: object) -> dict | None:
@@ -385,13 +391,22 @@ def load_safetensors_weights_sharded(
     if ct_meta:
         logger.info("compressed-tensors format detected: %s", ct_meta.get("__global__", {}))
 
+    # When quant_cfg is a pydantic object, _normalize_quant_cfg returns None
+    # inside each shard call, causing each shard to independently re-read
+    # config.json. Read it once here and pass the raw dict so all shards
+    # share the same config without redundant disk I/O.
+    _shard_quant_cfg = _eff_quant_cfg
+    if _shard_quant_cfg is None:
+        _cfg_json = Path(model_dir) / "config.json"
+        _shard_quant_cfg = _ct_get_quant_cfg(str(_cfg_json)) or {} if _cfg_json.exists() else {}
+
     for shard in shard_files:
         shard_path = str(Path(model_dir) / shard)
         logger.info("Loading shard %s", shard)
         shard_weights = load_safetensors_weights(
             shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys,
             skip_remap=True, weight_transforms=weight_transforms,
-            skip_prefixes=skip_prefixes, quant_cfg=quant_cfg,
+            skip_prefixes=skip_prefixes, quant_cfg=_shard_quant_cfg,
             scale_transforms=scale_transforms, _already_checked=True)
 
         # load_safetensors_weights guarantees a flush (submit + on_submitted_work_done_sync)
@@ -1004,11 +1019,12 @@ def load_safetensors_weights(
             quant_bases = sorted(set(
                 k.removesuffix(".qweight") for k in header if k.endswith(".qweight")
             ))
-            quant_set = set()
-            for base in quant_bases:
-                for suf in (".qweight", ".scales", ".qzeros", ".g_idx"):
-                    if f"{base}{suf}" in header:
-                        quant_set.add(f"{base}{suf}")
+            quant_set = {
+                f"{base}{suf}"
+                for base in quant_bases
+                for suf in _AWQ_GPTQ_SUFFIXES
+                if f"{base}{suf}" in header
+            }
 
             _upload_non_quant(header, quant_set | _i8_companion_skip, _upload_plain)
 
@@ -1101,12 +1117,12 @@ def load_safetensors_weights(
                 k.removesuffix(".weight_packed") for k in header
                 if k.endswith(".weight_packed") and header[k].get("dtype") == "U8"
             )
-            nvfp4_set = set()
-            for base in nvfp4_bases:
-                for suf in (".weight_packed", ".weight_scale", ".weight_global_scale",
-                            ".input_global_scale"):
-                    if f"{base}{suf}" in header:
-                        nvfp4_set.add(f"{base}{suf}")
+            nvfp4_set = {
+                f"{base}{suf}"
+                for base in nvfp4_bases
+                for suf in _NVFP4_SUFFIXES
+                if f"{base}{suf}" in header
+            }
 
             _upload_non_quant(header, nvfp4_set | _i8_companion_skip, _upload_plain)
 
@@ -1133,14 +1149,13 @@ def load_safetensors_weights(
         elif fmt == "diffusion_nvfp4":
             # DiffusionGemma ModelOpt NVFP4: *.weight (U8) + *.weight_scale (F8_E4M3) + *.weight_scale_2 (F32)
             # Used for quantized expert weights. Non-expert weights (BF16) uploaded normally.
-            dnvfp4_bases = sorted(set(
-                base
+            dnvfp4_bases = sorted({
+                k.removesuffix(".weight")
                 for k in header
                 if k.endswith(".weight")
-                for base in (k.removesuffix(".weight"),)
-                if header[k].get("dtype") == "U8"
-                and base + ".weight_scale" in header
-            ))
+                and header[k].get("dtype") == "U8"
+                and k.removesuffix(".weight") + ".weight_scale" in header
+            })
             dnvfp4_set = set()
             for base in dnvfp4_bases:
                 for suf in (".weight", ".weight_scale", ".weight_scale_2", ".input_scale"):
@@ -1463,6 +1478,8 @@ def load_safetensors_weights(
                 ct_reserved.add(f"{_b}.weight_scale")
                 if f"{_b}.weight_zero_point" in header:
                     ct_reserved.add(f"{_b}.weight_zero_point")
+                if f"{_b}.weight_shape" in header:
+                    ct_reserved.add(f"{_b}.weight_shape")
 
             _upload_non_quant(header, ct_reserved | _i8_companion_skip, _upload_plain)
 

@@ -2,6 +2,18 @@
 from __future__ import annotations
 
 
+def resolve_model_path(model_arg: str) -> str:
+    """Return a local path for model_arg, downloading from HuggingFace if needed.
+
+    When model_arg is an existing local directory it is returned unchanged.
+    Otherwise snapshot_download is called to fetch the repo and the resulting
+    cache path is returned.
+    """
+    from pathlib import Path
+    from huggingface_hub import snapshot_download
+    return model_arg if Path(model_arg).is_dir() else snapshot_download(model_arg)
+
+
 def apply_chat_template_or_encode(tok, prompt: str) -> list[int]:
     """Apply the tokenizer's chat template to prompt, falling back to tok.encode.
 

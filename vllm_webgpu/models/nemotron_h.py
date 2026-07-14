@@ -32,6 +32,17 @@ def _a_log_transform(arr: "np.ndarray") -> "np.ndarray":
     return -np.exp(arr)
 
 
+def _scale_sink(acc: dict, proj: str) -> "Callable[[np.ndarray], None]":
+    """Return a callback that stores a scale array in acc[proj].
+
+    Replaces the per-projection lambda closures that used __setitem__ to work
+    around the inability to assign inside a lambda body.
+    """
+    def _s(v: "np.ndarray") -> None:
+        acc[proj] = v
+    return _s
+
+
 # Verify that the upstream mapper fields match the snapshot this code was written
 # against (vLLM 0.24.0). Catches upstream changes at import time.
 _mapper = _NemotronHForCausalLM.hf_to_vllm_mapper
@@ -232,7 +243,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _hf_p = f"backbone.layers.{_i}.mixer"
                 for _proj in ("q", "k", "v"):
                     self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
-                        lambda v, _p=_proj, _a=_acc: _a.__setitem__(_p, v)
+                        _scale_sink(_acc, _proj)
                     )
 
         # The WebGPU MLP path does not implement bias addition. All known

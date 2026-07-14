@@ -261,15 +261,6 @@ class WebGPUModelRunner:
         block_size = self._block_size
         spec: dict[str, Any] = {}
 
-        def _make_spec(num_kv_heads: int, head_size: int, head_size_v: int | None = None) -> Any:
-            return FullAttentionSpec(
-                block_size=block_size,
-                num_kv_heads=num_kv_heads,
-                head_size=head_size,
-                head_size_v=head_size_v,
-                dtype=_KV_DTYPE,
-            )
-
         # Use per-layer params if available (Gemma4 heterogeneous layers).
         # Prefer the model object's _lp list (populated from layer_types config)
         # over the raw HF config attribute, which may not be set for safetensors.
@@ -302,9 +293,13 @@ class WebGPUModelRunner:
                     # Non-attention layer: skip to avoid emitting a
                     # zero-page-size FullAttentionSpec.
                     continue
-                spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
-                    lp["num_kv_heads"], lp["head_dim"],
-                    head_size_v=lp.get("head_dim_v"))
+                spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
+                    block_size=block_size,
+                    num_kv_heads=lp["num_kv_heads"],
+                    head_size=lp["head_dim"],
+                    head_size_v=lp.get("head_dim_v"),
+                    dtype=_KV_DTYPE,
+                )
         elif _layer_types and len(_layer_types) == num_hidden_layers:
             default_hd = self.vllm_config.model_config.get_head_size()
             default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
@@ -318,12 +313,23 @@ class WebGPUModelRunner:
                 if lt == "full_attention":
                     full_kv = global_kv if k_eq_v else default_kv
                     _hd_v = getattr(tc, "head_size_v", None) or global_hd
-                    spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(full_kv, global_hd, head_size_v=_hd_v)
+                    spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
+                        block_size=block_size,
+                        num_kv_heads=full_kv,
+                        head_size=global_hd,
+                        head_size_v=_hd_v,
+                        dtype=_KV_DTYPE,
+                    )
                 else:
                     # Treat all non-full-attention types (including sliding_attention) as
                     # full-attention: SlidingWindowSpec is not supported by
                     # allocate_kv_from_tensors, so we allocate for the full context window.
-                    spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(default_kv, default_hd)
+                    spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
+                        block_size=block_size,
+                        num_kv_heads=default_kv,
+                        head_size=default_hd,
+                        dtype=_KV_DTYPE,
+                    )
         else:
             head_size = self.vllm_config.model_config.get_head_size()
             num_kv_heads = self.vllm_config.model_config.get_total_num_kv_heads()
@@ -345,8 +351,12 @@ class WebGPUModelRunner:
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
             for i in range(num_hidden_layers):
-                spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
-                    num_kv_heads, head_size)
+                spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
+                    block_size=block_size,
+                    num_kv_heads=num_kv_heads,
+                    head_size=head_size,
+                    dtype=_KV_DTYPE,
+                )
         return spec
 
     def get_cache_block_size_bytes(self) -> int:
@@ -443,12 +453,11 @@ class WebGPUModelRunner:
                         # Sentinel row for requests with no logprob data. Use
                         # all-zero token IDs and -inf logprobs so any accidental
                         # read produces a detectable value rather than random memory.
-                        # selected_token_ranks uses int64 to match gather_logprobs;
-                        # the single cast in _stack_logprobs normalises to int32.
+                        # selected_token_ranks uses int32 to match LogprobsTensors.empty_cpu.
                         pieces.append(LogprobsTensors(
                             torch.zeros(1, max_k, dtype=torch.int32),
                             torch.full((1, max_k), -float('inf')),
-                            torch.zeros(1, dtype=torch.int64),
+                            torch.zeros(1, dtype=torch.int32),
                         ))
                 built_logprobs = _stack_logprobs(pieces)
 
@@ -487,7 +496,7 @@ class WebGPUModelRunner:
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits[row_idx]).unsqueeze(0))
         k = min(num_logprobs, logits.shape[-1])
         # selected_token_ranks is cast to int32 in _stack so no explicit cast is needed
-        # here. The _replace at line 144 is needed because _compute_prompt_logprobs
+        # here. The _replace at line 149 is needed because _compute_prompt_logprobs
         # returns directly without going through _stack.
         return Sampler.gather_logprobs(lp_t, k, torch.tensor([tok], dtype=torch.int64))
 
