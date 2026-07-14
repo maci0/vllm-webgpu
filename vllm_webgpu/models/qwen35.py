@@ -79,11 +79,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # ensures this but silently reduces the rotated dimension by 1 relative to
         # vLLM when the raw product is odd. Catch such configs at construction time
         # so the divergence is loud rather than a silent accuracy regression.
-        assert int(_head_dim_raw * _prf) % 2 == 0, (
-            f"rotary_dim={int(_head_dim_raw * _prf)} is odd; the WGSL rope shader requires "
-            f"even ROTARY_DIM. This model config diverges from vLLM."
+        assert int(_head_dim_raw * _prf) >= 2 and int(_head_dim_raw * _prf) % 2 == 0, (
+            f"rotary_dim={int(_head_dim_raw * _prf)} is invalid; the WGSL rope shader requires "
+            f"even ROTARY_DIM >= 2. This model config diverges from vLLM."
         )
-        self._rotary_dim: int = max(2, int(_head_dim_raw * _prf))
+        self._rotary_dim: int = int(_head_dim_raw * _prf)
         # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
         # Qwen3.5 uses mrope_interleaved=True, stored in rope_parameters dict,
         # not as a top-level config attribute.
