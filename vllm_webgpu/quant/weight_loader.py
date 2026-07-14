@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from transformers.utils import SAFE_WEIGHTS_NAME
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 
 import numpy as np
 import vllm_webgpu.envs as _webgpu_envs
@@ -51,13 +51,14 @@ def _normalize_quant_cfg(quant_cfg: object) -> dict | None:
     return quant_cfg if isinstance(quant_cfg, dict) else None
 
 
-def _unpack_nibbles_std4(packed: "np.ndarray") -> "np.ndarray":
+def _unpack_nibbles(packed: "np.ndarray", shifts: "np.ndarray") -> "np.ndarray":
     """Unpack 8 uint4 nibbles per int32 into a 2-D int32 array [out_rows, in_cols].
 
     packed: shape (out_rows, in_cols // 8), dtype int32 or uint32.
+    shifts: 1-D int32 array of 8 bit-shift values (e.g. _STD4_SHIFTS or _AWQ_NIBBLE_SHIFTS).
     Returns int32 array of shape (out_rows, in_cols) with values in [0, 15].
     """
-    return ((packed[:, :, np.newaxis] >> _STD4_SHIFTS) & 0xF).reshape(packed.shape[0], -1)
+    return ((packed[:, :, np.newaxis] >> shifts) & 0xF).reshape(packed.shape[0], -1)
 
 
 def _is_sym_zeros(qz: "np.ndarray | None") -> bool:
@@ -273,7 +274,7 @@ def detect_weight_format(path: str) -> "tuple[str, str | None, str | None]":
             # which already reads the index and can check for .biases keys.
             return "safetensors_sharded", index_path, None
         # No known safetensors manifest found in directory; default.
-        return "safetensors", None, str(p / SAFE_WEIGHTS_NAME)
+        return "safetensors", None, str(p / SAFETENSORS_SINGLE_FILE)
     if p.suffix == ".gguf":
         return "gguf", None, None
     if p.suffix == ".safetensors":
@@ -471,8 +472,8 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     sc = scales.astype(np.float32)           # (G, N)
 
     # Unpack 8 nibbles per int32 → (K, N) uint8
-    w_int4 = ((qw[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(K, N).astype(np.uint8)
-    z_int4 = ((qz[:, :, np.newaxis] >> _AWQ_NIBBLE_SHIFTS) & 0xF).reshape(G, N).astype(np.uint8)
+    w_int4 = _unpack_nibbles(qw, _AWQ_NIBBLE_SHIFTS).reshape(K, N).astype(np.uint8)
+    z_int4 = _unpack_nibbles(qz, _AWQ_NIBBLE_SHIFTS).reshape(G, N).astype(np.uint8)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
     return w_f32.T.astype(np.float16)  # (N, K)
@@ -509,8 +510,8 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     # Unpack 8 nibbles per int32.
     # qweight (K//8, N): packed along K axis → transpose to (N, K//8) then unpack to (N, K) → T to (K, N).
     # qzeros  (G, N//8): packed along N axis → unpack to (G, N).
-    w_int4 = _unpack_nibbles_std4(qweight.T).T.astype(np.int8)  # (K, N)
-    z_int4 = _unpack_nibbles_std4(qzeros).astype(np.int8)       # (G, N)
+    w_int4 = _unpack_nibbles(qweight.T, _STD4_SHIFTS).T.astype(np.int8)  # (K, N)
+    z_int4 = _unpack_nibbles(qzeros, _STD4_SHIFTS).astype(np.int8)       # (G, N)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
     return w_f32.T.astype(np.float16)  # (N, K)
@@ -1538,7 +1539,7 @@ def _dequant_mlx_int4(
         mx.eval(result)
         return np.array(result, dtype=np.float32)
     except (ImportError, RuntimeError):
-        nibbles = _unpack_nibbles_std4(weight_u32).astype(np.float32)
+        nibbles = _unpack_nibbles(weight_u32, _STD4_SHIFTS).astype(np.float32)
         scales_bc = np.repeat(scales_f32, group_size, axis=1)
         biases_bc = np.repeat(biases_f32, group_size, axis=1)
         return scales_bc * nibbles + biases_bc

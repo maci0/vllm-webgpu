@@ -1279,9 +1279,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # _use_fused_qkv is already False when is_kv_shared=True because the else
             # branch sets it False for both not-has_v and is_kv_shared cases.
-            # Defaults cover the is_kv_shared=True path where neither the fused nor the
-            # separate-projection branch assigns these variables.
-            _v_src = sc["k_buf"]
+            # _k_src default covers the is_kv_shared=True path and the non-fused
+            # non-KV-shared fallback rope loop; _v_src has no default because every
+            # non-KV-shared code path assigns it before use.
             _k_src = sc["k_buf"]
             _v_src_offset = 0
             if _use_fused_qkv:

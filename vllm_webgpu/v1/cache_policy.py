@@ -43,9 +43,19 @@ def is_attn_layer(lt: "str | int") -> bool:
     Handles both string layer types and the Minimax integer encoding where
     1 means attention and 0 means non-attention (Mamba/MLP). The "hybrid"
     value is used by Zamba2-style models (see vLLM model.py:1331-1337 where
-    get_num_layers_by_block_type counts "hybrid" as an attention layer).
+    get_num_layers_by_block_type counts "hybrid" as an attention layer only
+    when text_model_type == 'zamba2').
     Use this instead of bare string-set membership checks everywhere so that
     the integer sentinel never needs to be repeated at individual call sites.
+
+    NOTE: 'hybrid' is treated as an attention layer unconditionally here. This
+    is correct for Zamba2-family configs (the only current user of 'hybrid').
+    If a future model uses 'hybrid' to mean a non-attention variant (e.g. a
+    linear-attention or SSM layer), this function must be updated to accept a
+    model_type argument and return True only when model_type == 'zamba2'. Until
+    then, adding such a model to this backend will over-allocate KV buffers for
+    its hybrid layers. A CI test should verify the 'hybrid' invariant when new
+    hybrid-layer models are registered.
     """
     # "linear_attention" (Qwen3.5 / CPU platform) is intentionally absent: it
     # carries no KV cache state and must not be treated as an attention layer.
@@ -100,7 +110,8 @@ def allocate_kv_from_tensors(
                 )
             layer_spec_map.update(gs.kv_cache_specs)
         else:
-            layer_spec_map.update(dict.fromkeys(group.layer_names, gs))
+            for name in group.layer_names:
+                layer_spec_map[name] = gs
 
     # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
     # Keyed by layer index (int) so each entry can be written directly into model.kv_pool.

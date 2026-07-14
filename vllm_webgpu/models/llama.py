@@ -231,7 +231,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 if k.startswith('model.layers.')
                 and k.endswith(_PROJ_WEIGHT_SUFFIXES)
             ]
-            self._batch_matmul_supported = bool(proj_keys) and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
+            self._batch_matmul_supported = proj_keys and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
 
     def _decode_setup(
         self,
@@ -1006,7 +1006,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Down projection
         w_k = f"{p}.mlp.down_proj.weight"
         uq = self._uq_for_key(w_k)
-        qi3 = self._quant_extra(f"{p}.mlp.down_proj", uq)
+        base_k = w_k.removesuffix('.weight')
+        qi3 = self._quant_extra(base_k, uq)
         self._dispatch("matmul_quant",
                        [sc["ffn_act"], self.weights[w_k],
                         self._scales_buf(w_k, uq, self._dummy_buf), sc["ffn_out"]],

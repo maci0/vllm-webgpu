@@ -38,8 +38,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
 # as greedy (argmax) decoding. Imported from vllm.v1.sample.sampler, which is
 # already used by vLLM internals (llm_base_proposer.py). Importing directly
 # ensures we stay in sync if vLLM ever adjusts the threshold.
-from vllm.v1.sample.sampler import _SAMPLING_EPS as _GREEDY_TEMP
-GREEDY_TEMP = _GREEDY_TEMP
+from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

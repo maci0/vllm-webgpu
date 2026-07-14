@@ -3,6 +3,7 @@ import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
+import wgpu
 
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import _rows_wg, _vec4_wg
@@ -87,12 +88,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         it when Mixtral's __init__ skips staging allocation (num_local_experts=0
         for Qwen35, which uses a different config key for its expert count).
         """
-        import wgpu as _wgpu_lib
         # Buffer holds top_k uint32 indices (4 bytes each). wgpu requires
         # buffer sizes that are multiples of 4; top_k >= 1 always makes the
         # size >= 4, so no minimum guard is needed beyond the 4-byte alignment.
         _staging_sz = self._top_k * 4
-        _staging_usage = _wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ
+        _staging_usage = wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ
         self._topk_idx_staging = dev.create_buffer(
             size=_staging_sz,
             usage=_staging_usage)
@@ -436,7 +436,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                                        When None, no gate is applied (coefficient 1.0).
         """
         extra_gate_consts = extra_gate_consts if extra_gate_consts is not None else {}
-        import wgpu as _wgpu_lib
         dev = self.wgpu_device.wgpu_device
         msc = self._moe_sc
         hidden = self.hidden_size
@@ -482,7 +481,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(
                     size=self._top_k * 4,
-                    usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+                    usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ)
             self._active_encoder.copy_buffer_to_buffer(
                 msc["topk_w"].buf, 0, self._topk_w_staging, 0, K * 4)
 
@@ -491,11 +490,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         dev.queue.on_submitted_work_done_sync()
 
         # Map the pre-allocated staging buffers — no extra GPU submit needed.
-        self._topk_idx_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
+        self._topk_idx_staging.map_sync(mode=wgpu.MapMode.READ)
         expert_indices = np.frombuffer(self._topk_idx_staging.read_mapped(), dtype=np.uint32).copy()
         self._topk_idx_staging.unmap()
         if _debug_weights:
-            self._topk_w_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
+            self._topk_w_staging.map_sync(mode=wgpu.MapMode.READ)
             raw_w = np.frombuffer(self._topk_w_staging.read_mapped(), dtype=np.float32).copy()
             self._topk_w_staging.unmap()
             logger.debug(

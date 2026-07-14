@@ -383,8 +383,8 @@ class BaseWebGPUModel(ABC):
         return self.weight_meta.get(base_key, {})
 
     def _readback_recurrent_states(
-        self, bufs: "list[tuple[str, int, object]]"
-    ) -> "dict[str, dict]":
+        self, bufs: "list[tuple[str, int, WebGPUBuffer]]"
+    ) -> "dict[str, dict[int, bytes]]":
         """Copy an iterable of (kind, layer_idx, WebGPUBuffer) triples to CPU.
 
         All buffers are batched into a single staging buffer and submitted in

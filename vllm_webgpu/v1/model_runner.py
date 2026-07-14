@@ -47,7 +47,7 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.num_logprobs
+    num_logprobs = sp.logprobs
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -419,7 +419,7 @@ class WebGPUModelRunner:
         if widths:
             max_k = max(widths)
             # Short-circuit when all entries are present and share the same width.
-            all_present = all(d is not None for d in logprobs_data)
+            all_present = len(widths) == len(logprobs_data)
             if all_present and len(set(widths)) == 1:
                 built_logprobs = _stack_logprobs(cast("list[LogprobsTensors]", logprobs_data))
             else:
