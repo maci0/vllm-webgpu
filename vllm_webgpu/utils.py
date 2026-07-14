@@ -43,6 +43,7 @@ SHADERS_DIR = Path(__file__).parent / "shaders"
 # exactly 0.0 (greedy) or >= 0.01 (stochastic). The 1e-5 literal matches the
 # private _SAMPLING_EPS without importing the symbol.
 _GREEDY_TEMP_THRESHOLD = 1e-5
+GREEDY_TEMP = _GREEDY_TEMP_THRESHOLD
 
 
 # zero_bytes(n: int) -> bytes  — cached constructor for n zero bytes.
