@@ -558,7 +558,7 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
 
 
-def _extract_modelopt_algo(cfg: dict) -> str:
+def _extract_modelopt_algo(cfg: "dict | None") -> str:
     """Extract the ModelOpt quantization algorithm string from hf_quant_config.json.
 
     Mirrors ModelOptFp8Config._extract_modelopt_quant_algo from vLLM 0.24.x
@@ -569,12 +569,22 @@ def _extract_modelopt_algo(cfg: dict) -> str:
     Returns the upper-cased algorithm string, or '' when the key is absent or
     the 'quantization' value is not a dict.
 
-    Type divergence from the vLLM version: the upstream staticmethod returns
-    str | None (returning None when cfg['quantization'] is not a dict), while
-    this copy always returns str (using '' as the sentinel). The caller uses
-    `or ''` for the vLLM branch but not here, so both paths are functionally
-    equivalent despite the type difference.
+    Divergences from the vLLM original (must check all three on each vLLM bump):
+
+    1. None guard: upstream returns None when cfg is None; this version accepts
+       None and returns '' to avoid forcing every caller to add `or ''`.
+
+    2. quant_method guard: upstream returns None when
+       cfg['quant_method'] does not start with 'modelopt'; this copy omits that
+       check because the call site in _detect_mx_quant already gates on it
+       (`if cfg.get('quant_method','').lower().startswith('modelopt')`).
+
+    3. Return type: upstream returns str | None; this copy always returns str
+       ('' as sentinel). The vLLM branch at the call site applies `or ''`
+       explicitly, so both paths are functionally equivalent.
     """
+    if cfg is None:
+        return ''
     if 'quantization' in cfg:
         return str(cfg['quantization'].get('quant_algo', '')).upper() if isinstance(cfg['quantization'], dict) else ''
     return str(cfg.get('quant_algo', '')).upper()
