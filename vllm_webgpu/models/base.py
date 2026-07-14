@@ -359,7 +359,7 @@ class BaseWebGPUModel(ABC):
                 f"GGUF format not supported by this plugin. Use the vllm-gguf plugin: {path}"
             )
         transforms = self._weight_transforms
-        _quant_cfg = getattr(self.model_config.hf_config, 'quantization_config', None)
+        _quant_cfg = getattr(self.model_config, 'quantization_config', None)
         if fmt == "safetensors":
             self.weights = load_safetensors_weights(
                 _resolved, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
