@@ -1,11 +1,12 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
+import psutil
+
 from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.torch_utils import get_dtype_size
-from vllm.utils.mem_utils import get_cpu_memory
 from vllm.v1.kv_cache_interface import (ChunkedLocalAttentionSpec,
                                          FullAttentionSpec,
                                          KVQuantMode,
@@ -386,13 +387,14 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
 
 def determine_available_memory(worker: "WebGPUWorker") -> int:
     """
-    Available memory for KV cache = device total - model weights - overhead.
+    Available memory for KV cache = OS-available RAM - overhead.
 
-    Uses vLLM's get_cpu_memory to query real system memory, which is correct for
-    unified-memory platforms (Apple Silicon) and avoids confusing wgpu's per-buffer
-    maxBufferSize limit with total device memory. On a 7B f16 model (~14 GB weights)
-    with a 4 GB maxBufferSize, subtracting from maxBufferSize yields negative available
-    memory and clamps to 0 KV blocks.
+    Uses psutil.virtual_memory().available rather than the system total so that
+    memory already consumed by other processes (browsers, other inference servers,
+    OS page cache that cannot be reclaimed quickly) is excluded from the budget.
+    On Apple Silicon this is still correct: the UMA pool is reflected in
+    virtual_memory() just as on x86, and available already excludes the model
+    weights this process has loaded.
 
     Overhead budget: max(OVERHEAD_BYTES, model_mem * _ACTIVATION_OVERHEAD_FRACTION).
     The fraction-based term accounts for activation memory scaling with model size.
@@ -416,16 +418,19 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
         if _model is not None else 0
     )
 
-    total: int = get_cpu_memory()
-
+    vmem = psutil.virtual_memory()
     overhead = max(OVERHEAD_BYTES, int(model_mem * _ACTIVATION_OVERHEAD_FRACTION))
-    base = total - model_mem - overhead
+    # vmem.available excludes memory held by other processes as well as by this
+    # process (including model weights already uploaded), so there is no need to
+    # subtract model_mem explicitly.
+    base = vmem.available - overhead
     fraction = worker.cache_config.gpu_memory_utilization
     available = max(int(base * fraction), 0)
     logger.info(
-        "WebGPU memory: total=%dMiB model=%dMiB overhead=%dMiB available=%dMiB",
-        total // MiB_bytes, model_mem // MiB_bytes, overhead // MiB_bytes,
-        available // MiB_bytes,
+        "WebGPU memory: total=%dMiB available_os=%dMiB model=%dMiB "
+        "overhead=%dMiB kv_budget=%dMiB",
+        vmem.total // MiB_bytes, vmem.available // MiB_bytes,
+        model_mem // MiB_bytes, overhead // MiB_bytes, available // MiB_bytes,
     )
     return available
 
