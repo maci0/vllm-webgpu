@@ -86,8 +86,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     T = len(input_ids_list)
     needed_blocks = min(cdiv(len(input_ids_list) + max_tokens, block_size), num_blocks)
     block_table = np.arange(needed_blocks, dtype=np.uint32)
-    blk_idx, within = np.divmod(np.arange(T), block_size)
-    slots = (block_table[blk_idx].astype(np.int64) * block_size + within).tolist()
+    slots = list(range(T))
 
     _greedy = temperature < GREEDY_TEMP
     model._greedy_decode = _greedy
@@ -125,7 +124,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         if pos // block_size >= needed_blocks:
             print(f"  [KV cache full at step {step}]")
             break
-        slot = int(block_table[pos // block_size]) * block_size + pos % block_size
+        slot = pos
         meta   = SimpleNamespace(slot_mapping=[slot], block_tables=[block_table], max_decode_seq_len=pos + 1)
         logits = model.forward(
             np.array([last_token], dtype=np.uint32),

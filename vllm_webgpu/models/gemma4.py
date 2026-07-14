@@ -133,11 +133,10 @@ def _gemma4_layer_params(
 
         # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
         if is_kv_shared:
-            kv_shared_target = next(
-                (j for j in range(first_kv_shared - 1, -1, -1) if layer_types[j] == lt),
-                None,
-            )
-            if kv_shared_target is None:
+            prev = layer_types[:first_kv_shared]
+            try:
+                kv_shared_target = len(prev) - 1 - prev[::-1].index(lt)
+            except ValueError:
                 raise ValueError(
                     f"Layer {i} (type={lt!r}) is KV-shared but type {lt!r} was not "
                     f"found in the non-shared prefix layer_types[:{first_kv_shared}]. "
@@ -146,7 +145,7 @@ def _gemma4_layer_params(
         else:
             kv_shared_target = -1
 
-        # Attention-type dispatch (Gemma4Attention.__init__ L561-580)
+        # Attention-type dispatch (Gemma4DecoderLayer.__init__ L559-580)
         if lt == "full_attention":
             hd_l = global_hd
             nkv_l = global_kv if k_eq_v else default_kv

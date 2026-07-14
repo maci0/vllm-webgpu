@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 import wgpu as wgpu_lib
 
 from vllm.logger import init_logger

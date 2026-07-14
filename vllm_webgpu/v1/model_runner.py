@@ -644,7 +644,7 @@ class WebGPUModelRunner:
                     f"req {rid} already has saved state but chunked prefill is disabled; "
                     "update this path before re-enabling chunked prefill"
                 )
-            if sp is not None and sp.seed is not None:
+            if sp is not None and sp.sampling_type == SamplingType.RANDOM_SEED:
                 rng = torch.Generator()
                 rng.manual_seed(sp.seed)
             else:

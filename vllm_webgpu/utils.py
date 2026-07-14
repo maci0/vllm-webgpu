@@ -36,14 +36,12 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-from vllm.v1.sample.sampler import _SAMPLING_EPS
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 # SamplingParams clamps all sub-threshold temperatures to _MAX_TEMP (0.01) before
 # they reach sample_token, so any temperature below that threshold arrives here as
-# exactly 0.0 (greedy) or >= 0.01 (stochastic). _SAMPLING_EPS is the canonical
-# threshold imported from vllm.v1.sample.sampler.
-GREEDY_TEMP = _SAMPLING_EPS
+# exactly 0.0 (greedy) or >= 0.01 (stochastic). Matches vLLM _SAMPLING_EPS as of 0.24.
+GREEDY_TEMP: float = 1e-5  # vLLM _SAMPLING_EPS as of 0.24
 
 
 # zero_bytes(n: int) -> bytes  — cached constructor for n zero bytes.

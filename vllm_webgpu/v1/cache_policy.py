@@ -460,9 +460,9 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     _nodes = get_visible_memory_node()
     if not _nodes:
         raise RuntimeError(
-            "get_visible_memory_node() returned an empty list — "
-            "/proc/{}/status may lack Mems_allowed_list or "
-            "CPU_VISIBLE_MEMORY_NODES is misconfigured".format(os.getpid())
+            f"get_visible_memory_node() returned an empty list — "
+            f"/proc/{os.getpid()}/status may lack Mems_allowed_list or "
+            f"CPU_VISIBLE_MEMORY_NODES is misconfigured"
         )
     node_infos = [get_memory_node_info(n) for n in _nodes]
     total_memory = sum(i.total_memory for i in node_infos)

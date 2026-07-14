@@ -1,6 +1,5 @@
 from __future__ import annotations
 from itertools import batched, chain
-import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -88,7 +87,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Interleaved RoPE: pairs (2i, 2i+1) vs standard (i, i+half).
         # Qwen3.5 uses mrope_interleaved=True, stored in rope_parameters dict,
         # not as a top-level config attribute.
-        _rope_params = getattr(model_config, "rope_parameters", {}) or {}
+        _rope_params = getattr(model_config, "rope_parameters", None) or {}
         self._rope_interleaved: int = int(_rope_params.get("mrope_interleaved", False))
         # Attention output gate: when True, q_proj.weight has shape [2*q_dim, hidden].
         # Layout is per-head interleaved: within each head's 2*head_dim block the first
@@ -346,8 +345,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             f"conv_dim mismatch: {self._lin_conv_dim} vs {conv_shape[-1]}; "
             "MambaStateShapeCalculator.gated_delta_net_state_shape formula may have changed"
         )
-        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
-        ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
+        conv_bytes = conv_shape[0] * conv_shape[1] * _ELEM_BYTES["f16"]
+        ssm_bytes  = ssm_shape[0] * ssm_shape[1] * ssm_shape[2] * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}
         self._conv_gpu = {}
