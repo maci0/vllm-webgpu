@@ -772,7 +772,7 @@ class WebGPUModelRunner:
                 # step (exactly the resumed case).
                 rolled_back_pos = is_resumed and pos < state["pos"]
                 if rolled_back_pos:
-                    _all_toks = cached.scheduled_cached_reqs.all_token_ids.get(rid)
+                    _all_toks = cached.all_token_ids.get(rid)
                     tok = _all_toks[pos] if _all_toks and pos < len(_all_toks) else state["last_tok"]
                 else:
                     tok = state["last_tok"]
