@@ -50,6 +50,10 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         from vllm.transformers_utils.config import get_hf_text_config
+        # Preserve the outer config before extraction so _scratch_token_count can
+        # find canvas_length even when it lives only on the outer Gemma4Config rather
+        # than on the nested text_config.
+        self._outer_config = model_config
         # get_hf_text_config is called here before super().__init__ because we need
         # enable_moe_block and moe_intermediate_size before Gemma4.__init__ runs
         # _init_scratch_buffers. The parent __init__ calls get_hf_text_config again
@@ -128,12 +132,13 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
     def _scratch_token_count(self) -> int:
-        _cl = getattr(self.model_config, "canvas_length", None)
+        _cl = (
+            getattr(self.model_config, "canvas_length", None)
+            or getattr(self._outer_config, "canvas_length", None)
+        )
         if _cl is None:
             logger.warning(
-                "canvas_length not found in model config (text_config), defaulting to 256. "
-                "If the model stores canvas_length on the outer config, pass the outer config "
-                "as model_config so the attribute is visible here."
+                "canvas_length not found in model config or outer config, defaulting to 256."
             )
             return 256
         return _cl
