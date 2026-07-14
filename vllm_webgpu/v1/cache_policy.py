@@ -222,6 +222,11 @@ def allocate_kv_from_tensors(
                     raise NotImplementedError(
                         f"Quantized KV cache (kv_quant_mode={spec.kv_quant_mode!r}) is not supported by the WebGPU backend; KV shaders expect float16 data."
                     )
+                if spec.non_causal:
+                    raise NotImplementedError(
+                        "FullAttentionSpec with non_causal=True is not supported by the WebGPU backend; "
+                        "flash_attn_decode implements causal masking only."
+                    )
                 if type(spec) is not FullAttentionSpec:
                     raise NotImplementedError(
                         f"FullAttentionSpec subclass {type(spec).__name__} overrides real_page_size_bytes; "
