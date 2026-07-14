@@ -1083,9 +1083,10 @@ def load_safetensors_weights(
 
         elif fmt == "nvfp4":
             # NVFP4: weight_packed (U8) + weight_scale (F8_E4M3) + weight_global_scale (F32)
-            nvfp4_bases = sorted(set(
-                k.removesuffix(".weight_packed") for k in header if k.endswith(".weight_packed")
-            ))
+            nvfp4_bases = sorted(
+                k.removesuffix(".weight_packed") for k in header
+                if k.endswith(".weight_packed") and header[k].get("dtype") == "U8"
+            )
             nvfp4_set = set()
             for base in nvfp4_bases:
                 for suf in (".weight_packed", ".weight_scale", ".weight_global_scale",
@@ -1619,6 +1620,10 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
                     # Not actually an int4 weight; upload as plain float.
                     # Suppress sk and bk too: they were pre-bound above but
                     # belong to this non-quantized tensor, not a real quant triplet.
+                    logger.debug(
+                        "MLX: %s.weight dtype=%s (expected uint32); suppressing companion .scales/.biases",
+                        base, t.dtype,
+                    )
                     processed.update({wk, sk, bk})
                     arr = _torch_to_f16_numpy(t)
                     if weight_transforms and wk in weight_transforms:

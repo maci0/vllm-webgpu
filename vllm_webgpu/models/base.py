@@ -410,7 +410,7 @@ class BaseWebGPUModel(ABC):
         dev = self.wgpu_device.wgpu_device
 
         if not bufs:
-            return {"conv": {}, "ssm": {}}
+            return {}
 
         offsets: list[int] = []
         total = 0
@@ -448,9 +448,10 @@ class BaseWebGPUModel(ABC):
         """
         if self._gpu_sample_staging is None or self._gpu_sample_tok is None:
             return
-        if self._active_encoder is not None:
-            self._active_encoder.copy_buffer_to_buffer(
-                self._gpu_sample_tok.buf, 0, self._gpu_sample_staging, 0, 4)
+        assert self._active_encoder is not None, \
+            "_copy_sample_to_staging must be called inside _batched_dispatch"
+        self._active_encoder.copy_buffer_to_buffer(
+            self._gpu_sample_tok.buf, 0, self._gpu_sample_staging, 0, 4)
 
     def _read_sample_tok(self) -> int:
         """Map and read the staging buffer (no submit/sync — already done by main batch)."""

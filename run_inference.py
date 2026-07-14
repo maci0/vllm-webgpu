@@ -14,12 +14,6 @@ import numpy as np
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
     print(f"\nLoading model from: {model_dir}")
 
-    if Path(model_dir).suffix == ".gguf":
-        raise ValueError(
-            "GGUF format is not supported by this plugin. "
-            "Use the vllm-gguf plugin instead."
-        )
-
     # Use vLLM's config loader so Mistral-format repos (params.json) are handled correctly.
     from transformers import AutoTokenizer
     from vllm.transformers_utils.config import get_config as _vllm_get_config

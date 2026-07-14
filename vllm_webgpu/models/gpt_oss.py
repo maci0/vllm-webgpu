@@ -160,9 +160,9 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                     for j in range(num_experts):
                         ep = f"{p}.{j}"
                         self.weights[f"{ep}.w1.bias"] = WebGPUBuffer.from_numpy(
-                            wgpu_dev, arr[j, :inter].copy())
+                            wgpu_dev, arr[j, :inter])
                         self.weights[f"{ep}.w3.bias"] = WebGPUBuffer.from_numpy(
-                            wgpu_dev, arr[j, inter:].copy())
+                            wgpu_dev, arr[j, inter:])
 
                 d_key = f"{p}.down_proj_bias"
                 if d_key in _bias_pending:
@@ -171,7 +171,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                     for j in range(num_experts):
                         ep = f"{p}.{j}"
                         self.weights[f"{ep}.w2.bias"] = WebGPUBuffer.from_numpy(
-                            wgpu_dev, arr[j].copy())
+                            wgpu_dev, arr[j])
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.

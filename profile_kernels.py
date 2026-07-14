@@ -63,7 +63,12 @@ def main() -> None:
     # ── Tokenize prompt ──────────────────────────────────────────────────────────
     try:
         tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        tok_ids = tok.encode(args.prompt)
+        messages = [{"role": "user", "content": args.prompt}]
+        try:
+            tok_ids = tok.apply_chat_template(
+                messages, add_generation_prompt=True, tokenize=True)
+        except Exception:
+            tok_ids = tok.encode(args.prompt)
         print(f"Prompt: {len(tok_ids)} tokens")
     except Exception as e:
         print(f"Tokenizer unavailable ({e}), using synthetic 32-token prompt")
@@ -131,7 +136,6 @@ def main() -> None:
             pos += 1
     finally:
         model.profiling = False
-    assert decode_times, "No profiled decode steps measured (--decode-steps must be > 0)"
     avg_step_ms = np.mean(decode_times)
     tok_s = f"  ({1000/avg_step_ms:.1f} tok/s)" if avg_step_ms > 0 else ""
     print(f"\nAverage decode step: {avg_step_ms:.1f} ms{tok_s}")

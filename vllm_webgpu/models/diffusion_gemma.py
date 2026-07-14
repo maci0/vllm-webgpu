@@ -291,7 +291,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         """Forward pass using model.decoder.* weight keys."""
         dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
-        max_tokens = self._scratch_token_count()
+        max_tokens = self._canvas_length
         if num_tokens > max_tokens:
             raise RuntimeError(
                 f"num_tokens={num_tokens} exceeds canvas_length={max_tokens}"

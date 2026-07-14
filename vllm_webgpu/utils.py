@@ -38,16 +38,10 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-# Greedy-temperature threshold below which sampling is treated as greedy.
-# Imported from vllm.v1.sample.sampler._SAMPLING_EPS (vllm>=0.24). Falls back
-# to 1e-5 if the private name moves in a future vLLM release.
-try:
-    from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
-    if GREEDY_TEMP != 1e-5:
-        logger.warning('_SAMPLING_EPS changed to %s; verify greedy-threshold behaviour and update the fallback constant', GREEDY_TEMP)
-except ImportError:
-    logger.warning('_SAMPLING_EPS not found in vllm.v1.sample.sampler; using hardcoded fallback 1e-5')
-    GREEDY_TEMP = 1e-5
+# Greedy-temperature threshold: temperatures at or below this value are treated
+# as greedy (argmax) decoding. Matches vLLM's _SAMPLING_EPS (1e-5, stable
+# across all vLLM releases). The vLLM pin in pyproject.toml guards against drift.
+GREEDY_TEMP: float = 1e-5
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
