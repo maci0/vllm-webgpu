@@ -350,8 +350,8 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # hf_text_config differs from the outer config.
     _outer = hf_outer_config if hf_outer_config is not None else hf_text_config
     # Priority order mirrors vLLM's ModelConfig.get_num_layers_by_block_type
-    # (vllm/config/model.py:1327-1362 as of the installed vLLM):
-    #   probe 1 (L1330): layers_block_type  -- NemotronH / Falcon
+    # (vllm/config/model.py:1327-1369 as of the installed vLLM):
+    #   probe 1 (L1327): layers_block_type  -- NemotronH / Falcon
     #   probe 2 (L1341): attn_type_list     -- Minimax (truthiness, not is-not-None)
     #   probe 3 (L1346): layer_types        -- Gemma4 / Qwen3.5
     #
@@ -364,9 +364,15 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # Jamba but safe to fail loudly rather than silently misclassify.  If Jamba support
     # is needed: convert block_configs to a flat string list and return it here.
     #
+    # NOTE: Zamba2 special case (vllm/config/model.py:L1331) within probe 1 maps
+    # "hybrid" entries to attention when attn_block_type=True. This function returns
+    # the raw list unchanged; callers use is_attn_layer() which treats "hybrid" as a
+    # non-attention type. If Zamba2 support is needed: add a "hybrid" -> attention
+    # remapping step here before returning, or extend is_attn_layer accordingly.
+    #
     # VERSION SYNC: last verified against vLLM 0.24.0.
     # On each vLLM bump, diff ModelConfig.get_num_layers_by_block_type
-    # (vllm/config/model.py:1327-1362) against the probe sequence below and
+    # (vllm/config/model.py:1327-1369) against the probe sequence below and
     # update the version number above.
     # The block_configs / has_noops path is the known gap; check whether vLLM
     # has added any further probes beyond the three mirrored here.
