@@ -12,10 +12,9 @@ import wgpu as wgpu_lib
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
 import torch
-from vllm.model_executor.layers.rotary_embedding.common import (
-    yarn_find_correction_range,
-    yarn_get_mscale,
-    yarn_linear_ramp_mask,
+from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+    YaRNScalingRotaryEmbedding,
 )
 
 from vllm_webgpu.utils import zero_bytes
@@ -73,18 +72,13 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Inlines the combining formula from YaRNScalingRotaryEmbedding._compute_inv_freq
-    (vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py L49-73) and
-    the mscale ternary from YaRNScalingRotaryEmbedding.__init__ (L40-43), using the
-    three public vLLM helpers: yarn_find_correction_range, yarn_linear_ramp_mask,
-    yarn_get_mscale. Direct reuse of the class method is blocked because
-    YaRNScalingRotaryEmbedding.__init__ always calls _compute_cos_sin_cache(),
-    pre-allocating a [max_pos * factor, rotary_dim] tensor not needed here.
+    Calls YaRNScalingRotaryEmbedding._compute_inv_freq directly via a minimal
+    stub built with object.__new__, bypassing __init__ (which would build an
+    unneeded [max_pos * factor, rotary_dim] cos/sin cache). The mscale ternary
+    mirrors YaRNScalingRotaryEmbedding.__init__ (L40-43) using yarn_get_mscale.
 
-    Verified against vLLM 0.24 (yarn_scaling_rope.py L49-73, L40-43).
-    On each vLLM bump, re-run tests/test_yarn_freqs.py which cross-checks
-    this function against the class method via object.__new__ to catch any
-    upstream divergence before it becomes a silent correctness regression.
+    Any formula change in vLLM's _compute_inv_freq is picked up automatically.
+    tests/test_yarn_freqs.py cross-checks attribute mapping on every vLLM bump.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -129,12 +123,15 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
-    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
-    inv_freq_extrapolation = 1.0 / pos_freqs
-    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    inv_freq_mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
-    inv_freq = (inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask).numpy()
+    inst = object.__new__(YaRNScalingRotaryEmbedding)
+    inst.base                    = rope_theta
+    inst.rotary_dim              = rotary_dim
+    inst.beta_fast               = beta_fast
+    inst.beta_slow               = beta_slow
+    inst.max_position_embeddings = orig_ctx
+    inst.truncate                = truncate
+    inst.extrapolation_factor    = extrapolation_factor
+    inv_freq = inst._compute_inv_freq(factor).numpy()
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
