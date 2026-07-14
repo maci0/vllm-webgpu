@@ -14,10 +14,9 @@ from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
 import torch
 from vllm.model_executor.layers.rotary_embedding.common import (
+    yarn_find_correction_range,
     yarn_get_mscale,
-)
-from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
-    YaRNScalingRotaryEmbedding,
+    yarn_linear_ramp_mask,
 )
 
 from vllm_webgpu.utils import zero_bytes
@@ -122,26 +121,12 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
-    # Call _compute_inv_freq via an unbound method on a SimpleNamespace mock.
-    # Cannot instantiate YaRNScalingRotaryEmbedding: __init__ calls
-    # _compute_cos_sin_cache which allocates an O(max_ctx * scaling_factor x
-    # rotary_dim) float32 cos/sin cache (tens of MB for long-context models).
-    # Calling the private method directly on a mock is intentional: any vLLM
-    # bump that renames or reshapes _compute_inv_freq surfaces immediately as
-    # AttributeError rather than silently diverging. On each vLLM bump, verify
-    # the mock attributes still match the method's self.xxx accesses in
-    # yarn_scaling_rope.py:_compute_inv_freq.
-    _mock = SimpleNamespace(
-        base=rope_theta, rotary_dim=rotary_dim,
-        beta_fast=beta_fast, beta_slow=beta_slow,
-        max_position_embeddings=orig_ctx,
-        truncate=truncate, extrapolation_factor=extrapolation_factor,
-    )
-    inv_freq = (
-        YaRNScalingRotaryEmbedding._compute_inv_freq(_mock, factor)
-        .to(torch.float32)
-        .numpy()
-    )
+    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
+    inv_freq_extrapolation = 1.0 / pos_freqs
+    inv_freq_interpolation = 1.0 / (factor * pos_freqs)
+    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
+    inv_freq_mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    inv_freq = (inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask).to(torch.float32).numpy()
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
