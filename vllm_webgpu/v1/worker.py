@@ -122,7 +122,7 @@ class WebGPUWorker(WorkerBase):
 
     @torch.inference_mode()
     def sample_tokens(
-        self, grammar_output: "GrammarOutput"
+        self, grammar_output: "GrammarOutput | None"
     ) -> "ModelRunnerOutput | AsyncModelRunnerOutput":
         return self.model_runner.sample_tokens(grammar_output)
 
