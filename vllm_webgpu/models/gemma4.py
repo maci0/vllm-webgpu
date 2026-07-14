@@ -10,15 +10,15 @@ from vllm import __version__ as _vllm_version
 from vllm.utils.math_utils import cdiv
 from vllm.transformers_utils.config import get_hf_text_config
 
-# _gemma4_layer_params and _build_layer_params_from_config replicate three
-# per-layer constructor formulas from vllm/model_executor/models/gemma4.py.
-# They are pinned to the vLLM version below; re-audit the three source
+# _gemma4_layer_params and _build_layer_params_from_config transcribe four
+# per-layer constructor formula groups from vllm/model_executor/models/gemma4.py.
+# They are pinned to the vLLM version below; re-audit the four source
 # locations and re-run tests/test_gemma4_layer_params.py after any bump.
 _EXPECTED_VLLM_VERSION = "0.24.0"
 if _vllm_version != _EXPECTED_VLLM_VERSION:
     warnings.warn(
         f"vLLM {_vllm_version!r} differs from pinned {_EXPECTED_VLLM_VERSION!r}. "
-        "Run tests/test_gemma4_layer_params.py and re-audit the three constructor "
+        "Run tests/test_gemma4_layer_params.py and re-audit the four constructor "
         "sites in vllm/model_executor/models/gemma4.py to verify _gemma4_layer_params "
         "and _build_layer_params_from_config are still correct.",
         stacklevel=2,
