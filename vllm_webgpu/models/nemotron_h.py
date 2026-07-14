@@ -102,16 +102,15 @@ del _mapper
 # mamba2_state_shape. _validate_mamba_weights provides the authoritative runtime
 # guard by checking the actual in_proj.weight shape.
 
-# vLLM 0.24 does not export _resolve_intermediate_size. Local copy mirrors
-# NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24). On a future vLLM bump,
-# run `grep -n '_resolve_intermediate_size' .venv/lib/python*/site-packages/vllm/model_executor/models/nemotron_h.py`
-# to check whether the symbol is now exported at module scope (not indented inside a
-# class); if so, replace this definition with
-# `from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size`.
-def _resolve_intermediate_size(v, idx: int) -> int:
-    if isinstance(v, list):
-        return v[0] if len(v) == 1 else v[idx]
-    return v
+try:
+    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size
+except ImportError:
+    # vLLM 0.24 does not export _resolve_intermediate_size at module scope.
+    # Local copy mirrors NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24).
+    def _resolve_intermediate_size(v, idx: int) -> int:  # type: ignore[misc]
+        if isinstance(v, list):
+            return v[0] if len(v) == 1 else v[idx]
+        return v
 
 
 # Correctness of _resolve_intermediate_size is verified in
