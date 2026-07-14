@@ -10,10 +10,11 @@ from vllm import __version__ as _vllm_version
 from vllm.utils.math_utils import cdiv
 from vllm.transformers_utils.config import get_hf_text_config
 
-# _gemma4_layer_params and _build_layer_params_from_config transcribe four
-# per-layer constructor formula groups from vllm/model_executor/models/gemma4.py.
-# They are pinned to the vLLM version below; re-audit the four source
-# locations and re-run tests/test_gemma4_layer_params.py after any bump.
+# _gemma4_layer_params and _build_layer_params_from_config transcribe three
+# per-layer parameter formulas (KV-routing guard, reversed-search KV-sharing
+# target, MLP-width guard) from vllm/model_executor/models/gemma4.py.
+# They are pinned to the vLLM version below; re-audit both constructor sites
+# and re-run tests/test_gemma4_layer_params.py after any bump.
 _EXPECTED_VLLM_VERSION = "0.24.0"
 if _vllm_version != _EXPECTED_VLLM_VERSION:
     warnings.warn(
@@ -38,11 +39,13 @@ _SCALE_EPS = 1e-6
 
 # Three formula groups transcribed from vLLM v0.24.0 into _gemma4_layer_params below.
 # Pinned source locations in vllm/model_executor/models/gemma4.py:
-#   (1a) KV-routing guard:  Gemma4Attention.__init__    ~L462-464
-#   (1b) MLP width guard:   Gemma4DecoderLayer.__init__ ~L599-602
-#   (2)  KV-sharing target: Gemma4Attention.__init__    ~L469-471
-#   (3)  head_dim / num_kv_heads / has_v_proj by attention type: ~L561-577
-# On each vLLM bump: diff all four locations, re-run tests/test_gemma4_layer_params.py,
+#   (1) KV-routing guard:                  Gemma4Attention.__init__    L461-465
+#   (2) Reversed-search KV-sharing target: Gemma4Attention.__init__    L467-471
+#   (3) MLP-width guard:                   Gemma4DecoderLayer.__init__ L599-607
+# The attention-type dispatch (head_dim / num_kv_heads / has_v_proj) at
+# Gemma4Attention.__init__ L561-580 is also derived from vLLM and covered by
+# tests/test_gemma4_layer_params.py.
+# On each vLLM bump: diff both constructor sites, re-run tests/test_gemma4_layer_params.py,
 # and update _gemma4_layer_params, _build_layer_params_from_config, and
 # _EXPECTED_VLLM_VERSION together. If vLLM ever exports a public get_layer_params()
 # or equivalent, replace both functions with a direct call.
@@ -79,15 +82,18 @@ def _gemma4_layer_params(
 
     Pinned to vLLM v0.24.0 (github.com/vllm-project/vllm/releases/tag/v0.24.0).
     Formula locations in vllm/model_executor/models/gemma4.py:
-      (1a) KV-routing guard: Gemma4Attention.__init__ ~L462-464
-           "num_kv_shared_layers > 0 and layer_idx >= first_kv_shared_layer_idx"
-      (1b) MLP width guard: Gemma4DecoderLayer.__init__ ~L599-602
-           "layer_idx >= first_kv_shared_layer_idx > 0" (chained comparison)
-           These differ when num_kv_shared_layers == num_hidden_layers: DecoderLayer
-           evaluates False (no FFN doubling), Attention evaluates True. Checkpoint
-           weight shapes are determined by DecoderLayer, so inter_l must use (1b).
-      (2) reversed-search KV-sharing target: Gemma4Attention.__init__ ~L469-471
-      (3) head_dim / num_kv_heads / has_v_proj by attention type: ~L561-577
+      (1) KV-routing guard: Gemma4Attention.__init__ L461-465
+          "num_kv_shared_layers > 0 and layer_idx >= first_kv_shared_layer_idx"
+      (2) Reversed-search KV-sharing target: Gemma4Attention.__init__ L467-471
+      (3) MLP-width guard: Gemma4DecoderLayer.__init__ L599-607
+          "layer_idx >= first_kv_shared_layer_idx > 0" (chained comparison)
+          Differs from (1) when num_kv_shared_layers == num_hidden_layers:
+          first_kv_shared_layer_idx == 0 => DecoderLayer guard is False (no FFN
+          doubling), Attention guard is True. Checkpoint weight shapes are set by
+          DecoderLayer, so inter_l must use this guard, not the one in (1).
+    The attention-type dispatch (head_dim / num_kv_heads / has_v_proj) at
+    Gemma4Attention.__init__ L561-580 is also derived from vLLM and covered by
+    tests/test_gemma4_layer_params.py.
 
     Tested directly in tests/test_gemma4_layer_params.py against the vLLM
     reference implementation.
@@ -135,7 +141,7 @@ def _gemma4_layer_params(
         else:
             kv_shared_target = -1
 
-        # (3) Select dims by attention type (Gemma4DecoderLayer.__init__ ~L561-577)
+        # Attention-type dispatch (Gemma4Attention.__init__ L561-580)
         if lt == "full_attention":
             hd_l = global_hd
             nkv_l = global_kv if k_eq_v else default_kv
