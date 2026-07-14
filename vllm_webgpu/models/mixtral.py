@@ -540,6 +540,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             suw_k = f"{sp}.{up_key}.weight"
             sdw_k = f"{sp}.{down_key}.weight"
             _shared_weights_present = all(k in self.weights for k in (sgw_k, suw_k, sdw_k))
+            if not _shared_weights_present:
+                missing_shared = [k for k in (sgw_k, suw_k, sdw_k) if k not in self.weights]
+                raise RuntimeError(
+                    f"L{layer_idx:02d} shared expert: weights not loaded: {missing_shared}"
+                )
         if not _shared_weights_present:
             self._zero_write(msc["expert_out"])
 
