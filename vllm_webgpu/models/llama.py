@@ -427,6 +427,15 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         Last-token prediction extracted via GPU copy_buffer_to_buffer.
         Returns: (1, 1) int32 (GPU argmax token id) when greedy, or (1, vocab) float32 logits when greedy is False.
         """
+        # WebGPU per-dimension dispatch limit is 65535. Several dispatches place T
+        # directly in a workgroup dimension (embedding_lookup, rms_norm, rope,
+        # kv_cache_store_both, flash_attn_prefill, add_rms_norm, etc.) and others
+        # place cdiv(T*dim, 1024) there, which can also exceed 65535 for large dim.
+        # The sequential fallback handles arbitrary-length prompts without any
+        # dispatch-dimension concern.
+        if T > 65535:
+            return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
+
         # APC prefix-cache hit: the first token's absolute position is > 0, meaning
         # num_computed cached K/V blocks already exist in the KV cache. The batch
         # prefill shader has no KV-cache binding and applies a batch-local causal
