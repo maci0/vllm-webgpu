@@ -793,7 +793,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             moe_acc = self._moe_acc_buf
             # Zero-initialize the accumulation buffer before the expert loop so
             # moe_accumulate_batched can do in-place += without a ping-pong buffer.
-            dev.queue.write_buffer(moe_acc.buf, 0, bytes(num_tokens * self.hidden_size * 2))
+            self._zero_write(moe_acc)
 
             # Pre-pack all unique experts' per-token weights into the GPU buffer as a
             # [num_unique_experts, T] f32 array. A single write_buffer here is correct:
