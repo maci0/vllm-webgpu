@@ -217,7 +217,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _hf_p = f"backbone.layers.{_i}.mixer"
                 for _proj in ("q", "k", "v"):
                     self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
-                        lambda v, _p=_proj: _acc.__setitem__(_p, v)
+                        lambda v, _p=_proj, _a=_acc: _a.__setitem__(_p, v)
                     )
 
         # The WebGPU MLP path does not implement bias addition. All known
