@@ -104,6 +104,12 @@ class WebGPUWorker(WorkerBase):
         set_random_seed(self.model_config.seed)
         return CompilationTimes(language_model=elapsed, encoder=0.0)
 
+    def execute_dummy_batch(self) -> None:
+        # WebGPU has no CUDA streams to keep warm, so this is intentionally a
+        # no-op. The vLLM abstract executor calls this when the scheduler loop
+        # runs with no batch to execute but unfinished requests remain.
+        logger.debug("execute_dummy_batch: no-op on WebGPU backend")
+
     def execute_model(
         self, scheduler_output: "SchedulerOutput"
     ) -> "ModelRunnerOutput | AsyncModelRunnerOutput | None":
