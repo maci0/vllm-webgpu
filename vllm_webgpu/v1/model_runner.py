@@ -717,6 +717,24 @@ class WebGPUModelRunner:
                 num_logprobs = _resolve_num_logprobs(sp, rid)
                 is_resumed = rid in resumed_req_ids
 
+                # Guard: a preempted request rescheduled with num_scheduled_tokens > 1
+                # would cause a state desync. The decode loop processes exactly 1 token
+                # and advances state["pos"] by 1, but _update_after_schedule will add
+                # num_scheduled_tokens to num_computed_tokens. If those two values
+                # diverge the scheduler believes the request is further ahead than the
+                # KV cache actually is, and subsequent steps write to wrong KV slots
+                # producing corrupt output. Raise here so the bug surfaces immediately
+                # rather than silently corrupting generations.
+                num_scheduled = scheduler_output.num_scheduled_tokens.get(rid, 1)
+                if is_resumed and num_scheduled > 1:
+                    raise RuntimeError(
+                        f"req {rid}: resumed preempted request has num_scheduled_tokens="
+                        f"{num_scheduled} but the WebGPU decode loop can only process 1 "
+                        f"token per step. Routing through multi-token prefill for resumed "
+                        f"requests is not yet implemented. Disable preemption or set "
+                        f"enable_prefix_caching=False to avoid this path."
+                    )
+
                 # Update block table: preempted/resumed requests replace their
                 # block table entirely; others append newly allocated blocks.
                 cur_new_bids = new_block_ids[i]
