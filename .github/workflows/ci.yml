@@ -28,6 +28,30 @@ jobs:
           source .venv/bin/activate
           python -m pytest tests/ -q --tb=short
 
+      - name: Check Gemma4 vLLM version pin
+        run: |
+          source .venv/bin/activate
+          python - <<'PYEOF'
+          import re, pathlib, vllm
+          src = pathlib.Path("vllm_webgpu/models/gemma4.py").read_text()
+          m = re.search(r'_EXPECTED_VLLM_VERSION\s*=\s*["\'](.+?)["\']', src)
+          assert m, "Could not locate _EXPECTED_VLLM_VERSION in gemma4.py"
+          pin = m.group(1)
+          installed = vllm.__version__
+          if installed != pin:
+              raise SystemExit(
+                  f"vLLM version mismatch: installed={installed!r}, "
+                  f"gemma4.py pin={pin!r}. "
+                  "Re-audit the three formula sites in "
+                  "vllm/model_executor/models/gemma4.py "
+                  "(Gemma4Attention.__init__ L461-483, "
+                  "Gemma4DecoderLayer.__init__ L559-608), "
+                  "update _EXPECTED_VLLM_VERSION, and re-run "
+                  "tests/test_gemma4_layer_params.py."
+              )
+          print(f"OK: vLLM {installed} matches gemma4.py pin")
+          PYEOF
+
       - name: Verify Gemma4 layer params match vLLM formulas
         run: |
           source .venv/bin/activate

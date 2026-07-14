@@ -24,12 +24,24 @@ Source references pinned to vllm 0.24.0:
 from __future__ import annotations
 
 import inspect
+import pathlib
+import re
 import types
 from unittest.mock import MagicMock
 
 import pytest
 
-_PINNED_VLLM_VERSION = "0.24.0"
+# Read the canonical pin from the source module rather than maintaining a
+# separate copy that could silently drift.
+_GEMMA4_SRC = (
+    pathlib.Path(__file__).parent.parent / "vllm_webgpu" / "models" / "gemma4.py"
+)
+_m = re.search(
+    r'_EXPECTED_VLLM_VERSION\s*=\s*["\'](.+?)["\']',
+    _GEMMA4_SRC.read_text(),
+)
+assert _m, "Could not locate _EXPECTED_VLLM_VERSION in vllm_webgpu/models/gemma4.py"
+_PINNED_VLLM_VERSION = _m.group(1)
 
 # ---------------------------------------------------------------------------
 # Source-level guards
