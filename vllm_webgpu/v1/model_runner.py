@@ -735,7 +735,7 @@ class WebGPUModelRunner:
                 # KV cache actually is, and subsequent steps write to wrong KV slots
                 # producing corrupt output. Raise here so the bug surfaces immediately
                 # rather than silently corrupting generations.
-                num_scheduled = scheduler_output.num_scheduled_tokens.get(rid, 1)
+                num_scheduled = scheduler_output.num_scheduled_tokens[rid]
                 if is_resumed and num_scheduled > 1:
                     raise RuntimeError(
                         f"req {rid}: resumed preempted request has num_scheduled_tokens="
