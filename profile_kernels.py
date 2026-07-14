@@ -62,15 +62,10 @@ def main() -> None:
     print(f"Weights loaded in {time.perf_counter()-t0:.1f}s")
 
     # ── Tokenize prompt ──────────────────────────────────────────────────────────
+    from vllm_webgpu.scripts import apply_chat_template_or_encode
     try:
         tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        messages = [{"role": "user", "content": args.prompt}]
-        try:
-            tok_ids = tok.apply_chat_template(
-                messages, add_generation_prompt=True, tokenize=True)
-        except Exception as _e:
-            print(f'  Warning: apply_chat_template failed ({_e}), using tok.encode')
-            tok_ids = tok.encode(args.prompt)
+        tok_ids = apply_chat_template_or_encode(tok, args.prompt)
         print(f"Prompt: {len(tok_ids)} tokens")
     except Exception as e:
         print(f"Tokenizer unavailable ({e}), using synthetic 32-token prompt")
@@ -79,7 +74,7 @@ def main() -> None:
     # ── Setup fake KV pool ────────────────────────────────────────────────────────
     # Compute block count before allocating so the pool covers every block ID in bt.
     # Two separate decode_steps passes: production timing + profiling.
-    total_toks = len(tok_ids) + args.warmup_steps + args.decode_steps + args.decode_steps
+    total_toks = len(tok_ids) + args.warmup_steps + 2 * args.decode_steps
     bt_blocks = cdiv(total_toks, block_size)
     num_blocks = max(512, bt_blocks)
 

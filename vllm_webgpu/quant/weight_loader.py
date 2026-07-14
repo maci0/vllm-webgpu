@@ -768,7 +768,7 @@ def load_safetensors_weights(
             # The shape heuristic: scales.shape[-1] == qweight.shape[-1] * 8 implies AWQ
             # packing (K, N//8); equals implies GPTQ packing (K//8, N). If scales are
             # absent, the shape ratio (shape[0] > shape[1]) approximates AWQ.
-            _qm = _raw_quant_cfg.get("quant_method", "").lower()
+            _qm = (_raw_quant_cfg.get("quant_method") or "").lower()
             if _qm in ("awq", "auto_awq", "awq_marlin"):
                 fmt = "awq"
             elif _qm in ("gptq", "gptq_marlin"):

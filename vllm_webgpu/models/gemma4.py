@@ -195,25 +195,24 @@ def _build_layer_params_from_config(
         use_dwm=use_dwm,
     )
 
-    # Cross-check: when the k_eq_v (laptop) variant is active, full_attention
-    # layers use global_kv heads. Verify that the stored kv_dim is consistent
-    # with the global_head_dim and num_global_key_value_heads attributes on
-    # model_config. A silent rename of either attribute in vLLM config causes
-    # the getattr calls above to fall back to wrong defaults, producing a kv_dim
-    # that no longer matches this independent recomputation.
+    # Guard against vLLM silently renaming the global attention config attributes.
+    # The getattr calls above fall back to wrong defaults when the attribute is
+    # absent, which would produce silently wrong kv_dim for every full_attention
+    # layer. Access both attributes directly (no fallback) so a rename surfaces
+    # as AttributeError rather than as a wrong dimension in every decode step.
     # Only applicable for k_eq_v=True: k_eq_v=False full_attention layers use
-    # default_kv heads (not global_kv), so the check would spuriously fail there.
+    # default_kv heads (not global_kv), so this check is not relevant there.
     if "full_attention" in layer_types and k_eq_v:
-        expected_fa_kv_dim = global_hd * global_kv
-        fa_kv_dims = {entry["kv_dim"] for entry, lt in zip(lp, layer_types) if lt == "full_attention"}
-        if expected_fa_kv_dim not in fa_kv_dims:
+        raw_fa_kv_dim = model_config.global_head_dim * model_config.num_global_key_value_heads
+        if raw_fa_kv_dim != global_hd * global_kv:
             raise ValueError(
-                f"full_attention kv_dim mismatch: expected {expected_fa_kv_dim} "
-                f"(global_head_dim={global_hd!r} "
-                f"* num_global_key_value_heads={global_kv!r}) "
-                f"but full_attention layers produced {fa_kv_dims}. "
-                "Check whether vLLM renamed global attention config attributes, or "
-                "whether the k_eq_v branch in formula (3) is misapplied."
+                f"full_attention kv_dim mismatch: "
+                f"model_config.global_head_dim={model_config.global_head_dim!r} "
+                f"* model_config.num_global_key_value_heads="
+                f"{model_config.num_global_key_value_heads!r} = {raw_fa_kv_dim}, "
+                f"but getattr-with-fallback produced global_hd={global_hd!r} "
+                f"* global_kv={global_kv!r} = {global_hd * global_kv}. "
+                "Check whether vLLM renamed global attention config attributes."
             )
 
     return lp

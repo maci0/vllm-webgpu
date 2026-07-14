@@ -22,14 +22,9 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # AutoTokenizer handles chat templates, special tokens, and all tokenizer variants.
     print("\nLoading tokenizer...")
+    from vllm_webgpu.scripts import apply_chat_template_or_encode
     tok = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
-    messages = [{"role": "user", "content": prompt}]
-    try:
-        input_ids_list = tok.apply_chat_template(
-            messages, add_generation_prompt=True, tokenize=True)
-    except Exception as _e:
-        print(f"  Warning: apply_chat_template failed ({_e}), falling back to tok.encode")
-        input_ids_list = tok.encode(prompt)
+    input_ids_list = apply_chat_template_or_encode(tok, prompt)
     _eos_raw = getattr(cfg, 'eos_token_id', None)
     _eos_raw = _eos_raw if _eos_raw is not None else tok.eos_token_id
     eos_ids = set(_eos_raw if isinstance(_eos_raw, list) else [_eos_raw]) - {None}
@@ -84,8 +79,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_table = np.arange(needed_blocks, dtype=np.uint32)
     slots = list(range(T))
 
-    model._greedy_decode = (temperature < GREEDY_TEMP)
-    _greedy = model._greedy_decode
+    _greedy = temperature < GREEDY_TEMP
+    model._greedy_decode = _greedy
 
     batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)
     logits = model.forward(

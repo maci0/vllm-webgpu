@@ -12,6 +12,7 @@ from __future__ import annotations
 import torch
 from vllm.logger import init_logger
 from vllm.utils.mem_constants import MiB_bytes
+from vllm.utils.torch_utils import get_dtype_size
 
 from vllm_webgpu.v1.cache_policy import (
     MIN_WEBGPU_BUFFER_BYTES,
@@ -134,9 +135,13 @@ def _allocate_kv_pool_hybrid(
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
-    assert dtype == torch.float16, f"only float16 KV cache supported, got {dtype}"
-    k_bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * 2
-    v_bytes_per_layer = num_blocks * block_size * num_kv_heads * (head_dim_v or head_dim) * 2
+    if dtype != torch.float16:
+        raise ValueError(
+            f"_allocate_kv_pool_hybrid only supports float16; got {dtype}. "
+            "Buffer sizes hardcode 2 bytes/element."
+        )
+    k_bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * get_dtype_size(dtype)
+    v_bytes_per_layer = num_blocks * block_size * num_kv_heads * (head_dim_v or head_dim) * get_dtype_size(dtype)
 
     if layer_types is not None and len(layer_types) != num_layers:
         raise ValueError(
@@ -188,8 +193,7 @@ def _allocate_kv_pool_per_layer(
         raise RuntimeError("model must not be None during KV cache allocation")
     if dtype != torch.float16:
         raise ValueError(
-            f"_allocate_kv_pool_per_layer only supports float16; got {dtype}. "
-            "Buffer sizes hardcode 2 bytes/element."
+            f"_allocate_kv_pool_per_layer only supports float16; got {dtype}."
         )
     model.kv_pool.clear()
     logger.info("KV cache (per-layer): %d layers, mixed dims (%s)", len(layer_params), dtype)
@@ -207,8 +211,8 @@ def _allocate_kv_pool_per_layer(
             raise ValueError(
                 f"num_kv_heads={lp['num_kv_heads']} but head_dim=0; invalid KV spec"
             )
-        k_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * 2
-        v_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp.get("head_dim_v", lp["head_dim"]) * 2
+        k_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp["head_dim"] * get_dtype_size(dtype)
+        v_bytes = num_blocks * block_size * lp["num_kv_heads"] * lp.get("head_dim_v", lp["head_dim"]) * get_dtype_size(dtype)
         model.kv_pool.append((
             WebGPUBuffer.empty(dev, k_bytes),
             WebGPUBuffer.empty(dev, v_bytes),

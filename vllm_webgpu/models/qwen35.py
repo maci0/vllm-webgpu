@@ -114,14 +114,13 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # conv_dim derived from the authoritative vLLM calculator so any upstream formula
-        # change (e.g. new GDN variant, TP sharding semantics) is picked up automatically.
-        # SD layout is guaranteed here: DS is rejected above in the same __init__ block.
-        # _orient_conv_shape returns (state_len, dim) for SD, so conv_dim is at index 1.
-        _c_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            1, self._lin_k_heads, self._lin_v_heads, self._lin_k_dim, self._lin_v_dim,
-            self._lin_conv_kernel, 0)
-        self._lin_conv_dim: int = _c_shape[1]
+        # conv_dim formula from vLLM's GatedDeltaNet implementation:
+        # Q and K share the same head count (GDN property), so K_dim == Q_dim.
+        # The layout-independent formula is: K_heads*K_dim*2 + V_heads*V_dim.
+        # Using the formula directly avoids the fragile _orient_conv_shape[1] index
+        # which would silently return state_len (3) instead of the correct dim under
+        # DS layout if the DS rejection guard above is ever removed.
+        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         self._gdn_k_base: int = self._lin_k_heads * self._lin_k_dim

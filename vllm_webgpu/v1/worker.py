@@ -110,11 +110,13 @@ class WebGPUWorker(WorkerBase):
         # runs with no batch to execute but unfinished requests remain.
         logger.debug("execute_dummy_batch: no-op on WebGPU backend")
 
+    @torch.inference_mode()
     def execute_model(
         self, scheduler_output: "SchedulerOutput"
     ) -> "ModelRunnerOutput | AsyncModelRunnerOutput | None":
         return self.model_runner.execute_model(scheduler_output)
 
+    @torch.inference_mode()
     def sample_tokens(
         self, grammar_output: "GrammarOutput | None"
     ) -> "ModelRunnerOutput | AsyncModelRunnerOutput":

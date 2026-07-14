@@ -1,9 +1,9 @@
 from __future__ import annotations
-import itertools
 import math
 from typing import TYPE_CHECKING
 
 import numpy as np
+import wgpu as wgpu_lib
 
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
@@ -497,10 +497,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
         """
-        bufs = list(itertools.chain(
-            (("conv", i, b) for i, b in self._conv_states.items()),
-            (("ssm",  i, b) for i, b in self._ssm_states.items()),
-        ))
+        bufs = (
+            [("conv", i, b) for i, b in self._conv_states.items()] +
+            [("ssm",  i, b) for i, b in self._ssm_states.items()]
+        )
         return self._readback_recurrent_states(bufs)
 
     def restore_recurrent_states(self, states: dict) -> None:
@@ -693,8 +693,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         along axis 0 (i.e., their flat byte arrays are concatenated in order
         Q, K, V).  The originals are deleted after packing.
         """
-        import wgpu as _wgpu_lib
-
         dev = self.wgpu_device.wgpu_device
 
         for i, lt in enumerate(self._layer_types):
@@ -755,13 +753,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 v_buf = self.weights[v_key]
                 _staging_w = dev.create_buffer(
                     size=total_nb,
-                    usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+                    usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
                 _enc_w = dev.create_command_encoder()
                 _enc_w.copy_buffer_to_buffer(q_buf.buf, 0, _staging_w, 0, q_nb)
                 _enc_w.copy_buffer_to_buffer(k_buf.buf, 0, _staging_w, q_nb, k_nb)
                 _enc_w.copy_buffer_to_buffer(v_buf.buf, 0, _staging_w, q_nb + k_nb, v_nb)
                 dev.queue.submit([_enc_w.finish()])
-                _staging_w.map_sync(mode=_wgpu_lib.MapMode.READ)
+                _staging_w.map_sync(mode=wgpu_lib.MapMode.READ)
                 _raw_w = bytes(_staging_w.read_mapped())
                 _staging_w.unmap()
                 q_w = np.frombuffer(_raw_w[:q_nb], dtype=np.int32).reshape(q_buf.shape)
@@ -811,13 +809,13 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     _q_snb, _k_snb, _v_snb = q_sb.nbytes, k_sb.nbytes, v_sb.nbytes
                     _staging_s = dev.create_buffer(
                         size=_q_snb + _k_snb + _v_snb,
-                        usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
+                        usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
                     _enc_s = dev.create_command_encoder()
                     _enc_s.copy_buffer_to_buffer(q_sb.buf, 0, _staging_s, 0, _q_snb)
                     _enc_s.copy_buffer_to_buffer(k_sb.buf, 0, _staging_s, _q_snb, _k_snb)
                     _enc_s.copy_buffer_to_buffer(v_sb.buf, 0, _staging_s, _q_snb + _k_snb, _v_snb)
                     dev.queue.submit([_enc_s.finish()])
-                    _staging_s.map_sync(mode=_wgpu_lib.MapMode.READ)
+                    _staging_s.map_sync(mode=wgpu_lib.MapMode.READ)
                     _raw_s = bytes(_staging_s.read_mapped())
                     _staging_s.unmap()
                     q_sc = np.frombuffer(_raw_s[:_q_snb], dtype=np.float32).reshape(q_sb.shape)
