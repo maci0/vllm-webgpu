@@ -132,6 +132,22 @@ class WebGPUPlatform(Platform):
                 existing_backend,
             )
         parallel_config.distributed_executor_backend = "uni"
+        # Dual Batch Overlap requires GPU/CPU async pipelining, which does not
+        # exist on a synchronous backend. With enable_dbo=True the engine schedules
+        # num_scheduler_steps=2, causing two sequential forward passes per engine
+        # loop and incorrect throughput accounting. The default is False; guard
+        # against an explicit --enable-dbo override. Mirrors cpu.py:156-158.
+        if parallel_config.enable_dbo:
+            logger.warning(
+                "WebGPU backend is synchronous and does not support Dual Batch "
+                "Overlap (enable_dbo). Disabling enable_dbo."
+            )
+            parallel_config.enable_dbo = False
+        # cudagraph_capture_sizes is not consumed by the WebGPU model runner
+        # (it bypasses vLLM's GPU model runner entirely), but leaving a non-empty
+        # list makes the config inconsistent with a non-CUDA platform. Clear it
+        # to satisfy the platform contract. Mirrors cpu.py:177.
+        vllm_config.compilation_config.cudagraph_capture_sizes = []
         vllm_config.scheduler_config.enable_chunked_prefill = False
         if vllm_config.model_config is not None:
             # Re-validate after disabling chunked prefill: a model whose

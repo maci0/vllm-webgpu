@@ -12,6 +12,7 @@ from vllm.logger import init_logger
 from pydantic import ValidationError
 
 from compressed_tensors import QuantizationConfig as _QuantizationConfig
+from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
 from compressed_tensors.quantization import QuantizationType as _QuantizationType
 from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
 from compressed_tensors.utils.safetensors_load import (
@@ -1280,13 +1281,12 @@ def load_safetensors_weights(
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                         ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                         # E8M0 exponent decode: scale = 2^(u8 - 127).
-                        # decompress_mx_scale from compressed_tensors.compressors.mx_utils would
-                        # produce bit-for-bit identical results (2^k for integer k is exactly
-                        # representable in both bfloat16 and float32), but requires a torch
-                        # tensor roundtrip (from_numpy + .to(torch.float32).numpy()) that the
-                        # direct numpy expression avoids.
-                        # ponytail: intentional, avoids torch roundtrip; vLLM dequant_mxfp8_to_bf16 uses the same pattern inline
-                        ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)
+                        # Use decompress_mx_scale from compressed_tensors (the canonical
+                        # implementation). It returns bfloat16; cast to float32 for GPU upload.
+                        import torch as _torch
+                        ws_f32 = _decompress_mx_scale(
+                            _torch.from_numpy(ws_u8)
+                        ).to(_torch.float32).numpy()
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2
                         if not (ws_u8.ndim < 2 or ws_u8.shape[-1] == K_ // _MXFP4_BLOCK_SIZE):
@@ -1722,8 +1722,9 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     # Commit any remaining write_buffer calls before returning.
     _flush_pending(wgpu_device)
 
-    n_remapped = _apply_multimodal_remap(weights)
-    if n_remapped:
-        logger.info("Remapped %d language_model.* keys", n_remapped)
+    if any(k.startswith(("model.language_model.", "language_model.")) for k in weights):
+        n_remapped = _apply_multimodal_remap(weights)
+        if n_remapped:
+            logger.info("Remapped %d language_model.* keys", n_remapped)
     logger.info("Loaded %d tensors from MLX int4 dir %s", len(weights), model_dir)
     return weights

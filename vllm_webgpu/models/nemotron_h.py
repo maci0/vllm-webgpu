@@ -1,4 +1,5 @@
 from __future__ import annotations
+import functools
 import math
 from typing import TYPE_CHECKING
 
@@ -32,17 +33,6 @@ def _a_log_transform(arr: "np.ndarray") -> "np.ndarray":
     return -np.exp(arr)
 
 
-def _scale_sink(acc: dict, proj: str) -> "Callable[[np.ndarray], None]":
-    """Return a callback that stores a scale array in acc[proj].
-
-    Replaces the per-projection lambda closures that used __setitem__ to work
-    around the inability to assign inside a lambda body.
-    """
-    def _s(v: "np.ndarray") -> None:
-        acc[proj] = v
-    return _s
-
-
 # Verify that the upstream mapper fields match the snapshot this code was written
 # against (vLLM 0.24.0). Catches upstream changes at import time.
 _mapper = _NemotronHForCausalLM.hf_to_vllm_mapper
@@ -56,7 +46,7 @@ if _mapper.orig_to_new_substr != {"A_log": "A", "embeddings": "embed_tokens"}:
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_substr changed upstream: "
         f"{_mapper.orig_to_new_substr!r}. Review load_weights before removing this assertion."
     )
-if _mapper.orig_to_new_renamings != []:
+if _mapper.orig_to_new_renamings:
     raise AssertionError(
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_renamings changed upstream: "
         f"{_mapper.orig_to_new_renamings!r}. Review load_weights before removing this assertion."
@@ -243,7 +233,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _hf_p = f"backbone.layers.{_i}.mixer"
                 for _proj in ("q", "k", "v"):
                     self._scale_transforms[f"{_hf_p}.{_proj}_proj.weight.scales"] = (
-                        _scale_sink(_acc, _proj)
+                        functools.partial(_acc.__setitem__, _proj)
                     )
 
         # The WebGPU MLP path does not implement bias addition. All known

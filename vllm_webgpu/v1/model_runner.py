@@ -458,12 +458,12 @@ class WebGPUModelRunner:
                         # Sentinel row for requests with no logprob data. Use
                         # all-zero token IDs and -inf logprobs so any accidental
                         # read produces a detectable value rather than random memory.
-                        # selected_token_ranks is int64 to match the dtype produced
-                        # by batched_count_greater_than; _stack_logprobs casts to int32.
+                        # selected_token_ranks uses int32 to match LogprobsTensors.empty_cpu();
+                        # _stack_logprobs normalizes both to int32 anyway.
                         pieces.append(LogprobsTensors(
                             torch.zeros(1, max_k, dtype=torch.int32),
                             torch.full((1, max_k), -float('inf')),
-                            torch.zeros(1, dtype=torch.int64),
+                            torch.zeros(1, dtype=torch.int32),
                         ))
                 built_logprobs = _stack_logprobs(pieces)
 
@@ -716,7 +716,7 @@ class WebGPUModelRunner:
                         "registering state)"
                     )
                 pos = state["pos"]
-                blk_ids = list(state["block_ids"])
+                blk_ids = state["block_ids"]  # lazily copied below only when modified
                 sp = state.get("sampling_params")
                 num_logprobs = _resolve_num_logprobs(sp, rid)
                 is_resumed = rid in resumed_req_ids
@@ -731,7 +731,7 @@ class WebGPUModelRunner:
                 if cur_new_bids is not None:
                     flat_new = list(chain.from_iterable(cur_new_bids))
                     if is_resumed:
-                        blk_ids = flat_new
+                        blk_ids = flat_new  # already a fresh list from chain
                         # Realign pos with the scheduler's authoritative view.
                         # After preemption num_computed_tokens is often 0 (full
                         # recompute); using the stale _req_state pos would write
@@ -739,6 +739,7 @@ class WebGPUModelRunner:
                         # KV slots 0..old_pos-1 in the freshly allocated blocks.
                         pos = cached.num_computed_tokens[i]
                     else:
+                        blk_ids = list(blk_ids)  # copy-on-write before mutating
                         blk_ids.extend(flat_new)
 
                 # Decode step: forward one token at the current position.
@@ -836,7 +837,8 @@ class WebGPUModelRunner:
                 # replay_prefix_for_ssm has the full sequence if this request is
                 # later preempted and resumed with prefix-cached KV.
                 state["pos"] = pos + 1
-                state["block_ids"] = blk_ids
+                if blk_ids is not state["block_ids"]:
+                    state["block_ids"] = blk_ids
                 state["last_tok"] = stok
                 state["recurrent_states"] = decode_recurrent_states
                 if self._has_replay:

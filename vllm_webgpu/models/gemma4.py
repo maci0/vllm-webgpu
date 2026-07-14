@@ -847,6 +847,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
         _hstate  = 0
         _freq_buf = self._rope_freq_buf
+        add_n     = T * hidden  # constant for the entire call; gelu_n varies per layer
 
         for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), self._PREFILL_CHUNK)):
             with self._batched_dispatch():
@@ -875,7 +876,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     is_kv_shared    = lp["is_kv_shared"]
                     kv_shared_target = lp["kv_shared_target"]
                     is_sliding      = lp["is_sliding"]
-                    add_n           = T * hidden
                     gelu_n          = T * inter
                     _ls             = self._layer_scales[i]
 
@@ -1322,7 +1322,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 **self._quant_extra(f"{p}.self_attn.q_proj", uq_q)},
                                (q_dim, 1, 1))
                 if not is_kv_shared:
-                    uq_k = self._uq_for_key(kw)
+                    # When has_v=True, uq_k was already computed in the outer branch above.
+                    # When has_v=False (global attention, V=K), compute it here for the first time.
+                    if not has_v:
+                        uq_k = self._uq_for_key(kw)
                     self._dispatch("matmul_quant",
                                    [normed_x, self.weights[kw],
                                     self._scales_buf(kw, uq_k, self._dummy_buf), sc["k_buf"]],
