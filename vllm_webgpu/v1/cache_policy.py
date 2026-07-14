@@ -72,18 +72,11 @@ def allocate_kv_from_tensors(
 ) -> None:
     """Allocate KV cache buffers from vLLM's authoritative KVCacheTensor list.
 
-    K and V byte counts are computed directly from spec fields
-    (block_size, num_kv_heads, dtype, head_size, head_size_v), split proportionally
-    to head_size (K) and head_size_v (V). Total bytes are derived from
-    spec.real_page_size_bytes and split by head_size / (head_size + head_size_v),
-    instead of using tensor.size // 2 which would silently over- or under-allocate
-    when head dimensions are asymmetric (head_size != head_size_v) or per-token-head
-    scale bytes inflate tensor.size beyond what K and V data occupies.
-
-    Dividing tensor.size by 2 would silently over-allocate when the KV cache
-    dtype uses per-token-head scales, because page_size_bytes (and therefore
-    tensor.size) includes those scale bytes but the WebGPU K/V shaders do not
-    read them. Non-KV layers receive 16-byte placeholder buffers.
+    K and V buffer sizes are computed directly from spec fields (num_blocks,
+    block_size, num_kv_heads, head_size / head_size_v, dtype) rather than
+    splitting real_page_size_bytes (which introduces float division for asymmetric
+    heads) or halving tensor.size (which includes per-token-head scale overhead).
+    Non-KV layers receive 16-byte placeholder buffers.
     """
     if model is None:
         raise RuntimeError("model must not be None during KV cache allocation")
@@ -441,7 +434,11 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
         if _model is not None else 0
     )
 
-    _nodes = get_visible_memory_node() or [0]
+    # get_visible_memory_node() always returns [0] on macOS (hardcoded in vLLM's
+    # cpu_resource_utils.py). The assert below is unreachable there but keeps
+    # the guard valid on Linux where /proc/{pid}/status may lack Mems_allowed_list.
+    _nodes = get_visible_memory_node()
+    assert _nodes, "No visible memory nodes"
     node_infos = [get_memory_node_info(n) for n in _nodes]
     total_memory = sum(i.total_memory for i in node_infos)
     total_available = sum(i.available_memory for i in node_infos)

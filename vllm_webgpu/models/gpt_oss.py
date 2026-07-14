@@ -404,7 +404,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         gate_buf, up_buf = self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter, uq_g=uq_g, uq_u=uq_u)
         msc = self._moe_sc
         if "expert_gate_biased" not in msc:
-            msc["expert_gate_biased"] = self._make_buf(inter * 2)
+            msc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
 
         # Inject gate bias: expert_gate → expert_gate_biased (different src/dst: no alias).
         # When g_bias is absent use expert_gate directly as the gate source for gelu_mul.

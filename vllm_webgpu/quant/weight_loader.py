@@ -2,7 +2,6 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-import huggingface_hub.constants as _hf_constants
 
 import numpy as np
 import vllm_webgpu.envs as _webgpu_envs
@@ -286,14 +285,11 @@ def detect_weight_format(path: str) -> "tuple[str, str | None, str | None]":
             return "safetensors_sharded", index_path, None
         # No known safetensors manifest found in directory; probe the two
         # known single-file names. consolidated.safetensors covers Mistral
-        # single-file layout (also the value vLLM patches the constant to at
-        # runtime). model.safetensors is the HF default. Read the constant at
-        # call time so any runtime patch (e.g. vLLM's _mistral_patch_hf_hub_constants)
-        # is reflected correctly.
+        # single-file layout. model.safetensors is the HF default.
         _consolidated = p / "consolidated.safetensors"
         if _consolidated.exists():
             return "safetensors", None, str(_consolidated)
-        return "safetensors", None, str(p / _hf_constants.SAFETENSORS_SINGLE_FILE)
+        return "safetensors", None, str(p / "model.safetensors")
     if p.suffix == ".gguf":
         return "gguf", None, None
     if p.suffix == ".safetensors":

@@ -9,6 +9,17 @@ from types import SimpleNamespace
 import numpy as np
 
 
+def _pick_token(logits_2d, greedy: bool, temperature: float, top_p: float) -> int:
+    """Sample or greedily decode the next token from a (1, vocab_or_1) logits row."""
+    from vllm_webgpu.utils import sample_token
+    row = logits_2d[0]
+    if greedy and logits_2d.shape[-1] == 1:
+        return int(row[0])
+    if greedy:
+        return sample_token(row, temperature=temperature)
+    return sample_token(row, temperature=temperature, top_p=top_p)
+
+
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
     print(f"\nLoading model from: {model_dir}")
 
@@ -35,7 +46,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nInitializing WebGPU device...")
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.utils import sample_token, GREEDY_TEMP
+    from vllm_webgpu.utils import GREEDY_TEMP
     from vllm_webgpu.config import get_config
     from vllm.utils.math_utils import cdiv
 
@@ -91,18 +102,13 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # DiffusionGemma always returns full (num_tokens, vocab) float32 logits regardless of
     # _greedy_decode, so check shape before trusting logits[-1, 0] as a token ID.
-    if _greedy and logits.shape[-1] == 1:
-        last_token = int(logits[-1, 0])
-        print(f"  Last prefill logit: argmax={last_token}")
-    elif _greedy:
-        last_token = sample_token(logits[-1], temperature=temperature)
-        print(f"  Last prefill logit: argmax={last_token}, value={float(logits[-1][last_token]):.2f}, "
-              f"std={float(logits[-1].std()):.2f}")
-    else:
+    last_token = _pick_token(logits[-1:], _greedy, temperature, top_p)
+    if logits.shape[-1] != 1:
         _best = int(np.argmax(logits[-1]))
-        last_token = sample_token(logits[-1], temperature=temperature, top_p=top_p)
         print(f"  Last prefill logit: argmax={_best}, value={float(logits[-1][_best]):.2f}, "
               f"std={float(logits[-1].std()):.2f}")
+    else:
+        print(f"  Last prefill logit: argmax={last_token}")
 
     # Decode
     print(f"\nDecoding (max {max_tokens} tokens)...")
@@ -129,12 +135,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
         # DiffusionGemma always returns full (1, vocab) float32 logits regardless of
         # _greedy_decode, so check shape before trusting logits[0, 0] as a token ID.
-        if _greedy and logits.shape[-1] == 1:
-            last_token = int(logits[0, 0])
-        elif _greedy:
-            last_token = sample_token(logits[0], temperature=temperature)
-        else:
-            last_token = sample_token(logits[0], temperature=temperature, top_p=top_p)
+        last_token = _pick_token(logits, _greedy, temperature, top_p)
 
         if (step + 1) % 5 == 0:
             print(f"  [{step+1} tokens]: {repr(tok.decode(generated)[-60:])}", flush=True)

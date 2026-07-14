@@ -131,7 +131,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_dim: int = _conv_shape[-1]
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q (offset = K_heads * K_dim). V follows K+Q.
-        self._gdn_q_offset: int = 0
         self._gdn_k_offset: int = self._lin_k_heads * self._lin_k_dim
         self._gdn_v_offset: int = self._lin_k_heads * self._lin_k_dim * 2
 
@@ -642,7 +641,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                             self._ssm_gpu[layer_idx], sc["gdn_out"]],
                            {"K_DIM": self._lin_k_dim, "V_DIM": self._lin_v_dim,
                             "NUM_K_HEADS": kh, "NUM_V_HEADS": vh,
-                            "Q_BASE": self._gdn_q_offset, "K_BASE": self._gdn_k_offset, "V_BASE": self._gdn_v_offset},
+                            "K_BASE": self._gdn_k_offset, "V_BASE": self._gdn_v_offset},
                            (vh, 1, 1))
 
             # 7. Per-head RMSNorm + SiLU gate (z * sigmoid(z)) → gated
