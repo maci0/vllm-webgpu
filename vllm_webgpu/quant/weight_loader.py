@@ -481,7 +481,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
     # Unpack 8 nibbles per int32 → (K, N) uint8
     w_int4 = _unpack_nibbles(qw, _AWQ_NIBBLE_SHIFTS).reshape(K, N).astype(np.uint8)
-    z_int4 = _unpack_nibbles(qz, _AWQ_NIBBLE_SHIFTS).reshape(G, N).astype(np.uint8)
+    z_int4 = _unpack_nibbles(qz, _AWQ_NIBBLE_SHIFTS).astype(np.uint8)
 
     w_f32 = _scale_dequant(w_int4, z_int4, sc, group_size, g_idx)
     return w_f32.T.astype(np.float16)  # (N, K)
@@ -1263,11 +1263,10 @@ def load_safetensors_weights(
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                         ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                         # E8M0 exponent decode: scale = 2^(u8 - 127).
-                        # Intentionally inlined as a numpy float32 expression rather
-                        # than calling compressed_tensors.compressors.mx_utils.decompress_mx_scale,
-                        # which returns bfloat16 and would require a torch roundtrip.
-                        # The float32 path avoids rounding the exponent decode to bf16
-                        # before it is used as a multiplicative scale factor.
+                        # Do NOT replace with compressed_tensors.compressors.mx_utils.decompress_mx_scale:
+                        # that function returns bfloat16, which would require a torch roundtrip to float32
+                        # and rounds the exponent decode to bf16 precision before it is applied as a scale
+                        # factor. The direct numpy float32 expression avoids that precision loss.
                         ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2

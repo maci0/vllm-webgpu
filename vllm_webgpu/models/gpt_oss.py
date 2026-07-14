@@ -180,7 +180,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         Using the parent FFN scratch buffers (gate_buf/up_buf, sized at
         intermediate_size) would overflow when q_dim or kv_dim > intermediate_size.
         """
-        super()._init_scratch_buffers(max_ctx)
+        super()._init_scratch_buffers(max_ctx, qkv_size=4)
         if self._attn_bias:
             Q      = self.q_dim
             KV     = self.kv_dim

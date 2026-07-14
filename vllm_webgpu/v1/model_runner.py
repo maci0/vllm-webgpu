@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import cached_property
+from itertools import chain
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -140,7 +141,7 @@ def _compute_prompt_logprobs(
 
     lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
     lp = Sampler.gather_logprobs(lp_t, k, torch.tensor(tok_ids[1:], dtype=torch.int64))
-    return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
+    return LogprobsTensors(lp.logprob_token_ids, lp.logprobs, lp.selected_token_ranks.to(torch.int32))
 
 
 def _stack_logprobs(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
@@ -562,7 +563,7 @@ class WebGPUModelRunner:
             raw_bids = req.block_ids
             if not raw_bids:
                 raise RuntimeError(f"req {rid}: scheduler produced NewRequestData with empty block_ids")
-            blk_ids = [b for sub in raw_bids for b in sub]
+            blk_ids = list(chain.from_iterable(raw_bids))
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -706,7 +707,7 @@ class WebGPUModelRunner:
                         f"resumed req {rid} has no new_block_ids from scheduler"
                     )
                 if cur_new_bids is not None:
-                    flat_new = [b for sub in cur_new_bids for b in sub]
+                    flat_new = list(chain.from_iterable(cur_new_bids))
                     if is_resumed:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.

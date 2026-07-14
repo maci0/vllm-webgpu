@@ -28,10 +28,9 @@ def main() -> None:
     from huggingface_hub import snapshot_download
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.utils import SHADERS_DIR
     from vllm_webgpu.config import get_config
     wgpu_dev = WebGPUDevice.initialize(get_config().power_preference)
-    pipeline_cache = PipelineCache(wgpu_dev.wgpu_device, SHADERS_DIR)
+    pipeline_cache = PipelineCache(wgpu_dev.wgpu_device)
 
     # ── Load model ────────────────────────────────────────────────────────────────
     model_path = args.model if Path(args.model).is_dir() else snapshot_download(args.model)

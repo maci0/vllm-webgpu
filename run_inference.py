@@ -40,13 +40,13 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nInitializing WebGPU device...")
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.utils import SHADERS_DIR, sample_token, GREEDY_TEMP
+    from vllm_webgpu.utils import sample_token, GREEDY_TEMP
     from vllm_webgpu.config import get_config
     from vllm.utils.math_utils import cdiv
 
     device = WebGPUDevice.initialize(get_config().power_preference)
     print(f"  Adapter: f16={device.supports_f16}")
-    pipeline_cache = PipelineCache(device.wgpu_device, SHADERS_DIR)
+    pipeline_cache = PipelineCache(device.wgpu_device)
 
     # Build model
     print("\nBuilding model...")
@@ -164,7 +164,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_tokens",  type=int,   default=64)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p",       type=float, default=0.9)
-    parser.add_argument("--gdn_bf16",    action="store_true",
+    parser.add_argument("--gdn-bf16",    action="store_true",
                         help="Experimental: bf16 GDN weights for Qwen3.5 (safetensors BF16 only)")
     args = parser.parse_args()
 

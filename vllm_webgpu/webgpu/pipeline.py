@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from vllm.logger import init_logger
+from vllm_webgpu.utils import SHADERS_DIR
 
 logger = init_logger(__name__)
 
@@ -14,7 +15,7 @@ class PipelineKey:
 
 
 class PipelineCache:
-    def __init__(self, wgpu_device, shaders_dir: Path) -> None:
+    def __init__(self, wgpu_device, shaders_dir: Path = SHADERS_DIR) -> None:
         self._device = wgpu_device
         self._shaders_dir = Path(shaders_dir)
         self._cache: dict[PipelineKey, object] = {}

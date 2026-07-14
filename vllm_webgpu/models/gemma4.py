@@ -205,7 +205,7 @@ def _build_layer_params_from_config(
     # default_kv heads (not global_kv), so the check would spuriously fail there.
     if "full_attention" in layer_types and k_eq_v:
         expected_fa_kv_dim = global_hd * global_kv
-        fa_kv_dims = {p["kv_dim"] for p, lt in zip(lp, layer_types) if lt == "full_attention"}
+        fa_kv_dims = {entry["kv_dim"] for entry, lt in zip(lp, layer_types) if lt == "full_attention"}
         if expected_fa_kv_dim not in fa_kv_dims:
             raise ValueError(
                 f"full_attention kv_dim mismatch: expected {expected_fa_kv_dim} "

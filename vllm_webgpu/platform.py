@@ -149,7 +149,6 @@ class WebGPUPlatform(Platform):
         vllm_config.scheduler_config.async_scheduling = False
         if not vllm_config.cache_config.user_specified_block_size:
             vllm_config.cache_config.block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
-            vllm_config.cache_config.user_specified_block_size = True
 
     @classmethod
     def get_attn_backend_cls(
