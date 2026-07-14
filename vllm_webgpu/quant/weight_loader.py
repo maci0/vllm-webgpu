@@ -1246,11 +1246,12 @@ def load_safetensors_weights(
                     try:
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                         ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
-                        # E8M0 exponent decode: scale = 2^(u8 - 127). This matches
-                        # compressed_tensors.compressors.mx_utils.decompress_mx_scale
-                        # and torch.exp2(scales.to(torch.float32) - 127.0) used by the
-                        # MXFP8 path below via vllm.model_executor.layers.quantization
-                        # .utils.mxfp8_utils.dequant_mxfp8_to_bf16.
+                        # E8M0 exponent decode: scale = 2^(u8 - 127).
+                        # Intentionally inlined as a numpy float32 expression rather
+                        # than calling compressed_tensors.compressors.mx_utils.decompress_mx_scale,
+                        # which returns bfloat16 and would require a torch roundtrip.
+                        # The float32 path avoids rounding the exponent decode to bf16
+                        # before it is used as a multiplicative scale factor.
                         ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2

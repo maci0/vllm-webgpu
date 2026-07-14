@@ -248,19 +248,14 @@ class WebGPUModelRunner:
         )
 
     def _get_lp_list(self) -> "list | None":
-        """Return per-layer attention params, guarding against model=None.
+        """Return per-layer attention params, or None when not available.
 
         Returns model._lp, or None when the model is not loaded or does not
-        expose _lp.
-
-        Note: when self.model is None (always the case on the first call, since
-        vLLM calls get_kv_cache_spec before load_model), returns None and lets
-        kv_cache_spec fall through to the get_layer_types path. If Gemma4 GGUF
-        support is added later, the GGUF loader should set _lp on the model
-        object directly (matching the getattr(self.model, '_lp', None) path).
+        expose _lp. When self.model is None (always the case on the first call,
+        since vLLM calls get_kv_cache_spec before load_model), returns None and
+        lets kv_cache_spec fall through to the get_layer_types path.
         """
-        lp = getattr(self.model, "_lp", None) if self.model is not None else None
-        return lp
+        return getattr(self.model, "_lp", None)
 
     def get_kv_cache_spec(self) -> "dict[str, KVCacheSpec]":
         return self.kv_cache_spec

@@ -69,7 +69,8 @@ def main() -> None:
         try:
             tok_ids = tok.apply_chat_template(
                 messages, add_generation_prompt=True, tokenize=True)
-        except Exception:
+        except Exception as _e:
+            print(f'  Warning: apply_chat_template failed ({_e}), using tok.encode')
             tok_ids = tok.encode(args.prompt)
         print(f"Prompt: {len(tok_ids)} tokens")
     except Exception as e:

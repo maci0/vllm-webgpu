@@ -16,6 +16,11 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+_PROJ_WEIGHT_SUFFIXES = (
+    '.q_proj.weight', '.k_proj.weight', '.v_proj.weight', '.o_proj.weight',
+    '.gate_proj.weight', '.up_proj.weight', '.down_proj.weight',
+)
+
 
 class LlamaWebGPUModel(BaseWebGPUModel):
     """
@@ -222,11 +227,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         if self._is_moe:
             self._batch_matmul_supported = False
         else:
-            _proj_suffixes = {'q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj'}
             proj_keys = [
                 k for k in self.weights
                 if k.startswith('model.layers.')
-                and k.endswith(tuple(f'.{s}.weight' for s in _proj_suffixes))
+                and k.endswith(_PROJ_WEIGHT_SUFFIXES)
             ]
             self._batch_matmul_supported = bool(proj_keys) and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
 

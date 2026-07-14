@@ -481,8 +481,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 if has_v_proj:
                     self._gemm_adaptive(sc["normed"], f"{p}.self_attn.v_proj.weight", sc["v_buf"], hidden, kv_dim, num_tokens)
                     v_src = sc["v_buf"]
-                else:
-                    v_src = sc["k_buf"]  # global attention: V = K
 
             _freq_buf = self._rope_freq_buf
             rc = self._rope_consts[layer_idx]

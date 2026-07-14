@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -119,7 +120,6 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
-    import torch  # noqa: PLC0415
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     inv_freq_extr = 1.0 / pos_freqs
     inv_freq_intr = 1.0 / (factor * pos_freqs)
@@ -457,10 +457,10 @@ class BaseWebGPUModel(ABC):
         """Lazily allocate GPU sampler buffers and return the token output buffer."""
         if self._gpu_sample_tok is None:
             import wgpu as wgpu_lib
-            dev = self.wgpu_device.wgpu_device
-            self._gpu_sample_tok   = WebGPUBuffer.empty(dev, 4)      # 1 × u32
+            self._gpu_sample_tok   = self._make_buf(4)      # 1 × u32
             # MAP_READ staging buffer: copy argmax result here inside the MAIN command encoder,
             # then map after the single main sync — eliminates the second GPU sync per token.
+            dev = self.wgpu_device.wgpu_device
             self._gpu_sample_staging = dev.create_buffer(
                 size=4,
                 usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)

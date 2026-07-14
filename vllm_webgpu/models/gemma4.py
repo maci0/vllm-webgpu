@@ -876,12 +876,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     # For KV-shared layers only Q is used; K and V come from the target cache.
                     self._batch_gemm(normed_x, qw, b["q_buf"], hidden, q_dim, T)
                     if not is_kv_shared:
-                        v_src = b["v_buf"]
                         kw = f"{p}.self_attn.k_proj.weight"
                         self._batch_gemm(normed_x, kw, b["k_buf"], hidden, kv_dim, T)
                         if has_v:
                             self._batch_gemm(normed_x, f"{p}.self_attn.v_proj.weight",
                                        b["v_buf"], hidden, kv_dim, T)
+                            v_src = b["v_buf"]
                         else:
                             v_src = b["k_buf"]   # global attention: V = K (pre-RoPE)
                     # Resolve which KV pool slot to read/write.
@@ -1282,6 +1282,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # Defaults cover the is_kv_shared=True path where neither the fused nor the
             # separate-projection branch assigns these variables.
             _v_src = sc["k_buf"]
+            _k_src = sc["k_buf"]
             _v_src_offset = 0
             if _use_fused_qkv:
                 # All f16, non-shared: single fused_qkv dispatch → sc["qkv_buf"] laid out as [Q | K | V].
@@ -1304,7 +1305,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 **self._quant_extra(f"{p}.self_attn.q_proj", uq_q)},
                                (q_dim, 1, 1))
                 if not is_kv_shared:
-                    _v_src = sc["v_buf"]
                     _k_src = sc["k_buf"]
                     _v_src_offset = 0
                     self._dispatch("matmul_quant",
@@ -1320,6 +1320,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                        {"K": hidden, "N": kv_dim, "USE_QUANT": uq_v,
                                         **self._quant_extra(f"{p}.self_attn.v_proj", uq_v)},
                                        (kv_dim, 1, 1))
+                        _v_src = sc["v_buf"]
                     else:
                         _v_src = sc["k_buf"]  # global attention: V = K
                 _q_src = sc["q_buf"]

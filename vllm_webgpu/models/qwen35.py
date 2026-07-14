@@ -325,13 +325,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         (standard PyTorch depthwise-conv layout). The GPU shader reads bytes
         identically for both [CONV_DIM, 1, KERNEL] and [CONV_DIM, KERNEL], so no
         reshape is needed.
+
+        DS layout (VLLM_SSM_CONV_STATE_LAYOUT=DS) is rejected in __init__ before
+        any buffers are allocated, so this method is never called with DS layout.
         """
-        if is_conv_state_dim_first():
-            raise NotImplementedError(
-                "VLLM_SSM_CONV_STATE_LAYOUT=DS is not supported on the WebGPU "
-                "GDN path: causal_conv_step.wgsl hard-codes the SD (state_len-first) "
-                "index formula and has no runtime path for DS layout."
-            )
         # Use MambaStateShapeCalculator so the formula stays in one canonical place
         # and any upstream change to the shape definition is automatically reflected here.
         conv_shape, ssm_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
