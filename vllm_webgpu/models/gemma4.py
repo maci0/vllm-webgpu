@@ -18,8 +18,8 @@ from vllm.transformers_utils.config import get_hf_text_config
 # Re-audit Gemma4Attention.__init__ (L461-471) and
 # Gemma4DecoderLayer.__init__ (L559-580, L599-607) and re-run
 # tests/test_gemma4_layer_params.py after any bump.
-# TODO: file an upstream vLLM issue requesting a public get_layer_params(config)
-# helper; once available, replace both functions with a direct call.
+# Upstream issue filed: github.com/vllm-project/vllm/issues/48661
+# Once vLLM exposes get_layer_params(config), replace both functions with a direct call.
 _EXPECTED_VLLM_VERSION = "0.24.0"
 if _vllm_version != _EXPECTED_VLLM_VERSION:
     warnings.warn(
