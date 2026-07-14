@@ -442,9 +442,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = (
                 lambda a, hd=_hd, n=_nq: np.tile(a, n) if a.shape == (hd,) else a
             )
-            self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
-                lambda a, hd=_hd, n=_nkv: np.tile(a, n) if a.shape == (hd,) else a
-            )
+            if not _lp["is_kv_shared"]:
+                self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
+                    lambda a, hd=_hd, n=_nkv: np.tile(a, n) if a.shape == (hd,) else a
+                )
         # Spot-check for the GGUF path only: values come from external metadata that
         # can genuinely disagree with the per-layer formulas. The safetensors and
         # uniform-fallback paths derive q_dim/kv_dim algebraically from num_*_heads
