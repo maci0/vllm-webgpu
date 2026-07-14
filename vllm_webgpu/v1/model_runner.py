@@ -193,7 +193,7 @@ class WebGPUModelRunner:
         # _execute_model_v2 directly) would raise AttributeError.
         self._has_reset = self._has_save = self._has_replay = self._has_restore = False
 
-    def load_model(self) -> None:
+    def load_model(self, load_dummy_weights: bool = False) -> None:
         self.__dict__.pop("kv_cache_spec", None)
         # Reset capability flags before model is assigned; a reload clears stale values.
         self._has_reset = False
