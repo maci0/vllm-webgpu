@@ -957,14 +957,12 @@ def load_safetensors_weights(
                 _upload(arr_f32, np.float32, 'f32', name)
                 return True
 
-            if dtype_str == "F16":
-                arr = _torch_to_f16_numpy(sf.get_tensor(name))
-            elif dtype_str == "BF16":
+            if dtype_str == "BF16":
                 t_bf16 = sf.get_tensor(name)
                 arr = _torch_to_f16_numpy(t_bf16)
                 # __bf16 companion is created after weight_transforms below, so both
                 # the f16 buffer and the companion see the same (transformed) layout.
-            elif dtype_str == "F32":
+            elif dtype_str in ("F16", "F32"):
                 arr = _torch_to_f16_numpy(sf.get_tensor(name))
             elif dtype_str == "I8":
                 # Int8 per-channel weight (BnB int8 / compressed-tensors int8).

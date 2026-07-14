@@ -22,7 +22,7 @@ def test_worker_instantiates():
 
 def test_compute_request_logprobs():
     """_extract_logprob_data returns a LogprobsTensors with top-N tokens sorted by log-prob."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
+    from vllm_webgpu.v1.model_runner import _extract_logprob_data
 
     vocab = 32
     logits_1d = np.zeros(vocab, dtype=np.float32)
@@ -32,7 +32,7 @@ def test_compute_request_logprobs():
     # _extract_logprob_data expects a 2D array [batch, vocab]
     logits = logits_1d[np.newaxis]
 
-    result = WebGPUModelRunner._extract_logprob_data(logits, 0, 5, 3, "test-rid")
+    result = _extract_logprob_data(logits, 0, 5, 3, "test-rid")
     assert result is not None, "should return LogprobsTensors, not None"
 
     # gather_logprobs returns num_logprobs+1 columns: slot 0 = sampled token,
@@ -53,7 +53,7 @@ def test_compute_request_logprobs():
 
 def test_make_model_output_with_logprobs():
     """_make_model_output builds a non-None LogprobsLists when logprob data is supplied."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, ModelRunnerOutput
+    from vllm_webgpu.v1.model_runner import ModelRunnerOutput, _extract_logprob_data, _make_model_output
     try:
         from vllm.v1.outputs import LogprobsLists
     except ImportError:
@@ -62,9 +62,6 @@ def test_make_model_output_with_logprobs():
     if ModelRunnerOutput is None or LogprobsLists is None:
         pytest.skip("vllm not available (vllm mock installed by test_config.py)")
 
-    runner = MagicMock(spec=WebGPUModelRunner)
-    runner._last_model_output = None
-
     vocab = 16
     logits_1d = np.zeros(vocab, dtype=np.float32)
     logits_1d[2] = 8.0
@@ -72,9 +69,9 @@ def test_make_model_output_with_logprobs():
     logits_1d[1] = 1.0
     logits = logits_1d[np.newaxis]
 
-    lp_data = WebGPUModelRunner._extract_logprob_data(logits, 0, 2, 2, "req-1")
+    lp_data = _extract_logprob_data(logits, 0, 2, 2, "req-1")
 
-    out = WebGPUModelRunner._make_model_output(["req-1"], [2], [lp_data])
+    out = _make_model_output(["req-1"], [2], [lp_data])
     assert out is not None
     assert out.logprobs is not None, "logprobs should be populated, not None"
     # gather_logprobs returns num_logprobs+1 columns: slot 0 = sampled, slots 1..k = top-k.
@@ -85,15 +82,12 @@ def test_make_model_output_with_logprobs():
 
 def test_make_model_output_no_logprobs():
     """_make_model_output sets logprobs=None when no request supplies logprob data."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, ModelRunnerOutput
+    from vllm_webgpu.v1.model_runner import ModelRunnerOutput, _make_model_output
 
     if ModelRunnerOutput is None:
         pytest.skip("vllm not available (vllm mock installed by test_config.py)")
 
-    runner = MagicMock(spec=WebGPUModelRunner)
-    runner._last_model_output = None
-
-    out = WebGPUModelRunner._make_model_output(["req-1"], [7], [None])
+    out = _make_model_output(["req-1"], [7], [None])
     assert out is not None
     assert out.logprobs is None
 
@@ -154,7 +148,7 @@ def test_compute_prompt_logprobs_short_sequence():
 
 def test_make_model_output_with_prompt_logprobs():
     """_make_model_output passes prompt_logprobs_dict through to ModelRunnerOutput."""
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner, ModelRunnerOutput
+    from vllm_webgpu.v1.model_runner import ModelRunnerOutput, _make_model_output
 
     try:
         from vllm.v1.outputs import LogprobsTensors
@@ -166,9 +160,6 @@ def test_make_model_output_with_prompt_logprobs():
 
     import torch
 
-    runner = MagicMock(spec=WebGPUModelRunner)
-    runner._last_model_output = None
-
     fake_tensors = LogprobsTensors(
         logprob_token_ids=torch.zeros((3, 3), dtype=torch.int32),
         logprobs=torch.full((3, 3), -1.0),
@@ -176,7 +167,7 @@ def test_make_model_output_with_prompt_logprobs():
     )
     pld = {"req-1": fake_tensors}
 
-    out = WebGPUModelRunner._make_model_output(["req-1"], [7], [None], prompt_logprobs_dict=pld)
+    out = _make_model_output(["req-1"], [7], [None], prompt_logprobs_dict=pld)
     assert out is not None
     assert out.prompt_logprobs_dict == pld
 

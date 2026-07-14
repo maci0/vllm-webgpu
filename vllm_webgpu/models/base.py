@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -212,7 +213,7 @@ class BaseWebGPUModel(ABC):
         f16 arrays; buf.shape holds the original unpadded shape. Raises KeyError
         for any dtype not in _WGPU_DTYPE_TO_NP so unknown types fail immediately.
         """
-        expected = int(np.prod(buf.shape)) * _ELEM_BYTES[buf.dtype]
+        expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
         return buf.to_numpy()[:expected].view(_WGPU_DTYPE_TO_NP[buf.dtype])
 
     @contextmanager
@@ -454,7 +455,7 @@ class BaseWebGPUModel(ABC):
                 "GPU argmax was never dispatched"
             )
         self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
-        val = np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32).item()
+        val = int.from_bytes(bytes(self._gpu_sample_staging.read_mapped()[:4]), 'little')
         self._gpu_sample_staging.unmap()
         return val
 

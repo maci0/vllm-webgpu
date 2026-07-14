@@ -118,18 +118,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total V dimension (v_heads * v_dim).
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim
-        # conv_dim: derived from the authoritative formula in
-        # MambaStateShapeCalculator.gated_delta_net_state_shape so any upstream
-        # change is reflected here automatically. DS layout is rejected above, so
-        # SD layout is guaranteed and conv_shape[-1] is the conv dimension.
-        _conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            tp_world_size=1,
-            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
-            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
-            conv_kernel_size=self._lin_conv_kernel,
-            num_spec=0,
-        )
-        self._lin_conv_dim: int = _conv_shape[-1]
+        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_val_dim
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q (offset = K_heads * K_dim). V follows K+Q.
         self._gdn_k_offset: int = self._lin_k_heads * self._lin_k_dim

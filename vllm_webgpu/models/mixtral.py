@@ -245,7 +245,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         Returns the (gate, up) output buffers so callers can decide how to
         combine them (gelu_mul, bias injection, etc.) without duplicating the
-        _ensure_moe_expert_bufs + _quant_extra + _matmul_expert sequence.
+        _ensure_moe_expert_bufs + _quant_extra + _dispatch("matmul_quant", ...) sequence.
         """
         self._ensure_moe_expert_bufs()
         msc = self._moe_sc

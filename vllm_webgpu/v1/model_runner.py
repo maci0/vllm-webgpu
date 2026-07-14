@@ -176,6 +176,94 @@ def _stack_logprobs(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
     return combined.tolists()
 
 
+def _make_model_output(
+    req_ids: list[str],
+    sampled: list[int],
+    logprobs_data: "Sequence[LogprobsTensors | None]" = (),
+    prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
+) -> "ModelRunnerOutput":
+    if prompt_logprobs_dict is None:
+        prompt_logprobs_dict = {}
+    if not req_ids:
+        return EMPTY_MODEL_RUNNER_OUTPUT
+
+    # Build LogprobsLists for top-k sampled-token logprob entries.
+    # One row per request in the batch (matching req_id_to_index), so that
+    # LogprobsLists.slice_request(i, n) works with cu_num_generated_tokens=None
+    # and uses i directly as the row index, matching the vLLM API contract.
+    # Requests that have no logprobs get a dummy row (zeros / -inf) that is
+    # never exposed to callers because the scheduler guards slice_request on
+    # num_logprobs.
+    built_logprobs = None
+    widths = [d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None]
+    if widths:
+        max_k = max(widths)
+        # Short-circuit when all entries are present and share the same width.
+        all_present = None not in logprobs_data
+        if all_present and min(widths) == max(widths):
+            built_logprobs = _stack_logprobs(cast("list[LogprobsTensors]", logprobs_data))
+        else:
+            # Pad entries to max_k width and collect sentinel rows for requests
+            # without logprob data. empty_cpu() produces int32 for selected_token_ranks
+            # while gather_logprobs returns int64; torch.cat on CPU promotes int32 to
+            # int64 automatically, and _stack_logprobs normalises the result to int32.
+            pieces = []
+            for d in logprobs_data:
+                if d is not None:
+                    n_pad = max_k - d.logprob_token_ids.shape[1]
+                    pieces.append(LogprobsTensors(
+                        pad(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
+                        pad(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
+                        d.selected_token_ranks,
+                    ))
+                else:
+                    # Sentinel row for requests with no logprob data. Sentinel
+                    # rows are never sliced by the caller (the scheduler only
+                    # calls slice_request for requests where num_logprobs > 0),
+                    # so uninitialized memory from empty_cpu is safe here.
+                    pieces.append(LogprobsTensors.empty_cpu(1, max_k))
+            built_logprobs = _stack_logprobs(pieces)
+
+    return ModelRunnerOutput(
+        req_ids=req_ids,
+        req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
+        sampled_token_ids=[[t] for t in sampled],
+        logprobs=built_logprobs,
+        prompt_logprobs_dict=prompt_logprobs_dict,
+    )
+
+
+def _extract_logprob_data(
+    logits: "np.ndarray",
+    row_idx: int,
+    tok: int,
+    num_logprobs: "int | None",
+    rid: str,
+) -> "LogprobsTensors | None":
+    """Extract logprob data for one request from a logits array.
+
+    Args:
+        logits: The full logit array returned by forward().
+        row_idx: Which row to use (-1 for last token, 0 for single-token decode).
+        tok: The sampled token id.
+        num_logprobs: Number of top logprobs requested, or None to skip.
+        rid: Request id (used only for the warning message).
+
+    Returns a LogprobsTensors of shape [1, k+1] or None when logprobs cannot be computed.
+    """
+    if num_logprobs is None:
+        return None
+    if logits.shape[-1] <= 1:
+        logger.warning("req %s: logprobs requested but model returned argmax-only output", rid)
+        return None
+    lp_t = Sampler.compute_logprobs(torch.from_numpy(logits[row_idx]).unsqueeze(0))
+    k = min(num_logprobs, logits.shape[-1])
+    # selected_token_ranks is cast to int32 in _stack so no explicit cast is needed
+    # here. Prompt logprobs bypass _stack and are consumed as LogprobsTensors by
+    # the engine (ranks.tolist() produces plain Python ints regardless of dtype).
+    return Sampler.gather_logprobs(lp_t, k, torch.tensor([tok], dtype=torch.int64))
+
+
 class WebGPUModelRunner:
     def __init__(self, vllm_config: Any, wgpu_device: "WebGPUDevice") -> None:
         self.vllm_config = vllm_config
@@ -289,8 +377,9 @@ class WebGPUModelRunner:
         # The lp_list branch (lines below) is therefore the primary execution path.
         # _layer_types is the fallback for edge cases: tests that call get_kv_cache_spec
         # directly, OOT executors with different ordering, or model reload mid-session.
+        tc = self.vllm_config.model_config.hf_text_config
         _layer_types = get_layer_types(
-            self.vllm_config.model_config.hf_text_config,
+            tc,
             hf_outer_config=self.vllm_config.model_config.hf_config,
         )
 
@@ -310,7 +399,6 @@ class WebGPUModelRunner:
         elif _layer_types and len(_layer_types) == num_hidden_layers:
             default_hd = self.vllm_config.model_config.get_head_size()
             default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
-            tc = self.vllm_config.model_config.hf_text_config
             global_hd = getattr(tc, "global_head_dim", default_hd)
             global_kv = getattr(tc, "num_global_key_value_heads", default_kv)
             k_eq_v = getattr(tc, "attention_k_eq_v", False)
@@ -359,7 +447,6 @@ class WebGPUModelRunner:
             # Only trust layer_types when it covers every layer; a partial or
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
-            tc = self.vllm_config.model_config.hf_text_config
             for i in range(num_hidden_layers):
                 spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
                     block_size=block_size,
@@ -420,94 +507,6 @@ class WebGPUModelRunner:
         if self.model is None:
             return EMPTY_MODEL_RUNNER_OUTPUT
         return self._execute_model_v2(scheduler_output)
-
-    @staticmethod
-    def _make_model_output(
-        req_ids: list[str],
-        sampled: list[int],
-        logprobs_data: "Sequence[LogprobsTensors | None]" = (),
-        prompt_logprobs_dict: "dict[str, LogprobsTensors | None] | None" = None,
-    ) -> "ModelRunnerOutput":
-        if prompt_logprobs_dict is None:
-            prompt_logprobs_dict = {}
-        if not req_ids:
-            return EMPTY_MODEL_RUNNER_OUTPUT
-
-        # Build LogprobsLists for top-k sampled-token logprob entries.
-        # One row per request in the batch (matching req_id_to_index), so that
-        # LogprobsLists.slice_request(i, n) works with cu_num_generated_tokens=None
-        # and uses i directly as the row index, matching the vLLM API contract.
-        # Requests that have no logprobs get a dummy row (zeros / -inf) that is
-        # never exposed to callers because the scheduler guards slice_request on
-        # num_logprobs.
-        built_logprobs = None
-        widths = [d.logprob_token_ids.shape[1] for d in logprobs_data if d is not None]
-        if widths:
-            max_k = max(widths)
-            # Short-circuit when all entries are present and share the same width.
-            all_present = None not in logprobs_data
-            if all_present and min(widths) == max(widths):
-                built_logprobs = _stack_logprobs(cast("list[LogprobsTensors]", logprobs_data))
-            else:
-                # Pad entries to max_k width and collect sentinel rows for requests
-                # without logprob data. empty_cpu() produces int32 for selected_token_ranks
-                # while gather_logprobs returns int64; torch.cat on CPU promotes int32 to
-                # int64 automatically, and _stack_logprobs normalises the result to int32.
-                pieces = []
-                for d in logprobs_data:
-                    if d is not None:
-                        n_pad = max_k - d.logprob_token_ids.shape[1]
-                        pieces.append(LogprobsTensors(
-                            pad(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
-                            pad(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
-                            d.selected_token_ranks,
-                        ))
-                    else:
-                        # Sentinel row for requests with no logprob data. Sentinel
-                        # rows are never sliced by the caller (the scheduler only
-                        # calls slice_request for requests where num_logprobs > 0),
-                        # so uninitialized memory from empty_cpu is safe here.
-                        pieces.append(LogprobsTensors.empty_cpu(1, max_k))
-                built_logprobs = _stack_logprobs(pieces)
-
-        return ModelRunnerOutput(
-            req_ids=req_ids,
-            req_id_to_index={rid: i for i, rid in enumerate(req_ids)},
-            sampled_token_ids=[[t] for t in sampled],
-            logprobs=built_logprobs,
-            prompt_logprobs_dict=prompt_logprobs_dict,
-        )
-
-    @staticmethod
-    def _extract_logprob_data(
-        logits: "np.ndarray",
-        row_idx: int,
-        tok: int,
-        num_logprobs: "int | None",
-        rid: str,
-    ) -> "LogprobsTensors | None":
-        """Extract logprob data for one request from a logits array.
-
-        Args:
-            logits: The full logit array returned by forward().
-            row_idx: Which row to use (-1 for last token, 0 for single-token decode).
-            tok: The sampled token id.
-            num_logprobs: Number of top logprobs requested, or None to skip.
-            rid: Request id (used only for the warning message).
-
-        Returns a LogprobsTensors of shape [1, k+1] or None when logprobs cannot be computed.
-        """
-        if num_logprobs is None:
-            return None
-        if logits.shape[-1] <= 1:
-            logger.warning("req %s: logprobs requested but model returned argmax-only output", rid)
-            return None
-        lp_t = Sampler.compute_logprobs(torch.from_numpy(logits[row_idx]).unsqueeze(0))
-        k = min(num_logprobs, logits.shape[-1])
-        # selected_token_ranks is cast to int32 in _stack so no explicit cast is needed
-        # here. Prompt logprobs bypass _stack and are consumed as LogprobsTensors by
-        # the engine (ranks.tolist() produces plain Python ints regardless of dtype).
-        return Sampler.gather_logprobs(lp_t, k, torch.tensor([tok], dtype=torch.int64))
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> "ModelRunnerOutput":
         """vLLM >= 0.24 SchedulerOutput format."""
@@ -661,7 +660,7 @@ class WebGPUModelRunner:
                 )
 
             # Compute logprobs for this prefill token if the request asked for them.
-            lp_data = self._extract_logprob_data(last_logits, -1, first_decode_tok, num_logprobs, rid)
+            lp_data = _extract_logprob_data(last_logits, -1, first_decode_tok, num_logprobs, rid)
 
             # Compute prompt logprobs for each prompt position when full logits
             # are available.  Position i uses logits[i] to evaluate tok_ids[i+1],
@@ -867,7 +866,7 @@ class WebGPUModelRunner:
                     )
 
                 # Compute logprobs if requested for this request.
-                lp_data = self._extract_logprob_data(logits, 0, stok, num_logprobs, rid)
+                lp_data = _extract_logprob_data(logits, 0, stok, num_logprobs, rid)
 
                 # Commit state after a successful forward: don't mutate on failure.
                 # rng is a stateful object; storing the same reference is sufficient.
@@ -887,7 +886,7 @@ class WebGPUModelRunner:
 
         # Return empty output rather than None when no requests scheduled.
         # vLLM's batch queue raises "unexpected error" on None from execute_model.
-        return self._make_model_output(
+        return _make_model_output(
             all_req_ids, all_sampled, all_logprobs_data, prompt_logprobs_dict
         )
 

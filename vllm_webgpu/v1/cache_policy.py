@@ -20,11 +20,11 @@ from vllm.v1.kv_cache_interface import (ChunkedLocalAttentionSpec,
 
 # Minimum overhead budget: driver + runtime allocations for small models.
 # For large models activations scale with parameter count; see determine_available_memory.
-OVERHEAD_BYTES = 512 * MiB_bytes
+_OVERHEAD_BYTES = 512 * MiB_bytes
 # Fraction of model weight bytes reserved as activation/overhead budget.
 # A 7B f16 model (~14 GiB) with a 2048-token batch generates 2-4 GiB of
 # intermediate activations; 15% of 14 GiB ~ 2.1 GiB covers that range.
-# This kicks in only when it exceeds the OVERHEAD_BYTES floor.
+# This kicks in only when it exceeds the _OVERHEAD_BYTES floor.
 _ACTIVATION_OVERHEAD_FRACTION = 0.15
 MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
 
@@ -37,6 +37,8 @@ if TYPE_CHECKING:
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
+
+_ATTN_LAYER_TYPES: frozenset = frozenset({"attention", "full_attention", "sliding_attention", "hybrid", 1})
 
 
 class _LayerKV(NamedTuple):
@@ -72,7 +74,7 @@ def is_attn_layer(lt: "str | int") -> bool:
     # (see vllm/config/model.py:1348-1357). Including it here is correct because
     # sliding-window attention layers do require KV cache buffers; the count API
     # just exposes them under a different label.
-    return lt in {"attention", "full_attention", "sliding_attention", "hybrid", 1}
+    return lt in _ATTN_LAYER_TYPES
 
 
 def allocate_kv_from_tensors(
@@ -427,7 +429,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     virtual_memory() just as on x86, and available already excludes the model
     weights this process has loaded.
 
-    Overhead budget: max(OVERHEAD_BYTES, model_mem * _ACTIVATION_OVERHEAD_FRACTION).
+    Overhead budget: max(_OVERHEAD_BYTES, model_mem * _ACTIVATION_OVERHEAD_FRACTION).
     The fraction-based term accounts for activation memory scaling with model size.
     For models up to ~3.4 GiB weights the 512 MiB floor applies; above that the
     fraction dominates. A 7B f16 model (~14 GiB) gets ~2.1 GiB reserved, which
@@ -465,7 +467,7 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     node_infos = [get_memory_node_info(n) for n in _nodes]
     total_memory = sum(i.total_memory for i in node_infos)
     total_available = sum(i.available_memory for i in node_infos)
-    overhead = max(OVERHEAD_BYTES, int(model_mem * _ACTIVATION_OVERHEAD_FRACTION))
+    overhead = max(_OVERHEAD_BYTES, int(model_mem * _ACTIVATION_OVERHEAD_FRACTION))
     # total_available excludes memory held by other processes as well as by this
     # process (including model weights already uploaded), so there is no need to
     # subtract model_mem explicitly.

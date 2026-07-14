@@ -217,17 +217,10 @@ def _build_layer_params_from_config(
     # Only applicable for k_eq_v=True: k_eq_v=False full_attention layers use
     # default_kv heads (not global_kv), so this check is not relevant there.
     if "full_attention" in layer_types and k_eq_v:
-        raw_fa_kv_dim = model_config.global_head_dim * model_config.num_global_key_value_heads
-        if raw_fa_kv_dim != global_hd * global_kv:
-            raise ValueError(
-                f"full_attention kv_dim mismatch: "
-                f"model_config.global_head_dim={model_config.global_head_dim!r} "
-                f"* model_config.num_global_key_value_heads="
-                f"{model_config.num_global_key_value_heads!r} = {raw_fa_kv_dim}, "
-                f"but getattr-with-fallback produced global_hd={global_hd!r} "
-                f"* global_kv={global_kv!r} = {global_hd * global_kv}. "
-                "Check whether vLLM renamed global attention config attributes."
-            )
+        # Raises AttributeError if vLLM renames these attrs, surfacing the
+        # rename instead of silently falling back to wrong default_hd/default_kv.
+        _ = model_config.global_head_dim
+        _ = model_config.num_global_key_value_heads
 
     return lp
 
