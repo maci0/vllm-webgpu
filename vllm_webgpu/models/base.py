@@ -211,17 +211,6 @@ class BaseWebGPUModel(ABC):
         expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
         return buf.to_numpy()[:expected].view(_WGPU_DTYPE_TO_NP[buf.dtype])
 
-    def _buf_to_numpy_reshape(self, buf: "WebGPUBuffer") -> "np.ndarray":
-        """Read a GPU buffer as a numpy array with correct dtype, trimmed and reshaped.
-
-        Slices off wgpu alignment padding before the dtype view, then reshapes
-        to buf.shape. Use this instead of _buf_to_numpy when the caller needs the
-        full shape (e.g. slicing into fused weight tensors).
-        """
-        np_t = _WGPU_DTYPE_TO_NP[buf.dtype]
-        expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
-        return buf.to_numpy()[:expected].view(np_t).reshape(buf.shape)
-
     @contextmanager
     def _batched_dispatch(self, label: str = ""):
         """Record dispatch calls into a single CommandEncoder and submit once at exit.

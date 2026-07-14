@@ -103,7 +103,7 @@ def allocate_kv_from_tensors(
     # each other; the explicit collision check at the end of the loop catches that.
     # The name-to-index resolution uses extract_layer_index once per tensor entry.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
-    layer_idx_kv: dict[int, tuple[int, int]] = {}
+    layer_idx_kv: dict[int, tuple[int, int, str]] = {}
     for tensor in kv_cache_tensors:
         if tensor.block_stride > 0:
             # block_stride > 0 means K and V data for multiple layers share one
@@ -257,11 +257,12 @@ def allocate_kv_from_tensors(
             # multi-attention-per-layer model) would silently overwrite each other's
             # buffer sizes, producing wrong K/V allocations with no error at runtime.
             if _idx in layer_idx_kv:
+                _, _, prev_name = layer_idx_kv[_idx]
                 raise RuntimeError(
                     f"Two layer names resolve to the same index {_idx}: "
-                    f"{layer_name!r} and a previous entry. This is a model configuration bug."
+                    f"{layer_name!r} and {prev_name!r}. This is a model configuration bug."
                 )
-            layer_idx_kv[_idx] = (k_bytes, v_bytes)
+            layer_idx_kv[_idx] = (k_bytes, v_bytes, layer_name)
 
     # Sliding-attention layers in supported models always receive FullAttentionSpec(sliding_window=None)
     # from get_kv_cache_spec; the SlidingWindowSpec/FullAttentionSpec(sliding_window!=None) rejections
@@ -293,7 +294,7 @@ def allocate_kv_from_tensors(
     total_bytes = 0
     for i in range(num_total_layers):
         if i in layer_idx_kv:
-            k_bytes, v_bytes = layer_idx_kv[i]
+            k_bytes, v_bytes, _ = layer_idx_kv[i]
             model.kv_pool.append((
                 WebGPUBuffer.empty(wgpu_device, k_bytes),
                 WebGPUBuffer.empty(wgpu_device, v_bytes),

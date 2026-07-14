@@ -46,13 +46,8 @@ def main() -> None:
     from vllm.utils.math_utils import cdiv
     from vllm_webgpu.v1.model_runner import _build_model, ARCH_MAP
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
-    from vllm.transformers_utils.config import get_hf_text_config as _get_hf_text_cfg
     import vllm_webgpu.envs as _envs
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
-    # For multimodal wrapper configs the outer hf_config.num_hidden_layers is
-    # the unified model's count, not the text backbone's. get_hf_text_config
-    # unwraps the outer config to the text backbone so num_hidden_layers is correct.
-    num_layers = _get_hf_text_cfg(hf_cfg).num_hidden_layers
     family = ARCH_MAP.get(arch)
     if family == 'diffusion_gemma':
         raise NotImplementedError(
@@ -160,7 +155,7 @@ def main() -> None:
 
         print(f"Total GPU time: {total:.2f} ms")
         print(f"Unlabeled overhead (LM head + embed + norms + Python): {avg_step_ms - total:.2f} ms")
-        print(f"Each layer avg: {total/num_layers:.3f} ms")
+        print(f"Each layer avg: {total/model.num_layers:.3f} ms")
 
         print("\nBottleneck analysis:")
         # Sum weights for transformer layers only. Embedding, final norm, and LM-head
@@ -170,7 +165,7 @@ def main() -> None:
         # shader on every quantized GEMV and '.layers.' appears in their key.
         total_w_bytes = sum(v.nbytes for k, v in model.weights.items() if '.layers.' in k)
         total_w_mb = total_w_bytes / 1e6
-        print(f"  Weight data moved: {total_w_mb:.0f} MB  ({total_w_mb/num_layers:.1f} MB/layer avg)")
+        print(f"  Weight data moved: {total_w_mb:.0f} MB  ({total_w_mb/model.num_layers:.1f} MB/layer avg)")
         if total > 0:
             bw_util_gb_s = total_w_mb / total  # 1 MB/ms = 1 GB/s
             print(f"  Effective BW: {bw_util_gb_s:.0f} GB/s  (peak estimate: {args.peak_bw} GB/s)")

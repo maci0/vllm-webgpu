@@ -1001,14 +1001,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     # QKV projections (always separate in batch path — no fused_qkv).
                     # For KV-shared layers only Q is used; K and V come from the target cache.
                     self._batch_gemm(normed_x, qw, b["q_buf"], hidden, q_dim, T)
-                    v_src = b["v_buf"]
                     if not is_kv_shared:
+                        v_src = b["v_buf"]
                         kw = f"{p}.self_attn.k_proj.weight"
                         self._batch_gemm(normed_x, kw, b["k_buf"], hidden, kv_dim, T)
                         if has_v:
                             self._batch_gemm(normed_x, f"{p}.self_attn.v_proj.weight",
                                        b["v_buf"], hidden, kv_dim, T)
-                            v_src = b["v_buf"]
                         else:
                             v_src = b["k_buf"]   # global attention: V = K (pre-RoPE)
                     # Resolve which KV pool slot to read/write.
@@ -1420,10 +1419,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 # Separate projections (quantized weights, global attention, or KV-shared layer).
                 # KV-shared layers only need Q; K and V come from the target layer's KV cache.
-                # Initialize defaults so all three names are bound regardless of is_kv_shared.
-                _v_src_offset = 0
-                _v_src = sc["v_buf"]
-                _k_src = sc["k_buf"]
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[qw],
                                 self._scales_buf(qw, uq_q, self._dummy_buf), sc["q_buf"]],
@@ -1431,6 +1426,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 **self._quant_extra(f"{p}.self_attn.q_proj", uq_q)},
                                (q_dim, 1, 1))
                 if not is_kv_shared:
+                    _v_src = sc["v_buf"]
+                    _k_src = sc["k_buf"]
+                    _v_src_offset = 0
                     self._dispatch("matmul_quant",
                                    [normed_x, self.weights[kw],
                                     self._scales_buf(kw, uq_k, self._dummy_buf), sc["k_buf"]],
@@ -1444,11 +1442,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                        {"K": hidden, "N": kv_dim, "USE_QUANT": uq_v,
                                         **self._quant_extra(f"{p}.self_attn.v_proj", uq_v)},
                                        (kv_dim, 1, 1))
-                        _v_src = sc["v_buf"]
                     else:
                         _v_src = sc["k_buf"]  # global attention: V = K
-                    _k_src = sc["k_buf"]
-                    _v_src_offset = 0
                 _q_src = sc["q_buf"]
 
             # Per-head RMSNorm + RoPE for Q and K.
