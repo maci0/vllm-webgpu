@@ -1357,7 +1357,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             [sc["q_buf"], k_cache, v_cache, bt_buf, sc["attn_out"]],
             {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
              "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-             "CTX_LEN": ctx_len, "SCALE": self._attn_scale},
+             "CTX_LEN": ctx_len, "SCALE": self._attn_scale, "START_BLOCK": 0},
             (self.num_q_heads, 1, 1),
         )
 
