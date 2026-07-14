@@ -165,6 +165,62 @@ def test_get_layer_types_version_sync():
     )
 
 
+def test_get_layer_types_probe_attrs_in_source():
+    """Verify that the three probe attribute names used by get_layer_types() still appear
+    in ModelConfig.get_num_layers_by_block_type, in the expected order.
+
+    get_layer_types() in cache_policy.py mirrors the hybrid-model probe sequence from
+    vLLM's ModelConfig.get_num_layers_by_block_type.  That function is not part of
+    vLLM's documented public API, so upstream refactors can silently break the copy.
+
+    This test inspects the vLLM source and fails immediately when vLLM:
+      - renames one of the three probe attribute names, or
+      - reorders the probes, or
+      - removes a probe entirely.
+
+    When this test fails:
+      1. Diff ModelConfig.get_num_layers_by_block_type (vllm/config/model.py) against
+         get_layer_types() in vllm_webgpu/v1/cache_policy.py.
+      2. Update get_layer_types() to match the new probe sequence.
+      3. Update the VERSION SYNC comment in cache_policy.py to the new vLLM version.
+      4. Re-run this test and test_get_layer_types_version_sync to confirm they pass.
+
+    If vLLM ever exposes a public get_layer_types() list API, replace the probe
+    logic in cache_policy.py with a direct call and remove this test.
+    """
+    pytest.importorskip("vllm", reason="vllm not installed")
+
+    from vllm.config.model import ModelConfig
+
+    src = inspect.getsource(ModelConfig.get_num_layers_by_block_type)
+
+    # The three probe attribute names, in the order they must appear.
+    probes = ["layers_block_type", "attn_type_list", "layer_types"]
+    positions = {}
+    for attr in probes:
+        idx = src.find(f'"{attr}"')
+        if idx == -1:
+            idx = src.find(f"'{attr}'")
+        assert idx != -1, (
+            f"Probe attribute {attr!r} not found in "
+            "ModelConfig.get_num_layers_by_block_type source. "
+            "vLLM may have renamed or removed this probe. "
+            "Diff vllm/config/model.py against get_layer_types() in "
+            "vllm_webgpu/v1/cache_policy.py and update the probe list "
+            "and the VERSION SYNC comment."
+        )
+        positions[attr] = idx
+
+    assert positions["layers_block_type"] < positions["attn_type_list"] < positions["layer_types"], (
+        f"Probe order changed in ModelConfig.get_num_layers_by_block_type. "
+        f"Found positions: {positions}. "
+        "Expected: layers_block_type < attn_type_list < layer_types. "
+        "Diff vllm/config/model.py against get_layer_types() in "
+        "vllm_webgpu/v1/cache_policy.py and update the probe sequence "
+        "and the VERSION SYNC comment."
+    )
+
+
 @pytest.mark.parametrize("probe,hf_text_attrs,hf_outer_attrs,expected,attn_count", [
     (
         "layers_block_type",
