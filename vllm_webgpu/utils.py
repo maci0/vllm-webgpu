@@ -35,10 +35,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     random_sample,
 )
 # Greedy-temperature threshold: temperatures at or below this value are treated
-# as greedy (argmax) decoding. Matches vllm.v1.sample.sampler._SAMPLING_EPS = 1e-5
-# (also sampling_params.py, tpu_input_batch.py). Inlined here to avoid a fragile
-# cross-version dependency on a private vLLM symbol.
-GREEDY_TEMP = 1e-5
+# as greedy (argmax) decoding. Imported from vllm.v1.sample.sampler, which is
+# already used by vLLM internals (llm_base_proposer.py). Importing directly
+# ensures we stay in sync if vLLM ever adjusts the threshold.
+from vllm.v1.sample.sampler import _SAMPLING_EPS as _GREEDY_TEMP
+GREEDY_TEMP = _GREEDY_TEMP
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

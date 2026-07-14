@@ -299,7 +299,7 @@ class WebGPUModelRunner:
                     continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = _make_spec(
                     lp["num_kv_heads"], lp["head_dim"],
-                    head_size_v=lp.get("head_dim_v", lp["head_dim"]))
+                    head_size_v=lp.get("head_dim_v"))
         elif _layer_types and len(_layer_types) == num_hidden_layers:
             default_hd = self.vllm_config.model_config.get_head_size()
             default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
@@ -419,7 +419,7 @@ class WebGPUModelRunner:
         if widths:
             max_k = max(widths)
             # Short-circuit when all entries are present and share the same width.
-            all_present = len(widths) == len(logprobs_data)
+            all_present = all(d is not None for d in logprobs_data)
             if all_present and len(set(widths)) == 1:
                 built_logprobs = _stack_logprobs(cast("list[LogprobsTensors]", logprobs_data))
             else:

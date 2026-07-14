@@ -259,7 +259,7 @@ def test_build_layer_params_matches_vllm_reference(name):
     from vllm_webgpu.models.gemma4 import _build_layer_params_from_config
 
     cfg = CONFIGS[name]
-    actual = _build_layer_params_from_config(cfg, cfg.num_hidden_layers)
+    actual = _build_layer_params_from_config(cfg)
     _assert_layer_params_match_reference(cfg, actual)
 
 

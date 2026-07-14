@@ -370,8 +370,10 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # could be replaced with a direct call, eliminating this fragile copy.
     # Until then, this VERSION SYNC comment is the correct mitigation.
     #
-    # attn_type_list uses a truthiness check (matching vLLM) so an empty list falls
-    # through to layer_types rather than short-circuiting the chain.
+    # Probe 1 uses is-not-None (empty list is a valid value meaning all-non-attention).
+    # Probe 2 uses truthiness matching vLLM model.py:1342 (empty attn_type_list falls
+    # through to layer_types). The asymmetry is intentional: it mirrors vLLM's own
+    # inconsistency at model.py:1341-1342 and is not a bug.
     # Probe 4 (outer-config layer_types) is not present in vLLM; it is a local
     # extension for multimodal models where layer_types lives only on the outer config.
     v = getattr(hf_text_config, "layers_block_type", None)  # vllm/config/model.py:1330

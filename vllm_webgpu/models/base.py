@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -7,6 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
+import wgpu as wgpu_lib
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -205,7 +207,7 @@ class BaseWebGPUModel(ABC):
         f16 arrays; buf.shape holds the original unpadded shape. Raises KeyError
         for any dtype not in _WGPU_DTYPE_TO_NP so unknown types fail immediately.
         """
-        expected = int(np.prod(buf.shape)) * _ELEM_BYTES[buf.dtype]
+        expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
         return buf.to_numpy()[:expected].view(_WGPU_DTYPE_TO_NP[buf.dtype])
 
     @contextmanager
@@ -392,7 +394,6 @@ class BaseWebGPUModel(ABC):
         Subclasses build the `bufs` list from their own buffer collections
         (dict.items() for NemotronH, enumerate() with None-guard for Qwen35).
         """
-        import wgpu as wgpu_lib
         dev = self.wgpu_device.wgpu_device
 
         if not bufs:
@@ -446,7 +447,6 @@ class BaseWebGPUModel(ABC):
                 "_read_sample_tok called before _ensure_sample_buf; "
                 "GPU argmax was never dispatched"
             )
-        import wgpu as wgpu_lib
         self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
         val = np.frombuffer(self._gpu_sample_staging.read_mapped(), dtype=np.uint32).item()
         self._gpu_sample_staging.unmap()
@@ -455,7 +455,6 @@ class BaseWebGPUModel(ABC):
     def _ensure_sample_buf(self) -> "WebGPUBuffer":
         """Lazily allocate GPU sampler buffers and return the token output buffer."""
         if self._gpu_sample_tok is None:
-            import wgpu as wgpu_lib
             self._gpu_sample_tok   = self._make_buf(4)      # 1 × u32
             # MAP_READ staging buffer: copy argmax result here inside the MAIN command encoder,
             # then map after the single main sync — eliminates the second GPU sync per token.

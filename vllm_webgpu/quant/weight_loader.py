@@ -1245,6 +1245,13 @@ def load_safetensors_weights(
                 # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
                 # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
                 # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
+                try:
+                    from vllm.model_executor.layers.quantization.utils.mxfp8_utils import MXFP8_BLOCK_SIZE
+                except ImportError as exc:
+                    raise ImportError(
+                        f"MXFP4 processing requires vllm.model_executor.layers.quantization.utils.mxfp8_utils "
+                        f"(failed to import: {exc})"
+                    ) from exc
                 for base in mx_bases:
                     try:
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
@@ -1258,7 +1265,6 @@ def load_safetensors_weights(
                         ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2
-                        from vllm.model_executor.layers.quantization.utils.mxfp8_utils import MXFP8_BLOCK_SIZE
                         assert ws_u8.ndim < 2 or ws_u8.shape[-1] == K_ // MXFP8_BLOCK_SIZE, (
                             f"MXFP4 scale shape {ws_u8.shape} does not match expected "
                             f"K//MXFP8_BLOCK_SIZE = {K_}//{MXFP8_BLOCK_SIZE} = {K_ // MXFP8_BLOCK_SIZE}"

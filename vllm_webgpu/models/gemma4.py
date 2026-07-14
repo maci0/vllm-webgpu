@@ -159,14 +159,13 @@ def _gemma4_layer_params(
 
 def _build_layer_params_from_config(
     model_config,
-    num_layers: int,
 ) -> list[dict]:
     """Build per-layer attention/FFN params from a Gemma4 safetensors config.
 
     Precondition: model_config must already be the extracted text config (i.e.
     _get_text_config has been called by the caller) and must have a `layer_types`
-    attribute with len(layer_types) == num_layers. The caller in
-    Gemma4WebGPUModel.__init__ enforces this before calling this function.
+    attribute. The caller in Gemma4WebGPUModel.__init__ enforces this before
+    calling this function.
 
     Extracts the required fields from model_config (applying the same getattr
     defaults as vLLM's constructors) and delegates to _gemma4_layer_params for
@@ -323,7 +322,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # is_kv_shared: the last num_kv_shared_layers layers share KV with an earlier
             # layer of the same type (mirrors vLLM Gemma4Attention.is_kv_shared_layer).
             # Formulas transcribed from vLLM -- see _build_layer_params_from_config docstring.
-            self._lp = _build_layer_params_from_config(model_config, self.num_layers)
+            self._lp = _build_layer_params_from_config(model_config)
         else:
             # Uniform fallback: all layers use the config defaults.
             # For Gemma3 safetensors (uniform attention) this is correct.

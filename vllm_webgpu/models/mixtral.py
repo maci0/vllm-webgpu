@@ -22,8 +22,7 @@ def _validate_gate_consts(extra_gate_consts: dict) -> None:
     Both the base _dispatch_expert_gate_up and the bias override in
     GptOssWebGPUModel inject K and N themselves; callers must not pre-fill them.
     """
-    bad = {'K', 'N'} & extra_gate_consts.keys()
-    if bad:
+    if bad := {'K', 'N'} & extra_gate_consts.keys():
         raise ValueError(
             f"extra_gate_consts must not contain 'K' or 'N'; got {sorted(bad)}"
         )
@@ -474,7 +473,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         # Copy topk results into pre-allocated staging buffers inside the Phase A
         # encoder so no extra GPU submit is needed for the readback.
-        assert self._active_encoder is not None, "_moe_ffn_layer must be called inside an active encoder context"
+        if self._active_encoder is None:
+            raise RuntimeError("_moe_ffn_layer must be called inside an active encoder context")
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
         _debug_weights = logger.isEnabledFor(logging.DEBUG)
