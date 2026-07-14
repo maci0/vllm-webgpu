@@ -152,21 +152,6 @@ class WebGPUPlatform(Platform):
             vllm_config.cache_config.user_specified_block_size = True
 
     @classmethod
-    def update_block_size_for_backend(cls, vllm_config: VllmConfig) -> None:
-        # Skip Phase 1 (backend-driven block_size selection) and run only
-        # Phase 2 (hybrid mamba/attention alignment). Dispatch through cls so
-        # any WebGPUPlatform override of the helpers takes effect via normal MRO.
-        # If vLLM ever adds a Platform.update_block_size_skip_backend_preference()
-        # hook or a flag to suppress Phase 1, this override can be deleted.
-        model_config = vllm_config.model_config
-        if model_config is None or not model_config.is_hybrid:
-            return
-        backend_cls = cls._find_non_ssm_backend(vllm_config)
-        if backend_cls is None:
-            return
-        cls._align_hybrid_block_size(vllm_config, backend_cls)
-
-    @classmethod
     def get_attn_backend_cls(
         cls,
         selected_backend: AttentionBackendEnum,

@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
+from transformers.utils import SAFE_WEIGHTS_NAME
 
 import numpy as np
 import vllm_webgpu.envs as _webgpu_envs
@@ -259,7 +260,7 @@ def detect_weight_format(path: str) -> "tuple[str, str | None, str | None]":
             # which already reads the index and can check for .biases keys.
             return "safetensors_sharded", index_path, None
         # No known safetensors manifest found in directory; default.
-        return "safetensors", None, str(p / "model.safetensors")
+        return "safetensors", None, str(p / SAFE_WEIGHTS_NAME)
     if p.suffix == ".gguf":
         return "gguf", None, None
     if p.suffix == ".safetensors":
@@ -744,7 +745,7 @@ def load_safetensors_weights(
         # is read by detect_compressed_tensors_fmt() and stored in ct_meta; the weight tensors
         # themselves use different key names than standard GPTQ (.weight not .qweight, and
         # .weight_scale not .scales), so they need a dedicated loading path.
-        has_ct_pack_int4 = _ct_gptq_gpu and _ct_has_i32_weight
+        has_ct_pack_int4 = _ct_has_i32_weight  # _ct_has_i32_weight is only set True when _ct_gptq_gpu is already True
 
         if has_qweight:
             # Discriminate AWQ from GPTQ using the quant_method field in config.json,

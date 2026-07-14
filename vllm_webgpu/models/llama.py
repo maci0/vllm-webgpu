@@ -90,11 +90,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Qwen3 checkpoints store shared norm as (head_dim,); the shader expects
         # (num_heads * head_dim,) with each head using the same values.
         hd = self.head_dim
-        _tile_q = lambda a, n=self.num_q_heads: np.tile(a, n) if a.shape == (hd,) else a
-        _tile_k = lambda a, n=self.num_kv_heads: np.tile(a, n) if a.shape == (hd,) else a
         self._weight_transforms.update(
-            {f"model.layers.{i}.self_attn.q_norm.weight": _tile_q for i in range(self.num_layers)}
-            | {f"model.layers.{i}.self_attn.k_norm.weight": _tile_k for i in range(self.num_layers)}
+            {f"model.layers.{i}.self_attn.{norm}.weight": (lambda a, n=nheads: np.tile(a, n) if a.shape == (hd,) else a)
+             for i in range(self.num_layers)
+             for norm, nheads in [("q_norm", self.num_q_heads), ("k_norm", self.num_kv_heads)]}
         )
         # Cached after load_weights: True iff all *_proj weights are USE_QUANT=0 or 3.
         # None means not yet computed (weights not yet loaded).
@@ -380,7 +379,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             last token when non-greedy. Even during prefill only the last token is read back.
         """
         num_tokens = len(input_ids)
-        self._hstate = 0
 
         self._check_single_sequence(attn_metadata)
 
@@ -398,6 +396,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                 num_tokens,
             )
 
+        self._hstate = 0
         # Decode path (num_tokens=1): use pre-allocated buffers for zero-alloc hot path.
         ids_buf, pos_buf, slot_map, bt_buf, x_buf, norm_out, logits_buf, ctx_len = \
             self._decode_setup(input_ids, positions, attn_metadata)

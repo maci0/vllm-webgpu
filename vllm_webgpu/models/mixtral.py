@@ -475,13 +475,14 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         # Copy topk results into pre-allocated staging buffers inside the Phase A
         # encoder so no extra GPU submit is needed for the readback.
+        assert self._active_encoder is not None, "_moe_ffn_layer must be called inside an active encoder context"
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
         _debug_weights = logger.isEnabledFor(DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(
-                    size=max(self._top_k * 4, 8),
+                    size=self._top_k * 4,
                     usage=_wgpu_lib.BufferUsage.COPY_DST | _wgpu_lib.BufferUsage.MAP_READ)
             self._active_encoder.copy_buffer_to_buffer(
                 msc["topk_w"].buf, 0, self._topk_w_staging, 0, K * 4)

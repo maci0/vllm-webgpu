@@ -166,7 +166,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         H = self.hidden_size
         I = self._max_inter
         NQ = self.num_q_heads
-        self._init_pre_buffers(max_ctx)
+        self._init_pre_buffers(max_ctx, T)
 
         # qkv_buf omitted: _decoder_layer projects Q, K, V separately into q_buf,
         # k_buf, v_buf; the fused [Q|K|V] buffer used by _transformer_layer is

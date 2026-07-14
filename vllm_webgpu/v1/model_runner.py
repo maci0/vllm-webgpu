@@ -47,7 +47,7 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.num_logprobs
+    num_logprobs = sp.logprobs  # logprob_token_ids already guarded above; sp.logprobs is always the value here
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -318,9 +318,7 @@ class WebGPUModelRunner:
             default_kv = self.vllm_config.model_config.get_total_num_kv_heads()
             tc = self.vllm_config.model_config.hf_text_config
             global_hd = getattr(tc, "global_head_dim", default_hd)
-            global_kv = getattr(tc, "num_global_key_value_heads", None)
-            if global_kv is None:
-                global_kv = default_kv
+            global_kv = getattr(tc, "num_global_key_value_heads", default_kv)
             k_eq_v = getattr(tc, "attention_k_eq_v", False)
             for i, lt in enumerate(_layer_types):
                 if not is_attn_layer(lt):

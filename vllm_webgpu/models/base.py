@@ -127,6 +127,10 @@ def compute_yarn_freqs(
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
     mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
+    # Formula tracks YaRNScalingRotaryEmbedding._compute_inv_freq in
+    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py L49-73 (vLLM 0.24).
+    # inv_freq_interpolation = 1/(factor*pos_freqs); inv_freq_extrapolation = 1/pos_freqs.
+    # On each vLLM bump, re-verify against that method to catch silent drift.
     inv_freq = (1.0 / (factor * pos_freqs) * (1 - mask) + 1.0 / pos_freqs * mask).numpy()
 
     mscale = (
@@ -420,9 +424,9 @@ class BaseWebGPUModel(ABC):
         raw = bytes(staging.read_mapped())
         staging.unmap()
 
-        result: dict[str, dict] = defaultdict(dict)
+        result: dict[str, dict] = {}
         for (kind, i, buf), off in zip(bufs, offsets):
-            result[kind][i] = raw[off : off + buf.nbytes]
+            result.setdefault(kind, {})[i] = raw[off : off + buf.nbytes]
         return result
 
     # ── GPU sampler helpers ───────────────────────────────────────────────────

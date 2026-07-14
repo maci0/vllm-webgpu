@@ -46,6 +46,10 @@ def is_attn_layer(lt: "str | int") -> bool:
     Use this instead of bare string-set membership checks everywhere so that
     the integer sentinel never needs to be repeated at individual call sites.
     """
+    # "linear_attention" (Qwen3.5 / CPU platform) is intentionally absent: it
+    # carries no KV cache state and must not be treated as an attention layer.
+    # This mirrors vLLM's config/model.py:1352 which counts it separately from
+    # standard attention layers.
     return lt in {"attention", "full_attention", "sliding_attention", "hybrid", 1}
 
 
@@ -103,7 +107,8 @@ def allocate_kv_from_tensors(
     # each other; the explicit collision check at the end of the loop catches that.
     # The name-to-index resolution uses extract_layer_index once per tensor entry.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
-    layer_idx_kv: dict[int, tuple[int, int, str]] = {}
+    layer_idx_kv: dict[int, tuple[int, int]] = {}
+    layer_idx_name: dict[int, str] = {}  # populated at the same site; consulted only in the collision error branch
     for tensor in kv_cache_tensors:
         if tensor.block_stride > 0:
             # block_stride > 0 means K and V data for multiple layers share one
@@ -257,12 +262,13 @@ def allocate_kv_from_tensors(
             # multi-attention-per-layer model) would silently overwrite each other's
             # buffer sizes, producing wrong K/V allocations with no error at runtime.
             if _idx in layer_idx_kv:
-                _, _, prev_name = layer_idx_kv[_idx]
+                prev_name = layer_idx_name[_idx]
                 raise RuntimeError(
                     f"Two layer names resolve to the same index {_idx}: "
                     f"{layer_name!r} and {prev_name!r}. This is a model configuration bug."
                 )
-            layer_idx_kv[_idx] = (k_bytes, v_bytes, layer_name)
+            layer_idx_kv[_idx] = (k_bytes, v_bytes)
+            layer_idx_name[_idx] = layer_name
 
     # Sliding-attention layers in supported models always receive FullAttentionSpec(sliding_window=None)
     # from get_kv_cache_spec; the SlidingWindowSpec/FullAttentionSpec(sliding_window!=None) rejections
@@ -294,7 +300,7 @@ def allocate_kv_from_tensors(
     total_bytes = 0
     for i in range(num_total_layers):
         if i in layer_idx_kv:
-            k_bytes, v_bytes, _ = layer_idx_kv[i]
+            k_bytes, v_bytes = layer_idx_kv[i]
             model.kv_pool.append((
                 WebGPUBuffer.empty(wgpu_device, k_bytes),
                 WebGPUBuffer.empty(wgpu_device, v_bytes),

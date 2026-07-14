@@ -127,7 +127,8 @@ def main() -> None:
 
     assert prod_times, "No production steps measured (--decode-steps must be > 0)"
     prod_avg_ms = np.mean(prod_times)
-    print(f"Production throughput: {prod_avg_ms:.1f} ms/tok = {1000/prod_avg_ms:.1f} tok/s")
+    tok_s_prod = f" = {1000/prod_avg_ms:.1f} tok/s" if prod_avg_ms > 0 else ""
+    print(f"Production throughput: {prod_avg_ms:.1f} ms/tok{tok_s_prod}")
 
     # ── Profiled decode steps ──────────────────────────────────────────────────────
     print(f"Profiling {args.decode_steps} decode steps...")
