@@ -202,12 +202,15 @@ class WebGPUWorker(WorkerBase):
             ensure_kv_transfer_shutdown()
         if ensure_ec_transfer_shutdown is not None:
             ensure_ec_transfer_shutdown()
-        # Release the GPU device. Both the worker and model_runner hold a
-        # reference to wgpu_device; clearing only one leaves the object alive.
-        # Do not null model_runner itself: any post-shutdown delegate call (e.g.
-        # get_supported_tasks) would raise AttributeError on NoneType instead of
-        # a clear error.
+        # Release the GPU device. The worker, model_runner, and
+        # model_runner.model (BaseWebGPUModel) each hold a reference to
+        # wgpu_device; clearing all three is required to let the object be
+        # garbage-collected. Do not null model_runner itself: any post-shutdown
+        # delegate call (e.g. get_supported_tasks) would raise AttributeError on
+        # NoneType instead of a clear error.
         if self.model_runner is not None:
+            if self.model_runner.model is not None:
+                self.model_runner.model.wgpu_device = None
             self.model_runner.wgpu_device = None
         self.wgpu_device = None
         logger.info("WebGPU worker shutdown complete")
