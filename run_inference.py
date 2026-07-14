@@ -122,10 +122,10 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         generated.append(last_token)
 
         pos  = len(input_ids_list) + step
-        slot = int(block_table[pos // block_size]) * block_size + pos % block_size
         if pos // block_size >= needed_blocks:
             print(f"  [KV cache full at step {step}]")
             break
+        slot = int(block_table[pos // block_size]) * block_size + pos % block_size
         meta   = SimpleNamespace(slot_mapping=[slot], block_tables=[block_table], max_decode_seq_len=pos + 1)
         logits = model.forward(
             np.array([last_token], dtype=np.uint32),
