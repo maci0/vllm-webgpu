@@ -444,7 +444,7 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
     if g_idx is None:
         try:
             import torch as _torch
-            from auto_awq.utils.packing_utils import dequantize_gemm as _awq_dq
+            from awq.utils.packing_utils import dequantize_gemm as _awq_dq
             t_qw = _torch.from_numpy(qweight.astype(np.int32, copy=False))
             t_qz = _torch.from_numpy(qzeros.astype(np.int32, copy=False))
             t_sc = _torch.from_numpy(scales.astype(np.float16, copy=False))
@@ -603,16 +603,11 @@ def detect_compressed_tensors_fmt(config_path: "str | Path", quant_cfg: "dict | 
         return {"__global__": {"fmt": "fp8_gpu", "group_size": None}}
     if w_args.num_bits == 4 and w_args.type == _QuantizationType.INT and w_args.strategy == _QuantizationStrategy.GROUP:
         return {"__global__": {"fmt": "gptq_gpu", "group_size": w_args.group_size}}
-    # MXFP4: 4-bit FLOAT GROUP (group_size=32) or TENSOR_GROUP.
+    # MXFP4 (4-bit) and MXFP8 (8-bit) FLOAT GROUP / TENSOR_GROUP formats.
     # The U8+U8 weight-pair signature is detected later in the tensor-header scan
-    # via has_mx_u8_pair, which routes to _detect_mx_quant. Return {} so that
+    # via has_mx_u8_pair, which routes to _detect_mx_quant. Return {} so that the
     # scan loop is reached; raising here would abort before it runs.
-    if w_args.num_bits == 4 and w_args.type == _QuantizationType.FLOAT and w_args.strategy in (
-        _QuantizationStrategy.GROUP, _QuantizationStrategy.TENSOR_GROUP
-    ):
-        return {}
-    # MXFP8: 8-bit FLOAT GROUP (group_size=32) or TENSOR_GROUP. Same reasoning as MXFP4 above.
-    if w_args.num_bits == 8 and w_args.type == _QuantizationType.FLOAT and w_args.strategy in (
+    if w_args.type == _QuantizationType.FLOAT and w_args.num_bits in (4, 8) and w_args.strategy in (
         _QuantizationStrategy.GROUP, _QuantizationStrategy.TENSOR_GROUP
     ):
         return {}

@@ -166,8 +166,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         H = self.hidden_size
         I = self._max_inter
         NQ = self.num_q_heads
-        self._scores_max_ctx = max_ctx
-
         self._init_pre_buffers(max_ctx)
 
         # qkv_buf omitted: _decoder_layer projects Q, K, V separately into q_buf,
@@ -310,9 +308,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         ctx_len = int(attn_metadata.max_decode_seq_len)
         if ctx_len > 65535:
             raise RuntimeError(f"ctx_len={ctx_len} exceeds 65535")
-        if ctx_len > self._scores_max_ctx:
+        if ctx_len > self.max_ctx:
             raise RuntimeError(
-                f"ctx_len={ctx_len} exceeds scores_buf capacity={self._scores_max_ctx}; "
+                f"ctx_len={ctx_len} exceeds scores_buf capacity={self.max_ctx}; "
                 f"max_position_embeddings in the model config is too small for this sequence"
             )
 

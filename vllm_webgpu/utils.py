@@ -8,9 +8,6 @@ if TYPE_CHECKING:
     from typing import Callable
     import numpy as np
 import torch
-from vllm.logger import init_logger
-
-logger = init_logger(__name__)
 
 # vLLM v1 sampling internals verified against vllm>=0.24,<0.25.
 # These paths have no stability guarantees; a patch release may move or rename

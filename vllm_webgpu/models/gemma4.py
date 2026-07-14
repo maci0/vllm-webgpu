@@ -2,6 +2,7 @@ from __future__ import annotations
 import math
 from functools import partial
 from itertools import batched
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
@@ -194,14 +195,12 @@ def _assert_gemma4_formula_compat() -> None:
         ~L559-580  head_dim / num_kv_heads (same formulas, different guard)
         ~L599-608  intermediate_size doubling guard (chained "i >= first > 0")
     """
-    import types as _types
-
     # Output-level guard: compare _gemma4_layer_params against the vLLM reference
     # formulas applied directly in pure Python on a minimal canonical config.
     # 4 layers: [sliding, full, sliding, full], last 2 are KV-shared, use_dwm=True.
     # Covers all formula branches: head_dim selection, k_eq_v KV head routing,
     # KV-sharing reversed search, and MLP doubling guard.
-    cfg = _types.SimpleNamespace(
+    cfg = SimpleNamespace(
         num_hidden_layers=4,
         layer_types=["sliding_attention", "full_attention", "sliding_attention", "full_attention"],
         head_dim=64,

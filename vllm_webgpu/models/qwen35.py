@@ -392,7 +392,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # detects the missing gate key and raises a clear error in that case.
         _q_gate_pending: dict[str, np.ndarray] = {}
         if self._attn_output_gate:
-            _q_dim = self.num_q_heads * self.head_dim
+            _q_dim = self.q_dim
 
             def _make_split(gk):
                 def _split(arr):

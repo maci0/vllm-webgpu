@@ -202,11 +202,15 @@ class BaseWebGPUModel(ABC):
     def _buf_to_numpy(self, buf: "WebGPUBuffer") -> "np.ndarray":
         """Read a GPU buffer as a numpy array with the correct element dtype.
 
-        Reinterprets the raw bytes from buf.to_numpy() using the numpy dtype
-        that corresponds to the buffer's wgpu dtype. Raises KeyError for any
-        dtype not in _WGPU_DTYPE_TO_NP so unknown types fail immediately.
+        Strips wgpu 4-byte alignment padding before the dtype view so that
+        f16 buffers with an odd element count do not return a spurious extra
+        element. The upload path (_upload_plain) pads every buffer to a 4-byte
+        boundary, so buf.buf.size may exceed the logical element bytes for odd
+        f16 arrays; buf.shape holds the original unpadded shape. Raises KeyError
+        for any dtype not in _WGPU_DTYPE_TO_NP so unknown types fail immediately.
         """
-        return buf.to_numpy().view(_WGPU_DTYPE_TO_NP[buf.dtype])
+        expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
+        return buf.to_numpy()[:expected].view(_WGPU_DTYPE_TO_NP[buf.dtype])
 
     def _buf_to_numpy_reshape(self, buf: "WebGPUBuffer") -> "np.ndarray":
         """Read a GPU buffer as a numpy array with correct dtype, trimmed and reshaped.

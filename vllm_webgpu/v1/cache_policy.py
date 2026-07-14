@@ -36,16 +36,6 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
-# Canonical set of layer-type values that represent attention layers.
-# Includes both string types and the Minimax integer encoding (1 = attention,
-# 0 = non-attention). Used by is_attn_layer and referenced conceptually in
-# model_runner.py and kv_utils.py. A module-level constant makes it easy to
-# extend when a new layer type is added, without hunting for inline set literals.
-_ATTN_LAYER_TYPES: frozenset[str | int] = frozenset(
-    {"attention", "full_attention", "sliding_attention", "hybrid", 1}
-)
-
-
 def is_attn_layer(lt: "str | int") -> bool:
     """Return True when a layer-type value represents an attention layer.
 
@@ -56,7 +46,7 @@ def is_attn_layer(lt: "str | int") -> bool:
     Use this instead of bare string-set membership checks everywhere so that
     the integer sentinel never needs to be repeated at individual call sites.
     """
-    return lt in _ATTN_LAYER_TYPES
+    return lt in {"attention", "full_attention", "sliding_attention", "hybrid", 1}
 
 
 def allocate_kv_from_tensors(
@@ -222,11 +212,14 @@ def allocate_kv_from_tensors(
                         f"FullAttentionSpec subclass {type(spec).__name__} overrides real_page_size_bytes; "
                         "the head_size ratio split formula may be wrong. Add an explicit branch to handle it."
                     )
-                # Compute K and V buffer sizes independently from their own
-                # dimensions so that asymmetric head sizes (head_size != head_size_v)
-                # are handled correctly. Using real_page_size_bytes and splitting
-                # by ratio is wrong when head_size != head_size_v: that property
-                # counts only K bytes, so the ratio would misdivide a K-only total.
+                # Compute K and V buffer sizes directly from per-dimension fields.
+                # Using the direct formula avoids float division (head_size /
+                # (head_size + head_size_v) is non-integer for odd head sizes) and
+                # makes the separate K and V buffer sizes explicit. Ratio-splitting
+                # from real_page_size_bytes is mathematically equivalent for plain
+                # (non-quantized, non-NVFP4) FullAttentionSpec but adds unnecessary
+                # indirection. The real danger is tensor.size // 2 (which inflates
+                # by per-token-head scale overhead), not real_page_size_bytes.
                 dtype_size = get_dtype_size(spec.dtype)
                 k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * dtype_size
                 v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * dtype_size

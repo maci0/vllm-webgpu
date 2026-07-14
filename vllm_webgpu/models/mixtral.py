@@ -492,9 +492,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         # Map the pre-allocated staging buffers — no extra GPU submit needed.
         self._topk_idx_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
-        raw_idx = np.frombuffer(self._topk_idx_staging.read_mapped(), dtype=np.uint32).copy()
+        expert_indices = np.frombuffer(self._topk_idx_staging.read_mapped(), dtype=np.uint32).copy()
         self._topk_idx_staging.unmap()
-        expert_indices = raw_idx
         if _debug_weights:
             self._topk_w_staging.map_sync(mode=_wgpu_lib.MapMode.READ)
             raw_w = np.frombuffer(self._topk_w_staging.read_mapped(), dtype=np.float32).copy()
