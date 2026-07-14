@@ -12,7 +12,6 @@ import wgpu as wgpu_lib
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-import torch
 from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
 from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
     YaRNScalingRotaryEmbedding,

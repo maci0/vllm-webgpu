@@ -129,7 +129,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q (offset = K_heads * K_dim). V follows K+Q.
         self._gdn_k_offset: int = self._lin_k_heads * self._lin_k_dim
-        self._gdn_v_offset: int = self._lin_k_heads * self._lin_k_dim * 2
+        self._gdn_v_offset: int = self._gdn_k_offset * 2
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;

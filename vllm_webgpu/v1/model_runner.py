@@ -795,13 +795,12 @@ class WebGPUModelRunner:
                 # request beyond the first in a multi-sequence decode batch.
                 if self._has_restore:
                     saved_recurrent = state.get("recurrent_states")
-                    rolled_back = is_resumed and pos < state["pos"]
-                    if not rolled_back and saved_recurrent is not None:
+                    if not rolled_back_pos and saved_recurrent is not None:
                         self.model.restore_recurrent_states(saved_recurrent)
                     elif self._has_reset:
                         # Reset Mamba conv/SSM states to zero before decoding.
                         self.model.reset_recurrent_states()
-                        if rolled_back and pos > 0:
+                        if rolled_back_pos and pos > 0:
                             # The request was preempted and resumed at position pos > 0.
                             # Prefix caching preserved pos tokens in the KV cache for
                             # attention layers, but the Mamba SSM state was lost. Replay

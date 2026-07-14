@@ -7,6 +7,28 @@ silently break at runtime. The pinned range is declared in pyproject.toml:
 When bumping the vLLM pin, re-run this file first and fix any failures before
 updating pyproject.toml.
 
+Inline copy tracking
+--------------------
+vllm_webgpu/quant/weight_loader.py._detect_mx_quant contains a local copy of
+ModelOptFp8Config._extract_modelopt_quant_algo from
+vllm/model_executor/layers/quantization/modelopt.py.  That module has
+top-level CUDA/triton imports that prevent it from loading on WebGPU, so the
+copy is unavoidable for now.
+
+To avoid silent divergence, test_modelopt_source_hash_pinned (below) stores a
+SHA-256 of the upstream method source (stripped trailing whitespace, normalized
+to LF).  Any line change in the upstream method will flip the hash and fail CI,
+requiring a manual diff against the inline copy.
+
+When bumping vLLM and the hash fails:
+  1. diff _extract_modelopt_quant_algo in modelopt.py against the inline copy
+     in weight_loader.py._detect_mx_quant (the except block).
+  2. Update the inline copy to match the new logic.
+  3. Update PINNED_EXTRACT_ALGO_HASH below to the new hash.
+  4. Re-run this file to confirm green.
+
+VLLM_INLINE_COPY_VALIDATED: 0.24.0
+
 Background: apply_top_k_top_p_pytorch and random_sample are not part of
 vLLM's documented public API. They live in
 vllm.v1.sample.ops.topk_topp_sampler and are used in place of the public
@@ -18,12 +40,18 @@ assertions can be removed.
 
 Until then, the assertions below act as an early-warning system.
 """
+import hashlib
 import importlib
 import importlib.util
 import inspect
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import pytest
+
+# SHA-256 (first 16 hex chars) of _extract_modelopt_quant_algo source in vLLM 0.24.0.
+# Trailing whitespace stripped per line, joined with \n.
+# Recompute with: hashlib.sha256('\n'.join(l.rstrip() for l in src.splitlines()).encode()).hexdigest()[:16]
+PINNED_EXTRACT_ALGO_HASH = "a12d15f39ac3f5ee"
 
 
 def _attr_exists(module_path: str, attr: str) -> bool:
@@ -118,6 +146,41 @@ def test_modelopt_inline_copy_matches_vllm(cfg, expected_inline, label):
         )
     except (ImportError, RuntimeError):
         pass  # CUDA imports fail on WebGPU; inline-only path still verified above.
+
+
+def test_modelopt_source_hash_pinned():
+    """Fail when _extract_modelopt_quant_algo source changes in a vLLM bump.
+
+    modelopt.py carries CUDA imports at module scope, so vllm_webgpu keeps a
+    local copy of _extract_modelopt_quant_algo inside _detect_mx_quant.  This
+    test stores a SHA-256 of the upstream source; any line change flips the hash
+    and requires a manual diff against the inline copy.
+
+    When this test fails after a vLLM bump:
+      1. Diff _extract_modelopt_quant_algo in modelopt.py against the inline
+         fallback block in vllm_webgpu/quant/weight_loader.py._detect_mx_quant.
+      2. Update the inline copy to reflect the new logic.
+      3. Update PINNED_EXTRACT_ALGO_HASH at the top of this file to the new hash.
+      4. Update VLLM_INLINE_COPY_VALIDATED in the module docstring to the new version.
+    """
+    pytest.importorskip("vllm", reason="vllm not installed, skipping compat check")
+    try:
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptFp8Config
+    except (ImportError, RuntimeError):
+        pytest.skip("modelopt not importable on this platform (expected on WebGPU/CPU)")
+
+    src = inspect.getsource(ModelOptFp8Config._extract_modelopt_quant_algo)
+    normalized = "\n".join(line.rstrip() for line in src.splitlines())
+    actual_hash = hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+    assert actual_hash == PINNED_EXTRACT_ALGO_HASH, (
+        f"_extract_modelopt_quant_algo source changed (hash {actual_hash!r} != "
+        f"pinned {PINNED_EXTRACT_ALGO_HASH!r}). "
+        "Diff vllm/model_executor/layers/quantization/modelopt.py against the "
+        "inline copy in vllm_webgpu/quant/weight_loader.py._detect_mx_quant, "
+        "update the copy and PINNED_EXTRACT_ALGO_HASH in this file, and set "
+        "VLLM_INLINE_COPY_VALIDATED to the new vLLM version."
+    )
 
 
 def test_modelopt_extract_quant_algo_drift():

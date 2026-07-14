@@ -306,7 +306,7 @@ def allocate_kv_from_tensors(
     total_bytes = 0
     for i in range(num_total_layers):
         if i in layer_idx_kv:
-            k_bytes, v_bytes, _layer_name = layer_idx_kv[i]
+            k_bytes, v_bytes, _ = layer_idx_kv[i]
             model.kv_pool.append((
                 WebGPUBuffer.empty(wgpu_device, k_bytes),
                 WebGPUBuffer.empty(wgpu_device, v_bytes),

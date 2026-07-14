@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import vllm_webgpu.envs as _webgpu_envs
-from transformers.utils import SAFE_WEIGHTS_NAME
+from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
 
 from vllm.logger import init_logger
 
@@ -287,7 +287,7 @@ def detect_weight_format(path: str) -> "tuple[str, str | None, str | None]":
         _consolidated = p / "consolidated.safetensors"
         if _consolidated.exists():
             return "safetensors", None, str(_consolidated)
-        return "safetensors", None, str(p / SAFE_WEIGHTS_NAME)
+        return "safetensors", None, str(p / SAFETENSORS_SINGLE_FILE)
     if p.suffix == ".gguf":
         return "gguf", None, None
     if p.suffix == ".safetensors":
@@ -1016,9 +1016,9 @@ def load_safetensors_weights(
 
         if fmt in ("awq", "gptq"):
             # Collect quantized bases
-            quant_bases = sorted(set(
+            quant_bases = sorted({
                 k.removesuffix(".qweight") for k in header if k.endswith(".qweight")
-            ))
+            })
             quant_set = {
                 f"{base}{suf}"
                 for base in quant_bases
@@ -1113,10 +1113,10 @@ def load_safetensors_weights(
 
         elif fmt == "nvfp4":
             # NVFP4: weight_packed (U8) + weight_scale (F8_E4M3) + weight_global_scale (F32)
-            nvfp4_bases = sorted(
+            nvfp4_bases = sorted({
                 k.removesuffix(".weight_packed") for k in header
                 if k.endswith(".weight_packed") and header[k].get("dtype") == "U8"
-            )
+            })
             nvfp4_set = {
                 f"{base}{suf}"
                 for base in nvfp4_bases
@@ -1244,7 +1244,7 @@ def load_safetensors_weights(
                                 # Per-channel inverse scales: invert element-wise.
                                 scale_inv_f32 = scale_inv_arr.ravel().astype(np.float32)
                                 safe = np.where(scale_inv_f32 != 0.0, scale_inv_f32, 1.0)
-                                scale_f32 = np.reciprocal(safe)
+                                scale_f32 = 1.0 / safe
                                 _upload(scale_f32, np.float32, 'f32', wname + ".scales", weights)
                                 weights["__quant_meta__"][base] = {
                                     "fmt": "fp8_gpu", "global_scale": 1.0, "group_size": 1}

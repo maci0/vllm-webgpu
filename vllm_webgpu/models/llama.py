@@ -537,19 +537,19 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         _pfill_rope_base = self._rope_consts
         _freq_buf = self._rope_freq_buf
 
-        for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), _CHUNK)):
+        with self._batched_dispatch():
+            # ── Embedding (T tokens) ──────────────────────────────────────────
+            self._dispatch("embedding_lookup",
+                           [self.weights["model.embed_tokens.weight"], ids_buf, b["x"]],
+                           {"HIDDEN_DIM": hidden}, (T, 1, 1))
+
+            self._dispatch("rms_norm",
+                           [b["x"], self.weights["model.layers.0.input_layernorm.weight"],
+                            b["normed"]],
+                           rms_base, (T, 1, 1))
+
+        for chunk_layers in batched(range(self.num_layers), _CHUNK):
             with self._batched_dispatch():
-                if chunk_idx == 0:
-                    # ── Embedding (T tokens) ──────────────────────────────────────────
-                    self._dispatch("embedding_lookup",
-                                   [self.weights["model.embed_tokens.weight"], ids_buf, b["x"]],
-                                   {"HIDDEN_DIM": hidden}, (T, 1, 1))
-
-                    self._dispatch("rms_norm",
-                                   [b["x"], self.weights["model.layers.0.input_layernorm.weight"],
-                                    b["normed"]],
-                                   rms_base, (T, 1, 1))
-
                 for i in chunk_layers:
                     p    = f"model.layers.{i}"
                     q_wk = f"{p}.self_attn.q_proj.weight"

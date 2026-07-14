@@ -501,10 +501,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         ``_ELEM_BYTES["f16"]`` guards against silent under-allocation if
         the byte-size table is ever refactored.
         """
-        assert num_spec == 0, (
-            "speculative decoding not yet supported on WebGPU "
-            "(mamba2_causal_conv shader uses KERNEL-1 slots)"
-        )
+        if num_spec != 0:
+            raise NotImplementedError(
+                "speculative decoding not yet supported on WebGPU "
+                "(mamba2_causal_conv shader uses KERNEL-1 slots)"
+            )
         if is_conv_state_dim_first():
             raise NotImplementedError(
                 "VLLM_SSM_CONV_STATE_LAYOUT=DS is not supported on the WebGPU "
