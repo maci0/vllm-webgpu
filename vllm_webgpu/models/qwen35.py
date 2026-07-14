@@ -12,7 +12,7 @@ from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
 from vllm_webgpu.models.mixtral import MixtralWebGPUModel
 import vllm_webgpu.envs as _webgpu_envs
 
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES, assert_elem_bytes_stable
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.device import WebGPUDevice
@@ -20,22 +20,9 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-# Import-time sentinels: verify the element byte counts used by _alloc_lin_states
-# to size conv and SSM state buffers. Mirrors the identical guards in nemotron_h.py.
-# A refactor of _ELEM_BYTES would silently under/over-allocate buffers here without
-# these checks, causing GPU memory corruption or wrong reads at runtime.
-if _ELEM_BYTES["f16"] != 2:
-    raise AssertionError(
-        f"_ELEM_BYTES['f16'] is {_ELEM_BYTES['f16']!r}, expected 2; "
-        "_alloc_lin_states conv state buffer sizing is wrong. "
-        "Review the conv_bytes formula before removing this assertion."
-    )
-if _ELEM_BYTES["f32"] != 4:
-    raise AssertionError(
-        f"_ELEM_BYTES['f32'] is {_ELEM_BYTES['f32']!r}, expected 4; "
-        "_alloc_lin_states SSM state buffer sizing is wrong. "
-        "Review the ssm_bytes formula before removing this assertion."
-    )
+# Verify _ELEM_BYTES values used to size conv/SSM state buffers in _alloc_lin_states.
+# A refactor of _ELEM_BYTES would silently under/over-allocate buffers without this check.
+assert_elem_bytes_stable()
 
 # Qwen3.5 linear attention layer constants.
 # These serve a dual purpose:
@@ -132,6 +119,18 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Computed directly to avoid a throwaway function call; stays consistent
         # with _alloc_lin_states which calls gated_delta_net_state_shape with the real num_spec.
         self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
+        if __debug__ and self._lin_conv_kernel > 1:
+            _chk_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+                tp_world_size=1,
+                num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+                head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+                conv_kernel_size=self._lin_conv_kernel, num_spec=0,
+            )
+            _expected_conv_dim = math.prod(_chk_shape) // (self._lin_conv_kernel - 1)
+            assert self._lin_conv_dim == _expected_conv_dim, (
+                f"_lin_conv_dim formula drifted from gated_delta_net_state_shape: "
+                f"computed {self._lin_conv_dim}, expected {_expected_conv_dim}"
+            )
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         self._gdn_k_base: int = self._lin_k_heads * self._lin_k_dim

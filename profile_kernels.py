@@ -112,7 +112,8 @@ def main() -> None:
         _dm = SimpleNamespace(slot_mapping=[p], block_tables=[bt], max_decode_seq_len=p + 1)
         t_start = time.perf_counter()
         lg = model.forward(np.array([token_id], dtype=np.uint32), np.array([p], dtype=np.uint32), _dm)
-        assert lg.shape == (1, 1), f"expected greedy (1,1), got {lg.shape}"
+        if lg.shape != (1, 1):
+            raise RuntimeError(f"expected greedy (1,1) logits, got {lg.shape}; model did not respect _greedy_decode=True")
         elapsed = (time.perf_counter() - t_start) * 1000
         return int(lg[0, 0]), elapsed
 
@@ -125,7 +126,8 @@ def main() -> None:
         if phase_step >= args.warmup_steps:
             prod_times.append(elapsed_ms)
 
-    assert prod_times, "No production steps measured (--decode-steps must be > 0)"
+    if not prod_times:
+        raise ValueError("No production steps measured (--decode-steps must be > 0)")
     prod_avg_ms = np.mean(prod_times)
     tok_s_prod = f" = {1000/prod_avg_ms:.1f} tok/s" if prod_avg_ms > 0 else ""
     print(f"Production throughput: {prod_avg_ms:.1f} ms/tok{tok_s_prod}")

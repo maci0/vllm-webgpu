@@ -17,6 +17,27 @@ _WGPU_DTYPE_TO_NP: dict[str, type] = {v: k for k, v in _DTYPE_MAP.items()}
 _ELEM_BYTES: dict[str, int] = {"f16": 2, "f32": 4, "u8": 1, "i32": 4, "u32": 4}
 
 
+def assert_elem_bytes_stable() -> None:
+    """Verify that _ELEM_BYTES values have not changed from the expected constants.
+
+    Call at import time from any module whose buffer-sizing formulas depend on
+    specific f16/f32 byte counts. Raises AssertionError immediately if the values
+    change, rather than silently under/over-allocating GPU buffers at runtime.
+    """
+    if _ELEM_BYTES["f16"] != 2:
+        raise AssertionError(
+            f"_ELEM_BYTES['f16'] is {_ELEM_BYTES['f16']!r}, expected 2; "
+            "buffer sizing formulas that hard-code f16=2 bytes are wrong. "
+            "Review all conv state buffer sizing formulas before removing this check."
+        )
+    if _ELEM_BYTES["f32"] != 4:
+        raise AssertionError(
+            f"_ELEM_BYTES['f32'] is {_ELEM_BYTES['f32']!r}, expected 4; "
+            "buffer sizing formulas that hard-code f32=4 bytes are wrong. "
+            "Review all SSM state buffer sizing formulas before removing this check."
+        )
+
+
 def _usage_storage_rw():
     import wgpu
     return wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.COPY_SRC

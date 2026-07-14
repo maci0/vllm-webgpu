@@ -9,7 +9,7 @@ from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _Nemot
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES, assert_elem_bytes_stable
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -18,24 +18,10 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
-# Import-time sentinel: verify the f16 element byte count that _init_mamba_states
-# uses to size conv state buffers. The buffer sizing formula
-#   conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
-# is hard-coded to f16 because the WGSL shaders are compiled at a fixed precision
-# and cannot switch dtype at runtime. If _ELEM_BYTES is ever refactored, this
-# assertion fires immediately rather than silently under-allocating state buffers.
-if _ELEM_BYTES["f16"] != 2:
-    raise AssertionError(
-        f"_ELEM_BYTES['f16'] is {_ELEM_BYTES['f16']!r}, expected 2; "
-        "_init_mamba_states conv state buffer sizing is wrong. "
-        "Review the conv_bytes formula before removing this assertion."
-    )
-if _ELEM_BYTES["f32"] != 4:
-    raise AssertionError(
-        f"_ELEM_BYTES['f32'] is {_ELEM_BYTES['f32']!r}, expected 4; "
-        "_init_mamba_states SSM state buffer sizing is wrong. "
-        "Review the ssm_bytes formula at _init_mamba_states before removing this assertion."
-    )
+# Verify _ELEM_BYTES values used to size conv/SSM state buffers in _init_mamba_states.
+# The conv_bytes formula hard-codes f16 and the ssm_bytes formula hard-codes f32 because
+# the WGSL shaders run at fixed precision and cannot switch dtype at runtime.
+assert_elem_bytes_stable()
 
 # Shared transform for all Mamba A_log weights: -exp(A_log) converts the log-space
 # parameter to the negative-real value expected by the Mamba SSM kernel.

@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from functools import partial
+import warnings
 from itertools import batched
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, NamedTuple
@@ -17,7 +17,6 @@ from vllm.transformers_utils.config import get_hf_text_config
 # locations and re-run tests/test_gemma4_layer_params.py after any bump.
 _EXPECTED_VLLM_VERSION = "0.24.0"
 if _vllm_version != _EXPECTED_VLLM_VERSION:
-    import warnings
     warnings.warn(
         f"vLLM {_vllm_version!r} differs from pinned {_EXPECTED_VLLM_VERSION!r}. "
         "Run tests/test_gemma4_layer_params.py and re-audit the three constructor "
@@ -36,17 +35,6 @@ if TYPE_CHECKING:
 # Tolerance for treating a layer_scalar value as exactly 1.0 (no-op scaling).
 # A layer_scalar within this distance of 1.0 skips the f32_scale_inplace dispatch.
 _SCALE_EPS = 1e-6
-
-
-def _tile_if_shared(a: "np.ndarray", expected_dim: int, n: int) -> "np.ndarray":
-    """Tile a shared norm weight (shape [expected_dim]) into per-head layout (shape [n * expected_dim]).
-
-    Gemma4 checkpoints store q_norm/k_norm as (head_dim,) when all heads share
-    the same norm weights. The shaders expect (num_heads * head_dim,) with the
-    head weights laid out contiguously. If the weight already has the per-head
-    shape, it is returned unchanged.
-    """
-    return np.tile(a, n) if a.shape == (expected_dim,) else a
 
 
 # Three formulas transcribed from vLLM v0.24.0 into _gemma4_layer_params below.
@@ -553,11 +541,14 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             _hd = _lp["head_dim"]
             _nq = self.num_q_heads
             _nkv = _lp["num_kv_heads"]
+            # Tile shared norm weight (head_dim,) -> (num_heads * head_dim,).
+            # Gemma4 checkpoints store q_norm/k_norm as (head_dim,) when all heads
+            # share the same norm weights; the shaders expect (num_heads * head_dim,).
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = (
-                partial(_tile_if_shared, expected_dim=_hd, n=_nq)
+                lambda a, hd=_hd, n=_nq: np.tile(a, n) if a.shape == (hd,) else a
             )
             self._weight_transforms[f"{_p}.self_attn.k_norm.weight"] = (
-                partial(_tile_if_shared, expected_dim=_hd, n=_nkv)
+                lambda a, hd=_hd, n=_nkv: np.tile(a, n) if a.shape == (hd,) else a
             )
         # Spot-check for the GGUF path only: values come from external metadata that
         # can genuinely disagree with the per-layer formulas. The safetensors and

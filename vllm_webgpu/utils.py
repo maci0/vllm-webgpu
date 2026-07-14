@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from typing import Callable
     import numpy as np
 import torch
 
@@ -46,7 +45,9 @@ SHADERS_DIR = Path(__file__).parent / "shaders"
 # maxsize=16: fixed callers (model_runner/base) use 2-4 distinct sizes;
 # variable callers (e.g. diffusion_gemma per-request) are bounded by LRU
 # eviction rather than accumulating stale entries forever.
-zero_bytes: Callable[[int], bytes] = lru_cache(maxsize=16)(bytes)
+@lru_cache(maxsize=16)
+def zero_bytes(n: int) -> bytes:
+    return bytes(n)
 
 
 def sample_token(
