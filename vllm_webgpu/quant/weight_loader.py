@@ -574,9 +574,12 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
                 except Exception:
                     # modelopt.py has top-level CUDA imports that fail on WebGPU.
-                    # Return '' and let the U8+U8 weight-pair heuristic (has_mx_u8_pair)
-                    # pick up MXFP4/8 if hf_quant_config.json parsing fails entirely.
-                    algo = ''
+                    # Extract quant_algo directly from the already-loaded cfg dict,
+                    # mirroring _extract_modelopt_quant_algo without the import.
+                    if 'quantization' in cfg and isinstance(cfg['quantization'], dict):
+                        algo = str(cfg['quantization'].get('quant_algo', '')).upper()
+                    else:
+                        algo = str(cfg.get('quant_algo', '')).upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
