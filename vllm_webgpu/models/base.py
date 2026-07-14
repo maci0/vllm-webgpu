@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -18,7 +19,7 @@ from vllm.model_executor.layers.rotary_embedding.common import (
 )
 
 from vllm_webgpu.utils import zero_bytes
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _WGPU_DTYPE_TO_NP
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES, _WGPU_DTYPE_TO_NP
 from vllm_webgpu.webgpu.pipeline import PipelineKey
 
 
@@ -206,6 +207,17 @@ class BaseWebGPUModel(ABC):
         when the dtype is not in _WGPU_DTYPE_TO_NP.
         """
         return buf.to_numpy().view(_WGPU_DTYPE_TO_NP.get(buf.dtype, np.float16))
+
+    def _buf_to_numpy_reshape(self, buf: "WebGPUBuffer") -> "np.ndarray":
+        """Read a GPU buffer as a numpy array with correct dtype, trimmed and reshaped.
+
+        Slices off wgpu alignment padding before the dtype view, then reshapes
+        to buf.shape. Use this instead of _buf_to_numpy when the caller needs the
+        full shape (e.g. slicing into fused weight tensors).
+        """
+        np_t = _WGPU_DTYPE_TO_NP.get(buf.dtype, np.uint8)
+        expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
+        return buf.to_numpy()[:expected].view(np_t).reshape(buf.shape)
 
     @contextmanager
     def _batched_dispatch(self, label: str = ""):
