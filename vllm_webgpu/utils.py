@@ -1,6 +1,7 @@
 """Utility helpers for vllm-webgpu."""
 from __future__ import annotations
 from functools import cache
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -52,20 +53,24 @@ def sample_token(
     temperature: float,
     top_p: float = 1.0,
     top_k: int = 0,
+    min_p: float = 0.0,
     generator: torch.Generator | None = None,
     use_fp64_gumbel: bool = False,
 ) -> int:
     """Sample one token from a 1-D float32 logit vector.
 
-    Applies (in order): temperature scaling, top-k filtering, top-p nucleus
-    filtering, then draws from the resulting categorical distribution.
-    Returns argmax when temperature < GREEDY_TEMP.
+    Applies (in order): temperature scaling, min-p filtering, top-k filtering,
+    top-p nucleus filtering, then draws from the resulting categorical
+    distribution. Returns argmax when temperature < GREEDY_TEMP.
 
     Args:
         logits_1d: 1-D float32 logit vector of length vocab_size.
         temperature: Softmax temperature. Values < GREEDY_TEMP produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
         top_k: Keep at most top_k tokens. 0 disables.
+        min_p: Minimum probability relative to the top token. Tokens whose
+            temperature-scaled logit falls below max_logit + log(min_p) are
+            masked. 0.0 disables.
         generator: Optional per-request torch.Generator. The caller is
             responsible for seeding it once and passing the same object on
             every decode step so the RNG state advances correctly between
@@ -78,6 +83,9 @@ def sample_token(
 
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)
     logits_t = logits_t / temperature
+    if min_p > 0.0:
+        threshold = logits_t.max(dim=-1, keepdim=True).values + math.log(min_p)
+        logits_t = logits_t.masked_fill(logits_t < threshold, float('-inf'))
     k_t = torch.tensor([top_k]) if top_k > 0 else None
     p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None
     # allow_cpu_sync=True enables the faster partial-topk path (apply_top_k_only)

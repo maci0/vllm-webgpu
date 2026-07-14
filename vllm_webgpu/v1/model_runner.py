@@ -650,7 +650,8 @@ class WebGPUModelRunner:
             else:
                 first_decode_tok = _sample_token(
                     last_logits[-1], temperature=sp.temperature,
-                    top_p=sp.top_p, top_k=sp.top_k, generator=rng,
+                    top_p=sp.top_p, top_k=sp.top_k, min_p=sp.min_p,
+                    generator=rng,
                     use_fp64_gumbel=self._use_fp64_gumbel,
                 )
 
@@ -824,7 +825,8 @@ class WebGPUModelRunner:
                 else:
                     stok = _sample_token(
                         logits[0], temperature=sp.temperature,
-                        top_p=sp.top_p, top_k=sp.top_k, generator=rng,
+                        top_p=sp.top_p, top_k=sp.top_k, min_p=sp.min_p,
+                        generator=rng,
                         use_fp64_gumbel=self._use_fp64_gumbel,
                     )
 
