@@ -15,8 +15,6 @@ def _pick_token(logits_2d, greedy: bool, temperature: float, top_p: float) -> in
     row = logits_2d[0]
     if greedy and logits_2d.shape[-1] == 1:
         return int(row[0])
-    if greedy:
-        return int(row.argmax())
     return sample_token(row, temperature=temperature, top_p=top_p)
 
 

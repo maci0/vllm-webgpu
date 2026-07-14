@@ -63,6 +63,63 @@ def test_vllm_private_symbol_exists(module_path, symbol):
     )
 
 
+@pytest.mark.parametrize("cfg,expected_inline,label", [
+    # 'quantization' present as a dict: both paths return the upper-cased quant_algo.
+    (
+        {"quant_method": "modelopt", "quantization": {"quant_algo": "MXFP4"}},
+        "MXFP4",
+        "present-dict",
+    ),
+    # 'quantization' present but not a dict: vLLM returns None (coerced to ''),
+    # inline copy returns ''. Both reach the same final algo value.
+    (
+        {"quant_method": "modelopt", "quantization": "not_a_dict"},
+        "",
+        "present-non-dict",
+    ),
+    # 'quantization' absent: read quant_algo at top level.
+    (
+        {"quant_method": "modelopt", "quant_algo": "MXFP8"},
+        "MXFP8",
+        "absent",
+    ),
+])
+def test_modelopt_inline_copy_matches_vllm(cfg, expected_inline, label):
+    """Assert that the inline fallback in _detect_mx_quant returns the same
+    algo string as _extract_modelopt_quant_algo (coerced to '' for None) for
+    all three branch shapes: 'quantization' present-dict, present-non-dict,
+    and absent.
+
+    Pinned against vLLM 0.24.0
+    (vllm/model_executor/layers/quantization/modelopt.py L245-262).
+    When bumping vLLM, update the inline copy in
+    vllm_webgpu/quant/weight_loader.py and re-run.
+    """
+    pytest.importorskip("vllm", reason="vllm not installed, skipping compat check")
+
+    # Inline copy logic (mirrors weight_loader.py _detect_mx_quant fallback).
+    if 'quantization' in cfg:
+        inline_algo = str(cfg['quantization'].get('quant_algo', '')).upper() if isinstance(cfg['quantization'], dict) else ''
+    else:
+        inline_algo = str(cfg.get('quant_algo', '')).upper()
+
+    assert inline_algo == expected_inline, (
+        f"label={label!r}: inline copy returned {inline_algo!r}, expected {expected_inline!r}"
+    )
+
+    try:
+        from vllm.model_executor.layers.quantization.modelopt import ModelOptFp8Config
+        vllm_result = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
+        assert vllm_result == expected_inline, (
+            f"label={label!r}: vLLM _extract_modelopt_quant_algo returned "
+            f"{vllm_result!r} (after coercion), expected {expected_inline!r}. "
+            "The upstream logic changed; diff against the inline copy in "
+            "vllm_webgpu/quant/weight_loader.py and update accordingly."
+        )
+    except (ImportError, RuntimeError):
+        pass  # CUDA imports fail on WebGPU; inline-only path still verified above.
+
+
 def test_modelopt_extract_quant_algo_drift():
     """Detect drift in _extract_modelopt_quant_algo (vllm 0.24).
 

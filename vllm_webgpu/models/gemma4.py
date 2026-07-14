@@ -1177,6 +1177,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Block table is constant across all tokens; upload once before the loop.
         dev.queue.write_buffer(pre["bt"].buf, 0, _bt_bytes)
 
+        _chunks = list(batched(range(self.num_layers), self._PREFILL_CHUNK))
         for t in range(T):
             self._hstate = 0
             tok_pos = int(positions[t])
@@ -1192,7 +1193,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             normed_x = sc["normed"]
             x_buf    = pre["x"]
-            for chunk_idx, chunk_layers in enumerate(batched(range(self.num_layers), self._PREFILL_CHUNK)):
+            for chunk_idx, chunk_layers in enumerate(_chunks):
                 with self._batched_dispatch():
                     if chunk_idx == 0:
                         self._dispatch(

@@ -573,10 +573,10 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
                 except Exception:
                     # modelopt.py has top-level CUDA imports that fail on WebGPU.
-                    # Mirrors ModelOptFp8Config._extract_modelopt_quant_algo (vLLM 0.24,
-                    # vllm/model_executor/layers/quantization/modelopt.py L245-262).
-                    # On each vLLM bump, re-audit that file for new keys or changed fallback
-                    # logic and update the inline copy below accordingly.
+                    # Mirrors ModelOptFp8Config._extract_modelopt_quant_algo
+                    # (vLLM 0.24.0, vllm/model_executor/layers/quantization/modelopt.py
+                    # L245-262). On each vLLM bump, re-audit that file for new keys or
+                    # changed fallback logic and update the inline copy below accordingly.
                     # 'quantization' present but not a dict -> return None (coerced to '').
                     # 'quantization' absent -> read quant_algo at top level.
                     if 'quantization' in cfg:

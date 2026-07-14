@@ -132,7 +132,7 @@ def main() -> None:
     model.profile_reset()
     try:
         decode_times = []
-        for step in range(args.decode_steps):
+        for _ in range(args.decode_steps):
             decode_tok, step_ms = _run_decode_step(decode_tok, pos)
             decode_times.append(step_ms)
             pos += 1

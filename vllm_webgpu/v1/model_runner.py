@@ -591,7 +591,7 @@ class WebGPUModelRunner:
             T = min(num_sched, len(tok_ids) - num_computed)
             chunk_toks = tok_ids[num_computed:num_computed + T]
             abs_idx = np.arange(num_computed, num_computed + T)
-            blk_idx = abs_idx // block_size
+            blk_idx, within_block = np.divmod(abs_idx, block_size)
             oob = blk_idx >= len(blk_ids)
             if oob.any():
                 bad = int(abs_idx[oob][0])
@@ -599,7 +599,7 @@ class WebGPUModelRunner:
                     f"block table too short for req {rid}: token {bad} needs block "
                     f"{bad // block_size} but only {len(blk_ids)} blocks allocated"
                 )
-            slots = (bt[blk_idx].astype(np.int64) * block_size + abs_idx % block_size).tolist()
+            slots = (bt[blk_idx].astype(np.int64) * block_size + within_block).tolist()
 
             _batch_pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=num_computed + T)
 
@@ -629,12 +629,13 @@ class WebGPUModelRunner:
             # Seed a per-request generator once at prefill; the same object is
             # passed to every subsequent decode step so the RNG state advances
             # between steps rather than restarting from the same seed each time.
-            # Reuse a generator that was created during an earlier chunk of this
-            # same request (chunked prefill) so seeding happens only once total.
-            prev_state = self._req_state.get(rid)
-            if prev_state is not None and prev_state.get("rng") is not None:
-                rng = prev_state["rng"]
-            elif sp is not None and sp.seed is not None:
+            # chunked prefill is disabled (platform.py:enable_chunked_prefill = False),
+            # so every request here is truly new and must have no prior state.
+            assert self._req_state.get(rid) is None, (
+                f"req {rid} already has saved state but chunked prefill is disabled; "
+                "update this path before re-enabling chunked prefill"
+            )
+            if sp is not None and sp.seed is not None:
                 rng = torch.Generator()
                 rng.manual_seed(sp.seed)
             else:
