@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from typing import TYPE_CHECKING, NamedTuple
 
 from vllm.utils.cpu_resource_utils import get_memory_node_info, get_visible_memory_node
@@ -456,7 +457,6 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     # the guard valid on Linux where /proc/{pid}/status may lack Mems_allowed_list.
     _nodes = get_visible_memory_node()
     if not _nodes:
-        import os
         raise RuntimeError(
             "get_visible_memory_node() returned an empty list — "
             "/proc/{}/status may lack Mems_allowed_list or "

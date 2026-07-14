@@ -1303,6 +1303,7 @@ def load_safetensors_weights(
                 # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
                 # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
                 from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
+                import torch as _torch
                 for base in mx_bases:
                     try:
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
@@ -1310,7 +1311,6 @@ def load_safetensors_weights(
                         # E8M0 exponent decode: scale = 2^(u8 - 127).
                         # Use decompress_mx_scale from compressed_tensors (the canonical
                         # implementation). It returns bfloat16; cast to float32 for GPU upload.
-                        import torch as _torch
                         ws_f32 = _decompress_mx_scale(
                             _torch.from_numpy(ws_u8)
                         ).to(_torch.float32).numpy()

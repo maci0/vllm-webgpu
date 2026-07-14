@@ -250,7 +250,8 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         if self.is_moe:
             for i in range(self.num_layers):
                 p = self._layer_key_prefix(i)
-                pes_w = self.weights.get(f"{p}.router.per_expert_scale") or self.weights.get(f"{p}.moe.per_expert_scale")
+                pes_key = self._first_weight_key(f"{p}.router.per_expert_scale", f"{p}.moe.per_expert_scale")
+                pes_w = self.weights.get(pes_key)
                 if pes_w is not None:
                     self._pes_cache[i] = self._buf_to_numpy(pes_w).astype(np.float32)
             self._validate_expert_weights()

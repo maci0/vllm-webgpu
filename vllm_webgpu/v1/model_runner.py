@@ -446,7 +446,7 @@ class WebGPUModelRunner:
             max_k = max(widths)
             # Short-circuit when all entries are present and share the same width.
             all_present = None not in logprobs_data
-            if all_present and len(set(widths)) == 1:
+            if all_present and min(widths) == max(widths):
                 built_logprobs = _stack_logprobs(cast("list[LogprobsTensors]", logprobs_data))
             else:
                 # Pad entries to max_k width and collect sentinel rows for requests
