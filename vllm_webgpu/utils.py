@@ -35,19 +35,17 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     random_sample,
 )
 # Greedy-temperature threshold: temperatures at or below this value are treated
-# as greedy (argmax) decoding. Imported from vllm.v1.sample.sampler, which is
-# already used by vLLM internals (llm_base_proposer.py). Importing directly
-# ensures we stay in sync if vLLM ever adjusts the threshold.
-from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
+# as greedy (argmax) decoding. Coupled to vllm.sampling_params._SAMPLING_EPS,
+# which is the same constant that SamplingParams.sampling_type uses to gate
+# greedy vs. random sampling — keeping both checks consistent.
+from vllm.sampling_params import _SAMPLING_EPS as GREEDY_TEMP
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
 # maxsize=16: fixed callers (model_runner/base) use 2-4 distinct sizes;
 # variable callers (e.g. diffusion_gemma per-request) are bounded by LRU
 # eviction rather than accumulating stale entries forever.
-@lru_cache(maxsize=16)
-def zero_bytes(n: int) -> bytes:
-    return bytes(n)
+zero_bytes = lru_cache(maxsize=16)(bytes)
 
 
 def sample_token(

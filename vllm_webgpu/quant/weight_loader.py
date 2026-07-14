@@ -2,7 +2,7 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from huggingface_hub.constants import SAFETENSORS_SINGLE_FILE
+import huggingface_hub.constants as _hf_constants
 
 import numpy as np
 import vllm_webgpu.envs as _webgpu_envs
@@ -273,8 +273,16 @@ def detect_weight_format(path: str) -> "tuple[str, str | None, str | None]":
             # MLX vs standard sharded detection is deferred to the loader,
             # which already reads the index and can check for .biases keys.
             return "safetensors_sharded", index_path, None
-        # No known safetensors manifest found in directory; default.
-        return "safetensors", None, str(p / SAFETENSORS_SINGLE_FILE)
+        # No known safetensors manifest found in directory; probe the two
+        # known single-file names. consolidated.safetensors covers Mistral
+        # single-file layout (also the value vLLM patches the constant to at
+        # runtime). model.safetensors is the HF default. Read the constant at
+        # call time so any runtime patch (e.g. vLLM's _mistral_patch_hf_hub_constants)
+        # is reflected correctly.
+        _consolidated = p / "consolidated.safetensors"
+        if _consolidated.exists():
+            return "safetensors", None, str(_consolidated)
+        return "safetensors", None, str(p / _hf_constants.SAFETENSORS_SINGLE_FILE)
     if p.suffix == ".gguf":
         return "gguf", None, None
     if p.suffix == ".safetensors":
@@ -1246,13 +1254,10 @@ def load_safetensors_weights(
                 # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
                 # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
                 # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
-                try:
-                    from vllm.model_executor.layers.quantization.utils.mxfp8_utils import MXFP8_BLOCK_SIZE
-                except ImportError as exc:
-                    raise ImportError(
-                        f"MXFP4 processing requires vllm.model_executor.layers.quantization.utils.mxfp8_utils "
-                        f"(failed to import: {exc})"
-                    ) from exc
+                # MXFP4 block size: 32 elements per scale group (matches vLLM's mxfp4.py inline value).
+                # Defined here rather than imported from mxfp8_utils to avoid coupling the MXFP4
+                # scale assertion to an unrelated format constant.
+                _MXFP4_BLOCK_SIZE = 32
                 for base in mx_bases:
                     try:
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
@@ -1266,9 +1271,9 @@ def load_safetensors_weights(
                         ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2
-                        assert ws_u8.ndim < 2 or ws_u8.shape[-1] == K_ // MXFP8_BLOCK_SIZE, (
+                        assert ws_u8.ndim < 2 or ws_u8.shape[-1] == K_ // _MXFP4_BLOCK_SIZE, (
                             f"MXFP4 scale shape {ws_u8.shape} does not match expected "
-                            f"K//MXFP8_BLOCK_SIZE = {K_}//{MXFP8_BLOCK_SIZE} = {K_ // MXFP8_BLOCK_SIZE}"
+                            f"K//_MXFP4_BLOCK_SIZE = {K_}//{_MXFP4_BLOCK_SIZE} = {K_ // _MXFP4_BLOCK_SIZE}"
                         )
                         _upload_u8(wp, f"{base}.weight", weights)
                         _upload(ws_f32, np.float32, 'f32', f"{base}.weight.scales", weights)

@@ -80,10 +80,12 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Prefill
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
     T = len(input_ids_list)
-    block_table = np.arange(num_blocks, dtype=np.uint32)
+    needed_blocks = min(cdiv(len(input_ids_list) + max_tokens, block_size), num_blocks)
+    block_table = np.arange(needed_blocks, dtype=np.uint32)
     slots = list(range(T))
 
     model._greedy_decode = (temperature < GREEDY_TEMP)
+    _greedy = model._greedy_decode
 
     batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)
     logits = model.forward(
@@ -94,10 +96,10 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
     # DiffusionGemma always returns full (num_tokens, vocab) float32 logits regardless of
     # _greedy_decode, so check shape before trusting logits[-1, 0] as a token ID.
-    if model._greedy_decode and logits.shape[-1] == 1:
+    if _greedy and logits.shape[-1] == 1:
         last_token = int(logits[-1, 0])
         print(f"  Last prefill logit: argmax={last_token}")
-    elif model._greedy_decode:
+    elif _greedy:
         last_token = int(np.argmax(logits[-1]))
         print(f"  Last prefill logit: argmax={last_token}, value={float(logits[-1][last_token]):.2f}, "
               f"std={float(logits[-1].std()):.2f}")
@@ -132,7 +134,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
         # DiffusionGemma always returns full (1, vocab) float32 logits regardless of
         # _greedy_decode, so check shape before trusting logits[0, 0] as a token ID.
-        if model._greedy_decode and logits.shape[-1] == 1:
+        if _greedy and logits.shape[-1] == 1:
             last_token = int(logits[0, 0])
         else:
             last_token = sample_token(logits[0], temperature=temperature, top_p=top_p)
