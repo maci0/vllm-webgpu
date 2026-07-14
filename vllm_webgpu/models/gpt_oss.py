@@ -149,12 +149,14 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             inter = self._moe_inter
             hidden = self.hidden_size
             wgpu_dev = self.wgpu_device.wgpu_device
+            _has_gate_up_bias = False
 
             for i in range(self.num_layers):
                 p = f"model.layers.{i}.mlp.experts"
 
                 gu_key = f"{p}.gate_up_proj_bias"
                 if gu_key in _bias_pending:
+                    _has_gate_up_bias = True
                     arr = _bias_pending[gu_key].reshape(num_experts, 2 * inter)
                     del self.weights[gu_key]
                     for j in range(num_experts):
@@ -172,6 +174,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                         ep = f"{p}.{j}"
                         self.weights[f"{ep}.w2.bias"] = WebGPUBuffer.from_numpy(
                             wgpu_dev, arr[j])
+
+            if _has_gate_up_bias:
+                # Pre-allocate expert_gate_biased now rather than lazily on the
+                # first dispatch call (which may occur with an active command encoder).
+                self._moe_sc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
         """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
@@ -404,6 +411,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         gate_buf, up_buf = self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter, uq_g=uq_g, uq_u=uq_u)
         msc = self._moe_sc
         if "expert_gate_biased" not in msc:
+            # Normally pre-allocated in load_weights when gate_up_proj_bias is present.
+            # This fallback covers direct weight injection (e.g. tests).
             msc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
 
         # Inject gate bias: expert_gate → expert_gate_biased (different src/dst: no alias).

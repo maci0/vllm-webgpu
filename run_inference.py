@@ -3,6 +3,7 @@
 The run() function requires transformers and wgpu. When invoked from __main__,
 huggingface_hub.snapshot_download is used to resolve a repo ID to a local path.
 """
+import math
 import time
 from types import SimpleNamespace
 
@@ -16,7 +17,7 @@ def _pick_token(logits_2d, greedy: bool, temperature: float, top_p: float) -> in
     if greedy and logits_2d.shape[-1] == 1:
         return int(row[0])
     if greedy:
-        return sample_token(row, temperature=temperature)
+        return int(row.argmax())
     return sample_token(row, temperature=temperature, top_p=top_p)
 
 
@@ -48,7 +49,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.utils import GREEDY_TEMP
     from vllm_webgpu.config import get_config
-    from vllm.utils.math_utils import cdiv
 
     device = WebGPUDevice.initialize(get_config().power_preference)
     print(f"  Adapter: f16={device.supports_f16}")
@@ -75,7 +75,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
     # num_blocks is capped at 4096 (the KV pool ceiling for this script).
     max_ctx = getattr(cfg, "max_position_embeddings", 8192)
-    num_blocks = min(cdiv(max_ctx, block_size) + 4, 4096)
+    num_blocks = min(math.ceil(max_ctx / block_size) + 4, 4096)
 
     allocate_kv_from_hf_config(device.wgpu_device, model, cfg, num_blocks=num_blocks, block_size=block_size)
 
@@ -86,7 +86,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Prefill
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
     T = len(input_ids_list)
-    needed_blocks = min(cdiv(len(input_ids_list) + max_tokens, block_size), num_blocks)
+    needed_blocks = min(math.ceil((len(input_ids_list) + max_tokens) / block_size), num_blocks)
     block_table = np.arange(needed_blocks, dtype=np.uint32)
     slots = list(range(T))
 

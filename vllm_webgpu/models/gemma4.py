@@ -134,10 +134,9 @@ def _gemma4_layer_params(
         # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
         if is_kv_shared:
             prev = layer_types[:first_kv_shared]
-            kv_shared_target = next(
-                (j for j in range(len(prev) - 1, -1, -1) if prev[j] == lt), None
-            )
-            if kv_shared_target is None:
+            try:
+                kv_shared_target = len(prev) - 1 - prev[::-1].index(lt)
+            except ValueError:
                 raise ValueError(
                     f"Layer {i} (type={lt!r}) is KV-shared but type {lt!r} was not "
                     f"found in the non-shared prefix layer_types[:{first_kv_shared}]. "

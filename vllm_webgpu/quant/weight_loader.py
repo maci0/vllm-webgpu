@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import vllm_webgpu.envs as _webgpu_envs
+from transformers.utils import SAFE_WEIGHTS_NAME
 
 from vllm.logger import init_logger
 
@@ -289,7 +290,7 @@ def detect_weight_format(path: str) -> "tuple[str, str | None, str | None]":
         _consolidated = p / "consolidated.safetensors"
         if _consolidated.exists():
             return "safetensors", None, str(_consolidated)
-        return "safetensors", None, str(p / "model.safetensors")
+        return "safetensors", None, str(p / SAFE_WEIGHTS_NAME)
     if p.suffix == ".gguf":
         return "gguf", None, None
     if p.suffix == ".safetensors":
@@ -934,9 +935,7 @@ def load_safetensors_weights(
                 # __bf16 companion is created after weight_transforms below, so both
                 # the f16 buffer and the companion see the same (transformed) layout.
             elif dtype_str == "F32":
-                # Direct numpy path: avoids the identity f32→f32 cast inside
-                # _torch_to_f16_numpy (designed to bridge bf16, not f32).
-                arr = sf.get_tensor(name).numpy().clip(-_F16_MAX, _F16_MAX).astype(np.float16)
+                arr = _torch_to_f16_numpy(sf.get_tensor(name))
             elif dtype_str == "I8":
                 # Int8 per-channel weight (BnB int8 / compressed-tensors int8).
                 # Upload raw bytes; shader does sign extension via int8_to_f32().

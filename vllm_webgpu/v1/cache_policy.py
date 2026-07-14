@@ -103,8 +103,7 @@ def allocate_kv_from_tensors(
                 )
             layer_spec_map.update(gs.kv_cache_specs)
         else:
-            for name in group.layer_names:
-                layer_spec_map[name] = gs
+            layer_spec_map.update({name: gs for name in group.layer_names})
 
     # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
     # Keyed by layer index (int) so each entry can be written directly into model.kv_pool.
@@ -153,8 +152,6 @@ def allocate_kv_from_tensors(
                     f"Layer {layer_name!r} appears in kv_cache_tensors.shared_by but is absent "
                     "from every kv_cache_group.layer_names. This is a vLLM integration bug."
                 )
-            k_bytes = 0
-            v_bytes = 0
             if isinstance(spec, MLAAttentionSpec):
                 raise NotImplementedError(
                     f"MLA KV cache ({type(spec).__name__}) is not supported by the WebGPU backend. "

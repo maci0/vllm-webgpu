@@ -100,6 +100,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         if self.is_moe:
             self._pes_cache: list[np.ndarray | None] = [None] * self.num_layers
             self._expert_prefix_cache: dict[tuple[int, int], str] = {}
+            self._expert_key_layout: str = "experts"  # updated in _validate_expert_weights
             logger.info("DiffusionGemma MoE: %d experts, top-%d, moe_inter=%d",
                         self.num_experts, self.top_k_experts, self.moe_intermediate_size)
             # Extra scratch buffer: shared-expert residual (F16; unlike h0/h1/h2 which are F32).
@@ -268,6 +269,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         names never change at runtime.
         """
         self._expert_prefix_cache.clear()
+        # Detect key layout once from layer 0 / expert 0, then reuse for all
+        # subsequent (layer, expert) pairs to avoid O(num_layers * num_experts)
+        # dict probes. All experts in a checkpoint share the same layout.
+        p0 = self._layer_key_prefix(0)
+        if f"{p0}.experts.0.gate_proj.weight" in self.weights:
+            self._expert_key_layout = "experts"
+        else:
+            self._expert_key_layout = "moe.experts"
         for layer_idx in range(self.num_layers):
             p = self._layer_key_prefix(layer_idx)
             if f"{p}.router.proj.weight" not in self.weights:
@@ -275,7 +284,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     f"L{layer_idx}: is_moe=True but router.proj.weight missing"
                 )
             for eid in range(self.num_experts):
-                ep = self._expert_prefix(p, eid)
+                ep = f"{p}.{self._expert_key_layout}.{eid}"
                 if any(f"{ep}.{k}.weight" not in self.weights for k in ("gate_proj", "up_proj", "down_proj")):
                     raise RuntimeError(
                         f"L{layer_idx}: expert {eid} missing gate/up/down weights"

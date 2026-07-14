@@ -84,7 +84,7 @@ def sample_token(
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)
     logits_t = logits_t / temperature
     if min_p > 0.0:
-        threshold = logits_t.max(dim=-1, keepdim=True).values + math.log(min_p)
+        threshold = logits_t.amax(dim=-1, keepdim=True) + math.log(min_p)
         logits_t = logits_t.masked_fill(logits_t < threshold, float('-inf'))
     k_t = torch.tensor([top_k]) if top_k > 0 else None
     p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None
