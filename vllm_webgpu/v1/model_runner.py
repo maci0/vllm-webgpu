@@ -743,7 +743,21 @@ class WebGPUModelRunner:
                 # unconditionally by platform.py, so is_context_phase() is always
                 # False. If chunked prefill is enabled in the future, restore the
                 # context-phase branch here.
-                tok = state["last_tok"]
+                #
+                # For resumed preempted requests, pos has been rolled back to the
+                # prefix-cache hit boundary (cached.num_computed_tokens[i]), which
+                # is less than state["pos"] (the pre-preemption position). Using
+                # state["last_tok"] would feed the token that was current at the
+                # old position into the new (lower) KV slot, corrupting attention.
+                # Read the authoritative token from all_token_ids instead, which
+                # the scheduler populates for any request absent from the previous
+                # step (exactly the resumed case).
+                rolled_back_pos = is_resumed and pos < state["pos"]
+                if rolled_back_pos:
+                    _all_toks = cached.scheduled_cached_reqs.all_token_ids.get(rid)
+                    tok = _all_toks[pos] if _all_toks and pos < len(_all_toks) else state["last_tok"]
+                else:
+                    tok = state["last_tok"]
 
                 if pos // block_size >= len(blk_ids):
                     raise RuntimeError(
