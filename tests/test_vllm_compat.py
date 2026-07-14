@@ -53,6 +53,13 @@ import pytest
 # Recompute with: hashlib.sha256('\n'.join(l.rstrip() for l in src.splitlines()).encode()).hexdigest()[:16]
 PINNED_EXTRACT_ALGO_HASH = "a12d15f39ac3f5ee"
 
+# SHA-256 (first 16 hex chars) of ModelConfig.get_num_layers_by_block_type source in vLLM 0.24.0.
+# get_layer_types() in cache_policy.py mirrors the hybrid-model probe sequence of this function.
+# Any in-branch semantic change (e.g., truthiness vs. is-not-None for probe 2, new probe added)
+# flips this hash and requires a manual diff against get_layer_types() and a VERSION SYNC update.
+# Recompute with: hashlib.sha256('\n'.join(l.rstrip() for l in src.splitlines()).encode()).hexdigest()[:16]
+PINNED_GET_NUM_LAYERS_HASH = "bfd331d370f3d4ee"
+
 
 def _attr_exists(module_path: str, attr: str) -> bool:
     """Return True if module_path.attr is importable without errors."""
@@ -282,6 +289,46 @@ def test_get_layer_types_version_sync():
         "  2. Update get_layer_types() if probes were added, removed, or reordered.\n"
         "  3. Update the VERSION SYNC comment in cache_policy.py to the new version.\n"
         "  4. Re-run this test to confirm it passes."
+    )
+
+
+def test_get_num_layers_by_block_type_source_hash_pinned():
+    """Fail when the body of ModelConfig.get_num_layers_by_block_type changes.
+
+    get_layer_types() in cache_policy.py mirrors the hybrid-model probe sequence
+    of this function.  The probe-order and probe-attribute tests catch renames and
+    reorderings, but they do not catch in-branch semantic changes such as:
+      - flipping probe 2 from truthiness to is-not-None (or vice versa)
+      - changing the Zamba2 special-case mapping inside probe 1
+      - adding an early-return or new conditional before the probe sequence
+
+    This hash-pin catches all of those: any line change in the upstream function
+    flips the hash and requires a manual diff against get_layer_types().
+
+    When this test fails after a vLLM bump:
+      1. Diff ModelConfig.get_num_layers_by_block_type (vllm/config/model.py)
+         against get_layer_types() in vllm_webgpu/v1/cache_policy.py.
+      2. Update get_layer_types() to match any probe-sequence changes.
+      3. Update PINNED_GET_NUM_LAYERS_HASH at the top of this file to the new hash.
+      4. Update the VERSION SYNC comment in cache_policy.py to the new vLLM version.
+      5. Re-run this test and test_get_layer_types_version_sync to confirm they pass.
+
+    Pinned against vLLM 0.24.0.
+    """
+    pytest.importorskip("vllm", reason="vllm not installed")
+    from vllm.config.model import ModelConfig
+
+    src = inspect.getsource(ModelConfig.get_num_layers_by_block_type)
+    normalized = "\n".join(line.rstrip() for line in src.splitlines())
+    actual_hash = hashlib.sha256(normalized.encode()).hexdigest()[:16]
+
+    assert actual_hash == PINNED_GET_NUM_LAYERS_HASH, (
+        f"ModelConfig.get_num_layers_by_block_type source changed "
+        f"(hash {actual_hash!r} != pinned {PINNED_GET_NUM_LAYERS_HASH!r}). "
+        "Diff vllm/config/model.py:get_num_layers_by_block_type against "
+        "get_layer_types() in vllm_webgpu/v1/cache_policy.py, update the "
+        "inline copy and PINNED_GET_NUM_LAYERS_HASH in this file, update the "
+        "VERSION SYNC comment in cache_policy.py, then re-run."
     )
 
 
