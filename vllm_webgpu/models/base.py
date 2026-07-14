@@ -11,8 +11,12 @@ import wgpu as wgpu_lib
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import YaRNScalingRotaryEmbedding
-from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+import torch
+from vllm.model_executor.layers.rotary_embedding.common import (
+    yarn_find_correction_range,
+    yarn_get_mscale,
+    yarn_linear_ramp_mask,
+)
 
 from vllm_webgpu.utils import zero_bytes
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES, _WGPU_DTYPE_TO_NP
@@ -69,9 +73,9 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via an
-    object.__new__ stub (bypassing CustomOp.__init__ which requires a vLLM
-    config context) so that the formula stays in sync with vLLM automatically.
+    Inlines the YaRN inv_freq formula using the public helpers
+    `yarn_find_correction_range` and `yarn_linear_ramp_mask` from
+    `vllm.model_executor.layers.rotary_embedding.common`.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -116,18 +120,16 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
-    # Use object.__new__ to bypass CustomOp.__init__ (which requires a vLLM
-    # config context) and call _compute_inv_freq directly on a minimal stub.
-    stub = object.__new__(YaRNScalingRotaryEmbedding)
-    stub.base                    = rope_theta
-    stub.rotary_dim              = rotary_dim
-    stub.beta_fast               = beta_fast
-    stub.beta_slow               = beta_slow
-    stub.max_position_embeddings = orig_ctx
-    stub.truncate                = truncate
-    stub.extrapolation_factor    = extrapolation_factor
-
-    inv_freq = stub._compute_inv_freq(factor).numpy()
+    pos_freqs = rope_theta ** (np.arange(0, rotary_dim, 2, dtype=np.float32) / rotary_dim)
+    inv_freq_interp = 1.0 / (factor * pos_freqs)
+    inv_freq_extrap = 1.0 / pos_freqs
+    low, high = yarn_find_correction_range(
+        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
+    )
+    mask = (
+        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float).numpy()
+    ) * extrapolation_factor
+    inv_freq = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).astype(np.float32)
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
