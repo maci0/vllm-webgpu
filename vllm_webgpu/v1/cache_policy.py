@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from vllm.logger import init_logger
 from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
+from vllm.utils.torch_utils import get_dtype_size
 from vllm.utils.mem_utils import get_cpu_memory
 from vllm.v1.kv_cache_interface import (ChunkedLocalAttentionSpec,
                                          FullAttentionSpec,
@@ -219,16 +220,14 @@ def allocate_kv_from_tensors(
                         f"FullAttentionSpec subclass {type(spec).__name__} overrides real_page_size_bytes; "
                         "the head_size ratio split formula may be wrong. Add an explicit branch to handle it."
                     )
-                # Compute K and V sizes independently so that asymmetric head
-                # dimensions (e.g. MLA-style models where head_size != head_size_v)
-                # get correctly sized buffers instead of an averaged size.
-                # real_page_size_bytes = block_size * num_kv_heads * (head_size + head_size_v) * dtype_size.
-                # Splitting by head_size ratio is only correct because kv_quant_mode == KVQuantMode.NONE
-                # is enforced above; for NVFP4, real_page_size_bytes uses a different formula that cannot
-                # be split this way.
-                total = num_blocks * spec.real_page_size_bytes
-                k_bytes = total * spec.head_size // (spec.head_size + spec.head_size_v)
-                v_bytes = total - k_bytes
+                # Compute K and V buffer sizes independently from their own
+                # dimensions so that asymmetric head sizes (head_size != head_size_v)
+                # are handled correctly. Using real_page_size_bytes and splitting
+                # by ratio is wrong when head_size != head_size_v: that property
+                # counts only K bytes, so the ratio would misdivide a K-only total.
+                dtype_size = get_dtype_size(spec.dtype)
+                k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * dtype_size
+                v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * dtype_size
             else:
                 raise NotImplementedError(
                     f"Unsupported KV cache spec type {type(spec).__name__} for {layer_name!r}; "
