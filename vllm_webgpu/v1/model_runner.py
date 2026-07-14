@@ -331,10 +331,12 @@ class WebGPUModelRunner:
                     # Treat all non-full-attention types (including sliding_attention) as
                     # full-attention: SlidingWindowSpec is not supported by
                     # allocate_kv_from_tensors, so we allocate for the full context window.
+                    _hd_v_local = getattr(tc, "head_size_v", None) or default_hd
                     spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
                         block_size=block_size,
                         num_kv_heads=default_kv,
                         head_size=default_hd,
+                        head_size_v=_hd_v_local,
                         dtype=_KV_DTYPE,
                     )
         else:
@@ -357,11 +359,13 @@ class WebGPUModelRunner:
             # Only trust layer_types when it covers every layer; a partial or
             # mismatched list (including a stray MagicMock in tests) falls back
             # to the uniform path so all layers get a spec entry.
+            tc = self.vllm_config.model_config.hf_text_config
             for i in range(num_hidden_layers):
                 spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
                     block_size=block_size,
                     num_kv_heads=num_kv_heads,
                     head_size=head_size,
+                    head_size_v=getattr(tc, "head_size_v", None) or head_size,
                     dtype=_KV_DTYPE,
                 )
         return spec
