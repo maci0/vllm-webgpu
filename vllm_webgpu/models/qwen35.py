@@ -498,9 +498,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         Returns {"conv": {layer_idx: bytes}, "ssm": {layer_idx: bytes}}.
 
-        SSM state bytes use the vLLM convention: [V_HEADS, V_DIM, K_DIM] f32,
-        matching gated_delta_net_state_shape. The shader stores state in the same
-        layout, so no transposition is needed on readback.
+        SSM state bytes are stored as [V_HEADS, V_DIM, K_DIM] float32
+        (WebGPU plugin uses f32 for SSM precision; vLLM server state tensors
+        are float16 and are not directly compatible). The shader stores state
+        in the same layout, so no transposition is needed on readback.
         """
         bufs = (
             [("conv", i, b) for i, b in self._conv_gpu.items()] +
@@ -514,10 +515,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         queue.write_buffer enqueues writes without blocking, so all layers
         are uploaded before the next GPU dispatch without an explicit submit.
 
-        SSM bytes in `states["ssm"]` must use the vLLM convention
-        [V_HEADS, V_DIM, K_DIM] f32, which is also the shader's native layout.
-        Bytes from save_recurrent_states or from vLLM state tensors can be
-        uploaded directly without any transposition.
+        SSM bytes in `states["ssm"]` must be [V_HEADS, V_DIM, K_DIM] float32
+        (WebGPU plugin convention; vLLM server state tensors are float16 and
+        are not directly compatible -- convert to float32 before upload).
+        Bytes from save_recurrent_states can be uploaded directly without
+        any transposition.
         """
         dev = self.wgpu_device.wgpu_device
         for i, data in states.get("conv", {}).items():
