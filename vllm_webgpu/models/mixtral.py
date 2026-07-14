@@ -305,6 +305,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         uq_g = self._uq_for_key(gw_key)
         uq_u = self._uq_for_key(uw_key)
         if uq_g == 0 and uq_u == 0:
+            # fused_gate_act is a per-row reduction and has no vec4 alignment
+            # requirement, so _validate_inter_alignment is not needed here.
+            # The alignment guard below applies only to gelu_mul.
             self._dispatch(
                 "fused_gate_act",
                 [normed_x, self.weights[gw_key], self.weights[uw_key], msc["expert_act"]],
