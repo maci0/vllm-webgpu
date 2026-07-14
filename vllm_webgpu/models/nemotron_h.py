@@ -345,6 +345,30 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             _mlp_count += 1  # post-increment: index for the next MLP layer
         self._layer_int_size: list[int] = _layer_int_sizes
 
+        # Compute max per-layer attention dims across all attention layers so
+        # that scratch buffers are large enough for every layer in heterogeneous
+        # (puzzle) checkpoints where individual layers may have different head
+        # counts or head_dim than the global config values. For homogeneous
+        # models _get_layer_cfg is None and the result is identical to the
+        # global self._q_dim / self._k_dim set above.
+        if _get_layer_cfg is not None:
+            _max_q_dim = self._q_dim
+            _max_k_dim = self._k_dim
+            for _li, _lt in enumerate(self._layer_types):
+                if _lt != "attention":
+                    continue
+                _lcfg = _get_layer_cfg(_li)
+                _hd   = getattr(_lcfg, 'head_dim', None)
+                _hd   = _hd if isinstance(_hd, int) else self.head_dim
+                _nq   = getattr(_lcfg, 'num_attention_heads', None)
+                _nq   = _nq if isinstance(_nq, int) else self.num_q_heads
+                _nkv  = getattr(_lcfg, 'num_key_value_heads', None)
+                _nkv  = _nkv if isinstance(_nkv, int) else self.num_kv_heads
+                _max_q_dim = max(_max_q_dim, _nq  * _hd)
+                _max_k_dim = max(_max_k_dim, _nkv * _hd)
+            self._q_dim = _max_q_dim
+            self._k_dim = _max_k_dim
+
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
         self._conv_states: dict[int, "WebGPUBuffer"] = {}
