@@ -366,9 +366,9 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     #
     # NOTE: Zamba2 special case (vllm/config/model.py:L1331) within probe 1 maps
     # "hybrid" entries to attention when attn_block_type=True. This function returns
-    # the raw list unchanged; callers use is_attn_layer() which treats "hybrid" as a
-    # non-attention type. If Zamba2 support is needed: add a "hybrid" -> attention
-    # remapping step here before returning, or extend is_attn_layer accordingly.
+    # the raw list unchanged; callers use is_attn_layer() which treats
+    # "hybrid" as an attention type unconditionally (matching Zamba2-family semantics). Zamba2
+    # support is therefore already handled without any remapping step here.
     #
     # VERSION SYNC: last verified against vLLM 0.24.0.
     # On each vLLM bump, diff ModelConfig.get_num_layers_by_block_type
