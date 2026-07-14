@@ -661,11 +661,11 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self.weights[f"model.layers.{i}.norm.weight"] for i in range(self.num_layers)
         ]
         self._layer0_norm_w = self._layer_norm_weights[0]
+        n_mamba = self._layer_types.count("mamba")
+        n_attn  = self._layer_types.count("attention")
         logger.info(
             "NemotronH: loaded %d weight tensors (%d Mamba layers, %d attn layers)",
-            len(self.weights),
-            self._layer_types.count("mamba"),
-            self._layer_types.count("attention"),
+            len(self.weights), n_mamba, n_attn,
         )
 
     def _pack_attn_weights(self) -> None:

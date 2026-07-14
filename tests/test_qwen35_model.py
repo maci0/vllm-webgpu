@@ -276,7 +276,7 @@ def test_mlx_detect_format():
     if not os.path.isdir(model_dir):
         pytest.skip("Qwen3.5-9B MLX model not present on disk")
 
-    fmt, _index = detect_weight_format(model_dir)
+    fmt, _index, _resolved = detect_weight_format(model_dir)
     assert fmt == "safetensors_sharded", f"Expected safetensors_sharded, got {fmt!r}"
 
 

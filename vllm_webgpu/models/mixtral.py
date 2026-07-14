@@ -450,7 +450,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # ── Phase A: router + top-K (into current encoder) ───────────────────
         rw_k = f"{p}.{router_subkey}.weight"
         uq_r = self._uq_for_key(rw_k)
-        qi_r = self._quant_extra(f"{p}.{router_subkey}", uq_r)
+        qi_r = self._quant_extra(rw_k.removesuffix('.weight'), uq_r)
         rb_k = f"{p}.{router_subkey}.bias"
         router_bias = self.weights.get(rb_k)
         router_bindings = [normed_x, self.weights[rw_k],
@@ -547,7 +547,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             # additional per-token scalar gate on the shared expert output.
             self._dispatch_expert_gate_up(normed_x, sgw_k, suw_k, _sinter, extra_gate_consts)
             uq_sd = self._uq_for_key(sdw_k)
-            qi_sd = self._quant_extra(f"{sp}.{down_key}", uq_sd)
+            qi_sd = self._quant_extra(sdw_k.removesuffix('.weight'), uq_sd)
             self._dispatch(
                 "matmul_quant",
                 [msc["expert_act"], self.weights[sdw_k],
@@ -564,8 +564,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 segate_k = f"{p}.{shared_expert_gate_subkey}.weight"
                 if segate_k in self.weights:
                     uq_sg = self._uq_for_key(segate_k)
-                    qi_sg = self._quant_extra(
-                        f"{p}.{shared_expert_gate_subkey}", uq_sg)
+                    qi_sg = self._quant_extra(segate_k.removesuffix('.weight'), uq_sg)
                     self._dispatch(
                         "matmul_quant",
                         [normed_x, self.weights[segate_k],

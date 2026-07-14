@@ -162,14 +162,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         from vllm.transformers_utils.config import is_rope_parameters_nested, patch_legacy_rope_type
         _rope_parameters = getattr(self.model_config, "rope_parameters", None)
 
-        if _rope_parameters is not None:
-            if is_rope_parameters_nested(_rope_parameters):
-                logger.warning(
-                    "rope_parameters is layer-type-keyed (nested format); "
-                    "per-layer RoPE scaling is not supported, falling back to standard RoPE "
-                    "(long-context accuracy reduced beyond 8192 tokens)",
-                )
-                return
+        if _rope_parameters is not None and is_rope_parameters_nested(_rope_parameters):
+            logger.warning(
+                "rope_parameters is layer-type-keyed (nested format); "
+                "per-layer RoPE scaling is not supported, falling back to standard RoPE "
+                "(long-context accuracy reduced beyond 8192 tokens)",
+            )
+            return
 
         rope_scaling = dict(
             _rope_parameters
@@ -975,10 +974,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                            [normed_x, self.weights[gw_k], self.weights[uw_k], sc["ffn_act"]],
                            {"K": hidden, "N": inter}, (inter, 1, 1))
         else:
-            for out_b, w_k, uq2, mlp_proj in [
-                    (sc["gate_buf"], gw_k, uq_g, "gate_proj"),
-                    (sc["up_buf"],  uw_k, uq_u, "up_proj")]:
-                qi2 = self._quant_extra(f"{p}.mlp.{mlp_proj}", uq2)
+            for out_b, w_k, uq2 in [
+                    (sc["gate_buf"], gw_k, uq_g),
+                    (sc["up_buf"],  uw_k, uq_u)]:
+                qi2 = self._quant_extra(w_k.removesuffix('.weight'), uq2)
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[w_k],
                                 self._scales_buf(w_k, uq2, self._dummy_buf), out_b],

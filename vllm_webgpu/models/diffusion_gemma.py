@@ -5,6 +5,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
+from vllm.transformers_utils.config import get_hf_text_config
 from vllm_webgpu.models.base import _vec4_wg, _rows_wg, _H_NAMES
 from vllm_webgpu.utils import zero_bytes
 from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel, _SCALE_EPS
@@ -49,7 +50,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice",
                  pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
-        from vllm.transformers_utils.config import get_hf_text_config
         # Preserve the outer config before extraction so _scratch_token_count can
         # find canvas_length even when it lives only on the outer Gemma4Config rather
         # than on the nested text_config.

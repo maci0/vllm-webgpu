@@ -240,12 +240,16 @@ def _upload_non_quant(header, skip: set, upload_fn):
                 logger.warning("Skipping %s (dtype=%s)", name, dt)
 
 
-def detect_weight_format(path: str) -> "tuple[str, str | None]":
-    """Return (format_string, index_path) for the given model path.
+def detect_weight_format(path: str) -> "tuple[str, str | None, str | None]":
+    """Return (format_string, index_path, resolved_path) for the given model path.
 
     index_path is the str path to the safetensors index JSON for sharded models,
     or None for all other formats. Returning it avoids a second directory scan
     in load_safetensors_weights_sharded.
+
+    resolved_path is the actual file path for single-file safetensors formats.
+    For directories this is model.safetensors inside the directory. For explicit
+    file paths it is the path itself. None for sharded and non-safetensors formats.
     """
     p = Path(path)
     if p.is_dir():
@@ -253,13 +257,13 @@ def detect_weight_format(path: str) -> "tuple[str, str | None]":
         if index_path is not None:
             # MLX vs standard sharded detection is deferred to the loader,
             # which already reads the index and can check for .biases keys.
-            return "safetensors_sharded", index_path
+            return "safetensors_sharded", index_path, None
         # No known safetensors manifest found in directory; default.
-        return "safetensors", None
+        return "safetensors", None, str(p / "model.safetensors")
     if p.suffix == ".gguf":
-        return "gguf", None
+        return "gguf", None, None
     if p.suffix == ".safetensors":
-        return "safetensors", None
+        return "safetensors", None, path
     if p.suffix == ".bin":
         raise ValueError(
             f"Legacy .bin (PyTorch pickle) format not supported; convert to safetensors first: {path}"
@@ -269,7 +273,7 @@ def detect_weight_format(path: str) -> "tuple[str, str | None]":
     with open(p, "rb") as f:
         magic = f.read(4)
     if magic == b"GGUF":
-        return "gguf", None
+        return "gguf", None, None
     raise ValueError(
         f"Unrecognized file format for '{path}' (magic bytes: {magic!r}); "
         f"expected a .safetensors or .gguf file."
@@ -531,15 +535,11 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                         ModelOptFp8Config,
                     )
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
-                except ImportError:
-                    # Mirrors ModelOptFp8Config._extract_modelopt_quant_algo
-                    # (vllm/model_executor/layers/quantization/modelopt.py). If that
-                    # method's key names or nesting change, update this fallback to match.
-                    if 'quantization' in cfg:
-                        q = cfg['quantization']
-                        algo = str(q.get('quant_algo', '')).upper() if isinstance(q, dict) else ''
-                    else:
-                        algo = str(cfg.get('quant_algo', '')).upper()
+                except Exception:
+                    # modelopt.py has top-level CUDA imports that fail on WebGPU.
+                    # Return '' and let the U8+U8 weight-pair heuristic (has_mx_u8_pair)
+                    # pick up MXFP4/8 if hf_quant_config.json parsing fails entirely.
+                    algo = ''
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
@@ -1476,8 +1476,7 @@ def load_safetensors_weights(
         # Skipped when called from load_safetensors_weights_sharded, which applies
         # the combined remap once after all shards are merged.
         if not skip_remap:
-            keys = list(weights.keys())
-            if any(k.startswith(("model.language_model.", "language_model.")) for k in keys):
+            if any(k.startswith(("model.language_model.", "language_model.")) for k in weights):
                 n_remapped = _apply_multimodal_remap(weights)
                 if n_remapped:
                     logger.info("Remapped %d language_model.* keys", n_remapped)

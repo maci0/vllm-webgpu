@@ -97,12 +97,11 @@ def allocate_kv_from_tensors(
         else:
             layer_spec_map.update(dict.fromkeys(group.layer_names, gs))
 
-    # Build layer_name -> (k_bytes, v_bytes) from the tensors vLLM already computed.
-    # Keyed by layer name (str) rather than integer index so that two distinct layer
-    # names that happen to resolve to the same integer (e.g. "model.layers.3.self_attn"
-    # and "model.layers.3.cross_attn" in a future multi-attention-per-layer model) do
-    # not silently overwrite each other. The name-to-index mapping is resolved once
-    # after the loop with an explicit collision check.
+    # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
+    # Keyed by layer index (int) so each entry can be written directly into model.kv_pool.
+    # Two distinct layer names that resolve to the same integer would silently overwrite
+    # each other; the explicit collision check at the end of the loop catches that.
+    # The name-to-index resolution uses extract_layer_index once per tensor entry.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
     layer_idx_kv: dict[int, tuple[int, int]] = {}
     for tensor in kv_cache_tensors:

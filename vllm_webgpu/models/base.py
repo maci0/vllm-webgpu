@@ -4,7 +4,6 @@ import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from contextlib import contextmanager
-from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -360,20 +359,17 @@ class BaseWebGPUModel(ABC):
             detect_weight_format, load_safetensors_weights,
             load_safetensors_weights_sharded,
         )
-        fmt, _index_path = detect_weight_format(path)
+        fmt, _index_path, _resolved = detect_weight_format(path)
         if fmt == "gguf":
             raise ValueError(
                 f"GGUF format not supported by this plugin. Use the vllm-gguf plugin: {path}"
             )
         transforms = self._weight_transforms
-        _path = Path(path)
         _hf_cfg = getattr(self.model_config, 'hf_config', self.model_config)
         _quant_cfg = getattr(_hf_cfg, 'quantization_config', None)
         if fmt == "safetensors":
-            # If path is a directory, the actual file is model.safetensors inside it.
-            actual = str(_path / "model.safetensors") if _path.is_dir() else path
             self.weights = load_safetensors_weights(
-                actual, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
+                _resolved, self.wgpu_device.wgpu_device, f32_keys=f32_keys,
                 weight_transforms=transforms, skip_prefixes=skip_prefixes,
                 quant_cfg=_quant_cfg, scale_transforms=scale_transforms)
         elif fmt == "safetensors_sharded":

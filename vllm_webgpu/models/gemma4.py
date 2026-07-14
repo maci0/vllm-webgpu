@@ -9,6 +9,7 @@ import numpy as np
 
 from vllm import __version__ as _vllm_version
 from vllm.utils.math_utils import cdiv
+from vllm.transformers_utils.config import get_hf_text_config
 
 # _gemma4_layer_params and _build_layer_params_from_config replicate three
 # per-layer constructor formulas from vllm/model_executor/models/gemma4.py.
@@ -378,7 +379,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     _PREFILL_CHUNK: int = 4
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
-        from vllm.transformers_utils.config import get_hf_text_config
         model_config = get_hf_text_config(model_config)
         _ple = getattr(model_config, 'hidden_size_per_layer_input', None)
         if _ple is not None and _ple > 0:
@@ -651,6 +651,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         T_max = max_ctx
         V = self.vocab_size
         self._prefill_bufs: dict[str, "WebGPUBuffer"] = {
+            "ids":      self._make_buf(T_max * 4),           # [T] uint32 token ids
+            "pos":      self._make_buf(T_max * 4),           # [T] uint32 positions
+            "slot_map": self._make_buf(T_max * 4),           # [T] uint32 physical slots
             "x":        self._make_buf(T_max * H * 4),       # f32 embedding residual
             "normed":   self._make_buf(T_max * H * 2),        # f16 normed (pre-attn and pre-FFN)
             "q_buf":    self._make_buf(T_max * max_q_dim * 2),     # f16 Q projection output
@@ -944,10 +947,13 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # Reuse pre-allocated prefill buffers (sized to max_position_embeddings at init).
         # Dispatch sizes are based on T, so kernels only touch the first T*dim elements.
         b: dict = self._prefill_bufs
-        slot_map_buf = WebGPUBuffer.from_numpy(
-            dev, np.asarray(attn_metadata.slot_mapping, dtype=np.uint32))
-        pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
-        ids_buf = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32, copy=False))
+        dev.queue.write_buffer(b["ids"].buf, 0, input_ids.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(b["pos"].buf, 0, positions.astype(np.uint32, copy=False).tobytes())
+        dev.queue.write_buffer(b["slot_map"].buf, 0,
+                               np.asarray(attn_metadata.slot_mapping, dtype=np.uint32).tobytes())
+        ids_buf      = b["ids"]
+        pos_buf      = b["pos"]
+        slot_map_buf = b["slot_map"]
         _rms = self._rms_consts
 
         _hstate  = 0

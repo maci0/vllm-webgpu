@@ -3,9 +3,7 @@
 The run() function requires transformers and wgpu. When invoked from __main__,
 huggingface_hub.snapshot_download is used to resolve a repo ID to a local path.
 """
-import os
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -153,6 +151,8 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 
 if __name__ == "__main__":
     import argparse
+    import os
+    from pathlib import Path
     parser = argparse.ArgumentParser()
     parser.add_argument("--model",       required=True)
     parser.add_argument("--prompt",      default="What is 2+2?")
