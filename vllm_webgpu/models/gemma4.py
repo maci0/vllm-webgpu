@@ -650,6 +650,34 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         }
         self._hstate: int = 0
 
+        T_max = max_ctx
+        V = self.vocab_size
+        self._prefill_bufs: dict[str, "WebGPUBuffer"] = {
+            "x":        self._make_buf(T_max * H * 4),       # f32 embedding residual
+            "normed":   self._make_buf(T_max * H * 2),        # f16 normed (pre-attn and pre-FFN)
+            "q_buf":    self._make_buf(T_max * max_q_dim * 2),     # f16 Q projection output
+            "k_buf":    self._make_buf(T_max * max_kv_dim * 2),    # f16 K projection output
+            "v_buf":    self._make_buf(T_max * max_kv_dim * 2),    # f16 V projection output
+            "q_rope":   self._make_buf(T_max * max_q_dim * 2),     # f16 Q after norm+rope
+            "k_rope":   self._make_buf(T_max * max_kv_dim * 2),    # f16 K after norm+rope
+            "v_normed": self._make_buf(T_max * max_kv_dim * 2),    # f16 V after per-head RMS norm
+            "attn_out": self._make_buf(T_max * max_q_dim * 2),     # f16 attention output
+            "o_proj":   self._make_buf(T_max * H * 2),              # f16 output projection
+            "gate_buf": self._make_buf(T_max * I * 2),              # f16 FFN gate
+            "up_buf":   self._make_buf(T_max * I * 2),              # f16 FFN up
+            "ffn_act":  self._make_buf(T_max * I * 2),              # f16 activated gate*up
+            "ffn_out":  self._make_buf(T_max * H * 2),              # f16 FFN output
+            "h0":       self._make_buf(T_max * H * 4),              # f32 residual (rotation slot 0)
+            "h1":       self._make_buf(T_max * H * 4),              # f32 residual (rotation slot 1)
+            "h2":       self._make_buf(T_max * H * 4),              # f32 residual (rotation slot 2)
+            # Single-token scratch for final norm + LM head (not T-dependent)
+            "last_f32":  self._make_buf(H * 4),                     # f32 last-token residual copy
+            "last_norm": self._make_buf(H * 2),                     # f16 last-token after final norm
+            "logits":    self._make_buf(V * 2),                     # f16 LM head output
+        }
+        if self.softcap is not None and self.softcap > 0:
+            self._prefill_bufs["capped"] = self._make_buf(V * 2)   # f16 softcapped logits (Gemma4)
+
     def _layer_key_prefix(self, layer_idx: int) -> str:
         """Return the weight key prefix for layer i. Subclasses may override."""
         return f"model.layers.{layer_idx}"
@@ -915,33 +943,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         max_q_dim  = self._max_q_dim
         max_kv_dim = self._max_kv_dim
 
-        # T-token batch buffers. Allocated once per prefill call;
-        # allocation cost is negligible vs the GEMM savings.
-        b: dict = {
-            "x":        self._make_buf(T * hidden * 4),       # f32 embedding residual
-            "normed":   self._make_buf(T * hidden * 2),        # f16 normed (pre-attn and pre-FFN)
-            "q_buf":    self._make_buf(T * max_q_dim * 2),     # f16 Q projection output
-            "k_buf":    self._make_buf(T * max_kv_dim * 2),    # f16 K projection output
-            "v_buf":    self._make_buf(T * max_kv_dim * 2),    # f16 V projection output
-            "q_rope":   self._make_buf(T * max_q_dim * 2),     # f16 Q after norm+rope
-            "k_rope":   self._make_buf(T * max_kv_dim * 2),    # f16 K after norm+rope
-            "v_normed": self._make_buf(T * max_kv_dim * 2),    # f16 V after per-head RMS norm
-            "attn_out": self._make_buf(T * max_q_dim * 2),     # f16 attention output
-            "o_proj":   self._make_buf(T * hidden * 2),         # f16 output projection
-            "gate_buf": self._make_buf(T * max_inter * 2),          # f16 FFN gate
-            "up_buf":   self._make_buf(T * max_inter * 2),          # f16 FFN up
-            "ffn_act":  self._make_buf(T * max_inter * 2),          # f16 activated gate*up
-            "ffn_out":  self._make_buf(T * hidden * 2),         # f16 FFN output
-            "h0":       self._make_buf(T * hidden * 4),         # f32 residual (rotation slot 0)
-            "h1":       self._make_buf(T * hidden * 4),         # f32 residual (rotation slot 1)
-            "h2":       self._make_buf(T * hidden * 4),         # f32 residual (rotation slot 2)
-            # Single-token scratch for final norm + LM head
-            "last_f32":  self._make_buf(hidden * 4),            # f32 last-token residual copy
-            "last_norm": self._make_buf(hidden * 2),            # f16 last-token after final norm
-            "logits":    self._make_buf(vocab * 2),             # f16 LM head output
-        }
-        if self.softcap is not None and self.softcap > 0:
-            b["capped"] = self._make_buf(vocab * 2)             # f16 softcapped logits (Gemma4)
+        # Reuse pre-allocated prefill buffers (sized to max_position_embeddings at init).
+        # Dispatch sizes are based on T, so kernels only touch the first T*dim elements.
+        b: dict = self._prefill_bufs
         slot_map_buf = WebGPUBuffer.from_numpy(
             dev, np.asarray(attn_metadata.slot_mapping, dtype=np.uint32))
         pos_buf = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
@@ -993,6 +997,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     # QKV projections (always separate in batch path — no fused_qkv).
                     # For KV-shared layers only Q is used; K and V come from the target cache.
                     self._batch_gemm(normed_x, qw, b["q_buf"], hidden, q_dim, T)
+                    v_src = b["v_buf"]
                     if not is_kv_shared:
                         kw = f"{p}.self_attn.k_proj.weight"
                         self._batch_gemm(normed_x, kw, b["k_buf"], hidden, kv_dim, T)

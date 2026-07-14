@@ -45,14 +45,21 @@ def main() -> None:
 
     from vllm.utils.math_utils import cdiv
     from vllm_webgpu.v1.model_runner import _build_model, ARCH_MAP
-    from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config, _make_convertor
+    from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
+    from vllm.transformers_utils.config import get_hf_text_config as _get_hf_text_cfg
     import vllm_webgpu.envs as _envs
     block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
     # For multimodal wrapper configs the outer hf_config.num_hidden_layers is
-    # the unified model's count, not the text backbone's. Use the convertor
-    # (which reads from hf_text_config) to get the correct value.
-    num_layers = _make_convertor(hf_cfg).get_num_hidden_layers()
+    # the unified model's count, not the text backbone's. get_hf_text_config
+    # unwraps the outer config to the text backbone so num_hidden_layers is correct.
+    num_layers = _get_hf_text_cfg(hf_cfg).num_hidden_layers
     family = ARCH_MAP.get(arch)
+    if family == 'diffusion_gemma':
+        raise NotImplementedError(
+            f"profile_kernels does not support {arch} (diffusion_gemma family): "
+            "the model returns (num_tokens, vocab) logits regardless of _greedy_decode "
+            "and cannot be profiled with the standard prefill/decode flow."
+        )
     model = _build_model(arch, family, hf_cfg, wgpu_dev, pipeline_cache, block_size=block_size)
 
     print("Loading weights...")
@@ -96,9 +103,11 @@ def main() -> None:
     model._greedy_decode = True  # forward() must return (1,1) argmax token, not (1,vocab) logits
     logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
 
-    assert logits.shape == (1, 1), (
-        f"expected greedy (1,1) logits, got {logits.shape}; is _greedy_decode=True?"
-    )
+    if logits.shape != (1, 1):
+        raise RuntimeError(
+            f"expected greedy (1,1) logits, got {logits.shape}; "
+            "model did not respect _greedy_decode=True"
+        )
     decode_tok = int(logits[0, 0])
     pos = len(tok_ids)
     print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")

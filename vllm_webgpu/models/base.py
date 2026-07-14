@@ -203,10 +203,10 @@ class BaseWebGPUModel(ABC):
         """Read a GPU buffer as a numpy array with the correct element dtype.
 
         Reinterprets the raw bytes from buf.to_numpy() using the numpy dtype
-        that corresponds to the buffer's wgpu dtype. Falls back to float16
-        when the dtype is not in _WGPU_DTYPE_TO_NP.
+        that corresponds to the buffer's wgpu dtype. Raises KeyError for any
+        dtype not in _WGPU_DTYPE_TO_NP so unknown types fail immediately.
         """
-        return buf.to_numpy().view(_WGPU_DTYPE_TO_NP.get(buf.dtype, np.float16))
+        return buf.to_numpy().view(_WGPU_DTYPE_TO_NP[buf.dtype])
 
     def _buf_to_numpy_reshape(self, buf: "WebGPUBuffer") -> "np.ndarray":
         """Read a GPU buffer as a numpy array with correct dtype, trimmed and reshaped.
@@ -215,7 +215,7 @@ class BaseWebGPUModel(ABC):
         to buf.shape. Use this instead of _buf_to_numpy when the caller needs the
         full shape (e.g. slicing into fused weight tensors).
         """
-        np_t = _WGPU_DTYPE_TO_NP.get(buf.dtype, np.uint8)
+        np_t = _WGPU_DTYPE_TO_NP[buf.dtype]
         expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
         return buf.to_numpy()[:expected].view(np_t).reshape(buf.shape)
 

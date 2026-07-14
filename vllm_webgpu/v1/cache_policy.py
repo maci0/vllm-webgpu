@@ -155,6 +155,8 @@ def allocate_kv_from_tensors(
                     f"Layer {layer_name!r} appears in kv_cache_tensors.shared_by but is absent "
                     "from every kv_cache_group.layer_names. This is a vLLM integration bug."
                 )
+            k_bytes = 0
+            v_bytes = 0
             if isinstance(spec, MLAAttentionSpec):
                 raise NotImplementedError(
                     f"MLA KV cache ({type(spec).__name__}) is not supported by the WebGPU backend. "

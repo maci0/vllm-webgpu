@@ -650,23 +650,16 @@ class WebGPUModelRunner:
             # Compute prompt logprobs for each prompt position when full logits
             # are available.  Position i uses logits[i] to evaluate tok_ids[i+1],
             # producing T-1 rows of top-K logprob data.
-            if num_prompt_logprobs is not None and T >= 1:
-                if last_logits.shape[-1] > 1:  # full [T, vocab] logits
-                    # Pass only the token window so full_logits[i] and
-                    # tok_ids_param[i+1] stay aligned regardless of num_computed.
-                    pt = _compute_prompt_logprobs(
-                        last_logits,
-                        chunk_toks,
-                        num_prompt_logprobs,
-                    )
-                    if pt is not None:
-                        prompt_logprobs_dict[rid] = pt
-                else:
-                    logger.warning(
-                        "req %s: prompt_logprobs requested but model returns argmax-only "
-                        "logits; prompt logprobs cannot be computed",
-                        rid,
-                    )
+            if num_prompt_logprobs is not None and T >= 2:
+                # Pass only the token window so full_logits[i] and
+                # tok_ids_param[i+1] stay aligned regardless of num_computed.
+                pt = _compute_prompt_logprobs(
+                    last_logits,
+                    chunk_toks,
+                    num_prompt_logprobs,
+                )
+                if pt is not None:
+                    prompt_logprobs_dict[rid] = pt
 
             all_req_ids.append(rid)
             all_sampled.append(first_decode_tok)
