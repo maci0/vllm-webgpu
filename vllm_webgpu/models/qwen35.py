@@ -215,6 +215,16 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             # different config key), so it skips the allocation. Allocate them now.
             self._init_moe_staging(self.wgpu_device.wgpu_device)
 
+        if self._is_moe:
+            # Allocate MoE scratch buffers here rather than in _init_scratch_buffers
+            # so the allocation is independent of MRO call order. _init_scratch_buffers
+            # is invoked from inside Llama.__init__ (via super().__init__ above), at
+            # which point Mixtral.__init__ has not yet run its own _is_moe reassignment.
+            # Placing the allocation here, after super().__init__() returns, avoids the
+            # ordering dependency entirely.
+            self._moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
+            self._moe_sc = self._alloc_moe_sc(self._moe_num_experts, self._moe_k, self._moe_act_sz)
+
         # NOTE: profiling=True is incompatible with MoE forward (per-layer submit breaks
         # _batched_dispatch encoder management). Set profiling=False before forward().
 
@@ -249,10 +259,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             "gated":        self._make_buf(self._lin_val_dim * 2),   # after norm+gate
             "b_buf":        self._make_buf(self._lin_v_heads * 2),   # in_proj_b output [V_HEADS f16]
         })
-
-        if self._is_moe:
-            self._moe_act_sz = max(self._moe_inter, self._moe_shared_inter, 1)
-            self._moe_sc = self._alloc_moe_sc(self._moe_num_experts, self._moe_k, self._moe_act_sz)
 
     def _postprocess_weights(self) -> None:
         """Post-load weight fixups for full-attn layers.
