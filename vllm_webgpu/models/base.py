@@ -81,7 +81,11 @@ def compute_yarn_freqs(
     yarn_get_mscale. Direct reuse of the class method is blocked because
     YaRNScalingRotaryEmbedding.__init__ always calls _compute_cos_sin_cache(),
     pre-allocating a [max_pos * factor, rotary_dim] tensor not needed here.
-    Verify against the upstream formulas on each vLLM bump.
+
+    Verified against vLLM 0.24 (yarn_scaling_rope.py L49-73, L40-43).
+    On each vLLM bump, re-run tests/test_yarn_freqs.py which cross-checks
+    this function against the class method via object.__new__ to catch any
+    upstream divergence before it becomes a silent correctness regression.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -131,7 +135,7 @@ def compute_yarn_freqs(
     inv_freq_interpolation = 1.0 / (factor * pos_freqs)
     low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
     inv_freq_mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
-    inv_freq = (inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask).to(torch.float32).numpy()
+    inv_freq = (inv_freq_interpolation * (1 - inv_freq_mask) + inv_freq_extrapolation * inv_freq_mask).numpy()
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling

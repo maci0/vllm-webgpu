@@ -227,19 +227,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             "model.decoder.embed_tokens.weight", "model.embed_tokens.weight",
         )
 
-    def _expert_prefix(self, layer_prefix: str, eid: int) -> str:
-        """Return the weight prefix for expert eid.
-
-        Checkpoints processed through vLLM's standard Gemma4 weight loader use
-        '{p}.moe.experts.{eid}.*' (after _remap_gemma4_expert_weight_name).
-        Raw checkpoints or direct-upload paths use '{p}.experts.{eid}.*'.
-        Probe with gate_proj.weight (always present) and strip the suffix.
-        """
-        return self._first_weight_key(
-            f"{layer_prefix}.experts.{eid}.gate_proj.weight",
-            f"{layer_prefix}.moe.experts.{eid}.gate_proj.weight",
-        ).removesuffix(".gate_proj.weight")
-
     # ── Weight loading ───────────────────────────────────────────────────────
 
     def _load_layer_scales(self) -> None:

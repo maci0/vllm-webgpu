@@ -107,6 +107,11 @@ try:
 except ImportError:
     # vLLM 0.24 does not export _resolve_intermediate_size at module scope.
     # Local copy mirrors NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24).
+    # On each vLLM bump, re-run:
+    #   grep -n '_resolve_intermediate_size' \
+    #       .venv/lib/*/site-packages/vllm/model_executor/models/nemotron_h.py
+    # If the function appears at module scope (outside any class), remove the
+    # except branch and keep only the import above.
     def _resolve_intermediate_size(v, idx: int) -> int:  # type: ignore[misc]
         if isinstance(v, list):
             return v[0] if len(v) == 1 else v[idx]
@@ -930,7 +935,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     # q_proj metadata absent; fall back to k or v if available so
                     # _quant_extra gets a valid global_scale / group_size for the
                     # fused qkv_proj dispatch.
-                    fallback = qmeta.get(k_base) or qmeta.get(v_base)
+                    fallback = qmeta.get(k_base) if k_base in qmeta else qmeta.get(v_base)
                     if fallback is not None:
                         qmeta[qkv_base] = dict(fallback)
                     qmeta.pop(k_base, None)

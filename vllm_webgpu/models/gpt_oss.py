@@ -181,11 +181,17 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 self._moe_sc["expert_gate_biased"] = self._make_buf(self._moe_act_sz * 2)
 
     def _init_scratch_buffers(self, max_ctx: int) -> None:
-        """Extend parent scratch buffers with dedicated Q/K/V bias temporaries.
+        """Extend parent scratch buffers with dedicated Q/K/V/O bias temporaries.
 
-        Allocates dedicated Q/K/V/O bias temporaries sized at q_dim and kv_dim.
-        Using the parent FFN scratch buffers (gate_buf/up_buf, sized at
-        intermediate_size) would overflow when q_dim or kv_dim > intermediate_size.
+        q_bias_tmp, k_bias_tmp, v_bias_tmp are sized at q_dim and kv_dim to
+        avoid overflow when q_dim or kv_dim exceeds intermediate_size (using the
+        parent FFN scratch buffers gate_buf/up_buf for these would overflow in
+        that case).
+
+        o_bias_tmp is sized at hidden_size (same as ffn_out) for a different
+        reason: it avoids aliasing ffn_out. Writing the O-projection bias into
+        ffn_out created an ordering contract between _attn_block and _ffn_dispatch
+        that o_bias_tmp eliminates.
         """
         super()._init_scratch_buffers(max_ctx, qkv_size=4)
         if self._attn_bias:
@@ -212,8 +218,10 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         GPT-OSS has no q_norm/k_norm weights so the fused_qkv path is never
         taken. Bias vectors are added after each projection and before RoPE,
         using scratch buffers to avoid the WebGPU STORAGE_READ / STORAGE_READ_WRITE
-        aliasing restriction. The O-projection bias uses sc['ffn_out'] as its
-        destination (free at this call site). Per-layer context length respects
+        aliasing restriction. The O-projection bias writes to sc['o_bias_tmp'], a
+        dedicated buffer that does not alias sc['ffn_out'], eliminating the implicit
+        ordering constraint that _ffn_dispatch must not touch ffn_out before
+        add_rms_norm consumes the bias result. Per-layer context length respects
         the layer_types list: full_attention layers ignore the sliding window cap.
         """
         is_full = (layer_idx < len(self._layer_types)

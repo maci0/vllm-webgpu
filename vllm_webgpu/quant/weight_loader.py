@@ -48,6 +48,7 @@ _MXFP4_BLOCK_SIZE = 32
 _AWQ_GPTQ_SUFFIXES = (".qweight", ".scales", ".qzeros", ".g_idx")
 _NVFP4_SUFFIXES = (".weight_packed", ".weight_scale", ".weight_global_scale",
                    ".input_global_scale")
+_DIFFUSION_NVFP4_SUFFIXES = (".weight", ".weight_scale", ".weight_scale_2", ".input_scale")
 
 
 def _normalize_quant_cfg(quant_cfg: object) -> dict | None:
@@ -572,7 +573,10 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
                 except Exception:
                     # modelopt.py has top-level CUDA imports that fail on WebGPU.
-                    # Matches ModelOptFp8Config._extract_modelopt_quant_algo exactly:
+                    # Mirrors ModelOptFp8Config._extract_modelopt_quant_algo (vLLM 0.24,
+                    # vllm/model_executor/layers/quantization/modelopt.py L245-262).
+                    # On each vLLM bump, re-audit that file for new keys or changed fallback
+                    # logic and update the inline copy below accordingly.
                     # 'quantization' present but not a dict -> return None (coerced to '').
                     # 'quantization' absent -> read quant_algo at top level.
                     if 'quantization' in cfg:
@@ -1156,11 +1160,12 @@ def load_safetensors_weights(
                 and header[k].get("dtype") == "U8"
                 and k.removesuffix(".weight") + ".weight_scale" in header
             })
-            dnvfp4_set = set()
-            for base in dnvfp4_bases:
-                for suf in (".weight", ".weight_scale", ".weight_scale_2", ".input_scale"):
-                    if f"{base}{suf}" in header:
-                        dnvfp4_set.add(f"{base}{suf}")
+            dnvfp4_set = {
+                f"{base}{suf}"
+                for base in dnvfp4_bases
+                for suf in _DIFFUSION_NVFP4_SUFFIXES
+                if f"{base}{suf}" in header
+            }
 
             _upload_non_quant(header, dnvfp4_set | _i8_companion_skip, _upload_plain)
 

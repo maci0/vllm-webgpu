@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched
+from itertools import batched, chain
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -485,7 +485,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
     def reset_recurrent_states(self) -> None:
         """Zero out all GDN recurrent GPU buffers (call at start of each new sequence)."""
-        for buf in (*self._ssm_gpu.values(), *self._conv_gpu.values()):
+        for buf in chain(self._ssm_gpu.values(), self._conv_gpu.values()):
             self._zero_write(buf)
 
     def save_recurrent_states(self) -> dict:

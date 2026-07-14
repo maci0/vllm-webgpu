@@ -454,16 +454,11 @@ class WebGPUModelRunner:
                             d.selected_token_ranks,
                         ))
                     else:
-                        # Sentinel row for requests with no logprob data. Use
-                        # all-zero token IDs and -inf logprobs so any accidental
-                        # read produces a detectable value rather than random memory.
-                        # selected_token_ranks uses int32 to match LogprobsTensors.empty_cpu();
-                        # _stack_logprobs normalizes both to int32 anyway.
-                        pieces.append(LogprobsTensors(
-                            torch.zeros(1, max_k, dtype=torch.int32),
-                            torch.full((1, max_k), -float('inf')),
-                            torch.zeros(1, dtype=torch.int32),
-                        ))
+                        # Sentinel row for requests with no logprob data. Sentinel
+                        # rows are never sliced by the caller (the scheduler only
+                        # calls slice_request for requests where num_logprobs > 0),
+                        # so uninitialized memory from empty_cpu is safe here.
+                        pieces.append(LogprobsTensors.empty_cpu(1, max_k))
                 built_logprobs = _stack_logprobs(pieces)
 
         return ModelRunnerOutput(
