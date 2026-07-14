@@ -622,6 +622,33 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 f"skipped prefix ({skip_prefixes}) and the transform registration needs "
                 f"to be guarded accordingly."
             )
+        # Validate _scale_transforms analogously: for each attention layer, verify
+        # that _scale_acc[i] has all three keys ('q', 'k', 'v'). If any are absent,
+        # the CPU-side scale accumulation callbacks did not fire, meaning the
+        # checkpoint scale key names did not match the registered pattern
+        # ('backbone.layers.{i}.mixer.{proj}_proj.weight.scales'). Warn when scale
+        # keys actually exist in the checkpoint (so the mismatch is real) to give
+        # the same early-detection guarantee that _missing_transforms provides for
+        # weight transforms. The GPU readback fallback in _pack_attn_weights may
+        # still recover if the mapper correctly remaps those keys, but a silent
+        # failure would leave qkv_proj receiving _dummy_buf as its scale buffer.
+        _incomplete_scale_layers = [
+            i for i, acc in self._scale_acc.items()
+            if not all(proj in acc for proj in ("q", "k", "v"))
+        ]
+        if _incomplete_scale_layers:
+            _any_hf_scale = any(k.endswith(".weight.scales") for k in self.weights)
+            if _any_hf_scale:
+                logger.warning(
+                    "NemotronH: _scale_transforms did not fire for attention layer(s) %s. "
+                    "Scale keys exist in the checkpoint but their names do not match the "
+                    "expected 'backbone.layers.{i}.mixer.{proj}_proj.weight.scales' pattern. "
+                    "GPU readback fallback will be attempted in _pack_attn_weights; "
+                    "if the mapper also fails to remap those keys, qkv_proj will receive "
+                    "_dummy_buf as its scale buffer, producing numerically wrong attention "
+                    "outputs. Check that the checkpoint naming convention has not changed.",
+                    _incomplete_scale_layers,
+                )
         self.weights = _NemotronHForCausalLM.hf_to_vllm_mapper.apply_dict(self.weights)
         # self.weight_meta was populated by super().load_weights() with HF-prefixed
         # keys (e.g. 'backbone.layers.0.mixer.in_proj'). Remap those keys to match
