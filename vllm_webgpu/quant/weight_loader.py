@@ -202,8 +202,13 @@ def _apply_multimodal_remap(weights: dict) -> int:
 
     Adds remapped keys without removing originals (freeing non-LM GPU buffers
     causes Metal memory corruption on adjacent embeddings).
-    Returns the number of keys added.
+    Returns the number of keys added (0 when no matching key is present).
+
+    The early-exit guard avoids the full O(n) prefix scan in _remap_prefixes when
+    no multimodal key is present, which is the common case for text-only models.
     """
+    if not any(k.startswith(("model.language_model.", "language_model.")) for k in weights):
+        return 0
     before = len(weights)
     _remap_prefixes(weights)
     n_remapped = len(weights) - before
@@ -540,6 +545,22 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
 
 
+def _extract_modelopt_algo(cfg: dict) -> str:
+    """Extract the ModelOpt quantization algorithm string from hf_quant_config.json.
+
+    Mirrors ModelOptFp8Config._extract_modelopt_quant_algo from vLLM 0.24.x
+    (vllm/model_executor/layers/quantization/modelopt.py L245-262). Used as a
+    fallback when that class cannot be imported due to top-level CUDA imports in
+    modelopt.py (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe).
+
+    Returns the upper-cased algorithm string, or '' when the key is absent or
+    the 'quantization' value is not a dict.
+    """
+    if 'quantization' in cfg:
+        return str(cfg['quantization'].get('quant_algo', '')).upper() if isinstance(cfg['quantization'], dict) else ''
+    return str(cfg.get('quant_algo', '')).upper()
+
+
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
 
@@ -554,7 +575,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     quantization/modelopt.py) to avoid duplicating the quant_method/quant_algo
     extraction. That import may fail on WebGPU because modelopt.py has top-level
     CUDA kernel imports (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe);
-    the fallback inline logic is used in that case.
+    _extract_modelopt_algo (defined above) is used as the fallback in that case.
     """
     hf_quant = model_dir / "hf_quant_config.json"
     if hf_quant.exists():
@@ -567,18 +588,8 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                         ModelOptFp8Config,
                     )
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
-                except Exception:
-                    # modelopt.py has top-level CUDA imports that fail on WebGPU.
-                    # Mirrors ModelOptFp8Config._extract_modelopt_quant_algo
-                    # (vLLM 0.24.0, vllm/model_executor/layers/quantization/modelopt.py
-                    # L245-262). On each vLLM bump, re-audit that file for new keys or
-                    # changed fallback logic and update the inline copy below accordingly.
-                    # 'quantization' present but not a dict -> return None (coerced to '').
-                    # 'quantization' absent -> read quant_algo at top level.
-                    if 'quantization' in cfg:
-                        algo = str(cfg['quantization'].get('quant_algo', '')).upper() if isinstance(cfg['quantization'], dict) else ''
-                    else:
-                        algo = str(cfg.get('quant_algo', '')).upper()
+                except ImportError:
+                    algo = _extract_modelopt_algo(cfg)
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
@@ -1530,10 +1541,9 @@ def load_safetensors_weights(
         # Skipped when called from load_safetensors_weights_sharded, which applies
         # the combined remap once after all shards are merged.
         if not skip_remap:
-            if any(k.startswith(("model.language_model.", "language_model.")) for k in weights):
-                n_remapped = _apply_multimodal_remap(weights)
-                if n_remapped:
-                    logger.info("Remapped %d language_model.* keys", n_remapped)
+            n_remapped = _apply_multimodal_remap(weights)
+            if n_remapped:
+                logger.info("Remapped %d language_model.* keys", n_remapped)
 
         # Commit all pending write_buffer calls before returning.
         _flush_pending(wgpu_device)
@@ -1719,9 +1729,8 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
     # Commit any remaining write_buffer calls before returning.
     _flush_pending(wgpu_device)
 
-    if any(k.startswith(("model.language_model.", "language_model.")) for k in weights):
-        n_remapped = _apply_multimodal_remap(weights)
-        if n_remapped:
-            logger.info("Remapped %d language_model.* keys", n_remapped)
+    n_remapped = _apply_multimodal_remap(weights)
+    if n_remapped:
+        logger.info("Remapped %d language_model.* keys", n_remapped)
     logger.info("Loaded %d tensors from MLX int4 dir %s", len(weights), model_dir)
     return weights

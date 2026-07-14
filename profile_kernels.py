@@ -88,7 +88,7 @@ def main() -> None:
 
     print("Running prefill...")
     t0 = time.perf_counter()
-    slots = list(range(len(tok_ids)))
+    slots = (bt[np.arange(len(tok_ids)) // block_size].astype(np.int64) * block_size + np.arange(len(tok_ids)) % block_size).tolist()
     _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
     model._greedy_decode = True  # forward() must return (1,1) argmax token, not (1,vocab) logits
     logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
@@ -123,7 +123,7 @@ def main() -> None:
 
     if not prod_times:
         raise ValueError("No production steps measured (--decode-steps must be > 0)")
-    prod_avg_ms = np.mean(prod_times)
+    prod_avg_ms = sum(prod_times) / len(prod_times)
     print(f"Production throughput: {prod_avg_ms:.1f} ms/tok = {1000/prod_avg_ms:.1f} tok/s")
 
     # ── Profiled decode steps ──────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ def main() -> None:
             pos += 1
     finally:
         model.profiling = False
-    avg_step_ms = np.mean(decode_times)
+    avg_step_ms = sum(decode_times) / len(decode_times)
     print(f"\nAverage decode step: {avg_step_ms:.1f} ms  ({1000/avg_step_ms:.1f} tok/s)")
     print()
     print(model.profile_report())
@@ -147,7 +147,7 @@ def main() -> None:
     # ── Per-component breakdown ────────────────────────────────────────────────────
     stats = model.get_prof_stats()
     if stats:
-        total = sum(np.mean(v) for v in stats.values())
+        total = sum(sum(v) / len(v) for v in stats.values())
 
         print(f"Total GPU time: {total:.2f} ms")
         print(f"Unlabeled overhead (LM head + embed + norms + Python): {avg_step_ms - total:.2f} ms")
@@ -159,6 +159,11 @@ def main() -> None:
         # _prof_stats, so including them in the numerator would overstate effective BW.
         # Scale tensors for quantized layers are included because they are read by the
         # shader on every quantized GEMV and '.layers.' appears in their key.
+        # v.nbytes returns buf.size (the wgpu buffer size), which is rounded up to a
+        # 4-byte boundary. For f16 tensors with an odd element count this slightly
+        # overstates logical data size. Transformer weight matrices always have even
+        # element counts (hidden sizes are multiples of 64), so the overcount is zero
+        # in practice.
         total_w_bytes = sum(v.nbytes for k, v in model.weights.items() if '.layers.' in k)
         total_w_mb = total_w_bytes / 1e6
         print(f"  Weight data moved: {total_w_mb:.0f} MB  ({total_w_mb/model.num_layers:.1f} MB/layer avg)")

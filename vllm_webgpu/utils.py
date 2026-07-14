@@ -36,7 +36,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-GREEDY_TEMP: float = 1e-5  # mirror vllm.sampling_params._SAMPLING_EPS; greedy threshold
+# _SAMPLING_EPS is a private symbol verified against vllm>=0.24,<0.25.
+# It is stable in practice (unchanged since 0.5.x), but has no public-API guarantee.
+# If vLLM ever changes the greedy threshold, update the pin in pyproject.toml and
+# re-verify sample_token's greedy branch threshold.
+from vllm.sampling_params import _SAMPLING_EPS as GREEDY_TEMP
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

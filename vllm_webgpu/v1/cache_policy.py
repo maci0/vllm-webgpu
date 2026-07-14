@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from vllm.utils.cpu_resource_utils import get_memory_node_info, get_visible_memory_node
 
@@ -37,6 +37,13 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
+
+class _LayerKV(NamedTuple):
+    k_bytes: int
+    v_bytes: int
+    layer_name: str
+
+
 def is_attn_layer(lt: "str | int") -> bool:
     """Return True when a layer-type value represents an attention layer.
 
@@ -59,8 +66,11 @@ def is_attn_layer(lt: "str | int") -> bool:
     """
     # "linear_attention" (Qwen3.5 / CPU platform) is intentionally absent: it
     # carries no KV cache state and must not be treated as an attention layer.
-    # This mirrors vLLM's config/model.py:1352 which counts it separately from
-    # standard attention layers.
+    # "sliding_attention" is an extension beyond what vLLM's get_num_layers_by_block_type
+    # counts: that API groups sliding-window layers separately from "attention"
+    # (see vllm/config/model.py:1348-1357). Including it here is correct because
+    # sliding-window attention layers do require KV cache buffers; the count API
+    # just exposes them under a different label.
     return lt in {"attention", "full_attention", "sliding_attention", "hybrid", 1}
 
 
@@ -111,7 +121,7 @@ def allocate_kv_from_tensors(
     # each other; the explicit collision check at the end of the loop catches that.
     # The name-to-index resolution uses extract_layer_index once per tensor entry.
     # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
-    layer_idx_kv: dict[int, tuple[int, int, str]] = {}  # key: layer_idx, value: (k_bytes, v_bytes, layer_name)
+    layer_idx_kv: dict[int, _LayerKV] = {}
     for tensor in kv_cache_tensors:
         if tensor.block_stride > 0:
             # block_stride > 0 means K and V data for multiple layers share one
@@ -269,12 +279,11 @@ def allocate_kv_from_tensors(
             # multi-attention-per-layer model) would silently overwrite each other's
             # buffer sizes, producing wrong K/V allocations with no error at runtime.
             if _idx in layer_idx_kv:
-                _, _, prev_name = layer_idx_kv[_idx]
                 raise RuntimeError(
                     f"Two layer names resolve to the same index {_idx}: "
-                    f"{layer_name!r} and {prev_name!r}. This is a model configuration bug."
+                    f"{layer_name!r} and {layer_idx_kv[_idx].layer_name!r}. This is a model configuration bug."
                 )
-            layer_idx_kv[_idx] = (k_bytes, v_bytes, layer_name)
+            layer_idx_kv[_idx] = _LayerKV(k_bytes, v_bytes, layer_name)
 
     # Sliding-attention layers in supported models always receive FullAttentionSpec(sliding_window=None)
     # from get_kv_cache_spec; the SlidingWindowSpec/FullAttentionSpec(sliding_window!=None) rejections
@@ -306,7 +315,8 @@ def allocate_kv_from_tensors(
     total_bytes = 0
     for i in range(num_total_layers):
         if i in layer_idx_kv:
-            k_bytes, v_bytes, _ = layer_idx_kv[i]
+            entry = layer_idx_kv[i]
+            k_bytes, v_bytes = entry.k_bytes, entry.v_bytes
             model.kv_pool.append((
                 WebGPUBuffer.empty(wgpu_device, k_bytes),
                 WebGPUBuffer.empty(wgpu_device, v_bytes),
@@ -429,6 +439,9 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     # NOTE: mirrors gpu_worker.py walrus+truthiness check (`if kv_cache_memory_bytes := ...`).
     # Treats 0 as not-set and falls through to the profiling path rather than returning
     # 0 bytes (which would produce 0 KV blocks and an unrecoverable engine startup failure).
+    # The GPU worker calls profile_run() even when an explicit value is present, to compile
+    # CUDA graphs. WebGPU intentionally omits that step: there are no CUDA graphs, and
+    # warm_up() in compile_or_warm_up_model() is sufficient.
     if explicit := worker.cache_config.kv_cache_memory_bytes:
         return explicit
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 import functools
 import math
+from itertools import chain
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -548,7 +549,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
     def reset_recurrent_states(self) -> None:
         """Zero all Mamba conv and SSM states. Call before each new request."""
-        for buf in (*self._conv_states.values(), *self._ssm_states.values()):
+        for buf in chain(self._conv_states.values(), self._ssm_states.values()):
             self._zero_write(buf)
 
     def save_recurrent_states(self) -> dict:

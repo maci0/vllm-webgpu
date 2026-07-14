@@ -517,20 +517,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr)
         pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
         ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32, copy=False))
-        def gemm_batch(x_buf: "WebGPUBuffer", w_key: str, out_buf: "WebGPUBuffer",
-                       K_in: int, N_out: int) -> None:
-            """Batch GEMM: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T.
-
-            Supports USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4).
-            """
-            uq = self._uq_for_key(w_key)
-            sc_buf = self._scales_buf(w_key, uq, self._dummy_buf)
-            self._dispatch("matmul_quant_mr4",
-                           [x_buf, self.weights[w_key], sc_buf, out_buf],
-                           {"K": K_in, "N": N_out, "M": T,
-                            "USE_QUANT": uq, **self._quant_extra(w_key.removesuffix('.weight'), uq)},
-                           (N_out, T, 1))
-
         # _CHUNK layers per command encoder keeps each submit under Metal's GPU timeout.
         # At T=19 and inter=9728, a single 36-layer encoder generates ~37M threads and
         # exceeds the ~4-8 s per-command-buffer limit. 4 layers at a time stays safe.
@@ -563,9 +549,9 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     uw_k = f"{p}.mlp.up_proj.weight"
                     dw_k = f"{p}.mlp.down_proj.weight"
 
-                    gemm_batch(b["normed"], q_wk, b["q_buf"],    hidden, q_dim)
-                    gemm_batch(b["normed"], k_wk, b["k_buf"],    hidden, kv_dim)
-                    gemm_batch(b["normed"], v_wk, b["v_buf"],    hidden, kv_dim)
+                    self._gemm_batch(b["normed"], q_wk, b["q_buf"],    hidden, q_dim, T)
+                    self._gemm_batch(b["normed"], k_wk, b["k_buf"],    hidden, kv_dim, T)
+                    self._gemm_batch(b["normed"], v_wk, b["v_buf"],    hidden, kv_dim, T)
 
                     # ── Per-head RMSNorm + RoPE for all T tokens ──────────────────
                     for src, dst, n_h, wk in [
@@ -608,7 +594,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                    (self.num_q_heads, T, 1))
 
                     # ── O projection (batch GEMM) ─────────────────────────────────
-                    gemm_batch(b["attn_out"], ow, b["o_proj"], q_dim, hidden)
+                    self._gemm_batch(b["attn_out"], ow, b["o_proj"], q_dim, hidden, T)
 
                     # ── Fused post-attn add + FFN pre-norm ───────────────────────
                     residual = b[_H_NAMES[(_hstate + 1) % 3]]
@@ -620,13 +606,13 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                    rms_base, (T, 1, 1))
 
                     # ── FFN (batch GEMMs + SiLU) ──────────────────────────────────
-                    gemm_batch(b["ffn_n"], gw_k, b["gate_buf"], hidden, inter)
-                    gemm_batch(b["ffn_n"], uw_k, b["up_buf"],   hidden, inter)
+                    self._gemm_batch(b["ffn_n"], gw_k, b["gate_buf"], hidden, inter, T)
+                    self._gemm_batch(b["ffn_n"], uw_k, b["up_buf"],   hidden, inter, T)
                     self._dispatch("gelu_mul",
                                    [b["gate_buf"], b["up_buf"], b["ffn_act"]],
                                    {"N": T * inter},
                                    _vec4_wg(T * inter))
-                    gemm_batch(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden)
+                    self._gemm_batch(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden, T)
 
                     # ── Residual add (cross-layer fused if not last) ──────────────
                     if i < self.num_layers - 1:
@@ -665,6 +651,28 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             self._decode_teardown(b["last_norm"], b["logits"], vocab, greedy)
 
         return self._finish_forward(greedy)
+
+    def _gemm_batch(
+        self,
+        x_buf: "WebGPUBuffer",
+        w_key: str,
+        out_buf: "WebGPUBuffer",
+        K_in: int,
+        N_out: int,
+        T: int,
+    ) -> None:
+        """Batch GEMM: out[T, N_out] = x[T, K_in] @ w[N_out, K_in].T.
+
+        Supports USE_QUANT=0 (f16) and USE_QUANT=3 (GPTQ INT4).
+        Subclasses can override to change the GEMM dispatch for a given batch size.
+        """
+        uq = self._uq_for_key(w_key)
+        sc_buf = self._scales_buf(w_key, uq, self._dummy_buf)
+        self._dispatch("matmul_quant_mr4",
+                       [x_buf, self.weights[w_key], sc_buf, out_buf],
+                       {"K": K_in, "N": N_out, "M": T,
+                        "USE_QUANT": uq, **self._quant_extra(w_key.removesuffix('.weight'), uq)},
+                       (N_out, T, 1))
 
     def _prefill_sequential_fallback(
         self,

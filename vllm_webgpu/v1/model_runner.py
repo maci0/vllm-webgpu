@@ -445,11 +445,10 @@ class WebGPUModelRunner:
             if all_present and len(set(widths)) == 1:
                 built_logprobs = _stack_logprobs(cast("list[LogprobsTensors]", logprobs_data))
             else:
-                # Cast selected_token_ranks to int64 so torch.cat in _stack_logprobs
-                # operates on a uniform dtype. gather_logprobs returns int64 for
-                # selected_token_ranks; empty_cpu() produces int32. Making each piece
-                # explicit here avoids relying on implicit promotion in torch.cat.
-                # _stack_logprobs then normalises the combined tensor to int32.
+                # Pad entries to max_k width and collect sentinel rows for requests
+                # without logprob data. empty_cpu() produces int32 for selected_token_ranks
+                # while gather_logprobs returns int64; torch.cat on CPU promotes int32 to
+                # int64 automatically, and _stack_logprobs normalises the result to int32.
                 pieces = []
                 for d in logprobs_data:
                     if d is not None:
@@ -457,7 +456,7 @@ class WebGPUModelRunner:
                         pieces.append(LogprobsTensors(
                             pad(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
                             pad(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
-                            d.selected_token_ranks.to(torch.int64),
+                            d.selected_token_ranks,
                         ))
                     else:
                         # Sentinel row for requests with no logprob data. Sentinel

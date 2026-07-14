@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from itertools import batched, chain
 from typing import TYPE_CHECKING
 
@@ -340,8 +341,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             conv_kernel_size=self._lin_conv_kernel,
             num_spec=num_spec,
         )
-        conv_bytes = np.prod(conv_shape) * _ELEM_BYTES["f16"]
-        ssm_bytes  = np.prod(ssm_shape) * _ELEM_BYTES["f32"]
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}
         self._conv_gpu = {}
