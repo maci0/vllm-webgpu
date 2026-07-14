@@ -851,6 +851,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                    (n_heads, num_tokens, 1))
                 else:
                     # Binding 3 (inv_freq_buf): always provided.
+                    # Note: workgroup order is (T, H, 1) here, which is intentional.
+                    # fused_per_head_norm_rope above uses (H, T, 1) because its
+                    # shader iterates over heads in the outer dimension. The rope
+                    # shader iterates over tokens first, so the axes are swapped.
+                    # Both are correct for their respective shaders.
                     self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
                                    {**_rope_consts, "NUM_HEADS": n_heads,
                                     "INPUT_OFFSET": in_off},
