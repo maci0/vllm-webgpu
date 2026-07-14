@@ -138,8 +138,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
     def _scratch_token_count(self) -> int:
-        _cl = (getattr(self.model_config, "canvas_length", None)
-               or getattr(self._outer_config, "canvas_length", None))
+        _cl = getattr(self.model_config, "canvas_length", None)
+        if _cl is None:
+            _cl = getattr(self._outer_config, "canvas_length", None)
         if _cl is None:
             logger.warning(
                 "canvas_length not found in model config or outer config, defaulting to 256."
