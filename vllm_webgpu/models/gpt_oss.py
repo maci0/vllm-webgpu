@@ -99,11 +99,11 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         scale_transforms: "dict | None" = None,
     ) -> None:
         # Intercept fused expert bias tensors on the CPU before GPU upload.
-        # The transform stashes the numpy array that the loader already has in
-        # memory and returns it unchanged so the base loader still uploads the
-        # fused tensor. After super().load_weights() the per-expert buffers are
-        # created from the stashed CPU copies and the fused GPU entry is deleted,
-        # avoiding a synchronous GPU-CPU map_sync stall per layer.
+        # The transform stashes the CPU array and returns a 2-element placeholder
+        # so the base loader creates only a minimal GPU buffer (4 bytes). After
+        # super().load_weights() the placeholder is deleted and per-expert GPU
+        # buffers are created from the stashed CPU arrays, avoiding a synchronous
+        # GPU-CPU map_sync stall per layer.
         _bias_pending: dict = {}
 
         def _make_stash(k: str):

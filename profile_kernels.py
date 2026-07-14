@@ -129,8 +129,7 @@ def main() -> None:
     if not prod_times:
         raise ValueError("No production steps measured (--decode-steps must be > 0)")
     prod_avg_ms = np.mean(prod_times)
-    tok_s_prod = f" = {1000/prod_avg_ms:.1f} tok/s" if prod_avg_ms > 0 else ""
-    print(f"Production throughput: {prod_avg_ms:.1f} ms/tok{tok_s_prod}")
+    print(f"Production throughput: {prod_avg_ms:.1f} ms/tok" + (f" = {1000/prod_avg_ms:.1f} tok/s" if prod_avg_ms > 0 else ""))
 
     # ── Profiled decode steps ──────────────────────────────────────────────────────
     print(f"Profiling {args.decode_steps} decode steps...")
@@ -145,8 +144,7 @@ def main() -> None:
     finally:
         model.profiling = False
     avg_step_ms = np.mean(decode_times)
-    tok_s = f"  ({1000/avg_step_ms:.1f} tok/s)" if avg_step_ms > 0 else ""
-    print(f"\nAverage decode step: {avg_step_ms:.1f} ms{tok_s}")
+    print(f"\nAverage decode step: {avg_step_ms:.1f} ms" + (f"  ({1000/avg_step_ms:.1f} tok/s)" if avg_step_ms > 0 else ""))
     print()
     print(model.profile_report())
     print()

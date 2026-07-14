@@ -872,7 +872,6 @@ def load_safetensors_weights(
                 for _sc in (f"{_base}.weight_scale", f"{_base}.scale", f"{_k}.SCB"):
                     if _sc in header:
                         _i8_companion_skip.add(_sc)
-                        break
 
         # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
         _gdn_bf16 = _webgpu_envs.GDN_BF16  # read once; constant during weight loading
@@ -1383,7 +1382,7 @@ def load_safetensors_weights(
                         bnb_codes.reshape(N, K_half))
 
                     # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
-                    absmax_2d = absmax_arr.reshape(N, K // _BNB_GROUP_K).astype(np.float32)
+                    absmax_2d = absmax_arr.reshape(N, K // _BNB_GROUP_K)
 
                     _upload_u8(shader_codes, f"{base}.weight", weights)
                     _upload(absmax_2d, np.float32, 'f32', f"{base}.weight.scales", weights)

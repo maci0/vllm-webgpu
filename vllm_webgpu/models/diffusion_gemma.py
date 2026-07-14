@@ -392,7 +392,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
         # to sample from the joint distribution; GPU argmax (_finish_forward) is not
         # wired in here. If greedy decode is ever needed for this model, wire in
         # _dispatch_softcap_and_sample and _finish_forward here.
-        return result.to_numpy().view(np.float16)[:num_tokens * vocab].reshape(num_tokens, vocab).astype(np.float32)
+        return result.to_numpy()[:num_tokens * vocab * 2].view(np.float16).reshape(num_tokens, vocab).astype(np.float32)
 
     def _gemm_adaptive(
         self,

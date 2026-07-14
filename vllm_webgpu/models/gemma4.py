@@ -2,7 +2,6 @@ from __future__ import annotations
 import math
 import warnings
 from itertools import batched
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
@@ -25,9 +24,9 @@ if _vllm_version != _EXPECTED_VLLM_VERSION:
         stacklevel=2,
     )
 from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -157,126 +156,6 @@ def _gemma4_layer_params(
     return lp
 
 
-def _assert_gemma4_formula_compat() -> None:
-    """Fail-fast at import time if vLLM's Gemma4 formulas have drifted from our transcription.
-
-    Checks that _gemma4_layer_params produces the same per-layer params as the
-    vLLM reference formula applied to a canonical 4-layer config (output-level guard).
-    Compared fields: head_dim, num_kv_heads, has_v_proj, q_dim, kv_dim,
-    is_kv_shared, kv_shared_target, intermediate_size, is_sliding.
-
-    Raises AssertionError immediately on any mismatch, surfacing drift at import time
-    rather than silently producing wrong KV buffer sizes at inference.
-
-    Pinned to vllm 0.24.0. tests/test_gemma4_layer_params.py owns the full parametrised
-    suite and must be run as a CI gate after any vLLM bump.
-
-    On each vLLM upgrade, manually check these specific call-sites in
-    vllm/model_executor/models/gemma4.py before updating this file:
-
-      Gemma4Attention.__init__
-        ~L461-464  first_kv_shared_layer_idx and KV-routing guard
-        ~L469-471  reversed-search KV-sharing target (prev_layers[::-1].index)
-        ~L561-577  head_dim / num_kv_heads / has_v_proj selection by attention type
-                   (also the source of q_dim = num_heads * head_dim, kv_dim = nkv * head_dim)
-
-      Gemma4DecoderLayer.__init__
-        ~L559-580  head_dim / num_kv_heads (same formulas, different guard)
-        ~L599-608  intermediate_size doubling guard (chained "i >= first > 0")
-    """
-    # Output-level guard: compare _gemma4_layer_params against the vLLM reference
-    # formulas applied directly in pure Python on a minimal canonical config.
-    # 4 layers: [sliding, full, sliding, full], last 2 are KV-shared, use_dwm=True.
-    # Covers all formula branches: head_dim selection, k_eq_v KV head routing,
-    # KV-sharing reversed search, and MLP doubling guard.
-    cfg = SimpleNamespace(
-        num_hidden_layers=4,
-        layer_types=["sliding_attention", "full_attention", "sliding_attention", "full_attention"],
-        head_dim=64,
-        global_head_dim=128,
-        num_attention_heads=4,
-        num_key_value_heads=2,
-        num_global_key_value_heads=1,
-        attention_k_eq_v=True,
-        intermediate_size=1024,
-        num_kv_shared_layers=2,
-        use_double_wide_mlp=True,
-    )
-
-    # Reference: apply vLLM Gemma4DecoderLayer.__init__ / Gemma4Attention.__init__ formulas
-    # directly (see pinned source locations in the docstring of _gemma4_layer_params).
-    num_kv_shared = getattr(cfg, "num_kv_shared_layers", 0)
-    first_kv = cfg.num_hidden_layers - num_kv_shared
-    ref = []
-    for i, lt in enumerate(cfg.layer_types):
-        is_fa = lt == "full_attention"
-        hd = cfg.global_head_dim if is_fa else cfg.head_dim
-        use_k_eq_v = is_fa and getattr(cfg, "attention_k_eq_v", False)
-        nkv = (
-            getattr(cfg, "num_global_key_value_heads", cfg.num_key_value_heads)
-            if use_k_eq_v else cfg.num_key_value_heads
-        )
-        # Gemma4Attention.__init__ KV-sharing guard
-        is_kv_shared = num_kv_shared > 0 and i >= first_kv
-        if is_kv_shared:
-            prev = cfg.layer_types[:first_kv]
-            kv_target = len(prev) - 1 - prev[::-1].index(lt)
-        else:
-            kv_target = -1
-        # Gemma4DecoderLayer.__init__ MLP-doubling guard (chained comparison)
-        is_kv_shared_mlp = i >= first_kv > 0
-        inter = cfg.intermediate_size * (2 if (cfg.use_double_wide_mlp and is_kv_shared_mlp) else 1)
-        # has_v_proj: Gemma4Attention.__init__ ~L561-577
-        # False only when use_k_eq_v (full_attention + attention_k_eq_v=True);
-        # all other layer types (including full_attention without k_eq_v) use a
-        # separate V projection.
-        use_k_eq_v_ref = (lt == "full_attention") and cfg.attention_k_eq_v
-        has_v_proj_ref = not use_k_eq_v_ref
-        q_dim_ref  = cfg.num_attention_heads * hd
-        kv_dim_ref = nkv * hd
-        ref.append({
-            "head_dim":          hd,
-            "num_kv_heads":      nkv,
-            "has_v_proj":        has_v_proj_ref,
-            "q_dim":             q_dim_ref,
-            "kv_dim":            kv_dim_ref,
-            "is_kv_shared":      is_kv_shared,
-            "kv_shared_target":  kv_target,
-            "intermediate_size": inter,
-            "is_sliding":        lt == "sliding_attention",
-        })
-
-    actual = _gemma4_layer_params(
-        layer_types=cfg.layer_types,
-        num_q_heads=cfg.num_attention_heads,
-        default_hd=cfg.head_dim,
-        default_kv=cfg.num_key_value_heads,
-        global_hd=cfg.global_head_dim,
-        global_kv=cfg.num_global_key_value_heads,
-        k_eq_v=cfg.attention_k_eq_v,
-        intermediate_size=cfg.intermediate_size,
-        num_kv_shared_layers=cfg.num_kv_shared_layers,
-        use_dwm=cfg.use_double_wide_mlp,
-    )
-
-    for i, (r, a) in enumerate(zip(ref, actual)):
-        lt = cfg.layer_types[i]
-        for field in (
-            "head_dim", "num_kv_heads", "has_v_proj", "q_dim", "kv_dim",
-            "is_kv_shared", "kv_shared_target", "intermediate_size", "is_sliding",
-        ):
-            if r[field] != a[field]:
-                raise AssertionError(
-                    f"_gemma4_layer_params drift at layer {i} ({lt!r}): "
-                    f"{field} reference={r[field]!r} actual={a[field]!r}. "
-                    "The formula in _gemma4_layer_params diverged from vLLM. "
-                    "Re-audit _gemma4_layer_params and run tests/test_gemma4_layer_params.py."
-                )
-
-
-_assert_gemma4_formula_compat()
-
-
 def _build_layer_params_from_config(
     model_config,
     num_layers: int,
@@ -295,7 +174,7 @@ def _build_layer_params_from_config(
     num_q_heads       = model_config.num_attention_heads
     intermediate_size = model_config.intermediate_size
     layer_types       = model_config.layer_types
-    default_hd = getattr(model_config, 'head_dim', model_config.hidden_size // model_config.num_attention_heads)
+    default_hd = getattr(model_config, 'head_dim', None) or (model_config.hidden_size // model_config.num_attention_heads)
     default_kv        = model_config.num_key_value_heads
     global_hd         = getattr(model_config, "global_head_dim", default_hd)
     global_kv         = getattr(model_config, "num_global_key_value_heads", default_kv)

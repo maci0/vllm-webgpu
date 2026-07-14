@@ -351,7 +351,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """
         msc = self._moe_sc
         hidden = self.hidden_size
-        base_key = w2_key.removesuffix('.weight')
         uq_d = self._uq_for_key(w2_key)
         if uq_d == 0:
             self._dispatch(
@@ -363,6 +362,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
             )
         else:
             self._ensure_expert_tmp()
+            base_key = w2_key.removesuffix('.weight')
             qi_d = self._quant_extra(base_key, uq_d)
             self._dispatch(
                 "matmul_quant",
