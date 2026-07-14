@@ -1300,11 +1300,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # _use_fused_qkv is already False when is_kv_shared=True because the else
             # branch sets it False for both not-has_v and is_kv_shared cases.
-            # _k_src and _v_src defaults cover the is_kv_shared=True path; both values
-            # are overwritten by every live code path that actually reads them.
-            _k_src = sc["k_buf"]
-            _v_src = sc["k_buf"]
-            _v_src_offset = 0
             if _use_fused_qkv:
                 # All f16, non-shared: single fused_qkv dispatch → sc["qkv_buf"] laid out as [Q | K | V].
                 self._dispatch("fused_qkv",
@@ -1319,6 +1314,9 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 # Separate projections (quantized weights, global attention, or KV-shared layer).
                 # KV-shared layers only need Q; K and V come from the target layer's KV cache.
+                _k_src = sc["k_buf"]
+                _v_src = sc["k_buf"]
+                _v_src_offset = 0
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[qw],
                                 self._scales_buf(qw, uq_q, self._dummy_buf), sc["q_buf"]],

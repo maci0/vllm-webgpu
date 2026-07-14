@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 from itertools import batched, chain
 from typing import TYPE_CHECKING
 
@@ -342,8 +341,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         )
         # SD layout: conv_shape = (CONV_KERNEL-1+num_spec, CONV_DIM). DS layout is
         # rejected in __init__, so conv_shape[-1] is always the conv dimension.
-        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
-        ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
+        assert self._lin_conv_dim == conv_shape[-1], (
+            f"conv_dim mismatch: {self._lin_conv_dim} vs {conv_shape[-1]}; "
+            "MambaStateShapeCalculator.gated_delta_net_state_shape formula may have changed"
+        )
+        conv_bytes = int(np.prod(conv_shape)) * _ELEM_BYTES["f16"]
+        ssm_bytes  = int(np.prod(ssm_shape)) * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}
         self._conv_gpu = {}

@@ -1,5 +1,7 @@
 from __future__ import annotations
+import inspect
 import math
+import statistics
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -70,6 +72,35 @@ logger = init_logger(__name__)
 
 
 
+# Guard against vLLM changing the signatures of the YaRN public helpers.
+# compute_yarn_freqs calls these three functions directly and would silently
+# produce wrong results if a vLLM update adds or renames a parameter.
+# On each vLLM bump, verify both the signature and the formula in
+# yarn_scaling_rope.py._compute_inv_freq still match the composition in
+# compute_yarn_freqs below.
+assert (
+    str(inspect.signature(yarn_find_correction_range))
+    == "(low_rot: int, high_rot: int, dim: int, base: float = 10000, max_position_embeddings: int = 2048, truncate: bool = True) -> tuple[float | int, float | int]"
+), (
+    "yarn_find_correction_range signature changed; update compute_yarn_freqs "
+    "and this assertion to match the new vLLM signature"
+)
+assert (
+    str(inspect.signature(yarn_linear_ramp_mask))
+    == "(low: float, high: float, dim: int, dtype: torch.dtype) -> torch.Tensor"
+), (
+    "yarn_linear_ramp_mask signature changed; update compute_yarn_freqs "
+    "and this assertion to match the new vLLM signature"
+)
+assert (
+    str(inspect.signature(yarn_get_mscale))
+    == "(scale: float = 1) -> float"
+), (
+    "yarn_get_mscale signature changed; update compute_yarn_freqs "
+    "and this assertion to match the new vLLM signature"
+)
+
+
 def compute_yarn_freqs(
     head_dim: int,
     rope_scaling: dict,
@@ -83,9 +114,10 @@ def compute_yarn_freqs(
     YaRNScalingRotaryEmbedding._compute_inv_freq without instantiating
     that class (whose __init__ builds an unneeded cos/sin cache).
 
-    The public helper signatures are a stable vLLM contract. On each vLLM
-    bump, verify the formula in yarn_scaling_rope.py._compute_inv_freq
-    still matches the composition below.
+    The public helper signatures are pinned by the module-level assertions
+    above. On each vLLM bump, verify the formula in
+    yarn_scaling_rope.py._compute_inv_freq still matches the composition
+    below, then update the assertions if any signature changed.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -283,11 +315,10 @@ class BaseWebGPUModel(ABC):
         if not self._prof_stats:
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
-        rows = sorted([(lbl, sum(t), len(t)) for lbl, t in self._prof_stats.items()],
-                      key=lambda r: r[1], reverse=True)
-        total = sum(r[1] for r in rows)
-        for label, sum_t, n in rows:
-            avg = sum_t / n
+        rows = sorted([(lbl, statistics.fmean(v), sum(v), len(v)) for lbl, v in self._prof_stats.items()],
+                      key=lambda r: r[2], reverse=True)
+        total = sum(r[2] for r in rows)
+        for label, avg, sum_t, n in rows:
             pct = 100.0 * sum_t / total if total else 0
             lines.append(f"  {label:<40s} {avg:7.3f} ms  x{n:4d}  {sum_t:8.3f} ms  {pct:5.1f}%")
         lines.append(f"  {'TOTAL':<40s} {'':7s}       {'':6s}  {total:8.3f} ms")
@@ -455,7 +486,7 @@ class BaseWebGPUModel(ABC):
                 "GPU argmax was never dispatched"
             )
         self._gpu_sample_staging.map_sync(mode=wgpu_lib.MapMode.READ)
-        val = int.from_bytes(bytes(self._gpu_sample_staging.read_mapped()[:4]), 'little')
+        val = int.from_bytes(self._gpu_sample_staging.read_mapped()[:4], 'little')
         self._gpu_sample_staging.unmap()
         return val
 

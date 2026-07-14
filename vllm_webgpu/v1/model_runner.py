@@ -281,7 +281,7 @@ class WebGPUModelRunner:
         # _execute_model_v2 directly) would raise AttributeError.
         self._has_reset = self._has_save = self._has_replay = self._has_restore = False
 
-    def load_model(self, load_dummy_weights: bool = False) -> None:
+    def load_model(self) -> None:
         self.__dict__.pop("kv_cache_spec", None)
         # Reset capability flags before model is assigned; a reload clears stale values.
         self._has_reset = False
@@ -598,7 +598,7 @@ class WebGPUModelRunner:
             num_sched = scheduler_output.num_scheduled_tokens[rid]
             T = min(num_sched, len(tok_ids) - num_computed)
             chunk_toks = tok_ids[num_computed:num_computed + T]
-            abs_idx = np.arange(num_computed, num_computed + T)
+            abs_idx = np.arange(num_computed, num_computed + T, dtype=np.uint32)
             blk_idx, within_block = np.divmod(abs_idx, block_size)
             oob = blk_idx >= len(blk_ids)
             if oob.any():
@@ -622,7 +622,7 @@ class WebGPUModelRunner:
 
             last_logits = self.model.forward(
                 np.array(chunk_toks, dtype=np.uint32),
-                abs_idx.astype(np.uint32),
+                abs_idx,
                 _batch_pm,
             )
 

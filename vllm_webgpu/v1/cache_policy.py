@@ -38,7 +38,7 @@ from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
-_ATTN_LAYER_TYPES: frozenset = frozenset({"attention", "full_attention", "sliding_attention", "hybrid", 1})
+_ATTN_LAYER_TYPES: frozenset[str | int] = frozenset({"attention", "full_attention", "sliding_attention", "hybrid", 1})
 
 
 class _LayerKV(NamedTuple):

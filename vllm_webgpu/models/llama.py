@@ -441,7 +441,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # place cdiv(T*dim, 1024) there, which can also exceed 65535 for large dim.
         # The sequential fallback handles arbitrary-length prompts without any
         # dispatch-dimension concern.
-        if T > 65535 or cdiv(T * self.intermediate_size, 1024) > 65535:
+        if T > 65535 or cdiv(T * self.intermediate_size, 1024) > 65535 or cdiv(T * self.hidden_size, 1024) > 65535:
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 
         # APC prefix-cache hit: the first token's absolute position is > 0, meaning
