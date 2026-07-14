@@ -570,3 +570,123 @@ def test_kv_cache_spec_layer_count_per_arch(
         "vllm_webgpu/v1/cache_policy.py and update the probe list and the "
         "VERSION SYNC comment."
     )
+
+
+@pytest.mark.parametrize("arch,hf_text_attrs,hf_outer_attrs,num_layers,expected_attn", [
+    # NemotronH: layers_block_type probe (probe 1). 6 layers: 2 mamba + 1 mlp + 3 attention.
+    (
+        "NemotronHForCausalLM",
+        {"layers_block_type": ["mamba", "attention", "mamba", "mlp", "attention", "attention"]},
+        {},
+        6,
+        3,
+    ),
+    # Gemma4: layer_types probe (probe 3). 6 layers: 5 sliding_attention + 1 full_attention.
+    # is_attn_layer returns True for both, so all 6 count as KV-cache layers.
+    # Note: vLLM's get_num_layers_by_block_type("attention") only counts "full_attention"
+    # layers for the layer_types probe (see vllm/config/model.py:1348-1357); sliding_attention
+    # is a separate block type there. is_attn_layer() intentionally groups both because both
+    # require KV cache buffers. The per-block-type comparison below validates each label
+    # individually rather than relying on the "attention" catch-all.
+    (
+        "Gemma4ForCausalLM",
+        {"layer_types": ["sliding_attention"] * 5 + ["full_attention"]},
+        {},
+        6,
+        6,
+    ),
+    # Qwen3.5: layer_types probe (probe 3). 6 layers alternating full/linear.
+    # linear_attention carries no KV state (is_attn_layer returns False).
+    (
+        "Qwen3_5ForConditionalGeneration",
+        {"layer_types": ["full_attention", "linear_attention"] * 3},
+        {},
+        6,
+        3,
+    ),
+])
+def test_get_layer_types_matches_vllm_count_per_arch(
+    arch, hf_text_attrs, hf_outer_attrs, num_layers, expected_attn
+):
+    """get_layer_types() per-block-type counts must match get_num_layers_by_block_type().
+
+    For each registered architecture (Gemma4, NemotronH, Qwen3.5), this test:
+      1. Calls get_layer_types() on the arch's hf_config fixture and asserts the
+         returned list is not None.
+      2. Verifies that the KV-cache layer count (via is_attn_layer()) matches expected_attn.
+      3. For each distinct block type in the returned list, calls
+         get_num_layers_by_block_type() with that exact label and asserts the per-type
+         count agrees. This catches probe drift even when the generic "attention"
+         block_type query would mask it.
+
+    The per-block-type comparison is necessary because vLLM's get_num_layers_by_block_type
+    uses "attention" as an alias for "full_attention" in the layer_types probe (see
+    vllm/config/model.py:1348-1357), while is_attn_layer() also counts "sliding_attention"
+    as a KV-cache layer. Querying each label directly avoids that aliasing.
+
+    Run this test after each vLLM bump. When it fails:
+      1. Diff ModelConfig.get_num_layers_by_block_type (vllm/config/model.py) against
+         get_layer_types() in vllm_webgpu/v1/cache_policy.py.
+      2. Update get_layer_types() to match any new or reordered probes.
+      3. Update the VERSION SYNC comment in cache_policy.py to the new vLLM version.
+      4. Update PINNED_GET_NUM_LAYERS_HASH in this file to the new hash.
+      5. Re-run this test and test_get_layer_types_version_sync to confirm they pass.
+
+    If vLLM ever exposes a public get_layer_types() list API, replace the probe
+    logic in cache_policy.py with a direct call and remove this test.
+    """
+    pytest.importorskip("vllm", reason="vllm not installed")
+
+    from vllm.config.model import ModelConfig
+    from vllm_webgpu.v1.cache_policy import get_layer_types, is_attn_layer
+
+    hf_text = SimpleNamespace(**hf_text_attrs)
+    hf_outer = SimpleNamespace(**{**hf_text_attrs, **hf_outer_attrs})
+
+    layer_list = get_layer_types(hf_text, hf_outer)
+    assert layer_list is not None, (
+        f"arch={arch!r}: get_layer_types() returned None; expected a list. "
+        "The probe attributes may have changed in the hf_config. "
+        "Diff get_layer_types() in cache_policy.py against the fixture."
+    )
+
+    local_count = sum(1 for lt in layer_list if is_attn_layer(lt))
+    assert local_count == expected_attn, (
+        f"arch={arch!r}: get_layer_types() implies {local_count} KV-cache layers, "
+        f"expected {expected_attn}. layer_list={layer_list!r}."
+    )
+
+    # Build a minimal mock ModelConfig for the hybrid-model probe path.
+    mock_mc = SimpleNamespace(
+        is_hybrid=True,
+        has_noops=False,
+        is_attention_free=False,
+        hf_text_config=hf_text,
+        hf_config=hf_outer,
+        model_arch_config=SimpleNamespace(text_model_type="llama"),
+        get_layers_start_end_indices=lambda _pc: (0, num_layers),
+        get_num_layers=lambda _pc: num_layers,
+    )
+    pc = SimpleNamespace()
+
+    # Compare per distinct block type to avoid the "attention" / "full_attention"
+    # aliasing in the layer_types probe path. For each unique label in the list,
+    # vLLM's exact-match count must equal our direct count from the list.
+    for block_type in set(layer_list):
+        expected_type_count = sum(1 for lt in layer_list if lt == block_type)
+        try:
+            vllm_type_count = ModelConfig.get_num_layers_by_block_type(
+                mock_mc, parallel_config=pc, block_type=block_type,
+            )
+        except (AssertionError, ValueError):
+            # vLLM raised for an unsupported block_type label (e.g., a new type
+            # added after a version bump). Treat as a probe-sequence mismatch.
+            vllm_type_count = None
+        assert vllm_type_count == expected_type_count, (
+            f"arch={arch!r}, block_type={block_type!r}: "
+            f"get_layer_types() count={expected_type_count} but "
+            f"get_num_layers_by_block_type()={vllm_type_count}. "
+            "The probe sequence in get_layer_types() has drifted from vLLM. "
+            "Diff ModelConfig.get_num_layers_by_block_type (vllm/config/model.py) "
+            "against get_layer_types() in vllm_webgpu/v1/cache_policy.py."
+        )
