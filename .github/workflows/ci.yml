@@ -32,3 +32,8 @@ jobs:
         run: |
           source .venv/bin/activate
           python -m pytest tests/test_gemma4_layer_params.py -v --tb=short
+
+      - name: Check VERSION SYNC — cache_policy get_layer_types probe chain vs vLLM
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/test_vllm_compat.py::test_get_layer_types_version_sync -v --tb=short

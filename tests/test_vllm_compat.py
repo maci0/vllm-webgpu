@@ -118,6 +118,53 @@ def test_modelopt_extract_quant_algo_drift():
         )
 
 
+def test_get_layer_types_version_sync():
+    """Fail immediately when vLLM is bumped without updating the VERSION SYNC comment.
+
+    When this test fails, the required action is:
+      1. Diff ModelConfig.get_num_layers_by_block_type in vllm/config/model.py
+         against get_layer_types() in vllm_webgpu/v1/cache_policy.py.
+      2. Update get_layer_types() if probes were added, removed, or reordered.
+      3. Update the VERSION SYNC comment in cache_policy.py to the new version.
+      4. Re-run this test to confirm it passes.
+
+    The check is strict (exact version equality), so any vLLM bump triggers it.
+    The existing test_get_layer_types_probe_order_matches_vllm and
+    test_kv_cache_spec_layer_count_per_arch tests then verify that the probe
+    sequence still produces correct results.
+    """
+    pytest.importorskip("vllm", reason="vllm not installed")
+    import re
+    import pathlib
+    import vllm
+
+    cache_policy_path = (
+        pathlib.Path(__file__).parent.parent
+        / "vllm_webgpu" / "v1" / "cache_policy.py"
+    )
+    source = cache_policy_path.read_text()
+
+    m = re.search(r"VERSION SYNC: last verified against vLLM (\S+)", source)
+    assert m is not None, (
+        "Could not find 'VERSION SYNC: last verified against vLLM <version>' in "
+        "vllm_webgpu/v1/cache_policy.py. The comment was removed or reformatted."
+    )
+    pinned = m.group(1).rstrip(".")
+    installed = vllm.__version__
+
+    assert pinned == installed, (
+        f"VERSION SYNC mismatch: cache_policy.py was verified against vLLM {pinned} "
+        f"but {installed} is installed.\n\n"
+        "Action required:\n"
+        "  1. Diff ModelConfig.get_num_layers_by_block_type in\n"
+        "     vllm/config/model.py against get_layer_types() in\n"
+        "     vllm_webgpu/v1/cache_policy.py.\n"
+        "  2. Update get_layer_types() if probes were added, removed, or reordered.\n"
+        "  3. Update the VERSION SYNC comment in cache_policy.py to the new version.\n"
+        "  4. Re-run this test to confirm it passes."
+    )
+
+
 @pytest.mark.parametrize("probe,hf_text_attrs,hf_outer_attrs,expected,attn_count", [
     (
         "layers_block_type",
