@@ -88,12 +88,15 @@ class WebGPUWorker(WorkerBase):
         return self.model_runner.get_kv_cache_spec()
 
     def initialize_from_config(self, kv_cache_config: "KVCacheConfig") -> None:
+        # Set num_gpu_blocks first (matches GPU worker initialization order) so
+        # that any downstream code inspecting cache_config after an exception
+        # sees the correct block count rather than a stale pre-call value.
+        self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
+        ensure_kv_transfer_initialized(self.vllm_config, kv_cache_config)
         if self.model_config.enable_return_routed_experts:
             raise NotImplementedError(
                 "enable_return_routed_experts is not supported on the WebGPU backend"
             )
-        self.cache_config.num_gpu_blocks = kv_cache_config.num_blocks
-        ensure_kv_transfer_initialized(self.vllm_config, kv_cache_config)
         self.model_runner.initialize_kv_cache(kv_cache_config)
 
     def compile_or_warm_up_model(self) -> CompilationTimes:

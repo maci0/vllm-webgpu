@@ -41,6 +41,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
 # a private vLLM symbol that carries no stability guarantee. If vLLM changes
 # _SAMPLING_EPS, update this value and the pin comment in pyproject.toml.
 GREEDY_TEMP: float = 1e-5  # must equal vllm.sampling_params._SAMPLING_EPS
+from vllm.sampling_params import _SAMPLING_EPS as _VLLM_SAMPLING_EPS  # noqa: E402
+assert _VLLM_SAMPLING_EPS == GREEDY_TEMP, (
+    f"vllm.sampling_params._SAMPLING_EPS changed to {_VLLM_SAMPLING_EPS!r}; "
+    f"update GREEDY_TEMP in vllm_webgpu/utils.py to match."
+)
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

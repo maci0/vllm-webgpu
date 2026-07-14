@@ -36,13 +36,16 @@ if TYPE_CHECKING:
 _SCALE_EPS = 1e-6
 
 
-# Three formulas transcribed from vLLM v0.24.0 into _gemma4_layer_params below.
+# Three formula groups transcribed from vLLM v0.24.0 into _gemma4_layer_params below.
 # Pinned source locations in vllm/model_executor/models/gemma4.py:
-#   (1) Gemma4DecoderLayer.__init__ ~L601: first_kv_shared boundary
-#   (2) Gemma4Attention.__init__    ~L469-471: reversed-search KV-sharing target
-#   (3) Gemma4DecoderLayer.__init__ ~L561-577: head_dim / num_kv_heads by attention type
-# When upgrading past v0.24.0, re-audit these three locations and update _gemma4_layer_params.
-# Unit tests in tests/test_gemma4_layer_params.py verify the formulas against vLLM source.
+#   (1a) KV-routing guard:  Gemma4Attention.__init__    ~L462-464
+#   (1b) MLP width guard:   Gemma4DecoderLayer.__init__ ~L599-602
+#   (2)  KV-sharing target: Gemma4Attention.__init__    ~L469-471
+#   (3)  head_dim / num_kv_heads / has_v_proj by attention type: ~L561-577
+# On each vLLM bump: diff all four locations, re-run tests/test_gemma4_layer_params.py,
+# and update _gemma4_layer_params, _build_layer_params_from_config, and
+# _EXPECTED_VLLM_VERSION together. If vLLM ever exports a public get_layer_params()
+# or equivalent, replace both functions with a direct call.
 
 
 class _RopeConsts(NamedTuple):

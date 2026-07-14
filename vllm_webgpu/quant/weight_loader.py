@@ -1405,7 +1405,15 @@ def load_safetensors_weights(
                     shader_codes = bnb_codes.reshape(N, K_half)
 
                     # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
-                    absmax_2d = absmax_arr.reshape(N, K // _BNB_GROUP_K)
+                    # Use expected_blocks (already validated against absmax_arr.size above)
+                    # rather than recomputing from K, so the reshape target is always consistent
+                    # with the size check. Guarded for the case where N does not divide evenly.
+                    if expected_blocks % N != 0:
+                        logger.warning(
+                            "BnB NF4: absmax count %d not divisible by N=%d for %s, skipping",
+                            expected_blocks, N, base)
+                        continue
+                    absmax_2d = absmax_arr.reshape(N, expected_blocks // N)
 
                     _upload_u8(shader_codes, f"{base}.weight", weights)
                     _upload(absmax_2d, np.float32, 'f32', f"{base}.weight.scales", weights)

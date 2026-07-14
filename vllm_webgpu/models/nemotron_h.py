@@ -283,6 +283,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # checkpoints) expose get_nemotron_h_config_for_layer() on the model_config
         # to return per-layer overrides, including a different intermediate_size.
         _get_layer_cfg = getattr(model_config, 'get_nemotron_h_config_for_layer', None)
+        # Store for use in _attn_layer to read per-layer head counts and head_dim
+        # for puzzle/heterogeneous checkpoints that override attention geometry.
+        self._get_layer_cfg = _get_layer_cfg
 
         # Build per-layer intermediate sizes in O(num_layers) using a running MLP counter.
         # The vLLM canonical expression is:
@@ -1323,8 +1326,27 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         sc    = self._sc
         p     = f"model.layers.{layer_idx}.mixer"
         H     = self.hidden_size
-        q_dim = self._q_dim
-        k_dim = self._k_dim
+
+        # Per-layer config override for puzzle/heterogeneous checkpoints.
+        # Falls back to global attributes when get_nemotron_h_config_for_layer
+        # is absent or the per-layer config does not override the attention fields.
+        # isinstance(val, int) guards ensure mock objects in tests fall through
+        # to the global defaults rather than producing wrong buffer sizes.
+        if self._get_layer_cfg is not None:
+            _lcfg = self._get_layer_cfg(layer_idx)
+            _hd = getattr(_lcfg, 'head_dim', None)
+            head_dim     = _hd if isinstance(_hd, int) else self.head_dim
+            _nq  = getattr(_lcfg, 'num_attention_heads', None)
+            num_q_heads  = _nq  if isinstance(_nq, int) else self.num_q_heads
+            _nkv = getattr(_lcfg, 'num_key_value_heads', None)
+            num_kv_heads = _nkv if isinstance(_nkv, int) else self.num_kv_heads
+        else:
+            head_dim   = self.head_dim
+            num_q_heads  = self.num_q_heads
+            num_kv_heads = self.num_kv_heads
+        q_dim      = num_q_heads  * head_dim
+        k_dim      = num_kv_heads * head_dim
+        attn_scale = head_dim ** -0.5
 
         # Fused QKV projection.
         qkv_w    = f"{p}.qkv_proj.weight"
@@ -1358,19 +1380,19 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self._dispatch(
                 "kv_cache_store_both",
                 [sc["k_buf"], k_cache, sc["v_buf"], v_cache, slot_map],
-                {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
-                 "HEAD_DIM": self.head_dim, "V_IN_OFFSET": 0},
-                (num_tokens, self.num_kv_heads, 1),
+                {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": num_kv_heads,
+                 "HEAD_DIM": head_dim, "V_IN_OFFSET": 0},
+                (num_tokens, num_kv_heads, 1),
             )
 
         # Flash attention decode.
         self._dispatch(
             "flash_attn_decode",
             [sc["q_buf"], k_cache, v_cache, bt_buf, sc["attn_out"]],
-            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
-             "NUM_KV_HEADS": self.num_kv_heads, "HEAD_DIM": self.head_dim,
-             "CTX_LEN": ctx_len, "SCALE": self._attn_scale, "START_BLOCK": 0},
-            (self.num_q_heads, 1, 1),
+            {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": num_q_heads,
+             "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
+             "CTX_LEN": ctx_len, "SCALE": attn_scale, "START_BLOCK": 0},
+            (num_q_heads, 1, 1),
         )
 
         # Output projection.

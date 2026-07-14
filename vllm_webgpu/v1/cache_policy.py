@@ -273,7 +273,7 @@ def allocate_kv_from_tensors(
             # multi-attention-per-layer model) would silently overwrite each other's
             # buffer sizes, producing wrong K/V allocations with no error at runtime.
             if _idx in layer_idx_kv:
-                _prev_k, _prev_v, prev_name = layer_idx_kv[_idx]
+                _, _, prev_name = layer_idx_kv[_idx]
                 raise RuntimeError(
                     f"Two layer names resolve to the same index {_idx}: "
                     f"{layer_name!r} and {prev_name!r}. This is a model configuration bug."
