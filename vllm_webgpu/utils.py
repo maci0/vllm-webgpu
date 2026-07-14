@@ -35,17 +35,10 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     random_sample,
 )
 # Greedy-temperature threshold: temperatures at or below this value are treated
-# as greedy (argmax) decoding. Must equal vllm.sampling_params._SAMPLING_EPS,
+# as greedy (argmax) decoding. Equals vllm.sampling_params._SAMPLING_EPS,
 # which is the constant SamplingParams.sampling_type uses to gate greedy vs.
-# random sampling. Defined here as a local literal (1e-5) to avoid depending on
-# a private vLLM symbol that carries no stability guarantee. If vLLM changes
-# _SAMPLING_EPS, update this value and the pin comment in pyproject.toml.
-GREEDY_TEMP: float = 1e-5  # must equal vllm.sampling_params._SAMPLING_EPS
-from vllm.sampling_params import _SAMPLING_EPS as _VLLM_SAMPLING_EPS  # noqa: E402
-assert _VLLM_SAMPLING_EPS == GREEDY_TEMP, (
-    f"vllm.sampling_params._SAMPLING_EPS changed to {_VLLM_SAMPLING_EPS!r}; "
-    f"update GREEDY_TEMP in vllm_webgpu/utils.py to match."
-)
+# random sampling.
+from vllm.sampling_params import _SAMPLING_EPS as GREEDY_TEMP
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

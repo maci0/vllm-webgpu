@@ -130,10 +130,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
     # ── Scratch buffer sizing ────────────────────────────────────────────────
 
     def _scratch_token_count(self) -> int:
-        _cl = (
-            getattr(self.model_config, "canvas_length", None)
-            or getattr(self._outer_config, "canvas_length", None)
-        )
+        _cl = getattr(self.model_config, "canvas_length", None)
+        if _cl is None:
+            _cl = getattr(self._outer_config, "canvas_length", None)
         if _cl is None:
             logger.warning(
                 "canvas_length not found in model config or outer config, defaulting to 256."
@@ -261,7 +260,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                      if k in self.weights),
                     None,
                 )
-                pes_w = self.weights.get(pes_key) if pes_key else None
+                pes_w = self.weights.get(pes_key)
                 if pes_w is not None:
                     self._pes_cache[i] = self._buf_to_numpy(pes_w).astype(np.float32)
             self._validate_expert_weights()

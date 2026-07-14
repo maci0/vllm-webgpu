@@ -382,7 +382,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         CD  = self.conv_dim
         IPD = self.in_proj_dim
         MNH = self.mamba_num_heads
-        I   = max(self._layer_int_size, default=0)
+        I   = max(self._layer_int_size)
         V   = self.vocab_size
 
         max_ctx = self.model_config.max_position_embeddings

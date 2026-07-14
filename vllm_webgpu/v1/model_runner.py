@@ -175,9 +175,6 @@ class WebGPUModelRunner:
         self.pipeline_cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
         self.model: "BaseWebGPUModel | None" = None
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
-        # Accumulator for prompt logprobs across chunked-prefill steps.
-        # Maps req_id -> list of per-chunk LogprobsTensors; cleared on completion or finish.
-        self._in_progress_prompt_logprobs: dict[str, list] = {}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks
         self._block_size: int = vllm_config.cache_config.block_size
         self._use_fp64_gumbel: bool = vllm_config.model_config.use_fp64_gumbel
@@ -362,7 +359,7 @@ class WebGPUModelRunner:
         to those positions. Attention over positions beyond the current write
         cursor would read that garbage, producing incorrect outputs.
 
-        This mirrors gpu_model_runner.py _zero_block_ids (lines 1105-1108).
+        This mirrors gpu_model_runner.py _zero_block_ids (lines 1155-1156).
         Called before any forward pass in the step so the zeroing is committed
         to the GPU before the first attention dispatch.
 
@@ -505,7 +502,6 @@ class WebGPUModelRunner:
         # _req_state.get(rid) and gets None).
         for rid in scheduler_output.finished_req_ids:
             self._req_state.pop(rid, None)
-            self._in_progress_prompt_logprobs.pop(rid, None)
 
         cached = scheduler_output.scheduled_cached_reqs
         new_reqs = scheduler_output.scheduled_new_reqs
@@ -602,7 +598,7 @@ class WebGPUModelRunner:
 
             last_logits = self.model.forward(
                 np.array(chunk_toks, dtype=np.uint32),
-                np.arange(num_computed, num_computed + T, dtype=np.uint32),
+                abs_idx.astype(np.uint32),
                 _batch_pm,
             )
 
@@ -650,21 +646,8 @@ class WebGPUModelRunner:
                     chunk_toks,
                     num_prompt_logprobs,
                 )
-                is_final_chunk = (num_computed + T) >= len(tok_ids)
                 if pt is not None:
-                    acc = self._in_progress_prompt_logprobs.setdefault(rid, [])
-                    acc.append(pt)
-                if is_final_chunk:
-                    acc = self._in_progress_prompt_logprobs.pop(rid, None)
-                    if acc:
-                        if len(acc) == 1:
-                            prompt_logprobs_dict[rid] = acc[0]
-                        else:
-                            prompt_logprobs_dict[rid] = LogprobsTensors(
-                                logprob_token_ids=torch.cat([x.logprob_token_ids for x in acc]),
-                                logprobs=torch.cat([x.logprobs for x in acc]),
-                                selected_token_ranks=torch.cat([x.selected_token_ranks for x in acc]),
-                            )
+                    prompt_logprobs_dict[rid] = pt
 
             all_req_ids.append(rid)
             all_sampled.append(first_decode_tok)

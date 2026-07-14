@@ -435,7 +435,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                                        key is '{p}.{subkey}.weight' (output dim = 1).
                                        When None, no gate is applied (coefficient 1.0).
         """
-        extra_gate_consts = extra_gate_consts if extra_gate_consts is not None else {}
+        extra_gate_consts = extra_gate_consts or {}
         dev = self.wgpu_device.wgpu_device
         msc = self._moe_sc
         hidden = self.hidden_size

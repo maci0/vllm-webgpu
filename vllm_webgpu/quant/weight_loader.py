@@ -1263,10 +1263,11 @@ def load_safetensors_weights(
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
                         ws_u8 = _load_raw(f"{base}.weight_scale")  # (N, K//32) U8 exponents
                         # E8M0 exponent decode: scale = 2^(u8 - 127).
-                        # Do NOT replace with compressed_tensors.compressors.mx_utils.decompress_mx_scale:
-                        # that function returns bfloat16, which would require a torch roundtrip to float32
-                        # and rounds the exponent decode to bf16 precision before it is applied as a scale
-                        # factor. The direct numpy float32 expression avoids that precision loss.
+                        # decompress_mx_scale from compressed_tensors.compressors.mx_utils would
+                        # produce bit-for-bit identical results (2^k for integer k is exactly
+                        # representable in both bfloat16 and float32), but requires a torch
+                        # tensor roundtrip (from_numpy + .to(torch.float32).numpy()) that the
+                        # direct numpy expression avoids.
                         ws_f32 = np.exp2(ws_u8.astype(np.float32) - 127.0)
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2

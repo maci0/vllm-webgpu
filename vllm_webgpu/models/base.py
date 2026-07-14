@@ -74,9 +74,11 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Implements the same formula as YaRNScalingRotaryEmbedding._compute_inv_freq
-    using the public vLLM utilities yarn_find_correction_range and
-    yarn_linear_ramp_mask (both from vllm.model_executor.layers.rotary_embedding.common).
+    WebGPU cannot call YaRNScalingRotaryEmbedding._compute_inv_freq directly
+    because it requires CUDA init; this is a direct numpy port of that method.
+    Implements the same formula using the public vLLM utilities
+    yarn_find_correction_range and yarn_linear_ramp_mask (both from
+    vllm.model_executor.layers.rotary_embedding.common).
 
     Args:
         head_dim:    Full attention head dimension.

@@ -451,16 +451,16 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 for _j in range(_n_exp):
                     _ep = f"{_pfx}.{_j}"
                     self.weights[f"{_ep}.gate_proj.weight"] = WebGPUBuffer.from_numpy(
-                        _dev, _gu_arr[_j, :_inter, :])
+                        _dev, _gu_arr[_j, :_inter])
                     self.weights[f"{_ep}.up_proj.weight"] = WebGPUBuffer.from_numpy(
-                        _dev, _gu_arr[_j, _inter:, :])
+                        _dev, _gu_arr[_j, _inter:])
                 if _d_key in _expert_weight_pending:
                     del self.weights[_d_key]
                     _d_arr = _expert_weight_pending[_d_key]
                     for _j in range(_d_arr.shape[0]):
                         _ep = f"{_pfx}.{_j}"
                         self.weights[f"{_ep}.down_proj.weight"] = WebGPUBuffer.from_numpy(
-                            _dev, _d_arr[_j, :, :])
+                            _dev, _d_arr[_j])
             logger.info(
                 "Unfused MoE expert weights into per-expert keys for %d layers",
                 self.num_layers,
