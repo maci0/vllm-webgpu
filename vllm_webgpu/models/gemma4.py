@@ -133,16 +133,15 @@ def _gemma4_layer_params(
 
         # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
         if is_kv_shared:
-            kv_shared_target = next(
-                (j for j in range(first_kv_shared - 1, -1, -1) if layer_types[j] == lt),
-                None,
-            )
-            if kv_shared_target is None:
+            prev = layer_types[:first_kv_shared]
+            try:
+                kv_shared_target = len(prev) - 1 - prev[::-1].index(lt)
+            except ValueError:
                 raise ValueError(
                     f"Layer {i} (type={lt!r}) is KV-shared but type {lt!r} was not "
                     f"found in the non-shared prefix layer_types[:{first_kv_shared}]. "
-                    f"Check layer_types config."
-                )
+                    "Check layer_types config."
+                ) from None
         else:
             kv_shared_target = -1
 
@@ -1283,14 +1282,15 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             # QKV projections: fused for f16 local layers; separate for quantized weights or
             # global layers (has_v=False, no v_proj weight).
             qw = f"{p}.self_attn.q_proj.weight"
-            kw = f"{p}.self_attn.k_proj.weight"
             uq_q = self._uq_for_key(qw)
-            uq_k = self._uq_for_key(kw)
             if has_v and not is_kv_shared:
-                vw = f"{p}.self_attn.v_proj.weight"
+                kw  = f"{p}.self_attn.k_proj.weight"
+                vw  = f"{p}.self_attn.v_proj.weight"
+                uq_k = self._uq_for_key(kw)
                 uq_v = self._uq_for_key(vw)
                 _use_fused_qkv = (uq_q == 0 and uq_k == 0 and uq_v == 0)
             else:
+                kw = f"{p}.self_attn.k_proj.weight"  # still needed for dispatch when not kv_shared
                 _use_fused_qkv = False
 
             # _use_fused_qkv is already False when is_kv_shared=True because the else
@@ -1321,6 +1321,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                 **self._quant_extra(f"{p}.self_attn.q_proj", uq_q)},
                                (q_dim, 1, 1))
                 if not is_kv_shared:
+                    uq_k = self._uq_for_key(kw)
                     self._dispatch("matmul_quant",
                                    [normed_x, self.weights[kw],
                                     self._scales_buf(kw, uq_k, self._dummy_buf), sc["k_buf"]],

@@ -1,6 +1,5 @@
 from __future__ import annotations
 from functools import cached_property
-from itertools import chain
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
@@ -151,7 +150,7 @@ def _compute_prompt_logprobs(
 
     lp_t = Sampler.compute_logprobs(torch.from_numpy(full_logits[:num_positions]))
     lp = Sampler.gather_logprobs(lp_t, k, torch.tensor(tok_ids[1:], dtype=torch.int64))
-    return lp._replace(selected_token_ranks=lp.selected_token_ranks.to(torch.int32))
+    return lp
 
 
 def _stack_logprobs(items: "Sequence[LogprobsTensors]") -> "LogprobsLists":
@@ -502,8 +501,8 @@ class WebGPUModelRunner:
         lp_t = Sampler.compute_logprobs(torch.from_numpy(logits[row_idx]).unsqueeze(0))
         k = min(num_logprobs, logits.shape[-1])
         # selected_token_ranks is cast to int32 in _stack so no explicit cast is needed
-        # here. The _replace at line 149 is needed because _compute_prompt_logprobs
-        # returns directly without going through _stack.
+        # here. Prompt logprobs bypass _stack and are consumed as LogprobsTensors by
+        # the engine (ranks.tolist() produces plain Python ints regardless of dtype).
         return Sampler.gather_logprobs(lp_t, k, torch.tensor([tok], dtype=torch.int64))
 
     def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> "ModelRunnerOutput":
@@ -585,7 +584,7 @@ class WebGPUModelRunner:
             raw_bids = req.block_ids
             if not raw_bids:
                 raise RuntimeError(f"req {rid}: scheduler produced NewRequestData with empty block_ids")
-            blk_ids = list(chain.from_iterable(raw_bids))
+            blk_ids = [b for bids in raw_bids for b in bids]
 
             bt = np.array(blk_ids, dtype=np.uint32)
 
@@ -729,7 +728,7 @@ class WebGPUModelRunner:
                         f"resumed req {rid} has no new_block_ids from scheduler"
                     )
                 if cur_new_bids is not None:
-                    flat_new = list(chain.from_iterable(cur_new_bids))
+                    flat_new = [b for bids in cur_new_bids for b in bids]
                     if is_resumed:
                         blk_ids = flat_new
                         # Realign pos with the scheduler's authoritative view.

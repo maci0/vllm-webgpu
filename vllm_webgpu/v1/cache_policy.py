@@ -437,8 +437,9 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     )
 
     _nodes = get_visible_memory_node() or [0]
-    total_memory = sum(get_memory_node_info(n).total_memory for n in _nodes)
-    total_available = sum(get_memory_node_info(n).available_memory for n in _nodes)
+    node_infos = [get_memory_node_info(n) for n in _nodes]
+    total_memory = sum(i.total_memory for i in node_infos)
+    total_available = sum(i.available_memory for i in node_infos)
     overhead = max(OVERHEAD_BYTES, int(model_mem * _ACTIVATION_OVERHEAD_FRACTION))
     # total_available excludes memory held by other processes as well as by this
     # process (including model weights already uploaded), so there is no need to

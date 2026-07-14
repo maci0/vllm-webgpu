@@ -138,7 +138,7 @@ def _allocate_kv_pool_hybrid(
     if dtype != torch.float16:
         raise ValueError(
             f"_allocate_kv_pool_hybrid only supports float16; got {dtype}. "
-            "Buffer sizes hardcode 2 bytes/element."
+            "KV shaders only support float16; other dtypes produce incorrect results at runtime."
         )
     k_bytes_per_layer = num_blocks * block_size * num_kv_heads * head_dim * get_dtype_size(dtype)
     v_bytes_per_layer = num_blocks * block_size * num_kv_heads * (head_dim_v or head_dim) * get_dtype_size(dtype)

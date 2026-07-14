@@ -273,7 +273,8 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         )
         return msc["expert_gate"], msc["expert_up"]
 
-    def _validate_inter_alignment(self, inter: int) -> None:
+    @staticmethod
+    def _validate_inter_alignment(inter: int) -> None:
         """Raise if inter is not a multiple of 4, as required by the gelu_mul dispatch.
 
         Called from both the parent quantized gate/up path and the GPT-OSS bias path
@@ -461,8 +462,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         rw_k = f"{p}.{router_subkey}.weight"
         uq_r = self._uq_for_key(rw_k)
         qi_r = self._quant_extra(rw_k.removesuffix('.weight'), uq_r)
-        rb_k = f"{p}.{router_subkey}.bias"
-        router_bias = self.weights.get(rb_k)
+        router_bias = self.weights.get(f"{p}.{router_subkey}.bias")
         router_bindings = [normed_x, self.weights[rw_k],
                            self._scales_buf(rw_k, uq_r, self._dummy_buf),
                            msc["router_out"]]

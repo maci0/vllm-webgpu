@@ -929,7 +929,7 @@ def load_safetensors_weights(
                 return True
 
             if dtype_str == "F16":
-                arr = sf.get_tensor(name).numpy()
+                arr = _torch_to_f16_numpy(sf.get_tensor(name))
             elif dtype_str == "BF16":
                 t_bf16 = sf.get_tensor(name)
                 arr = _torch_to_f16_numpy(t_bf16)
