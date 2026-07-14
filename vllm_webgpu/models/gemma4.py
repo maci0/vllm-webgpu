@@ -258,6 +258,11 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
     _PREFILL_CHUNK: int = 4
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
+        # Read model_type from the outer config before get_hf_text_config() extracts
+        # the nested text subconfig. For Gemma3, the outer model_type is 'gemma3' and
+        # the nested text config is 'gemma3_text'. For Gemma4, similarly 'gemma4' vs
+        # 'gemma4_text'. Reading after extraction gives '*_text', making both comparisons fail.
+        _outer_model_type = getattr(model_config, "model_type", "")
         model_config = get_hf_text_config(model_config)
         _ple = getattr(model_config, 'hidden_size_per_layer_input', None)
         if _ple is not None and _ple > 0:
@@ -293,14 +298,17 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # applies V-norm unconditionally there, so this flag is not consulted for that subclass.
         # Prefer an explicit config field so future variants (e.g. gemma4_moe) can opt in/out
         # without this string comparison silently diverging from the DiffusionGemma path.
-        _model_type = getattr(model_config, "model_type", "")
+        # Use _outer_model_type (captured before get_hf_text_config) so 'gemma4' and
+        # 'gemma3' match correctly. The nested text configs report 'gemma4_text' /
+        # 'gemma3_text', which would cause both comparisons below to silently return
+        # their wrong-default values.
         self._apply_v_norm = getattr(
             model_config, "apply_v_norm",
-            _model_type == "gemma4",
+            _outer_model_type.startswith("gemma4"),
         )
         # Gemma3 trains norm weights as deviations from zero (GemmaRMSNorm), so the shader
         # must compute (1+w)*x. Gemma4 uses plain RMSNorm; weights are actual scale values.
-        self._GEMMA_NORM = 1 if _model_type == "gemma3" else 0
+        self._GEMMA_NORM = 1 if _outer_model_type.startswith("gemma3") else 0
         if raw_lp and len(raw_lp) == self.num_layers:
             # Shallow-copy each entry before adding defaults so the config object
             # is not mutated. A second instantiation from the same config would
