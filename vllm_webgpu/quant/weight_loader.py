@@ -30,13 +30,25 @@ _STD4_SHIFTS: np.ndarray = np.arange(8, dtype=np.int32) * 4
 _F16_MAX: float = float(np.finfo(np.float16).max)  # 65504.0
 # Symmetric AWQ/GPTQ zero-point sentinel: all uint4 nibbles = 8 (midpoint),
 # bit pattern 0x88888888.
-_SYM_ZERO_SENTINEL: "np.int32" = np.int32(-2004318072)
+_SYM_ZERO_SENTINEL: np.int32 = np.int32(-2004318072)
 # Flush every 512 MB of pending write_buffer calls. Metal silently drops
 # write_buffer operations when the GPU staging buffer queue is saturated
 # (~1-2 GB). Periodic flushes prevent this for large single-file models.
 _FLUSH_THRESHOLD = 512 * 1024 * 1024
 # BitsAndBytes NF4 quantization block size (fixed by the BnB format spec).
 _BNB_GROUP_K = 64
+
+
+def _normalize_quant_cfg(quant_cfg: object) -> dict | None:
+    """Return quant_cfg unchanged when it is a plain dict, else None.
+
+    vLLM passes a pydantic QuantizationConfigArgs model when --quantization is
+    given as an online-quant shorthand. That object has no .get() method, so
+    any downstream caller that treats quant_cfg as a dict would crash with
+    AttributeError. Normalizing to None here lets callers fall back to
+    config.json instead.
+    """
+    return quant_cfg if isinstance(quant_cfg, dict) else None
 
 
 def _unpack_nibbles_std4(packed: "np.ndarray") -> "np.ndarray":
@@ -301,12 +313,7 @@ def load_safetensors_weights_sharded(
     index_path: pre-found str path to model.safetensors.index.json from detect_weight_format.
     When None, the directory is scanned again via _ct_find_index (backwards compatibility).
     """
-    # quant_cfg may be a vLLM pydantic quantization config model when --quantization
-    # is passed as an online-quant shorthand. Such models have no .get() method, so
-    # _check_unsupported_quant and detect_compressed_tensors_fmt would crash with
-    # AttributeError. Normalize to None here; the downstream callers fall back to
-    # config.json. Mirrors the identical guard at lines 692-695 in load_safetensors_weights.
-    _eff_quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else None
+    _eff_quant_cfg = _normalize_quant_cfg(quant_cfg)
     _check_unsupported_quant(_eff_quant_cfg if _eff_quant_cfg is not None else {})
     if index_path is None:
         index_path = _ct_find_index(model_dir)
@@ -675,11 +682,7 @@ def load_safetensors_weights(
         # re-reading config.json (the single-file caller reads it once in load_weights
         # and passes it here; the sharded caller passes ct_meta per shard).
         _config_json = Path(path).parent / "config.json"
-        # quant_cfg must be a plain dict (loaded from config.json). If the caller
-        # passes a vLLM QuantizationConfigArgs pydantic model (set when --quantization
-        # is given as an online-quant shorthand), it has no .get() method and will
-        # crash below. Fall through to the config.json path in that case.
-        _effective_quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else None
+        _effective_quant_cfg = _normalize_quant_cfg(quant_cfg)
         _raw_quant_cfg = _effective_quant_cfg if _effective_quant_cfg is not None else (
             _ct_get_quant_cfg(str(_config_json)) or {} if _config_json.exists() else {}
         )

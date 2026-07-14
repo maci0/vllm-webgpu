@@ -472,6 +472,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # K and V projections: skip for KV-shared layers; they reuse the
             # target layer's already-populated cache and never consume these outputs.
             self._gemm_adaptive(sc["normed"], f"{p}.self_attn.q_proj.weight", sc["q_buf"], hidden, q_dim, num_tokens)
+            v_src = sc["k_buf"]  # default; overwritten for non-shared layers with a v_proj
             if not is_kv_shared:
                 self._gemm_adaptive(sc["normed"], f"{p}.self_attn.k_proj.weight", sc["k_buf"], hidden, kv_dim, num_tokens)
                 # v_proj: global attention layers (no separate V; V=K) have no v_proj weight.

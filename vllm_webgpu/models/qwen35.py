@@ -114,23 +114,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # conv_dim from vLLM's gated_delta_net_state_shape formula (SD layout):
-        #   conv_dim = head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads
-        # Computed directly to avoid a throwaway function call; stays consistent
-        # with _alloc_lin_states which calls gated_delta_net_state_shape with the real num_spec.
-        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
-        if __debug__ and self._lin_conv_kernel > 1:
-            _chk_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
-                tp_world_size=1,
-                num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
-                head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
-                conv_kernel_size=self._lin_conv_kernel, num_spec=0,
-            )
-            _expected_conv_dim = math.prod(_chk_shape) // (self._lin_conv_kernel - 1)
-            assert self._lin_conv_dim == _expected_conv_dim, (
-                f"_lin_conv_dim formula drifted from gated_delta_net_state_shape: "
-                f"computed {self._lin_conv_dim}, expected {_expected_conv_dim}"
-            )
+        # Derive conv_dim from the canonical vLLM formula (SD layout; DS is rejected above).
+        # num_spec=0 because we only need the per-token channel count, not the spec dimension.
+        _conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel, num_spec=0,
+        )
+        self._lin_conv_dim: int = _conv_shape[1]
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         self._gdn_k_base: int = self._lin_k_heads * self._lin_k_dim

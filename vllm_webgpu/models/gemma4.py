@@ -174,7 +174,7 @@ def _build_layer_params_from_config(
     num_q_heads       = model_config.num_attention_heads
     intermediate_size = model_config.intermediate_size
     layer_types       = model_config.layer_types
-    default_hd = getattr(model_config, 'head_dim', None) or (model_config.hidden_size // model_config.num_attention_heads)
+    default_hd = getattr(model_config, 'head_dim', model_config.hidden_size // model_config.num_attention_heads)
     default_kv        = model_config.num_key_value_heads
     global_hd         = getattr(model_config, "global_head_dim", default_hd)
     global_kv         = getattr(model_config, "num_global_key_value_heads", default_kv)
@@ -1279,6 +1279,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
 
             # _use_fused_qkv is already False when is_kv_shared=True because the else
             # branch sets it False for both not-has_v and is_kv_shared cases.
+            # Defaults cover the is_kv_shared=True path where neither the fused nor the
+            # separate-projection branch assigns these variables.
+            _v_src = sc["k_buf"]
+            _v_src_offset = 0
             if _use_fused_qkv:
                 # All f16, non-shared: single fused_qkv dispatch → sc["qkv_buf"] laid out as [Q | K | V].
                 self._dispatch("fused_qkv",
