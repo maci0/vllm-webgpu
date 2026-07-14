@@ -532,18 +532,15 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # will seed it. Check weight availability here so the write_buffer
         # always precedes Phase B encoder creation (consistent ordering).
         _shared_weights_present = False
-        if shared_expert_prefix is None:
-            self._zero_write(msc["expert_out"])
-        else:
+        if shared_expert_prefix is not None:
             _sinter = shared_expert_inter if shared_expert_inter is not None else inter
             sp = f"{p}.{shared_expert_prefix}"
             sgw_k = f"{sp}.{gate_key}.weight"
             suw_k = f"{sp}.{up_key}.weight"
             sdw_k = f"{sp}.{down_key}.weight"
             _shared_weights_present = all(k in self.weights for k in (sgw_k, suw_k, sdw_k))
-            if not _shared_weights_present:
-                # Shared expert weights not loaded; zero-init before Phase B encoder.
-                self._zero_write(msc["expert_out"])
+        if not _shared_weights_present:
+            self._zero_write(msc["expert_out"])
 
         # ── Phase B: expert dispatches (new encoder) ──────────────────────────
         # Subsequent _dispatch() calls (including the residual add in the calling

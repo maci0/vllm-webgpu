@@ -12,7 +12,6 @@ from vllm.logger import init_logger
 from pydantic import ValidationError
 
 from compressed_tensors import QuantizationConfig as _QuantizationConfig
-from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
 from compressed_tensors.quantization import QuantizationType as _QuantizationType
 from compressed_tensors.quantization import QuantizationStrategy as _QuantizationStrategy
 from compressed_tensors.utils.safetensors_load import (
@@ -38,10 +37,7 @@ _SYM_ZERO_SENTINEL: np.int32 = np.int32(-2004318072)
 _FLUSH_THRESHOLD = 512 * 1024 * 1024
 # BitsAndBytes NF4 quantization block size (fixed by the BnB format spec).
 _BNB_GROUP_K = 64
-# MXFP4 block size: 32 elements per scale group (matches vLLM's mxfp4.py inline value).
-# Defined here rather than imported from mxfp8_utils to avoid coupling the MXFP4
-# scale assertion to an unrelated format constant.
-_MXFP4_BLOCK_SIZE = 32
+from vllm.model_executor.layers.quantization.utils.ocp_mx_utils import OCP_MX_BLOCK_SIZE as _MXFP4_BLOCK_SIZE
 # Companion key suffixes for AWQ/GPTQ and NVFP4 quantized layers. Defined at
 # module level so the skip-set comprehensions below don't reconstruct them on
 # every load_safetensors_weights call.
@@ -1276,6 +1272,7 @@ def load_safetensors_weights(
                 # MXFP4 (microscaling FP4): *.weight [N, K//2] U8 packed FP4 + *.weight_scale [N, K//32] U8 exponents.
                 # Scales are u8 exponents (not F8_E4M3): scale_f16 = 2^(u8 - 127).
                 # Reuses the NVFP4 GPU shader path (USE_QUANT=6) with GROUP_K=32 instead of 16.
+                from compressed_tensors.compressors.mx_utils import decompress_mx_scale as _decompress_mx_scale
                 for base in mx_bases:
                     try:
                         wp    = _load_raw(f"{base}.weight")        # (N, K//2) U8 packed FP4
@@ -1289,7 +1286,7 @@ def load_safetensors_weights(
                         ).to(_torch.float32).numpy()
                         N_, K2_ = wp.shape
                         K_ = K2_ * 2
-                        if not (ws_u8.ndim < 2 or ws_u8.shape[-1] == K_ // _MXFP4_BLOCK_SIZE):
+                        if ws_u8.ndim >= 2 and ws_u8.shape[-1] != K_ // _MXFP4_BLOCK_SIZE:
                             raise ValueError(
                                 f"MXFP4 scale shape {ws_u8.shape} does not match expected "
                                 f"K//_MXFP4_BLOCK_SIZE = {K_}//{_MXFP4_BLOCK_SIZE} = {K_ // _MXFP4_BLOCK_SIZE}"

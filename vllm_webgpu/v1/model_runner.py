@@ -129,11 +129,10 @@ def _compute_prompt_logprobs(
     # [1, vocab]) even during a multi-token prefill.  In that case we
     # cannot reconstruct per-position distributions and must bail out
     # rather than letting the subsequent row-index into a 1-row array
-    # raise IndexError.  shape[0] == 1 catches last-token-only output
-    # regardless of T: for T > 2 the first clause fires (1 < T-1); for
-    # T == 2 num_positions == 1 so 1 < 1 is False, but shape[0] == 1
-    # still fires and prevents a wrong logprob from position T-1.
-    if full_logits.shape[0] < num_positions or full_logits.shape[0] == 1:
+    # raise IndexError.  At least 2 logit rows are required to compute
+    # even a single prompt-logprob position (T >= 2 means num_positions
+    # >= 1), so max(num_positions, 2) expresses both constraints at once.
+    if full_logits.shape[0] < max(num_positions, 2):
         logger.warning(
             "prompt_logprobs: logits buffer has %d rows but %d prompt "
             "positions need coverage; skipping (model returns "
@@ -631,10 +630,11 @@ class WebGPUModelRunner:
             # between steps rather than restarting from the same seed each time.
             # chunked prefill is disabled (platform.py:enable_chunked_prefill = False),
             # so every request here is truly new and must have no prior state.
-            assert self._req_state.get(rid) is None, (
-                f"req {rid} already has saved state but chunked prefill is disabled; "
-                "update this path before re-enabling chunked prefill"
-            )
+            if self._req_state.get(rid) is not None:
+                raise RuntimeError(
+                    f"req {rid} already has saved state but chunked prefill is disabled; "
+                    "update this path before re-enabling chunked prefill"
+                )
             if sp is not None and sp.seed is not None:
                 rng = torch.Generator()
                 rng.manual_seed(sp.seed)

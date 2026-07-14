@@ -657,11 +657,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         skip_prefixes = frozenset({"mtp."})
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
                              scale_transforms=self._scale_transforms)
-        _sp = tuple(skip_prefixes)
         _missing_transforms = [
             k for k in self._weight_transforms
             if k not in self.weights
-            and not k.startswith(_sp)
         ]
         if _missing_transforms:
             raise AssertionError(
@@ -1308,8 +1306,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # Step 2: Causal conv1d on x_B_C with SiLU activation.
         conv_w = f"{p}.conv1d.weight"
         conv_b = f"{p}.conv1d.bias"
-        has_bias = int(conv_b in self.weights)
         bias_buf = self.weights.get(conv_b, self._dummy_buf)  # dummy when absent
+        has_bias = int(bias_buf is not self._dummy_buf)
         self._dispatch(
             "mamba2_causal_conv",
             [sc["mamba_conv_in"], self.weights[conv_w], bias_buf,

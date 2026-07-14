@@ -504,11 +504,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         are float16 and are not directly compatible). The shader stores state
         in the same layout, so no transposition is needed on readback.
         """
-        bufs = (
-            [("conv", i, b) for i, b in self._conv_gpu.items()] +
-            [("ssm",  i, b) for i, b in self._ssm_gpu.items()]
-        )
-        return self._readback_recurrent_states(bufs)
+        return self._readback_recurrent_states(list(chain(
+            (("conv", i, b) for i, b in self._conv_gpu.items()),
+            (("ssm",  i, b) for i, b in self._ssm_gpu.items()),
+        )))
 
     def restore_recurrent_states(self, states: dict) -> None:
         """Write saved state bytes back into GDN conv/SSM GPU buffers.
