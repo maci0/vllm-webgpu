@@ -334,7 +334,16 @@ def load_safetensors_weights_sharded(
     When None, the directory is scanned again via _ct_find_index (backwards compatibility).
     """
     _eff_quant_cfg = _normalize_quant_cfg(quant_cfg)
-    _check_unsupported_quant(_eff_quant_cfg if _eff_quant_cfg is not None else {})
+    # Resolve the raw quant config once before the unsupported-format check so
+    # the check sees the actual quant_type/quant_method even when quant_cfg was
+    # None or a pydantic object (both normalize to None). Reading config.json
+    # here also eliminates the redundant per-shard re-read that occurred when
+    # _shard_quant_cfg was computed after the check.
+    _shard_quant_cfg = _eff_quant_cfg
+    if _shard_quant_cfg is None:
+        _cfg_json = Path(model_dir) / "config.json"
+        _shard_quant_cfg = _ct_get_quant_cfg(str(_cfg_json)) or {} if _cfg_json.exists() else {}
+    _check_unsupported_quant(_shard_quant_cfg)
     if index_path is None:
         index_path = _ct_find_index(model_dir)
     if index_path is None:
@@ -383,22 +392,13 @@ def load_safetensors_weights_sharded(
     # The I8 and F8_E4M3 dtypes are already handled per-shard inside load_safetensors_weights,
     # but we apply comprehensive quant_meta here for any layers not caught by dtype detection.
     try:
-        ct_meta = detect_compressed_tensors_fmt(Path(model_dir) / "config.json", quant_cfg=_eff_quant_cfg)
+        ct_meta = detect_compressed_tensors_fmt(Path(model_dir) / "config.json", quant_cfg=_shard_quant_cfg)
     except ValueError as exc:
         raise RuntimeError(
             f"Unsupported compressed-tensors quantization format in {model_dir}: {exc}"
         ) from exc
     if ct_meta:
         logger.info("compressed-tensors format detected: %s", ct_meta.get("__global__", {}))
-
-    # When quant_cfg is a pydantic object, _normalize_quant_cfg returns None
-    # inside each shard call, causing each shard to independently re-read
-    # config.json. Read it once here and pass the raw dict so all shards
-    # share the same config without redundant disk I/O.
-    _shard_quant_cfg = _eff_quant_cfg
-    if _shard_quant_cfg is None:
-        _cfg_json = Path(model_dir) / "config.json"
-        _shard_quant_cfg = _ct_get_quant_cfg(str(_cfg_json)) or {} if _cfg_json.exists() else {}
 
     for shard in shard_files:
         shard_path = str(Path(model_dir) / shard)
