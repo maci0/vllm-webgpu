@@ -608,6 +608,13 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     )
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
                 except ImportError:
+                    # modelopt.py has top-level CUDA kernel imports
+                    # (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe)
+                    # that fail on WebGPU where no CUDA runtime is present.
+                    # _extract_modelopt_algo is a copy of
+                    # ModelOptFp8Config._extract_modelopt_quant_algo kept in
+                    # sync manually. On each vLLM bump, diff the upstream body
+                    # against _extract_modelopt_algo and update if it changed.
                     algo = _extract_modelopt_algo(cfg)
                 if "MXFP4" in algo:
                     return "mxfp4"
