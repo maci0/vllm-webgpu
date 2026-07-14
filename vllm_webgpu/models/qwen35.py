@@ -90,8 +90,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         _rope_params = getattr(model_config, "rope_parameters", {}) or {}
         self._rope_interleaved: int = int(_rope_params.get("mrope_interleaved", False))
         # Attention output gate: when True, q_proj.weight has shape [2*q_dim, hidden].
-        # The first half is Q; the second half is a gate applied as sigmoid(gate)*attn_out
-        # before the o_proj. The split is performed at load time by the _make_split weight
+        # Layout is per-head interleaved: within each head's 2*head_dim block the first
+        # head_dim rows are Q and the second head_dim rows are gate, giving
+        # [Q_head0, Gate_head0, Q_head1, Gate_head1, ...] per vLLM fused_qk_norm_rope.py.
+        # A simple midpoint slice arr[:q_dim] / arr[q_dim:] would mix Q and gate values
+        # across heads. The split is performed at load time by the _make_split weight
         # transform registered in load_weights; the gate half is stored under
         # self_attn.q_gate_proj.weight.
         self._attn_output_gate: bool = getattr(model_config, "attn_output_gate", True)
@@ -122,9 +125,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # DS layout if the DS rejection guard above is ever removed.
         self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
-        # Q is always at offset 0. K follows Q; V follows K.
-        self._gdn_k_base: int = self._lin_k_heads * self._lin_k_dim
-        self._gdn_v_base: int = 2 * self._gdn_k_base  # V starts where the Q+K section ends
+        # Q is always at offset 0. K follows Q (offset = K_heads * K_dim). V follows K+Q.
+        self._gdn_q_offset: int = 0
+        self._gdn_k_offset: int = self._lin_k_heads * self._lin_k_dim
+        self._gdn_v_offset: int = self._lin_k_heads * self._lin_k_dim * 2
 
         # MoE config (Qwen3.6-35B-A3B and similar MoE variants).
         # When num_experts > 0 the FFN in every layer is a mixture-of-experts block;
@@ -283,7 +287,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     buf = self.weights[q_key]
                     # Detect unsplit q+gate tensors by shape rather than total element count.
                     # fp16/INT8/FP8: (2*q_dim, hidden) → shape[0] == 2*q_dim
-                    # GPTQ:          (2*q_dim, hidden//8) → shape[0] == 2*q_dim
+                    # GPTQ: weight_loader transposes qweight [K//8, N] -> [N, K//8] = (2*q_dim, hidden//8) -> shape[0] == 2*q_dim
                     # NF4/NVFP4:     (2*q_dim, hidden//2) → shape[0] == 2*q_dim
                     # AWQ:           (hidden, 2*q_dim//8) → shape[1] * 8 == 2*q_dim
                     uq = self._uq_for_key(q_key)
@@ -379,7 +383,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 def _split(arr):
                     if arr.shape[0] != 2 * _q_dim:
                         return arr  # already split or unexpected shape; pass through
-                    # arr is always float16: loader converts BF16/F32 before invoking transforms
+                    # arr is always float16: loader converts BF16/F32 before invoking transforms.
+                    # Reshape to (num_q_heads, 2*head_dim, hidden) to split along the
+                    # per-head axis: each head contributes head_dim Q rows then head_dim
+                    # gate rows ([Q_head0, Gate_head0, ...] interleaved). A midpoint slice
+                    # arr[:q_dim] / arr[q_dim:] would interleave Q and gate across heads.
                     a = arr.reshape(self.num_q_heads, 2 * self.head_dim, self.hidden_size)
                     q_half    = a[:, :self.head_dim, :].reshape(_q_dim, self.hidden_size)
                     gate_half = a[:, self.head_dim:, :].reshape(_q_dim, self.hidden_size)
@@ -627,7 +635,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                             self._ssm_gpu[layer_idx], sc["gdn_out"]],
                            {"K_DIM": self._lin_k_dim, "V_DIM": self._lin_v_dim,
                             "NUM_K_HEADS": kh, "NUM_V_HEADS": vh,
-                            "Q_BASE": 0, "K_BASE": self._gdn_k_base, "V_BASE": self._gdn_v_base},
+                            "Q_BASE": self._gdn_q_offset, "K_BASE": self._gdn_k_offset, "V_BASE": self._gdn_v_offset},
                            (vh, 1, 1))
 
             # 7. Per-head RMSNorm + SiLU gate (z * sigmoid(z)) → gated

@@ -1227,10 +1227,8 @@ def load_safetensors_weights(
                             else:
                                 # Per-channel inverse scales: invert element-wise.
                                 scale_inv_f32 = scale_inv_arr.ravel().astype(np.float32)
-                                scale_f32 = np.divide(
-                                    1.0, scale_inv_f32,
-                                    where=scale_inv_f32 != 0.0,
-                                    out=np.ones_like(scale_inv_f32))
+                                safe = np.where(scale_inv_f32 != 0.0, scale_inv_f32, 1.0)
+                                scale_f32 = np.reciprocal(safe)
                                 _upload(scale_f32, np.float32, 'f32', wname + ".scales", weights)
                                 weights["__quant_meta__"][base] = {
                                     "fmt": "fp8_gpu", "global_scale": 1.0, "group_size": 1}

@@ -118,6 +118,11 @@ def _compute_prompt_logprobs(
     if T < 2:
         return None
 
+    # Guard against argmax-only output (single-element vocabulary dimension),
+    # matching the equivalent check in _extract_logprob_data.
+    if full_logits.shape[-1] <= 1:
+        return None
+
     num_positions = T - 1
 
     # Guard: the model may return only the last token's logits (shape
@@ -438,10 +443,12 @@ class WebGPUModelRunner:
                         # Sentinel row for requests with no logprob data. Use
                         # all-zero token IDs and -inf logprobs so any accidental
                         # read produces a detectable value rather than random memory.
+                        # selected_token_ranks uses int64 to match gather_logprobs;
+                        # the single cast in _stack_logprobs normalises to int32.
                         pieces.append(LogprobsTensors(
                             torch.zeros(1, max_k, dtype=torch.int32),
                             torch.full((1, max_k), -float('inf')),
-                            torch.zeros(1, dtype=torch.int32),
+                            torch.zeros(1, dtype=torch.int64),
                         ))
                 built_logprobs = _stack_logprobs(pieces)
 

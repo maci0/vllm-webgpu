@@ -45,6 +45,21 @@ if _mapper.orig_to_new_substr != {"A_log": "A", "embeddings": "embed_tokens"}:
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_substr changed upstream: "
         f"{_mapper.orig_to_new_substr!r}. Review load_weights before removing this assertion."
     )
+if _mapper.orig_to_new_renamings != []:
+    raise AssertionError(
+        f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_renamings changed upstream: "
+        f"{_mapper.orig_to_new_renamings!r}. Review load_weights before removing this assertion."
+    )
+if dict(_mapper.orig_to_new_regex) != {}:
+    raise AssertionError(
+        f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_regex changed upstream: "
+        f"{dict(_mapper.orig_to_new_regex)!r}. Review load_weights before removing this assertion."
+    )
+if dict(_mapper.orig_to_new_suffix) != {}:
+    raise AssertionError(
+        f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_suffix changed upstream: "
+        f"{dict(_mapper.orig_to_new_suffix)!r}. Review load_weights before removing this assertion."
+    )
 # Behavioral check: verify the mapper's actual output, not just its fields.
 # A new regex or suffix rule added to the mapper could silently rename keys
 # (e.g. 'model.norm_f.weight') even if the field equality checks above still pass.

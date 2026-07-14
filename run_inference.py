@@ -95,7 +95,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         last_token = int(logits[-1, 0])
         print(f"  Last prefill logit: argmax={last_token}")
     elif _greedy:
-        last_token = int(np.argmax(logits[-1]))
+        last_token = sample_token(logits[-1], temperature=temperature)
         print(f"  Last prefill logit: argmax={last_token}, value={float(logits[-1][last_token]):.2f}, "
               f"std={float(logits[-1].std()):.2f}")
     else:
@@ -117,7 +117,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         generated.append(last_token)
 
         slot = len(input_ids_list) + step
-        if slot // block_size >= num_blocks:
+        if slot // block_size >= needed_blocks:
             print(f"  [KV cache full at step {step}]")
             break
         meta   = SimpleNamespace(slot_mapping=[slot], block_tables=[block_table], max_decode_seq_len=len(input_ids_list) + step + 1)
@@ -132,7 +132,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         if _greedy and logits.shape[-1] == 1:
             last_token = int(logits[0, 0])
         elif _greedy:
-            last_token = int(np.argmax(logits[0]))
+            last_token = sample_token(logits[0], temperature=temperature)
         else:
             last_token = sample_token(logits[0], temperature=temperature, top_p=top_p)
 
