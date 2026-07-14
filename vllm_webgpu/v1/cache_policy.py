@@ -357,8 +357,8 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # Priority order mirrors vLLM's ModelConfig.get_num_layers_by_block_type
     # (vllm/config/model.py:1327-1362 as of the installed vLLM):
     #   probe 1 (L1330): layers_block_type  -- NemotronH / Falcon
-    #   probe 2 (L1340): attn_type_list     -- Minimax (truthiness, not is-not-None)
-    #   probe 3 (L1348): layer_types        -- Gemma4 / Qwen3.5
+    #   probe 2 (L1341): attn_type_list     -- Minimax (truthiness, not is-not-None)
+    #   probe 3 (L1346): layer_types        -- Gemma4 / Qwen3.5
     #
     # NOTE: Jamba (has_noops / block_configs) is intentionally NOT supported here.
     # vLLM's has_noops path (vllm/config/model.py:1322-1324) uses hf_config.block_configs,
@@ -390,10 +390,10 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     v = getattr(hf_text_config, "layers_block_type", None)  # vllm/config/model.py:1330
     if v is not None:
         return v
-    v = getattr(_outer, "attn_type_list", None)             # vllm/config/model.py:1340 (truthiness)
+    v = getattr(_outer, "attn_type_list", None)             # vllm/config/model.py:1341 (truthiness)
     if v:
         return v
-    v = getattr(hf_text_config, "layer_types", None)        # vllm/config/model.py:1348
+    v = getattr(hf_text_config, "layer_types", None)        # vllm/config/model.py:1346
     if v is not None:
         return v
     if _outer is not hf_text_config:                        # local extension: outer-only configs
