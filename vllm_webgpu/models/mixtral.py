@@ -1,5 +1,5 @@
 from __future__ import annotations
-from logging import DEBUG
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -478,7 +478,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         assert self._active_encoder is not None, "_moe_ffn_layer must be called inside an active encoder context"
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(DEBUG)
+        _debug_weights = logger.isEnabledFor(logging.DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(

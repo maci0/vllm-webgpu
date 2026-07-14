@@ -1382,8 +1382,7 @@ def load_safetensors_weights(
                     # Reshape: [N//2, K] → [N, K//2].
                     # BnB row r: first K//2 bytes → shader row 2r, last K//2 bytes → shader row 2r+1.
                     # C-order (row-major) reshape merges the N//2 and K//2 dimensions correctly.
-                    shader_codes = np.ascontiguousarray(
-                        bnb_codes.reshape(N, K_half))
+                    shader_codes = bnb_codes.reshape(N, K_half)
 
                     # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
                     absmax_2d = absmax_arr.reshape(N, K // _BNB_GROUP_K)

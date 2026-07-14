@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
@@ -120,6 +119,7 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
+    import torch
     pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
     inv_freq_extr = 1.0 / pos_freqs
     inv_freq_intr = 1.0 / (factor * pos_freqs)

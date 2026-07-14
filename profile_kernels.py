@@ -40,7 +40,7 @@ def main() -> None:
     from transformers import AutoTokenizer
     from vllm.transformers_utils.config import get_config as _vllm_get_config
     hf_cfg = _vllm_get_config(model_path, trust_remote_code=True)
-    arch = (getattr(hf_cfg, 'architectures', None) or ['LlamaForCausalLM'])[0]
+    arch = (hf_cfg.architectures or ['LlamaForCausalLM'])[0]
     print(f"Architecture: {arch}")
 
     from vllm.utils.math_utils import cdiv
