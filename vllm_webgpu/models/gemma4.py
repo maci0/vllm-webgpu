@@ -174,7 +174,7 @@ def _assert_gemma4_formula_compat() -> None:
     Checks that _gemma4_layer_params produces the same per-layer params as the
     vLLM reference formula applied to a canonical 4-layer config (output-level guard).
     Compared fields: head_dim, num_kv_heads, has_v_proj, q_dim, kv_dim,
-    is_kv_shared, kv_shared_target, intermediate_size.
+    is_kv_shared, kv_shared_target, intermediate_size, is_sliding.
 
     Raises AssertionError immediately on any mismatch, surfacing drift at import time
     rather than silently producing wrong KV buffer sizes at inference.
@@ -254,6 +254,7 @@ def _assert_gemma4_formula_compat() -> None:
             "is_kv_shared":      is_kv_shared,
             "kv_shared_target":  kv_target,
             "intermediate_size": inter,
+            "is_sliding":        lt == "sliding_attention",
         })
 
     actual = _gemma4_layer_params(
@@ -273,7 +274,7 @@ def _assert_gemma4_formula_compat() -> None:
         lt = cfg.layer_types[i]
         for field in (
             "head_dim", "num_kv_heads", "has_v_proj", "q_dim", "kv_dim",
-            "is_kv_shared", "kv_shared_target", "intermediate_size",
+            "is_kv_shared", "kv_shared_target", "intermediate_size", "is_sliding",
         ):
             if r[field] != a[field]:
                 raise AssertionError(
