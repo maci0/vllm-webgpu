@@ -43,9 +43,8 @@ from vllm.sampling_params import _SAMPLING_EPS as GREEDY_TEMP  # noqa: PLC2701
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
-@cache
-def zero_bytes(n: int) -> bytes:
-    return bytes(n)
+# zero_bytes(n: int) -> bytes  — cached constructor for n zero bytes.
+zero_bytes = cache(bytes)
 
 
 def sample_token(

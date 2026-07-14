@@ -14,9 +14,10 @@ from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
 import torch
 from vllm.model_executor.layers.rotary_embedding.common import (
-    yarn_find_correction_range,
     yarn_get_mscale,
-    yarn_linear_ramp_mask,
+)
+from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+    YaRNScalingRotaryEmbedding,
 )
 
 from vllm_webgpu.utils import zero_bytes
@@ -121,21 +122,26 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
-    # Inlines YaRNScalingRotaryEmbedding._compute_inv_freq from
-    # vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py L49-73.
-    # Cannot call it directly: YaRNScalingRotaryEmbedding.__init__ triggers
-    # _compute_cos_sin_cache() which is CUDA-dependent. On each vLLM version bump,
-    # diff _compute_inv_freq against these four lines and update if the formula changes.
-    pos_freqs = rope_theta ** (np.arange(0, rotary_dim, 2, dtype=np.float32) / rotary_dim)
-    inv_freq_interp = 1.0 / (factor * pos_freqs)
-    inv_freq_extrap = 1.0 / pos_freqs
-    low, high = yarn_find_correction_range(
-        beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate
+    # Call _compute_inv_freq via an unbound method on a SimpleNamespace mock.
+    # Cannot instantiate YaRNScalingRotaryEmbedding: __init__ calls
+    # _compute_cos_sin_cache which allocates an O(max_ctx * scaling_factor x
+    # rotary_dim) float32 cos/sin cache (tens of MB for long-context models).
+    # Calling the private method directly on a mock is intentional: any vLLM
+    # bump that renames or reshapes _compute_inv_freq surfaces immediately as
+    # AttributeError rather than silently diverging. On each vLLM bump, verify
+    # the mock attributes still match the method's self.xxx accesses in
+    # yarn_scaling_rope.py:_compute_inv_freq.
+    _mock = SimpleNamespace(
+        base=rope_theta, rotary_dim=rotary_dim,
+        beta_fast=beta_fast, beta_slow=beta_slow,
+        max_position_embeddings=orig_ctx,
+        truncate=truncate, extrapolation_factor=extrapolation_factor,
     )
-    mask = (
-        1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float).numpy()
-    ) * extrapolation_factor
-    inv_freq = (inv_freq_interp * (1 - mask) + inv_freq_extrap * mask).astype(np.float32)
+    inv_freq = (
+        YaRNScalingRotaryEmbedding._compute_inv_freq(_mock, factor)
+        .to(torch.float32)
+        .numpy()
+    )
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling

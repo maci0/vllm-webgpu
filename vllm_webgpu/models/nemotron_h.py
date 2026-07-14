@@ -61,15 +61,15 @@ if _mapper.orig_to_new_renamings != []:
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_renamings changed upstream: "
         f"{_mapper.orig_to_new_renamings!r}. Review load_weights before removing this assertion."
     )
-if dict(_mapper.orig_to_new_regex) != {}:
+if _mapper.orig_to_new_regex:
     raise AssertionError(
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_regex changed upstream: "
-        f"{dict(_mapper.orig_to_new_regex)!r}. Review load_weights before removing this assertion."
+        f"{_mapper.orig_to_new_regex!r}. Review load_weights before removing this assertion."
     )
-if dict(_mapper.orig_to_new_suffix) != {}:
+if _mapper.orig_to_new_suffix:
     raise AssertionError(
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_suffix changed upstream: "
-        f"{dict(_mapper.orig_to_new_suffix)!r}. Review load_weights before removing this assertion."
+        f"{_mapper.orig_to_new_suffix!r}. Review load_weights before removing this assertion."
     )
 # Behavioral check: verify the mapper's actual output, not just its fields.
 # A new regex or suffix rule added to the mapper could silently rename keys

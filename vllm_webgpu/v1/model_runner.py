@@ -129,8 +129,13 @@ def _compute_prompt_logprobs(
     # [1, vocab]) even during a multi-token prefill.  In that case we
     # cannot reconstruct per-position distributions and must bail out
     # rather than letting the subsequent row-index into a 1-row array
-    # raise IndexError.
-    if full_logits.shape[0] < num_positions:
+    # raise IndexError.  The T==2 branch is explicit because num_positions==1
+    # in that case, so the strict-less-than check alone would not fire
+    # (1 < 1 is False) even though the single returned row is position T-1,
+    # not position 0, and would silently produce the wrong logprob.
+    if full_logits.shape[0] < num_positions or (
+        T == 2 and full_logits.shape[0] == 1
+    ):
         logger.warning(
             "prompt_logprobs: logits buffer has %d rows but %d prompt "
             "positions need coverage; skipping (model returns "
@@ -453,11 +458,12 @@ class WebGPUModelRunner:
                         # Sentinel row for requests with no logprob data. Use
                         # all-zero token IDs and -inf logprobs so any accidental
                         # read produces a detectable value rather than random memory.
-                        # selected_token_ranks uses int32 to match LogprobsTensors.empty_cpu.
+                        # selected_token_ranks is int64 to match the dtype produced
+                        # by batched_count_greater_than; _stack_logprobs casts to int32.
                         pieces.append(LogprobsTensors(
                             torch.zeros(1, max_k, dtype=torch.int32),
                             torch.full((1, max_k), -float('inf')),
-                            torch.zeros(1, dtype=torch.int32),
+                            torch.zeros(1, dtype=torch.int64),
                         ))
                 built_logprobs = _stack_logprobs(pieces)
 

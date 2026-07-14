@@ -154,7 +154,6 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
 if __name__ == "__main__":
     import argparse
     import os
-    from pathlib import Path
     parser = argparse.ArgumentParser()
     parser.add_argument("--model",       required=True)
     parser.add_argument("--prompt",      default="What is 2+2?")

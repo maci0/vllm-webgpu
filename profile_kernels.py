@@ -6,7 +6,6 @@ Usage:
     python3 profile_kernels.py [--model MODEL_PATH] [--decode-steps N] [--warmup-steps N]
 """
 import argparse
-from pathlib import Path
 import time
 from types import SimpleNamespace
 import numpy as np
