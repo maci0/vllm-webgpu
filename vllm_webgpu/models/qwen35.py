@@ -114,10 +114,14 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
-        # conv_dim is the total Q+K+V projection size packed into the convolution state.
-        # Mirrors vLLM's formula: conv_dim = key_dim * 2 + value_dim
-        # (qwen_gdn_linear_attn.py: conv_dim = self.key_dim * 2 + self.value_dim).
-        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
+        # conv_dim derived from the authoritative vLLM calculator so any upstream formula
+        # change (e.g. new GDN variant, TP sharding semantics) is picked up automatically.
+        # SD layout is guaranteed here: DS is rejected above in the same __init__ block.
+        # _orient_conv_shape returns (state_len, dim) for SD, so conv_dim is at index 1.
+        _c_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            1, self._lin_k_heads, self._lin_v_heads, self._lin_k_dim, self._lin_v_dim,
+            self._lin_conv_kernel, 0)
+        self._lin_conv_dim: int = _c_shape[1]
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q; V follows K.
         self._gdn_k_base: int = self._lin_k_heads * self._lin_k_dim
