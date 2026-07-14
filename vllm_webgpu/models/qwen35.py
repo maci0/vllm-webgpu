@@ -413,6 +413,26 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 _g_key = f"model.layers.{_i}.self_attn.q_gate_proj.weight"
                 self._weight_transforms[_q_key] = _make_split(_g_key)
 
+        # Stash fused MoE expert weights on the CPU before GPU upload to avoid
+        # synchronous GPU readback (WebGPUBuffer.to_numpy() / map_sync stall) at
+        # unfuse time. The transforms capture the numpy arrays the loader already
+        # has in memory and return a 2-element (4-byte) placeholder that satisfies
+        # WebGPU's minimum STORAGE buffer size requirement. After super().load_weights()
+        # the placeholder entries are deleted and per-expert buffers are created from
+        # the stashed CPU arrays without any GPU round-trip.
+        _expert_weight_pending: dict[str, np.ndarray] = {}
+        if self._is_moe:
+            def _make_expert_stash(k: str):
+                def _stash(arr):
+                    _expert_weight_pending[k] = arr
+                    return np.empty(2, dtype=np.float16)
+                return _stash
+
+            for _li in range(self.num_layers):
+                _pfx = f"model.layers.{_li}.mlp.experts"
+                for _wk in (f"{_pfx}.gate_up_proj", f"{_pfx}.down_proj"):
+                    self._weight_transforms[_wk] = _make_expert_stash(_wk)
+
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
                              scale_transforms=scale_transforms)
 
@@ -433,17 +453,18 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         #   model.layers.{i}.mlp.experts.{j}.down_proj.weight  shape [inter, hidden]
         # Without this step self.weights holds only the fused keys, and every
         # selected expert triggers the RuntimeError in mixtral.py at line 594.
-        if self._is_moe:
+        if _expert_weight_pending:
             _dev = self.wgpu_device.wgpu_device
             for _li in range(self.num_layers):
                 _pfx = f"model.layers.{_li}.mlp.experts"
                 _gu_key = f"{_pfx}.gate_up_proj"
                 _d_key  = f"{_pfx}.down_proj"
-                if _gu_key not in self.weights:
+                if _gu_key not in _expert_weight_pending:
                     continue
-                # Split gate_up_proj [num_experts, 2*inter, hidden] into per-expert slices.
-                _gu_buf = self.weights.pop(_gu_key)
-                _gu_arr = self._buf_to_numpy_reshape(_gu_buf)
+                # Delete the placeholder GPU buffer and create per-expert slices from
+                # the stashed CPU arrays. No GPU readback needed.
+                del self.weights[_gu_key]
+                _gu_arr = _expert_weight_pending[_gu_key]
                 _n_exp, _two_inter, _hidden = _gu_arr.shape
                 _inter = _two_inter // 2
                 for _j in range(_n_exp):
@@ -452,10 +473,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                         _dev, _gu_arr[_j, :_inter, :])
                     self.weights[f"{_ep}.up_proj.weight"] = WebGPUBuffer.from_numpy(
                         _dev, _gu_arr[_j, _inter:, :])
-                # Split down_proj [num_experts, inter, hidden] into per-expert slices.
-                if _d_key in self.weights:
-                    _d_buf = self.weights.pop(_d_key)
-                    _d_arr = self._buf_to_numpy_reshape(_d_buf)
+                if _d_key in _expert_weight_pending:
+                    del self.weights[_d_key]
+                    _d_arr = _expert_weight_pending[_d_key]
                     for _j in range(_d_arr.shape[0]):
                         _ep = f"{_pfx}.{_j}"
                         self.weights[f"{_ep}.down_proj.weight"] = WebGPUBuffer.from_numpy(
