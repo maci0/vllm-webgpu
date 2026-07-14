@@ -35,7 +35,10 @@ _SYM_ZERO_SENTINEL: np.int32 = np.int32(-2004318072)
 # write_buffer operations when the GPU staging buffer queue is saturated
 # (~1-2 GB). Periodic flushes prevent this for large single-file models.
 _FLUSH_THRESHOLD = 512 * 1024 * 1024
-# BitsAndBytes NF4 quantization block size (fixed by the BnB format spec).
+# BitsAndBytes NF4 default block size. bitsandbytes.nn.Params4bit accepts a
+# configurable blocksize (32, 64, 128 are all valid). The actual value for a
+# checkpoint is stored in the per-layer quant_state JSON; 64 is used only as a
+# fallback when that metadata is absent.
 _BNB_GROUP_K = 64
 from vllm.model_executor.layers.quantization.utils.ocp_mx_utils import OCP_MX_BLOCK_SIZE as _MXFP4_BLOCK_SIZE
 # Companion key suffixes for AWQ/GPTQ and NVFP4 quantized layers. Defined at
@@ -1419,7 +1422,27 @@ def load_safetensors_weights(
                         logger.warning("BnB NF4: no absmax found for %s, skipping", base)
                         continue
 
-                    expected_blocks = N * K // _BNB_GROUP_K
+                    # Read the actual block size from the per-layer quant_state
+                    # JSON embedded in the checkpoint. bitsandbytes.nn.Params4bit
+                    # allows 32, 64, and 128; the default of 64 is only a fallback.
+                    bnb_group_k = _BNB_GROUP_K
+                    qs_key = f"{base}.weight.quant_state.bitsandbytes__nf4"
+                    if qs_key in header:
+                        try:
+                            qs_bytes = _load_raw(qs_key).tobytes()
+                            qs = json.loads(qs_bytes)
+                            bnb_group_k = int(qs["blocksize"])
+                        except Exception as qs_exc:
+                            logger.warning(
+                                "BnB NF4: could not parse quant_state for %s (%s); "
+                                "falling back to blocksize=%d",
+                                base, qs_exc, _BNB_GROUP_K)
+                    else:
+                        logger.debug(
+                            "BnB NF4: no quant_state key for %s; assuming blocksize=%d",
+                            base, _BNB_GROUP_K)
+
+                    expected_blocks = N * K // bnb_group_k
                     if absmax_arr.size != expected_blocks:
                         logger.warning(
                             "BnB NF4: absmax size %d != expected %d (N=%d, K=%d) for %s — skipping",
@@ -1431,10 +1454,11 @@ def load_safetensors_weights(
                     # C-order (row-major) reshape merges the N//2 and K//2 dimensions correctly.
                     shader_codes = bnb_codes.reshape(N, K_half)
 
-                    # Reshape absmax: [N*K//64] → [N, K//64] (flat block order matches row-major).
-                    # Use expected_blocks (already validated against absmax_arr.size above)
-                    # rather than recomputing from K, so the reshape target is always consistent
-                    # with the size check. Guarded for the case where N does not divide evenly.
+                    # Reshape absmax: [N*K//bnb_group_k] → [N, K//bnb_group_k] (flat block
+                    # order matches row-major). Use expected_blocks (already validated against
+                    # absmax_arr.size above) rather than recomputing from K, so the reshape
+                    # target is always consistent with the size check. Guarded for the case
+                    # where N does not divide evenly.
                     if expected_blocks % N != 0:
                         logger.warning(
                             "BnB NF4: absmax count %d not divisible by N=%d for %s, skipping",
@@ -1446,7 +1470,7 @@ def load_safetensors_weights(
                     _upload(absmax_2d, np.float32, 'f32', f"{base}.weight.scales")
                     weights.setdefault("__quant_meta__", {})[base] = {
                         "fmt": "nf4_gpu",
-                        "group_size": _BNB_GROUP_K,
+                        "group_size": bnb_group_k,
                     }
                     logger.debug("GPU NF4: %s (N=%d, K=%d, blocks=%d)", base, N, K, expected_blocks)
 
