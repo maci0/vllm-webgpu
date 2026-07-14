@@ -15,8 +15,8 @@ from vllm.transformers_utils.config import get_hf_text_config
 # attention-type dispatch, MLP-width guard) from vllm/model_executor/models/gemma4.py.
 # There is no public vLLM API to call instead; these are a necessary transcription
 # but drift silently on every vLLM bump. They are pinned to the vLLM version below.
-# Re-audit Gemma4Attention.__init__ (L461-471, L561-580) and
-# Gemma4DecoderLayer.__init__ (L599-607) and re-run
+# Re-audit Gemma4Attention.__init__ (L461-471) and
+# Gemma4DecoderLayer.__init__ (L559-580, L599-607) and re-run
 # tests/test_gemma4_layer_params.py after any bump.
 # TODO: file an upstream vLLM issue requesting a public get_layer_params(config)
 # helper; once available, replace both functions with a direct call.
@@ -46,11 +46,11 @@ _SCALE_EPS = 1e-6
 # Pinned source locations in vllm/model_executor/models/gemma4.py:
 #   (1) KV-routing guard:                  Gemma4Attention.__init__    L461-465
 #   (2) Reversed-search KV-sharing target: Gemma4Attention.__init__    L467-471
-#   (3) Attention-type dispatch:           Gemma4Attention.__init__    L561-580
+#   (3) Attention-type dispatch:           Gemma4DecoderLayer.__init__ L559-580
 #       (head_dim / num_kv_heads / has_v_proj per layer type)
 #   (4) MLP-width guard:                   Gemma4DecoderLayer.__init__ L599-607
-# On each vLLM bump: diff Gemma4Attention.__init__ (L461-471, L561-580) and
-# Gemma4DecoderLayer.__init__ (L599-607) against _gemma4_layer_params and
+# On each vLLM bump: diff Gemma4Attention.__init__ (L461-471) and
+# Gemma4DecoderLayer.__init__ (L559-580, L599-607) against _gemma4_layer_params and
 # _build_layer_params_from_config, re-run tests/test_gemma4_layer_params.py,
 # and update _EXPECTED_VLLM_VERSION together.
 # If vLLM ever exports a public get_layer_params() or equivalent,
@@ -91,7 +91,7 @@ def _gemma4_layer_params(
       (1) KV-routing guard: Gemma4Attention.__init__ L461-465
           "num_kv_shared_layers > 0 and layer_idx >= first_kv_shared_layer_idx"
       (2) Reversed-search KV-sharing target: Gemma4Attention.__init__ L467-471
-      (3) Attention-type dispatch: Gemma4Attention.__init__ L561-580
+      (3) Attention-type dispatch: Gemma4DecoderLayer.__init__ L559-580
           (head_dim / num_kv_heads / has_v_proj per layer type)
       (4) MLP-width guard: Gemma4DecoderLayer.__init__ L599-607
           "layer_idx >= first_kv_shared_layer_idx > 0" (chained comparison)
