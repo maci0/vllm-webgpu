@@ -117,10 +117,18 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total V dimension (v_heads * v_dim).
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim
-        # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
-        # conv_dim = 2*k_heads*k_dim + v_heads*v_dim (matches the formula inside
-        # MambaStateShapeCalculator.gated_delta_net_state_shape, mamba_utils.py L223).
-        self._lin_conv_dim: int = 2 * self._lin_k_heads * self._lin_k_dim + self._lin_v_heads * self._lin_v_dim
+        # conv_dim: derived from the authoritative formula in
+        # MambaStateShapeCalculator.gated_delta_net_state_shape so any upstream
+        # change is reflected here automatically. DS layout is rejected above, so
+        # SD layout is guaranteed and conv_shape[-1] is the conv dimension.
+        _conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel,
+            num_spec=0,
+        )
+        self._lin_conv_dim: int = _conv_shape[-1]
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q (offset = K_heads * K_dim). V follows K+Q.
         self._gdn_k_offset: int = self._lin_k_heads * self._lin_k_dim
@@ -344,12 +352,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         )
         # SD layout: conv_shape = (CONV_KERNEL-1+num_spec, CONV_DIM). DS layout is
         # rejected in __init__, so conv_shape[-1] is always the conv dimension.
-        # If vLLM changes the formula, this assertion catches the drift.
-        assert conv_shape[-1] == self._lin_conv_dim, (
-            f"_lin_conv_dim={self._lin_conv_dim} does not match "
-            f"gated_delta_net_state_shape conv_dim={conv_shape[-1]}; "
-            f"update _lin_conv_dim formula when bumping vLLM"
-        )
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
 
