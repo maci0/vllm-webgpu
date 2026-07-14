@@ -154,7 +154,6 @@ def _gemma4_layer_params(
 
         lp.append({
             "head_dim":          hd_l,
-            "num_q_heads":       num_q_heads,
             "num_kv_heads":      nkv_l,
             "q_dim":             num_q_heads * hd_l,
             "kv_dim":            nkv_l * hd_l,
@@ -464,7 +463,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             nkv = default_kv
             uniform_lp = {
                 "head_dim":         hd,
-                "num_q_heads":      self.num_q_heads,
                 "num_kv_heads":     nkv,
                 "q_dim":            self.num_q_heads * hd,
                 "kv_dim":           nkv * hd,
@@ -553,7 +551,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         for _i, _lp in enumerate(self._lp):
             _p = self._layer_key_prefix(_i)
             _hd = _lp["head_dim"]
-            _nq = _lp["num_q_heads"]
+            _nq = self.num_q_heads
             _nkv = _lp["num_kv_heads"]
             self._weight_transforms[f"{_p}.self_attn.q_norm.weight"] = (
                 partial(_tile_if_shared, expected_dim=_hd, n=_nq)
@@ -568,10 +566,10 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         # of cross-validation.
         if raw_lp and len(raw_lp) == self.num_layers and self._lp:
             _lp0 = self._lp[0]
-            if _lp0["num_q_heads"] * _lp0["head_dim"] != _lp0["q_dim"]:
+            if self.num_q_heads * _lp0["head_dim"] != _lp0["q_dim"]:
                 raise ValueError(
                     f"q_norm tile shape mismatch at layer 0: "
-                    f"num_q_heads={_lp0['num_q_heads']} * head_dim={_lp0['head_dim']} "
+                    f"num_q_heads={self.num_q_heads} * head_dim={_lp0['head_dim']} "
                     f"!= q_dim={_lp0['q_dim']}"
                 )
             if _lp0["num_kv_heads"] * _lp0["head_dim"] != _lp0["kv_dim"]:
