@@ -129,8 +129,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
           CTX_LEN = 21-12 = 9 (tokens 12-20, all 9 in range)
         """
         if self._sw is not None and ctx_len > self._sw:
-            rem = (ctx_len - self._sw) % self.block_size
-            start_block = (ctx_len - self._sw) // self.block_size
+            start_block, rem = divmod(ctx_len - self._sw, self.block_size)
             return start_block, self._sw + rem
         return 0, ctx_len
 

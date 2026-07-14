@@ -318,7 +318,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         # (NemotronHMLPDecoderLayer.__init__, vLLM 0.24, lines 280-292)
         # A slice + count() per layer is O(n^2). The running counter below is O(n).
         # VERSION SYNC: verify on each vLLM version bump that this resolution
-        # logic has not changed.
+        # logic has not changed. Also check whether _resolve_intermediate_size
+        # is now exported at module scope (see comment at module top).
         _layer_int_sizes: list[int] = []
         _mlp_count = 0  # 0-indexed MLP position; matches vLLM's mlp_index = count("-") - 1
         for _li, _lt in enumerate(self._layer_types):

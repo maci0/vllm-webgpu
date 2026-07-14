@@ -74,9 +74,14 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Inlines the YaRN inv_freq formula using the public helpers
-    `yarn_find_correction_range` and `yarn_linear_ramp_mask` from
-    `vllm.model_executor.layers.rotary_embedding.common`.
+    Inlines the combining formula from YaRNScalingRotaryEmbedding._compute_inv_freq
+    (vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py L49-73) and
+    the mscale ternary from YaRNScalingRotaryEmbedding.__init__ (L40-43), using the
+    three public vLLM helpers: yarn_find_correction_range, yarn_linear_ramp_mask,
+    yarn_get_mscale. Direct reuse of the class method is blocked because
+    YaRNScalingRotaryEmbedding.__init__ always calls _compute_cos_sin_cache(),
+    pre-allocating a [max_pos * factor, rotary_dim] tensor not needed here.
+    Verify against the upstream formulas on each vLLM bump.
 
     Args:
         head_dim:    Full attention head dimension.

@@ -1290,15 +1290,16 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 uq_v = self._uq_for_key(vw)
                 _use_fused_qkv = (uq_q == 0 and uq_k == 0 and uq_v == 0)
             else:
-                kw = f"{p}.self_attn.k_proj.weight"  # still needed for dispatch when not kv_shared
+                if not is_kv_shared:
+                    kw = f"{p}.self_attn.k_proj.weight"
                 _use_fused_qkv = False
 
             # _use_fused_qkv is already False when is_kv_shared=True because the else
             # branch sets it False for both not-has_v and is_kv_shared cases.
-            # _k_src default covers the is_kv_shared=True path and the non-fused
-            # non-KV-shared fallback rope loop; _v_src has no default because every
-            # non-KV-shared code path assigns it before use.
+            # _k_src and _v_src defaults cover the is_kv_shared=True path; both values
+            # are overwritten by every live code path that actually reads them.
             _k_src = sc["k_buf"]
+            _v_src = sc["k_buf"]
             _v_src_offset = 0
             if _use_fused_qkv:
                 # All f16, non-shared: single fused_qkv dispatch → sc["qkv_buf"] laid out as [Q | K | V].

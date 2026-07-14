@@ -159,7 +159,6 @@ class WebGPUPlatform(Platform):
         # still runs via the base class.
         cache_config = vllm_config.cache_config
         if not cache_config.user_specified_block_size:
-            cache_config.block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
             cache_config.user_specified_block_size = True
             try:
                 super().update_block_size_for_backend(vllm_config)
