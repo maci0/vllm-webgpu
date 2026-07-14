@@ -347,30 +347,17 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             hd = getattr(model_config, "head_dim", self.hidden_size // self.num_q_heads)
             nkv = getattr(model_config, "num_key_value_heads", 1)
             uniform_lp = {
-                "head_dim":         hd,
-                "num_kv_heads":     nkv,
-                "q_dim":            self.num_q_heads * hd,
-                "kv_dim":           nkv * hd,
-                "has_v_proj":       True,
+                "head_dim":          hd,
+                "num_kv_heads":      nkv,
+                "q_dim":             self.num_q_heads * hd,
+                "kv_dim":            nkv * hd,
+                "has_v_proj":        True,
                 "intermediate_size": self.intermediate_size,
-                "is_kv_shared":     False,
-                "kv_shared_target": -1,
-                "is_sliding":       False,
+                "is_kv_shared":      False,
+                "kv_shared_target":  -1,
+                "is_sliding":        False,
             }
-            self._lp = [
-                {
-                    "head_dim":          hd,
-                    "num_kv_heads":      nkv,
-                    "q_dim":             self.num_q_heads * hd,
-                    "kv_dim":            nkv * hd,
-                    "has_v_proj":        True,
-                    "intermediate_size": self.intermediate_size,
-                    "is_kv_shared":      False,
-                    "kv_shared_target":  -1,
-                    "is_sliding":        False,
-                }
-                for _ in range(self.num_layers)
-            ]
+            self._lp = [uniform_lp.copy() for _ in range(self.num_layers)]
 
         # Validate even dimensions required by WGSL shaders
         for name, val in [("hidden_size", self.hidden_size),

@@ -36,12 +36,13 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-# _SAMPLING_EPS is a private symbol verified against vllm>=0.24,<0.25.
-# It is stable in practice (unchanged since 0.5.x), but has no public-API guarantee.
-# If vLLM ever changes the greedy threshold, update the pin in pyproject.toml and
-# re-verify sample_token's greedy branch threshold.
-from vllm.sampling_params import _SAMPLING_EPS as GREEDY_TEMP
 SHADERS_DIR = Path(__file__).parent / "shaders"
+
+# SamplingParams clamps all sub-threshold temperatures to _MAX_TEMP (0.01) before
+# they reach sample_token, so any temperature below that threshold arrives here as
+# exactly 0.0 (greedy) or >= 0.01 (stochastic). The 1e-5 literal matches the
+# private _SAMPLING_EPS without importing the symbol.
+_GREEDY_TEMP_THRESHOLD = 1e-5
 
 
 # zero_bytes(n: int) -> bytes  — cached constructor for n zero bytes.
@@ -65,7 +66,7 @@ def sample_token(
 
     Args:
         logits_1d: 1-D float32 logit vector of length vocab_size.
-        temperature: Softmax temperature. Values < GREEDY_TEMP produce greedy argmax.
+        temperature: Softmax temperature. Values < _GREEDY_TEMP_THRESHOLD produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
         top_k: Keep at most top_k tokens. 0 disables.
         min_p: Minimum probability relative to the top token. Tokens whose
@@ -78,7 +79,7 @@ def sample_token(
         use_fp64_gumbel: When True, Gumbel noise is sampled in fp64 for
             higher numerical precision. Mirrors ModelConfig.use_fp64_gumbel.
     """
-    if temperature < GREEDY_TEMP:
+    if temperature < _GREEDY_TEMP_THRESHOLD:
         return logits_1d.argmax().item()
 
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)

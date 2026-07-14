@@ -115,8 +115,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_v_heads: int = getattr(model_config, "linear_num_value_heads", _LIN_V_HEADS)
         self._lin_v_dim: int   = getattr(model_config, "linear_value_head_dim", _LIN_V_DIM)
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
+        # Total V dimension (v_heads * v_dim).
+        self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim
         # Total QKV packed dimension: Q + K + V. Q_heads == K_heads for GDN, so Q_dim == K_dim.
-        self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim   # total value dim
         # conv_dim = 2*k_heads*k_dim + v_heads*v_dim (matches the formula inside
         # MambaStateShapeCalculator.gated_delta_net_state_shape, mamba_utils.py L223).
         self._lin_conv_dim: int = 2 * self._lin_k_heads * self._lin_k_dim + self._lin_v_heads * self._lin_v_dim
@@ -340,6 +341,14 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
             conv_kernel_size=self._lin_conv_kernel,
             num_spec=num_spec,
+        )
+        # SD layout: conv_shape = (CONV_KERNEL-1+num_spec, CONV_DIM). DS layout is
+        # rejected in __init__, so conv_shape[-1] is always the conv dimension.
+        # If vLLM changes the formula, this assertion catches the drift.
+        assert conv_shape[-1] == self._lin_conv_dim, (
+            f"_lin_conv_dim={self._lin_conv_dim} does not match "
+            f"gated_delta_net_state_shape conv_dim={conv_shape[-1]}; "
+            f"update _lin_conv_dim formula when bumping vLLM"
         )
         conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
         ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]

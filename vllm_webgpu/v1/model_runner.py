@@ -15,7 +15,7 @@ from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
 from vllm.utils.import_utils import resolve_obj_by_qualname
-from vllm_webgpu.utils import SHADERS_DIR, sample_token as _sample_token, zero_bytes
+from vllm_webgpu.utils import sample_token as _sample_token, zero_bytes
 from vllm_webgpu.v1.cache_policy import MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types, is_attn_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
 
@@ -47,7 +47,7 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.logprobs
+    num_logprobs = sp.num_logprobs
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -180,7 +180,7 @@ class WebGPUModelRunner:
     def __init__(self, vllm_config: Any, wgpu_device: "WebGPUDevice") -> None:
         self.vllm_config = vllm_config
         self.wgpu_device = wgpu_device
-        self.pipeline_cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+        self.pipeline_cache = PipelineCache(wgpu_device.wgpu_device)
         self.model: "BaseWebGPUModel | None" = None
         self._req_state: dict[str, Any] = {}  # per-request decode state {req_id: {pos, block_ids}}
         self._num_kv_blocks: int = 0  # set by initialize_kv_cache; used by _zero_kv_blocks

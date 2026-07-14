@@ -193,6 +193,8 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         ffn_out created an ordering contract between _attn_block and _ffn_dispatch
         that o_bias_tmp eliminates.
         """
+        # qkv_buf unused: GPT-OSS always uses separate Q/K/V projections via
+        # sc['q_buf']/sc['k_buf']/sc['v_buf']; 4-byte minimum placeholder only.
         super()._init_scratch_buffers(max_ctx, qkv_size=4)
         if self._attn_bias:
             Q      = self.q_dim

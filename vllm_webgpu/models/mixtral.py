@@ -530,20 +530,18 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # Zero-initialize expert_out before Phase B whenever no shared expert
         # will seed it. Check weight availability here so the write_buffer
         # always precedes Phase B encoder creation (consistent ordering).
-        _shared_weights_present = False
         if shared_expert_prefix is not None:
             _sinter = shared_expert_inter if shared_expert_inter is not None else inter
             sp = f"{p}.{shared_expert_prefix}"
             sgw_k = f"{sp}.{gate_key}.weight"
             suw_k = f"{sp}.{up_key}.weight"
             sdw_k = f"{sp}.{down_key}.weight"
-            _shared_weights_present = all(k in self.weights for k in (sgw_k, suw_k, sdw_k))
-            if not _shared_weights_present:
+            if not all(k in self.weights for k in (sgw_k, suw_k, sdw_k)):
                 missing_shared = [k for k in (sgw_k, suw_k, sdw_k) if k not in self.weights]
                 raise RuntimeError(
                     f"L{layer_idx:02d} shared expert: weights not loaded: {missing_shared}"
                 )
-        if not _shared_weights_present:
+        else:
             self._zero_write(msc["expert_out"])
 
         # ── Phase B: expert dispatches (new encoder) ──────────────────────────
@@ -551,7 +549,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # _transformer_layer) will land in this new encoder.
         self._active_encoder = dev.create_command_encoder()
 
-        if shared_expert_prefix is not None and _shared_weights_present:
+        if shared_expert_prefix is not None:
             # Shared expert. For most models the coefficient is 1.0, but
             # Qwen3.5-MoE applies sigmoid(shared_expert_gate(x)[0]) as an
             # additional per-token scalar gate on the shared expert output.

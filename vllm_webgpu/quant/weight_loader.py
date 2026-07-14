@@ -50,6 +50,16 @@ _NVFP4_SUFFIXES = (".weight_packed", ".weight_scale", ".weight_global_scale",
 _DIFFUSION_NVFP4_SUFFIXES = (".weight", ".weight_scale", ".weight_scale_2", ".input_scale")
 
 
+def _quant_type_str(cfg: dict) -> str:
+    """Return the normalized quant type string from a quantization config dict.
+
+    Checks quant_type first, then quant_method, returning an empty string when
+    neither key is present. Both call sites (_check_unsupported_quant and
+    _detect_mx_quant) share the same field-priority order and normalization.
+    """
+    return (cfg.get("quant_type") or cfg.get("quant_method") or "").lower().strip()
+
+
 def _normalize_quant_cfg(quant_cfg: object) -> dict | None:
     """Return quant_cfg unchanged when it is a plain dict, else None.
 
@@ -188,7 +198,7 @@ def _check_unsupported_quant(quant_cfg: dict) -> None:
 
     Pass quant_cfg with the already-parsed quantization config dict.
     """
-    qt = (quant_cfg.get("quant_type") or quant_cfg.get("quant_method") or "").lower().strip()
+    qt = _quant_type_str(quant_cfg)
     if qt in _UNSUPPORTED_QUANT_TYPES:
         raise ValueError(
             f"Quantization format {qt!r} is not supported by vllm-webgpu. "
@@ -608,7 +618,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     if quant_cfg is None:
         config_json = model_dir / "config.json"
         quant_cfg = _ct_get_quant_cfg(str(config_json)) or {} if config_json.exists() else {}
-    qt = (quant_cfg.get("quant_type") or quant_cfg.get("quant_method") or "").lower().strip()
+    qt = _quant_type_str(quant_cfg)
     if qt == "mxfp4":
         return "mxfp4"
     if qt == "mxfp8":
