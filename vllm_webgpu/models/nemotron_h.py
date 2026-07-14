@@ -117,6 +117,17 @@ except ImportError:
             return v[0] if len(v) == 1 else v[idx]
         return v
 
+    # Behavioral assertion: verify the two known cases match the upstream logic
+    # (NemotronHMLPDecoderLayer.__init__ L286-292). If vLLM adds a third branch
+    # (e.g. a dict case), this fires at import time rather than silently producing
+    # wrong per-layer intermediate sizes for heterogeneous checkpoints.
+    assert _resolve_intermediate_size([42], 0) == 42, \
+        "fallback _resolve_intermediate_size: single-element list case broken"
+    assert _resolve_intermediate_size([10, 20], 1) == 20, \
+        "fallback _resolve_intermediate_size: multi-element list case broken"
+    assert _resolve_intermediate_size(99, 0) == 99, \
+        "fallback _resolve_intermediate_size: scalar case broken"
+
 
 # Correctness of _resolve_intermediate_size is verified in
 # tests/test_nemotron_h_model.py::test_resolve_intermediate_size.
@@ -1477,14 +1488,15 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             (I, 1, 1),
         )
 
-        # relu^2 element-wise activation. WG_SIZE=256 matches _rows_wg's divisor,
-        # so the workgroup count is identical; this shader is element-wise, not
-        # row-parallel, but the formula (cdiv(N, 256), 1, 1) is the same.
+        # relu^2 element-wise activation. One workgroup per 256 elements.
+        # Inline cdiv(I, 256) rather than reusing _rows_wg whose semantic is
+        # "one WG per 256 output rows for row-parallel matmuls"; repurposing it
+        # here would silently break if _rows_wg's divisor were ever changed.
         self._dispatch(
             "relu_sq",
             [sc["up_buf"], sc["ffn_act"]],
             {"N": I, "WG_SIZE": 256},
-            _rows_wg(I),
+            (cdiv(I, 256), 1, 1),
         )
 
         # down_proj: intermediate -> hidden

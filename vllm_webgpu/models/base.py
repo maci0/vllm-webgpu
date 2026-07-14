@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -211,7 +210,7 @@ class BaseWebGPUModel(ABC):
         f16 arrays; buf.shape holds the original unpadded shape. Raises KeyError
         for any dtype not in _WGPU_DTYPE_TO_NP so unknown types fail immediately.
         """
-        expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
+        expected = int(np.prod(buf.shape)) * _ELEM_BYTES[buf.dtype]
         return buf.to_numpy()[:expected].view(_WGPU_DTYPE_TO_NP[buf.dtype])
 
     @contextmanager
@@ -357,8 +356,7 @@ class BaseWebGPUModel(ABC):
                 f"GGUF format not supported by this plugin. Use the vllm-gguf plugin: {path}"
             )
         transforms = self._weight_transforms
-        _hf_cfg = getattr(self.model_config, 'hf_config', self.model_config)
-        _quant_cfg = getattr(_hf_cfg, 'quantization_config', None)
+        _quant_cfg = getattr(self.model_config.hf_config, 'quantization_config', None)
         if fmt == "safetensors":
             self.weights = load_safetensors_weights(
                 _resolved, self.wgpu_device.wgpu_device, f32_keys=f32_keys,

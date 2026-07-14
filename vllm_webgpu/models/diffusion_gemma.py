@@ -83,6 +83,15 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                 f"for vec4<f16> shaders"
             )
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size=block_size)
+        # DiffusionGemma always uses Gemma4 plain RMSNorm (no (1+w) additive bias),
+        # so GEMMA_NORM must be 0. The parent __init__ derives _GEMMA_NORM from
+        # _outer_model_type, but receives the inner text config's model_type because
+        # we extract it above with get_hf_text_config before calling super(). Force
+        # the correct value unconditionally to remove the dependence on that ordering.
+        self._GEMMA_NORM = 0
+        # _rms_consts is built by super().__init__() using the (possibly wrong)
+        # _GEMMA_NORM; update it to match the forced value above.
+        self._rms_consts["GEMMA_NORM"] = 0
         # Router scale: constant across all layers and tokens.
         self._router_root_size: float = self.hidden_size ** -0.5
 

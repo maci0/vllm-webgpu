@@ -47,7 +47,7 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.num_logprobs
+    num_logprobs = sp.logprobs
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -283,8 +283,12 @@ class WebGPUModelRunner:
         # NemotronH attention layers live under .mixer, not .self_attn.
         _is_nemotron_h = ARCH_MAP.get(self.vllm_config.model_config.architecture) == "nemotron_h"
         _attn_suffix = ".mixer" if _is_nemotron_h else ".self_attn"
-        # The vLLM engine always calls get_kv_cache_spec before weight loading,
-        # so no model object is available here; get_layer_types probes hf_config only.
+        # In the standard UniProc executor, load_model() runs before get_kv_cache_spec():
+        # _init_executor() calls init_device() then load_model(), and only after that
+        # does the engine call _initialize_kv_caches() which invokes get_kv_cache_spec().
+        # The lp_list branch (lines below) is therefore the primary execution path.
+        # _layer_types is the fallback for edge cases: tests that call get_kv_cache_spec
+        # directly, OOT executors with different ordering, or model reload mid-session.
         _layer_types = get_layer_types(
             self.vllm_config.model_config.hf_text_config,
             hf_outer_config=self.vllm_config.model_config.hf_config,
@@ -441,8 +445,11 @@ class WebGPUModelRunner:
             if all_present and len(set(widths)) == 1:
                 built_logprobs = _stack_logprobs(cast("list[LogprobsTensors]", logprobs_data))
             else:
-                # _stack_logprobs casts selected_token_ranks to int32 uniformly
-                # for both paths. No per-piece cast needed here.
+                # Cast selected_token_ranks to int64 so torch.cat in _stack_logprobs
+                # operates on a uniform dtype. gather_logprobs returns int64 for
+                # selected_token_ranks; empty_cpu() produces int32. Making each piece
+                # explicit here avoids relying on implicit promotion in torch.cat.
+                # _stack_logprobs then normalises the combined tensor to int32.
                 pieces = []
                 for d in logprobs_data:
                     if d is not None:
@@ -450,7 +457,7 @@ class WebGPUModelRunner:
                         pieces.append(LogprobsTensors(
                             pad(d.logprob_token_ids, (0, n_pad), value=0) if n_pad else d.logprob_token_ids,
                             pad(d.logprobs, (0, n_pad), value=-float("inf")) if n_pad else d.logprobs,
-                            d.selected_token_ranks,
+                            d.selected_token_ranks.to(torch.int64),
                         ))
                     else:
                         # Sentinel row for requests with no logprob data. Sentinel

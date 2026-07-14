@@ -25,8 +25,9 @@ import torch
 # is active (p is None); for combined top-k+top-p requests it still uses the sort
 # path, which is acceptable given WebGPU's single-request batch size. It is therefore
 # the correct choice for WebGPU's CPU-backed tensor workflow.
-# When vLLM fixes apply_top_k_top_p to pass allow_cpu_sync=True for OOT
-# platforms, replace the two imports below with:
+# TODO(vLLM#16774): revert to apply_top_k_top_p once upstream passes
+# allow_cpu_sync=True for OOT platforms. When the fix lands, replace the two
+# imports below with:
 #   from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p, random_sample
 # and change the call in sample_token from apply_top_k_top_p_pytorch(...) to:
 #   filtered = apply_top_k_top_p(logits_t, k_t, p_t)
@@ -35,12 +36,7 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-# Greedy-temperature threshold: temperatures at or below this value are treated
-# as greedy (argmax) decoding. Imported from vllm.sampling_params so that
-# SamplingParams.sampling_type and sample_token use the identical threshold;
-# a version bump that changes _SAMPLING_EPS stays consistent automatically.
-# vLLM is version-pinned in pyproject.toml; accept the private-API dependency.
-from vllm.sampling_params import _SAMPLING_EPS as GREEDY_TEMP  # noqa: PLC2701
+GREEDY_TEMP: float = 1e-5  # mirror vllm.sampling_params._SAMPLING_EPS; greedy threshold
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 

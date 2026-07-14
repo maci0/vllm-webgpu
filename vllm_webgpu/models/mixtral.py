@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging
+from logging import DEBUG
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -15,6 +15,8 @@ if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
+
+_STAGING_USAGE = wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ
 
 
 def _validate_gate_consts(extra_gate_consts: dict) -> None:
@@ -91,10 +93,9 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # buffer sizes that are multiples of 4; top_k >= 1 always makes the
         # size >= 4, so no minimum guard is needed beyond the 4-byte alignment.
         _staging_sz = self._top_k * 4
-        _staging_usage = wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ
         self._topk_idx_staging = dev.create_buffer(
             size=_staging_sz,
-            usage=_staging_usage)
+            usage=_STAGING_USAGE)
         # Lazy-allocate _topk_w_staging: only needed on the debug-logging path.
         self._topk_w_staging = None
 
@@ -486,12 +487,12 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         # encoder so no extra GPU submit is needed for the readback.
         self._active_encoder.copy_buffer_to_buffer(
             msc["topk_idx"].buf, 0, self._topk_idx_staging, 0, K * 4)
-        _debug_weights = logger.isEnabledFor(logging.DEBUG)
+        _debug_weights = logger.isEnabledFor(DEBUG)
         if _debug_weights:
             if self._topk_w_staging is None:
                 self._topk_w_staging = dev.create_buffer(
                     size=self._top_k * 4,
-                    usage=wgpu.BufferUsage.COPY_DST | wgpu.BufferUsage.MAP_READ)
+                    usage=_STAGING_USAGE)
             self._active_encoder.copy_buffer_to_buffer(
                 msc["topk_w"].buf, 0, self._topk_w_staging, 0, K * 4)
 
