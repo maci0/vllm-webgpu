@@ -283,9 +283,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         dev.queue.write_buffer(pre["pos"].buf,      0, pos_1d.astype(np.uint32, copy=False).tobytes())
         dev.queue.write_buffer(pre["slot_map"].buf, 0, slot_1d)
         if write_bt:
-            assert bt_bytes is not None, (
-                "_write_token_bufs called with write_bt=True but bt_bytes is None"
-            )
+            if bt_bytes is None:
+                raise ValueError("_write_token_bufs called with write_bt=True but bt_bytes is None")
             dev.queue.write_buffer(pre["bt"].buf,   0, bt_bytes)
 
     def _decode_teardown(

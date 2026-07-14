@@ -89,8 +89,7 @@ def main() -> None:
 
     print("Running prefill...")
     t0 = time.perf_counter()
-    idx = np.arange(len(tok_ids))
-    blk_idx, within = np.divmod(idx, block_size)
+    blk_idx, within = np.divmod(np.arange(len(tok_ids)), block_size)
     slots = (bt[blk_idx].astype(np.int64) * block_size + within).tolist()
     _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
     model._greedy_decode = True  # forward() must return (1,1) argmax token, not (1,vocab) logits

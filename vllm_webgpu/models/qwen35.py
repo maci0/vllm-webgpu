@@ -1,5 +1,6 @@
 from __future__ import annotations
 from itertools import batched, chain
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -345,8 +346,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             f"conv_dim mismatch: {self._lin_conv_dim} vs {conv_shape[-1]}; "
             "MambaStateShapeCalculator.gated_delta_net_state_shape formula may have changed"
         )
-        conv_bytes = int(np.prod(conv_shape)) * _ELEM_BYTES["f16"]
-        ssm_bytes  = int(np.prod(ssm_shape)) * _ELEM_BYTES["f32"]
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}
         self._conv_gpu = {}

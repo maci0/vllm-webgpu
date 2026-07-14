@@ -407,7 +407,7 @@ class WebGPUModelRunner:
                     continue
                 if lt == "full_attention":
                     full_kv = global_kv if k_eq_v else default_kv
-                    _hd_v = getattr(tc, "head_size_v", None) or global_hd
+                    _hd_v = getattr(tc, "head_size_v", None)
                     spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
                         block_size=block_size,
                         num_kv_heads=full_kv,
@@ -419,7 +419,7 @@ class WebGPUModelRunner:
                     # Treat all non-full-attention types (including sliding_attention) as
                     # full-attention: SlidingWindowSpec is not supported by
                     # allocate_kv_from_tensors, so we allocate for the full context window.
-                    _hd_v_local = getattr(tc, "head_size_v", None) or default_hd
+                    _hd_v_local = getattr(tc, "head_size_v", None)
                     spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
                         block_size=block_size,
                         num_kv_heads=default_kv,
@@ -452,7 +452,7 @@ class WebGPUModelRunner:
                     block_size=block_size,
                     num_kv_heads=num_kv_heads,
                     head_size=head_size,
-                    head_size_v=getattr(tc, "head_size_v", None) or head_size,
+                    head_size_v=getattr(tc, "head_size_v", None),
                     dtype=_KV_DTYPE,
                 )
         return spec

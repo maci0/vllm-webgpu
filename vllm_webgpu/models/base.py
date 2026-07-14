@@ -1,7 +1,5 @@
 from __future__ import annotations
-import inspect
 import math
-import statistics
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -15,10 +13,9 @@ import wgpu as wgpu_lib
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm.model_executor.layers.rotary_embedding.common import (
-    yarn_find_correction_range,
-    yarn_get_mscale,
-    yarn_linear_ramp_mask,
+from vllm.model_executor.layers.rotary_embedding.common import yarn_get_mscale
+from vllm.model_executor.layers.rotary_embedding.yarn_scaling_rope import (
+    YaRNScalingRotaryEmbedding,
 )
 
 from vllm_webgpu.utils import zero_bytes
@@ -72,33 +69,6 @@ logger = init_logger(__name__)
 
 
 
-# Guard against vLLM changing the signatures of the YaRN public helpers.
-# compute_yarn_freqs calls these three functions directly and would silently
-# produce wrong results if a vLLM update adds or renames a parameter.
-# On each vLLM bump, verify both the signature and the formula in
-# yarn_scaling_rope.py._compute_inv_freq still match the composition in
-# compute_yarn_freqs below.
-assert (
-    str(inspect.signature(yarn_find_correction_range))
-    == "(low_rot: int, high_rot: int, dim: int, base: float = 10000, max_position_embeddings: int = 2048, truncate: bool = True) -> tuple[float | int, float | int]"
-), (
-    "yarn_find_correction_range signature changed; update compute_yarn_freqs "
-    "and this assertion to match the new vLLM signature"
-)
-assert (
-    str(inspect.signature(yarn_linear_ramp_mask))
-    == "(low: float, high: float, dim: int, dtype: torch.dtype) -> torch.Tensor"
-), (
-    "yarn_linear_ramp_mask signature changed; update compute_yarn_freqs "
-    "and this assertion to match the new vLLM signature"
-)
-assert (
-    str(inspect.signature(yarn_get_mscale))
-    == "(scale: float = 1) -> float"
-), (
-    "yarn_get_mscale signature changed; update compute_yarn_freqs "
-    "and this assertion to match the new vLLM signature"
-)
 
 
 def compute_yarn_freqs(
@@ -108,16 +78,14 @@ def compute_yarn_freqs(
 ) -> tuple[np.ndarray, float]:
     """Compute YaRN-scaled inverse frequencies for RoPE.
 
-    Composes yarn_find_correction_range, yarn_linear_ramp_mask, and
-    yarn_get_mscale (all public helpers from vllm.model_executor.layers.
-    rotary_embedding.common) to reproduce the formula in
-    YaRNScalingRotaryEmbedding._compute_inv_freq without instantiating
-    that class (whose __init__ builds an unneeded cos/sin cache).
+    Delegates to YaRNScalingRotaryEmbedding._compute_inv_freq via a
+    SimpleNamespace shim that sets only the attributes the method reads,
+    bypassing __init__ and its cos/sin cache allocation entirely.
 
-    The public helper signatures are pinned by the module-level assertions
-    above. On each vLLM bump, verify the formula in
-    yarn_scaling_rope.py._compute_inv_freq still matches the composition
-    below, then update the assertions if any signature changed.
+    On each vLLM bump, verify that YaRNScalingRotaryEmbedding._compute_inv_freq
+    still reads the same set of instance attributes (base, rotary_dim,
+    beta_fast, beta_slow, max_position_embeddings, truncate,
+    extrapolation_factor) and accepts scaling_factor as its sole argument.
 
     Args:
         head_dim:    Full attention head dimension.
@@ -162,10 +130,16 @@ def compute_yarn_freqs(
     apply_yarn_scaling   = bool(rope_scaling.get("apply_yarn_scaling",   True))
     truncate             = bool(rope_scaling.get("truncate",             True))
 
-    pos_freqs = rope_theta ** (torch.arange(0, rotary_dim, 2, dtype=torch.float) / rotary_dim)
-    low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float)) * extrapolation_factor
-    inv_freq = ((1.0 / (factor * pos_freqs)) * (1 - mask) + (1.0 / pos_freqs) * mask).numpy()
+    _shim = SimpleNamespace(
+        base=rope_theta,
+        rotary_dim=rotary_dim,
+        beta_fast=beta_fast,
+        beta_slow=beta_slow,
+        max_position_embeddings=orig_ctx,
+        truncate=truncate,
+        extrapolation_factor=extrapolation_factor,
+    )
+    inv_freq = YaRNScalingRotaryEmbedding._compute_inv_freq(_shim, factor).numpy()
     mscale = (
         float(yarn_get_mscale(factor) * attn_factor)
         if apply_yarn_scaling
@@ -315,7 +289,7 @@ class BaseWebGPUModel(ABC):
         if not self._prof_stats:
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
-        rows = sorted([(lbl, statistics.fmean(v), sum(v), len(v)) for lbl, v in self._prof_stats.items()],
+        rows = sorted([(lbl, (s := sum(v)) / (n := len(v)), s, n) for lbl, v in self._prof_stats.items()],
                       key=lambda r: r[2], reverse=True)
         total = sum(r[2] for r in rows)
         for label, avg, sum_t, n in rows:

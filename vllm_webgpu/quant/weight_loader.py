@@ -276,7 +276,7 @@ def _upload_non_quant(header, skip: set, upload_fn):
         if name in skip:
             continue
         if not upload_fn(name):
-            dt = header[name].get("dtype", "?")
+            dt = header[name]["dtype"]
             if dt not in ('U8', 'I32'):
                 logger.warning("Skipping %s (dtype=%s)", name, dt)
 
