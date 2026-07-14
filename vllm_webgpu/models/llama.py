@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.transformers_utils.config import is_rope_parameters_nested, patch_legacy_rope_type
 from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import BaseWebGPUModel, compute_yarn_freqs, _rows_wg, _vals_per_thread, _vec4_wg, _H_NAMES
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -163,7 +164,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         When rope_type == 'yarn', replaces the base-class dummy buffer with actual
         YaRN-scaled frequencies. All other rope types keep the dummy (_use_freq_buf=False).
         """
-        from vllm.transformers_utils.config import is_rope_parameters_nested, patch_legacy_rope_type
         _rope_parameters = getattr(self.model_config, "rope_parameters", None)
 
         if _rope_parameters is not None and is_rope_parameters_nested(_rope_parameters):

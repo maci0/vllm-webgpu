@@ -558,38 +558,6 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
 
 
-def _extract_modelopt_algo(cfg: "dict | None") -> str:
-    """Extract the ModelOpt quantization algorithm string from hf_quant_config.json.
-
-    Mirrors ModelOptFp8Config._extract_modelopt_quant_algo from vLLM 0.24.x
-    (vllm/model_executor/layers/quantization/modelopt.py L245-262). Used as a
-    fallback when that class cannot be imported due to top-level CUDA imports in
-    modelopt.py (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe).
-
-    Returns the upper-cased algorithm string, or '' when the key is absent or
-    the 'quantization' value is not a dict.
-
-    Divergences from the vLLM original (must check all three on each vLLM bump):
-
-    1. None guard: upstream returns None when cfg is None; this version accepts
-       None and returns '' to avoid forcing every caller to add `or ''`.
-
-    2. quant_method guard: upstream returns None when
-       cfg['quant_method'] does not start with 'modelopt'; this copy omits that
-       check because the call site in _detect_mx_quant already gates on it
-       (`if cfg.get('quant_method','').lower().startswith('modelopt')`).
-
-    3. Return type: upstream returns str | None; this copy always returns str
-       ('' as sentinel). The vLLM branch at the call site applies `or ''`
-       explicitly, so both paths are functionally equivalent.
-    """
-    if cfg is None:
-        return ''
-    if 'quantization' in cfg:
-        return str(cfg['quantization'].get('quant_algo', '')).upper() if isinstance(cfg['quantization'], dict) else ''
-    return str(cfg.get('quant_algo', '')).upper()
-
-
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
 
@@ -621,11 +589,12 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     # modelopt.py has top-level CUDA kernel imports
                     # (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe)
                     # that fail on WebGPU where no CUDA runtime is present.
-                    # _extract_modelopt_algo is a copy of
-                    # ModelOptFp8Config._extract_modelopt_quant_algo kept in
-                    # sync manually. On each vLLM bump, diff the upstream body
-                    # against _extract_modelopt_algo and update if it changed.
-                    algo = _extract_modelopt_algo(cfg)
+                    # cfg is a non-None dict (just parsed from JSON) and
+                    # quant_method.startswith('modelopt') is already confirmed above.
+                    if 'quantization' in cfg and isinstance(cfg['quantization'], dict):
+                        algo = str(cfg['quantization'].get('quant_algo', '')).upper()
+                    else:
+                        algo = str(cfg.get('quant_algo', '')).upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:

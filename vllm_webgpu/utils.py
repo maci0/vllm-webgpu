@@ -40,8 +40,9 @@ SHADERS_DIR = Path(__file__).parent / "shaders"
 
 # SamplingParams clamps all sub-threshold temperatures to _MAX_TEMP (0.01) before
 # they reach sample_token, so any temperature below that threshold arrives here as
-# exactly 0.0 (greedy) or >= 0.01 (stochastic). Matches vLLM _SAMPLING_EPS as of 0.24.
-GREEDY_TEMP: float = 1e-5  # vLLM _SAMPLING_EPS as of 0.24
+# exactly 0.0 (greedy) or >= 0.01 (stochastic). Imported from vLLM so the
+# greedy/stochastic decision stays consistent if vLLM ever changes the threshold.
+from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP
 
 
 # zero_bytes(n: int) -> bytes  — cached constructor for n zero bytes.

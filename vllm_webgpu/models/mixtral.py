@@ -29,6 +29,18 @@ def _validate_gate_consts(extra_gate_consts: dict) -> None:
         )
 
 
+def _validate_inter_alignment(inter: int) -> None:
+    """Raise if inter is not a multiple of 4, as required by the gelu_mul dispatch.
+
+    Called from both the parent quantized gate/up path and the GPT-OSS bias path
+    so the identical guard is not duplicated across two methods.
+    """
+    if inter % 4 != 0:
+        raise ValueError(
+            f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
+        )
+
+
 class MixtralWebGPUModel(LlamaWebGPUModel):
     """
     Handles Mistral (dense, optional sliding window attention) and
@@ -271,18 +283,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         )
         return msc["expert_gate"], msc["expert_up"]
 
-    @staticmethod
-    def _validate_inter_alignment(inter: int) -> None:
-        """Raise if inter is not a multiple of 4, as required by the gelu_mul dispatch.
-
-        Called from both the parent quantized gate/up path and the GPT-OSS bias path
-        so the identical guard is not duplicated across two methods.
-        """
-        if inter % 4 != 0:
-            raise ValueError(
-                f"expert intermediate size {inter} must be divisible by 4 for gelu_mul dispatch"
-            )
-
     def _dispatch_expert_gate_up(
         self,
         normed_x: "WebGPUBuffer",
@@ -314,7 +314,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 (inter, 1, 1),
             )
         else:
-            self._validate_inter_alignment(inter)
+            _validate_inter_alignment(inter)
             gate_buf, up_buf = self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter, uq_g=uq_g, uq_u=uq_u)
             self._dispatch(
                 "gelu_mul",

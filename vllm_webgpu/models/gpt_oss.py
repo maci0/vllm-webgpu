@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm_webgpu.models.base import _rows_wg, _vec4_wg
-from vllm_webgpu.models.mixtral import MixtralWebGPUModel, _validate_gate_consts
+from vllm_webgpu.models.mixtral import MixtralWebGPUModel, _validate_gate_consts, _validate_inter_alignment
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 if TYPE_CHECKING:
@@ -407,7 +407,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             return
 
         _validate_gate_consts(extra_gate_consts)
-        self._validate_inter_alignment(inter)
+        _validate_inter_alignment(inter)
 
         # Pre-compute quantization indices to avoid redundant _uq_for_key lookups
         # inside _dispatch_expert_projections (see docstring for that method).

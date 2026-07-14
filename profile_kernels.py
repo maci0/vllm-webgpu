@@ -6,7 +6,6 @@ Usage:
     python3 profile_kernels.py [--model MODEL_PATH] [--decode-steps N] [--warmup-steps N]
 """
 import argparse
-import statistics
 import time
 from types import SimpleNamespace
 import numpy as np
@@ -125,7 +124,7 @@ def main() -> None:
 
     if not prod_times:
         raise ValueError("No production steps measured (--decode-steps must be > 0)")
-    prod_avg_ms = statistics.fmean(prod_times)
+    prod_avg_ms = float(np.mean(prod_times))
     print(f"Production throughput: {prod_avg_ms:.1f} ms/tok = {1000/prod_avg_ms:.1f} tok/s")
 
     # ── Profiled decode steps ──────────────────────────────────────────────────────
@@ -140,7 +139,7 @@ def main() -> None:
             pos += 1
     finally:
         model.profiling = False
-    avg_step_ms = statistics.fmean(decode_times)
+    avg_step_ms = float(np.mean(decode_times))
     print(f"\nAverage decode step: {avg_step_ms:.1f} ms  ({1000/avg_step_ms:.1f} tok/s)")
     print()
     print(model.profile_report())
@@ -149,7 +148,7 @@ def main() -> None:
     # ── Per-component breakdown ────────────────────────────────────────────────────
     stats = model.get_prof_stats()
     if stats:
-        total = sum(statistics.fmean(v) for v in stats.values())
+        total = sum(float(np.mean(v)) for v in stats.values())
 
         print(f"Total GPU time: {total:.2f} ms")
         print(f"Unlabeled overhead (LM head + embed + norms + Python): {avg_step_ms - total:.2f} ms")

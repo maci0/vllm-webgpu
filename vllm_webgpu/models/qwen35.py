@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from itertools import batched, chain
 from typing import TYPE_CHECKING
 
@@ -115,9 +116,19 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_v_heads: int = getattr(model_config, "linear_num_value_heads", _LIN_V_HEADS)
         self._lin_v_dim: int   = getattr(model_config, "linear_value_head_dim", _LIN_V_DIM)
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
-        # Total V dimension (v_heads * v_dim).
+        # Total V dimension (v_heads * v_dim); kept for scratch buffer sizing.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim
-        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_val_dim
+        # Conv dimension derived from the authoritative shape calculator (num_spec=0
+        # here; _alloc_lin_states passes the actual num_spec at allocation time).
+        # conv_shape[-1] is always the conv dimension in SD layout (the only layout
+        # accepted by this backend; DS is rejected in __init__ above).
+        _conv_shape_init, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel, num_spec=0,
+        )
+        self._lin_conv_dim: int = _conv_shape_init[-1]
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q (offset = K_heads * K_dim). V follows K+Q.
         self._gdn_k_offset: int = self._lin_k_heads * self._lin_k_dim
@@ -339,14 +350,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             conv_kernel_size=self._lin_conv_kernel,
             num_spec=num_spec,
         )
-        # SD layout: conv_shape = (CONV_KERNEL-1+num_spec, CONV_DIM). DS layout is
-        # rejected in __init__, so conv_shape[-1] is always the conv dimension.
-        assert self._lin_conv_dim == conv_shape[-1], (
-            f"conv_dim mismatch: {self._lin_conv_dim} vs {conv_shape[-1]}; "
-            "MambaStateShapeCalculator.gated_delta_net_state_shape formula may have changed"
-        )
-        conv_bytes = conv_shape[0] * conv_shape[1] * _ELEM_BYTES["f16"]
-        ssm_bytes  = ssm_shape[0] * ssm_shape[1] * ssm_shape[2] * _ELEM_BYTES["f32"]
+        conv_bytes = math.prod(conv_shape) * _ELEM_BYTES["f16"]
+        ssm_bytes  = math.prod(ssm_shape) * _ELEM_BYTES["f32"]
 
         self._ssm_gpu  = {}
         self._conv_gpu = {}

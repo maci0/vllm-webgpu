@@ -116,7 +116,7 @@ def allocate_kv_from_tensors(
                 )
             layer_spec_map.update(gs.kv_cache_specs)
         else:
-            layer_spec_map.update({name: gs for name in group.layer_names})
+            layer_spec_map.update(dict.fromkeys(group.layer_names, gs))
 
     # Build layer_index -> (k_bytes, v_bytes) from the tensors vLLM already computed.
     # Keyed by layer index (int) so each entry can be written directly into model.kv_pool.
