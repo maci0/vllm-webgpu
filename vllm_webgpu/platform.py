@@ -151,6 +151,24 @@ class WebGPUPlatform(Platform):
             vllm_config.cache_config.block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
 
     @classmethod
+    def update_block_size_for_backend(cls, vllm_config: "VllmConfig") -> None:
+        # The base class Phase 1 calls CPU_ATTN.get_preferred_block_size(), which
+        # always returns DEFAULT_BLOCK_SIZE (16), overwriting any VLLM_WEBGPU_BLOCK_SIZE
+        # value written by check_and_update_config. Skip Phase 1 by temporarily
+        # marking block_size as user-specified; Phase 2 (hybrid model alignment)
+        # still runs via the base class.
+        cache_config = vllm_config.cache_config
+        if not cache_config.user_specified_block_size:
+            cache_config.block_size = _envs.VLLM_WEBGPU_BLOCK_SIZE
+            cache_config.user_specified_block_size = True
+            try:
+                super().update_block_size_for_backend(vllm_config)
+            finally:
+                cache_config.user_specified_block_size = False
+        else:
+            super().update_block_size_for_backend(vllm_config)
+
+    @classmethod
     def get_attn_backend_cls(
         cls,
         selected_backend: AttentionBackendEnum,
