@@ -94,7 +94,9 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
         batch_meta,
     )
 
-    if model._greedy_decode:
+    # DiffusionGemma always returns full (num_tokens, vocab) float32 logits regardless of
+    # _greedy_decode, so check shape before trusting logits[-1, 0] as a token ID.
+    if model._greedy_decode and logits.shape[-1] == 1:
         last_token = int(logits[-1, 0])
         print(f"  Last prefill logit: argmax={last_token}")
     else:
@@ -127,11 +129,11 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             meta,
         )
 
-        if model._greedy_decode:
+        # DiffusionGemma always returns full (1, vocab) float32 logits regardless of
+        # _greedy_decode, so check shape before trusting logits[0, 0] as a token ID.
+        if model._greedy_decode and logits.shape[-1] == 1:
             last_token = int(logits[0, 0])
         else:
-            # _greedy_decode=False: forward() already returned full (1, vocab) logits.
-            # No logit_readback() call needed.
             last_token = sample_token(logits[0], temperature=temperature, top_p=top_p)
 
         if (step + 1) % 5 == 0:
