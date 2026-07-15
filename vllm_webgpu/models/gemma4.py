@@ -859,6 +859,21 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         if not self._mr4_ok:
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 
+        # Guard against WebGPU per-dimension dispatch limit (65535).
+        # gelu_mul/add_f32 dispatch: (cdiv(T * max(max_inter, hidden), 1024), 1, 1).
+        # embedding/norm/rope/kv_cache dispatches place T in a workgroup dimension directly.
+        # Mirrors the same guard in LlamaWebGPUModel._prefill_batch_forward.
+        if T > 65535 or cdiv(T * max(self._max_inter, self.hidden_size), 1024) > 65535:
+            return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
+
+        # APC prefix-cache hit: the first token's absolute position is > 0, meaning
+        # some cached K/V blocks already exist in the KV cache. flash_attn_prefill has
+        # no KV-cache binding and applies a batch-local causal mask starting at index 0,
+        # so it cannot attend to the cached prefix. Fall back to the sequential path,
+        # which drives flash_attn_decode with the full block table and ctx_len = tok_pos + 1.
+        if int(positions[0]) > 0:
+            return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
+
         dev = self.wgpu_device.wgpu_device
         hidden = self.hidden_size
         vocab  = self.vocab_size
