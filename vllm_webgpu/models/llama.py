@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched, chain
+from itertools import batched
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -230,14 +230,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         if self._is_moe:
             self._batch_matmul_supported = False
         else:
-            _it = (k for k in self.weights
-                   if k.startswith('model.layers.')
-                   and k.endswith(_PROJ_WEIGHT_SUFFIXES))
-            _first = next(_it, None)
+            proj_keys = [k for k in self.weights
+                         if k.startswith('model.layers.')
+                         and k.endswith(_PROJ_WEIGHT_SUFFIXES)]
             self._batch_matmul_supported = (
-                _first is not None
-                and all(self._uq_for_key(k) in (0, 3)
-                        for k in chain([_first], _it))
+                bool(proj_keys)
+                and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
             )
 
     def _decode_setup(

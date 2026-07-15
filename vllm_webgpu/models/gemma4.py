@@ -390,7 +390,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 _rope_base = float(_rp.get("rope_theta", self.rope_theta))
             _partial    = float(_rp.get("partial_rotary_factor", 1.0))
-            _rope_type  = str(_rp.get("rope_type", "default"))
+            _rope_type  = _rp.get("rope_type", "default")
             _hd         = _lp_e["head_dim"]
             _rotary_dim = int(_hd * _partial)
             # "proportional" rope: freq exponent denominator = head_dim, not rotary_dim.

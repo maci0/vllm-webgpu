@@ -12,7 +12,7 @@ class WebGPUConfig:
         if self.power_preference not in _PowerPreference:
             raise ValueError(
                 f"VLLM_WEBGPU_POWER_PREFERENCE={self.power_preference!r}. "
-                f"Valid: {sorted(_PowerPreference)}"
+                f"Valid: {', '.join(sorted(_PowerPreference))}"
             )
 
 

@@ -768,8 +768,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # Allocate one small buffer set per token for ids/pos/slot_map.
         # Shared scratch (sc["normed"], sc["h0/h1/h2"]) is safe to reuse because
         # the GPU executes dispatches within each encoder in submission order.
-        bt_arr = self._bt_arr(attn_metadata)
-        dev.queue.write_buffer(self._pre["bt"].buf, 0, bt_arr.tobytes())
+        dev.queue.write_buffer(self._pre["bt"].buf, 0, self._bt_arr(attn_metadata).tobytes())
         bt_buf = self._pre["bt"]
 
         # Cast at construction time: attn_metadata.slot_mapping may be a plain Python

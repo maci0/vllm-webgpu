@@ -126,6 +126,13 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
                              scale_transforms=scale_transforms)
 
+        # Remove the one-shot stash transforms so _weight_transforms is not
+        # permanently inflated by 2 * num_layers entries after loading.
+        for _i in range(self.num_layers):
+            _p = f"model.layers.{_i}.mlp.experts"
+            for _key in (f"{_p}.gate_up_proj_bias", f"{_p}.down_proj_bias"):
+                self._weight_transforms.pop(_key, None)
+
         # Verify that stash transforms ran for every bias key that was loaded.
         # The weight loader silently skips weight_transforms for I8 tensors
         # (logs a warning, then bypasses the transform). If that happened for a
