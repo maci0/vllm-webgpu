@@ -11,7 +11,7 @@ from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculat
 from vllm.model_executor.models.nemotron_h import NemotronHForCausalLM as _NemotronHForCausalLM
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
+from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES, _STAGING_USAGE
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES, assert_elem_bytes_stable
 
 if TYPE_CHECKING:
@@ -810,7 +810,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 v_buf = self.weights[v_key]
                 _staging_w = dev.create_buffer(
                     size=total_nb,
-                    usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
+                    usage=_STAGING_USAGE)
                 _enc_w = dev.create_command_encoder()
                 _enc_w.copy_buffer_to_buffer(q_buf.buf, 0, _staging_w, 0, q_nb)
                 _enc_w.copy_buffer_to_buffer(k_buf.buf, 0, _staging_w, q_nb, k_nb)
@@ -866,7 +866,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     _q_snb, _k_snb, _v_snb = q_sb.nbytes, k_sb.nbytes, v_sb.nbytes
                     _staging_s = dev.create_buffer(
                         size=_q_snb + _k_snb + _v_snb,
-                        usage=wgpu_lib.BufferUsage.COPY_DST | wgpu_lib.BufferUsage.MAP_READ)
+                        usage=_STAGING_USAGE)
                     _enc_s = dev.create_command_encoder()
                     _enc_s.copy_buffer_to_buffer(q_sb.buf, 0, _staging_s, 0, _q_snb)
                     _enc_s.copy_buffer_to_buffer(k_sb.buf, 0, _staging_s, _q_snb, _k_snb)

@@ -199,8 +199,8 @@ def _make_model_output(
     if widths:
         max_k = max(widths)
         # Short-circuit when all entries are present and share the same width.
-        all_present = None not in logprobs_data
-        if all_present and min(widths) == max(widths):
+        all_present = not any(d is None for d in logprobs_data)
+        if all_present and len(set(widths)) == 1:
             built_logprobs = _stack_logprobs(cast("list[LogprobsTensors]", logprobs_data))
         else:
             # Pad entries to max_k width and collect sentinel rows for requests
@@ -639,7 +639,7 @@ class WebGPUModelRunner:
             # between steps rather than restarting from the same seed each time.
             # chunked prefill is disabled (platform.py:enable_chunked_prefill = False),
             # so every request here is truly new and must have no prior state.
-            if self._req_state.get(rid) is not None:
+            if rid in self._req_state:
                 raise RuntimeError(
                     f"req {rid} already has saved state but chunked prefill is disabled; "
                     "update this path before re-enabling chunked prefill"
@@ -722,7 +722,7 @@ class WebGPUModelRunner:
                     )
                 pos = state["pos"]
                 blk_ids = state["block_ids"]  # lazily copied below only when modified
-                sp = state.get("sampling_params")
+                sp = state["sampling_params"]
                 num_logprobs = _resolve_num_logprobs(sp, rid)
                 is_resumed = rid in resumed_req_ids
 
@@ -854,7 +854,7 @@ class WebGPUModelRunner:
                 # Non-greedy path: model returns (1, vocab) float32; sample here.
                 # Use the persisted per-request generator so the RNG state
                 # advances between steps (not reset to the same seed each step).
-                rng = state.get("rng")
+                rng = state["rng"]
                 if sp is None or logits.shape[-1] == 1:
                     stok = int(logits[0, 0])
                 else:

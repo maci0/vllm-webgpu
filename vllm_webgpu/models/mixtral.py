@@ -3,7 +3,7 @@ from logging import DEBUG
 from typing import TYPE_CHECKING
 
 import numpy as np
-import wgpu
+from wgpu import MapMode
 
 from vllm.logger import init_logger
 from vllm_webgpu.models.base import _rows_wg, _STAGING_USAGE, _vec4_wg
@@ -499,11 +499,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         dev.queue.on_submitted_work_done_sync()
 
         # Map the pre-allocated staging buffers — no extra GPU submit needed.
-        self._topk_idx_staging.map_sync(mode=wgpu.MapMode.READ)
+        self._topk_idx_staging.map_sync(mode=MapMode.READ)
         expert_indices = np.frombuffer(self._topk_idx_staging.read_mapped(), dtype=np.uint32).copy()
         self._topk_idx_staging.unmap()
         if _debug_weights:
-            self._topk_w_staging.map_sync(mode=wgpu.MapMode.READ)
+            self._topk_w_staging.map_sync(mode=MapMode.READ)
             raw_w = np.frombuffer(self._topk_w_staging.read_mapped(), dtype=np.float32).copy()
             self._topk_w_staging.unmap()
             logger.debug(

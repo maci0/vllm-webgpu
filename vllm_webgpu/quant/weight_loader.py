@@ -558,6 +558,21 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
 
 
+def _extract_modelopt_algo(cfg: dict) -> str:
+    """Extract the ModelOpt quantization algorithm string from a parsed hf_quant_config dict.
+
+    Mirrors ModelOptFp8Config._extract_modelopt_quant_algo (vllm/model_executor/layers/
+    quantization/modelopt.py). When 'quantization' is present but not a dict, vLLM's
+    method returns None (which callers coerce to ''); this function does the same.
+    Only falls back to the top-level 'quant_algo' key when 'quantization' is absent.
+    """
+    if 'quantization' in cfg:
+        algo = str(cfg['quantization'].get('quant_algo', '')).upper() if isinstance(cfg['quantization'], dict) else ''
+    else:
+        algo = str(cfg.get('quant_algo', '')).upper()
+    return algo
+
+
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
 
@@ -572,7 +587,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     quantization/modelopt.py) to avoid duplicating the quant_method/quant_algo
     extraction. That import may fail on WebGPU because modelopt.py has top-level
     CUDA kernel imports (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe);
-    _extract_modelopt_algo (defined above) is used as the fallback in that case.
+    _extract_modelopt_algo (defined below) is used as the fallback in that case.
     """
     hf_quant = model_dir / "hf_quant_config.json"
     if hf_quant.exists():
@@ -591,10 +606,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     # that fail on WebGPU where no CUDA runtime is present.
                     # cfg is a non-None dict (just parsed from JSON) and
                     # quant_method.startswith('modelopt') is already confirmed above.
-                    if 'quantization' in cfg and isinstance(cfg['quantization'], dict):
-                        algo = str(cfg['quantization'].get('quant_algo', '')).upper()
-                    else:
-                        algo = str(cfg.get('quant_algo', '')).upper()
+                    algo = _extract_modelopt_algo(cfg)
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:

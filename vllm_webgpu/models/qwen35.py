@@ -312,7 +312,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                             hint = (
                                 "The CPU-side split transform for q_proj.weight did not fire; "
                                 "verify that load_weights registered _make_split for this layer "
-                                "and that the base loader's weight_transforms path was reached."
+                                "and that the base loader's weight_transforms path was reached. "
+                                "Note: GPTQ CPU dequantization and the I8 path bypass "
+                                "weight_transforms entirely; if this checkpoint is GPTQ-dequantized, "
+                                "the transform cannot fire regardless of registration."
                             )
                         raise ValueError(
                             f"Layer {i}: q_gate_proj.weight is missing but "
@@ -513,10 +516,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         are float16 and are not directly compatible). The shader stores state
         in the same layout, so no transposition is needed on readback.
         """
-        return self._readback_recurrent_states(list(chain(
-            (("conv", i, b) for i, b in self._conv_gpu.items()),
-            (("ssm",  i, b) for i, b in self._ssm_gpu.items()),
-        )))
+        return self._readback_recurrent_states([
+            *(("conv", i, b) for i, b in self._conv_gpu.items()),
+            *(("ssm",  i, b) for i, b in self._ssm_gpu.items()),
+        ])
 
     def restore_recurrent_states(self, states: dict) -> None:
         """Write saved state bytes back into GDN conv/SSM GPU buffers.

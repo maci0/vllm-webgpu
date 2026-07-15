@@ -8,14 +8,28 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from vllm_webgpu.utils import sample_token
 
-def _pick_token(logits_2d, greedy: bool, temperature: float, top_p: float) -> int:
+
+def _pick_token(
+    logits_2d,
+    greedy: bool,
+    temperature: float,
+    top_p: float,
+    top_k: int = 0,
+    min_p: float = 0.0,
+    generator=None,
+    use_fp64_gumbel: bool = False,
+) -> int:
     """Sample or greedily decode the next token from a (1, vocab_or_1) logits row."""
-    from vllm_webgpu.utils import sample_token
     row = logits_2d[0]
     if greedy and logits_2d.shape[-1] == 1:
         return int(row[0])
-    return sample_token(row, temperature=temperature, top_p=top_p)
+    return sample_token(
+        row, temperature=temperature, top_p=top_p,
+        top_k=top_k, min_p=min_p, generator=generator,
+        use_fp64_gumbel=use_fp64_gumbel,
+    )
 
 
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
