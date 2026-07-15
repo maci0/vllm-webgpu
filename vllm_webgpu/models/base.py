@@ -83,7 +83,7 @@ def compute_yarn_freqs(
     YaRNScalingRotaryEmbedding._compute_inv_freq in numpy without instantiating
     that class or calling any private method.
 
-    VERSION SYNC: formula last verified against vLLM 0.24.0.
+    VERSION SYNC: formula last verified against vLLM 0.25.1.
     Reference: YaRNScalingRotaryEmbedding._compute_inv_freq
     (vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py:49-73).
     On each vLLM bump, run tests/test_yarn_freqs.py — the test constructs a

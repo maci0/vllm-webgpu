@@ -564,7 +564,7 @@ def _extract_modelopt_algo(cfg: "dict | None") -> "str | None":
     that fail on WebGPU. The logic is intentionally kept here rather than imported so
     that each vLLM bump can be verified by diffing against the upstream method body.
 
-    VERSION SYNC: verified against vLLM 0.24.0 (modelopt.py:245-262).
+    VERSION SYNC: verified against vLLM 0.25.1 (modelopt.py:245-262).
     On each vLLM bump, diff ModelOptFp8Config._extract_modelopt_quant_algo against
     the body below and update the version number above.
     """

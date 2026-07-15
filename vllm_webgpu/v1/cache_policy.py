@@ -395,18 +395,18 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # Until then, this VERSION SYNC comment is the correct mitigation.
     #
     # Probe 1 uses is-not-None (empty list is a valid value meaning all-non-attention).
-    # Probe 2 uses truthiness matching vLLM model.py:1342 (empty attn_type_list falls
+    # Probe 2 uses truthiness matching vLLM model.py:1393 (empty attn_type_list falls
     # through to layer_types). The asymmetry is intentional: it mirrors vLLM's own
-    # inconsistency at model.py:1341-1342 and is not a bug.
+    # inconsistency at model.py:1392-1393 and is not a bug.
     # Probe 4 (outer-config layer_types) is not present in vLLM; it is a local
     # extension for multimodal models where layer_types lives only on the outer config.
-    v = getattr(hf_text_config, "layers_block_type", None)  # vllm/config/model.py:1330
+    v = getattr(hf_text_config, "layers_block_type", None)  # vllm/config/model.py:1378
     if v is not None:
         return v
-    v = getattr(_outer, "attn_type_list", None)             # vllm/config/model.py:1341 (truthiness)
+    v = getattr(_outer, "attn_type_list", None)             # vllm/config/model.py:1392 (truthiness)
     if v:
         return v
-    v = getattr(hf_text_config, "layer_types", None)        # vllm/config/model.py:1346
+    v = getattr(hf_text_config, "layer_types", None)        # vllm/config/model.py:1397
     if v is not None:
         return v
     if _outer is not hf_text_config:                        # local extension: outer-only configs
