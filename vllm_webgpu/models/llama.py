@@ -611,7 +611,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     self._gemm_batch(b["ffn_n"], uw_k, b["up_buf"],   hidden, inter, T)
                     self._dispatch("gelu_mul",
                                    [b["gate_buf"], b["up_buf"], b["ffn_act"]],
-                                   {"N": T * inter, "ACTIVATION": 0},
+                                   {"N": T * inter},
                                    _vec4_wg(T * inter))
                     self._gemm_batch(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden, T)
 
@@ -1018,7 +1018,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                {"K": hidden, "N": inter, "USE_QUANT": uq2, **qi2},
                                (inter, 1, 1))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                           {"N": inter, "ACTIVATION": 0}, _vec4_wg(inter))
+                           {"N": inter}, _vec4_wg(inter))
 
         # Down projection
         w_k = f"{p}.mlp.down_proj.weight"

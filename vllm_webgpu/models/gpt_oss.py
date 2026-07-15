@@ -474,12 +474,14 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
             return
 
         # Only expert_tmp is needed on the biased-down path. Use the shared
-        # helper rather than calling _ensure_moe_expert_bufs(), which would
-        # also allocate expert_gate and expert_up unnecessarily.
+        # helper rather than relying on the inline `if "expert_gate" not in msc`
+        # allocation inside `_dispatch_expert_projections`, which would also
+        # allocate expert_gate and expert_up unnecessarily.
         # This call is not redundant: when gate+up biases are absent the gate_up
         # dispatch uses the fused f16 path (fused_gate_act), which skips
-        # _ensure_moe_expert_bufs and leaves expert_tmp unallocated. The call
-        # here is the sole allocation site in that case.
+        # the inline `if "expert_gate" not in msc` allocation inside
+        # `_dispatch_expert_projections` and leaves expert_tmp unallocated.
+        # The call here is the sole allocation site in that case.
         self._ensure_expert_tmp()
         msc = self._moe_sc
         hidden = self.hidden_size

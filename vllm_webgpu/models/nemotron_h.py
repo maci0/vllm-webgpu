@@ -47,17 +47,17 @@ if _mapper.orig_to_new_substr != {"A_log": "A", "embeddings": "embed_tokens"}:
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_substr changed upstream: "
         f"{_mapper.orig_to_new_substr!r}. Review load_weights before removing this assertion."
     )
-if _mapper.orig_to_new_renamings:
+if _mapper.orig_to_new_renamings != []:
     raise AssertionError(
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_renamings changed upstream: "
         f"{_mapper.orig_to_new_renamings!r}. Review load_weights before removing this assertion."
     )
-if _mapper.orig_to_new_regex:
+if _mapper.orig_to_new_regex != {}:
     raise AssertionError(
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_regex changed upstream: "
         f"{_mapper.orig_to_new_regex!r}. Review load_weights before removing this assertion."
     )
-if _mapper.orig_to_new_suffix:
+if _mapper.orig_to_new_suffix != {}:
     raise AssertionError(
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_suffix changed upstream: "
         f"{_mapper.orig_to_new_suffix!r}. Review load_weights before removing this assertion."
@@ -441,7 +441,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         CD  = self.conv_dim
         IPD = self.in_proj_dim
         MNH = self.mamba_num_heads
-        I   = max(self._layer_int_size)
+        I   = max(self._layer_int_size, default=0)
         V   = self.vocab_size
 
         max_ctx = self.model_config.max_position_embeddings

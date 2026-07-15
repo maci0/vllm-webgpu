@@ -135,9 +135,10 @@ def _gemma4_layer_params(
         # (2) Find last non-shared layer of the same type (Gemma4Attention.__init__ ~L469-471)
         if is_kv_shared:
             prev = layer_types[:first_kv_shared]
-            try:
-                kv_shared_target = len(prev) - 1 - prev[::-1].index(lt)
-            except ValueError:
+            kv_shared_target = next(
+                (len(prev) - 1 - j for j, x in enumerate(reversed(prev)) if x == lt), -1
+            )
+            if kv_shared_target == -1:
                 raise ValueError(
                     f"Layer {i} (type={lt!r}) is KV-shared but type {lt!r} was not "
                     f"found in the non-shared prefix layer_types[:{first_kv_shared}]. "
@@ -620,9 +621,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 self._layer_scales.append(1.0)
             else:
                 raw = _raw_by_layer[i]
-                n_elem = math.prod(buf.shape)
-                elem_b = _ELEM_BYTES[buf.dtype]
-                val = float(np.frombuffer(raw[:n_elem * elem_b], dtype=_WGPU_DTYPE_TO_NP[buf.dtype]).item())
+                expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
+                val = float(np.frombuffer(raw[:expected], dtype=_WGPU_DTYPE_TO_NP[buf.dtype]).item())
                 self._layer_scales.append(val)
         bad = [i for i, s in enumerate(self._layer_scales) if s <= 0]
         if bad:

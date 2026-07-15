@@ -291,8 +291,10 @@ class BaseWebGPUModel(ABC):
         if not self._prof_stats:
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
-        rows = sorted([(lbl, (s := sum(v)) / (n := len(v)), s, n) for lbl, v in self._prof_stats.items()],
-                      key=lambda r: r[2], reverse=True)
+        rows = sorted(
+            [(lbl, sum(v) / len(v), sum(v), len(v)) for lbl, v in self._prof_stats.items() if v],
+            key=lambda r: r[2], reverse=True,
+        )
         total = sum(r[2] for r in rows)
         for label, avg, sum_t, n in rows:
             pct = 100.0 * sum_t / total if total else 0

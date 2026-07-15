@@ -36,14 +36,11 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-from vllm.v1.sample.sampler import _SAMPLING_EPS as GREEDY_TEMP  # mirrors vllm.v1.sample.sampler._SAMPLING_EPS
+# SamplingParams clamps all sub-threshold temperatures to exactly 0.0 (greedy)
+# or >= 0.01 (stochastic) before they reach sample_token, so any value in
+# (0.0, 0.01) produces the same greedy/stochastic split.
+GREEDY_TEMP: float = 1e-5
 SHADERS_DIR = Path(__file__).parent / "shaders"
-
-# SamplingParams clamps all sub-threshold temperatures to _MAX_TEMP (0.01) before
-# they reach sample_token, so any temperature below that threshold arrives here as
-# exactly 0.0 (greedy) or >= 0.01 (stochastic). Any value in (0.0, 0.01) produces
-# the same greedy/stochastic split, so the constant is stable regardless of which
-# vLLM internal symbol holds it.
 
 
 # zero_bytes(n: int) -> bytes  — cached constructor for n zero bytes.
@@ -67,7 +64,7 @@ def sample_token(
 
     Args:
         logits_1d: 1-D float32 logit vector of length vocab_size.
-        temperature: Softmax temperature. Values < _SAMPLING_EPS produce greedy argmax.
+        temperature: Softmax temperature. Values < GREEDY_TEMP produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
         top_k: Keep at most top_k tokens. 0 disables.
         min_p: Minimum probability relative to the top token. Tokens whose

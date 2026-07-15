@@ -596,8 +596,8 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
           6. gdn_state_update(qkv_conv, a_buf, b_buf, A_log, dt_bias, ssm_state) → gdn_out [val_dim f16], updates ssm_state
           7. linear_attn_norm_gate(gdn,z)     → gated      [4096 f16]
           8. matmul_quant(gated, out_proj)    → out_buf    [hidden f16]
-          9. add(x, out_buf)                  → residual
-          10. FFN (gate/up → silu → down)
+          9+10 fused: add_rms_norm(x, out_buf, post_attn_norm) → residual (sum), ffn_normed (normed for FFN input)
+          10. FFN (gate/up → silu → down)  [ffn_normed produced by the fused step above]
         """
         sc = self._sc
         hidden = self.hidden_size

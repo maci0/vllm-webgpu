@@ -103,8 +103,7 @@ def main() -> None:
 
     def _run_decode_step(token_id, p):
         """Run one decode step; returns (next_tok, elapsed_ms)."""
-        slot = p
-        _dm = SimpleNamespace(slot_mapping=[slot], block_tables=[bt], max_decode_seq_len=p + 1)
+        _dm = SimpleNamespace(slot_mapping=[p], block_tables=[bt], max_decode_seq_len=p + 1)
         t_start = time.perf_counter()
         lg = model.forward(np.array([token_id], dtype=np.uint32), np.array([p], dtype=np.uint32), _dm)
         if lg.shape != (1, 1):
