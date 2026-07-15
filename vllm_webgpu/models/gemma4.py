@@ -458,6 +458,23 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                     f"num_kv_heads={_lp0['num_kv_heads']} * head_dim={_lp0['head_dim']} "
                     f"!= kv_dim={_lp0['kv_dim']}"
                 )
+            # Layer 0 is always sliding_attention in Gemma4-12B, so also spot-check the
+            # first global full_attention layer if one exists, as it has different dims
+            # (larger head_dim, num_kv_heads=1) that GGUF metadata could corrupt silently.
+            _lp_global = next((lp for lp in self._lp if not lp.get("is_sliding", True)), None)
+            if _lp_global is not None:
+                if self.num_q_heads * _lp_global["head_dim"] != _lp_global["q_dim"]:
+                    raise ValueError(
+                        f"q_norm tile shape mismatch at global layer: "
+                        f"num_q_heads={self.num_q_heads} * head_dim={_lp_global['head_dim']} "
+                        f"!= q_dim={_lp_global['q_dim']}"
+                    )
+                if _lp_global["num_kv_heads"] * _lp_global["head_dim"] != _lp_global["kv_dim"]:
+                    raise ValueError(
+                        f"k_norm tile shape mismatch at global layer: "
+                        f"num_kv_heads={_lp_global['num_kv_heads']} * head_dim={_lp_global['head_dim']} "
+                        f"!= kv_dim={_lp_global['kv_dim']}"
+                    )
 
         # Updated to True/False in load_weights() once weights are known.
         # Defaults to True so tests that bypass load_weights() reach the batch path.
@@ -1332,7 +1349,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 # wrong results from stale values written by a previous layer's K dispatch.
                 if not is_kv_shared:
                     _k_src = sc["k_buf"]
-                    _v_src = sc["k_buf"]
                 _v_src_offset = 0
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[qw],
@@ -1358,7 +1374,8 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                        {"K": hidden, "N": kv_dim, "USE_QUANT": uq_v,
                                         **self._quant_extra(f"{p}.self_attn.v_proj", uq_v)},
                                        (kv_dim, 1, 1))
-                        _v_src = sc["v_buf"]
+                    # V=K for global attention (has_v=False); V uses its own buffer otherwise.
+                    _v_src = sc["v_buf"] if has_v else sc["k_buf"]
                 _q_src = sc["q_buf"]
 
             # Per-head RMSNorm + RoPE for Q and K.

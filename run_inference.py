@@ -100,7 +100,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # _greedy_decode, so check shape before trusting logits[-1, 0] as a token ID.
     last_token = _pick_token(logits[-1:], temperature, top_p)
     if logits.shape[-1] != 1:
-        _best = int(np.argmax(logits[-1]))
+        _best = int(logits[-1].argmax())
         print(f"  Last prefill logit: argmax={_best}, value={float(logits[-1][_best]):.2f}, "
               f"std={float(logits[-1].std()):.2f}")
     else:

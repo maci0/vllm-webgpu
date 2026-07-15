@@ -34,7 +34,8 @@ def _get_wgpu_adapter():
     try:
         from vllm_webgpu.config import get_config
         cfg = get_config()
-    except ImportError:
+    except Exception as exc:
+        logger.debug("WebGPU config probe failed: %s", exc)
         return None
     try:
         import wgpu

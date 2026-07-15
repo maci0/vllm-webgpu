@@ -110,6 +110,13 @@ logger = init_logger(__name__)
 
 _UNSUPPORTED_QUANT_TYPES = frozenset({"aqlm", "hqq", "quip#", "quip"})
 
+# GDN_BF16 companion is created for linear_attn keys in this set.
+# Extracted as a module-level constant so it is not reallocated on every
+# _upload_plain call (called once per weight key in the safetensors header).
+_GDN_BF16_PROJ_KEYS: frozenset = frozenset(
+    {"in_proj_qkv", "in_proj_a", "in_proj_b", "in_proj_z", "out_proj", "conv1d"}
+)
+
 
 def _flush_pending(wgpu_device) -> None:
     """Submit all pending GPU write_buffer operations and block until complete.
@@ -594,7 +601,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                         ModelOptFp8Config,
                     )
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
-                except (ImportError, Exception):
+                except Exception:
                     # modelopt.py has top-level CUDA kernel imports
                     # (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe)
                     # that fail on WebGPU where no CUDA runtime is present,
@@ -1006,7 +1013,7 @@ def load_safetensors_weights(
             # Do not register value-changing (non-shape) transforms for GDN weight
             # keys: this block mirrors the shape but not value changes from f16 back
             # to bf16.
-            if dtype_str == "BF16" and _gdn_bf16 and "linear_attn" in name and any(p in name for p in {"in_proj_qkv", "in_proj_a", "in_proj_b", "in_proj_z", "out_proj", "conv1d"}):
+            if dtype_str == "BF16" and _gdn_bf16 and "linear_attn" in name and any(p in name for p in _GDN_BF16_PROJ_KEYS):
                 # Preserve bf16 bit pattern: pack u16 pairs into u32 (same storage
                 # cost as f16 pairs). The shader decodes via bitcast<f32>(w << 16u),
                 # recovering the full 8-bit bf16 exponent — avoids f16 range loss.
