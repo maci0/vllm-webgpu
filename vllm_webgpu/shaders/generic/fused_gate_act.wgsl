@@ -42,8 +42,12 @@ override ACTIVATION: u32 = 0u;   // 0 = SiLU, 1 = x*sigmoid(1.702*x) (SwigluOAI)
 fn activate(x: f32) -> f32 {
     var a: f32;
     if (ACTIVATION == 1u) {
-        // GELU: x * Φ(x) approximated as x * sigmoid(1.702 * x)
-        a = x * (1.0f / (1.0f + exp(-1.702f * x)));
+        // x * sigmoid(1.702 * x) (SwigluOAI). Gate input is clamped before
+        // activation, matching gelu_mul.wgsl and vLLM SiluAndMulWithClamp:
+        //   gate = clamp(raw, max=limit) → gate * sigmoid(alpha * gate).
+        var xc = x;
+        if (CLAMP_MAX > 0.0f) { xc = min(xc, CLAMP_MAX); }
+        a = xc * (1.0f / (1.0f + exp(-1.702f * xc)));
     } else if (ACTIVATION == 2u) {
         // ReLU² (squared ReLU, Nemotron-3)
         let r = max(x, 0.0f);
@@ -57,7 +61,9 @@ fn activate(x: f32) -> f32 {
         // SiLU (default): x * sigmoid(x)
         a = x * (1.0f / (1.0f + exp(-x)));
     }
-    if (CLAMP_MAX > 0.0f) { a = min(a, CLAMP_MAX); }
+    // Post-activation CLAMP_MAX for non-SwigluOAI paths.
+    // ACTIVATION == 1u applies CLAMP_MAX pre-activation above.
+    if (ACTIVATION != 1u && CLAMP_MAX > 0.0f) { a = min(a, CLAMP_MAX); }
     return a;
 }
 
@@ -109,8 +115,11 @@ fn main(
 
     if (tid == 0u) {
         let g = sh_gate[0];
-        var u = sh_up[0] + UP_BIAS;
+        // Clamp raw up before adding UP_BIAS, matching gelu_mul.wgsl and vLLM:
+        //   up = clamp(raw_up, -limit, limit)  →  up + bias.
+        var u = sh_up[0];
         if (CLAMP_MIN < 0.0) { u = clamp(u, CLAMP_MIN, -CLAMP_MIN); }
+        u += UP_BIAS;
         ffn_act[row] = f16(clamp(activate(g) * u, -65504.0, 65504.0));
     }
 }
