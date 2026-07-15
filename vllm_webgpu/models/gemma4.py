@@ -30,6 +30,7 @@ if _vllm_version != _EXPECTED_VLLM_VERSION:
         stacklevel=2,
     )
 from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
+from vllm_webgpu.webgpu.buffer import _ELEM_BYTES, _WGPU_DTYPE_TO_NP
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -594,12 +595,30 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         assumption used in rms_norm_add_f32_rms_norm. A non-positive value
         indicates a corrupt or incorrectly quantized checkpoint.
         """
-        self._layer_scales: list[float] = [
-            self._buf_to_numpy(buf).item()
-            if (buf := self.weights.get(f"{self._layer_key_prefix(i)}.layer_scalar")) is not None
-            else 1.0
+        # Batch all layer_scalar GPU-to-CPU copies into a single staging readback
+        # (one map_sync for all layers) rather than N individual to_numpy() calls.
+        _scalar_triples = [
+            ("s", i, buf)
             for i in range(self.num_layers)
+            if (buf := self.weights.get(f"{self._layer_key_prefix(i)}.layer_scalar")) is not None
         ]
+        if _scalar_triples:
+            _staged = self._readback_recurrent_states(_scalar_triples)
+            _raw_by_layer = _staged.get("s", {})
+        else:
+            _raw_by_layer = {}
+
+        self._layer_scales: list[float] = []
+        for i in range(self.num_layers):
+            buf = self.weights.get(f"{self._layer_key_prefix(i)}.layer_scalar")
+            if buf is None:
+                self._layer_scales.append(1.0)
+            else:
+                raw = _raw_by_layer[i]
+                n_elem = math.prod(buf.shape)
+                elem_b = _ELEM_BYTES[buf.dtype]
+                val = float(np.frombuffer(raw[:n_elem * elem_b], dtype=_WGPU_DTYPE_TO_NP[buf.dtype]).item())
+                self._layer_scales.append(val)
         bad = [i for i, s in enumerate(self._layer_scales) if s <= 0]
         if bad:
             raise ValueError(
@@ -1313,8 +1332,12 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             else:
                 # Separate projections (quantized weights, global attention, or KV-shared layer).
                 # KV-shared layers only need Q; K and V come from the target layer's KV cache.
-                _k_src = sc["k_buf"]
-                _v_src = sc["k_buf"]
+                # _k_src and _v_src are intentionally left uninitialized for KV-shared layers
+                # so that any accidental read raises NameError rather than silently producing
+                # wrong results from stale values written by a previous layer's K dispatch.
+                if not is_kv_shared:
+                    _k_src = sc["k_buf"]
+                    _v_src = sc["k_buf"]
                 _v_src_offset = 0
                 self._dispatch("matmul_quant",
                                [normed_x, self.weights[qw],

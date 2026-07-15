@@ -73,8 +73,7 @@ def main() -> None:
     # ── Setup fake KV pool ────────────────────────────────────────────────────────
     # Compute block count before allocating so the pool covers every block ID in bt.
     # Two separate decode_steps passes: production timing + profiling.
-    total_toks = len(tok_ids) + args.warmup_steps + 2 * args.decode_steps
-    bt_blocks = cdiv(total_toks, block_size)
+    bt_blocks = cdiv(len(tok_ids) + args.warmup_steps + 2 * args.decode_steps, block_size)
     num_blocks = max(512, bt_blocks)
 
     allocate_kv_from_hf_config(wgpu_dev.wgpu_device, model, hf_cfg, num_blocks=num_blocks, block_size=block_size)
@@ -86,12 +85,12 @@ def main() -> None:
     # ── Run prefill ───────────────────────────────────────────────────────────────
     bt = np.arange(bt_blocks, dtype=np.uint32)
 
+    T = len(tok_ids)
     print("Running prefill...")
     t0 = time.perf_counter()
-    slots = list(range(len(tok_ids)))
-    _pm = SimpleNamespace(slot_mapping=slots, block_tables=[bt], max_decode_seq_len=len(tok_ids))
+    _pm = SimpleNamespace(slot_mapping=list(range(T)), block_tables=[bt], max_decode_seq_len=T)
     model._greedy_decode = True  # forward() must return (1,1) argmax token, not (1,vocab) logits
-    logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(len(tok_ids), dtype=np.uint32), _pm)
+    logits = model.forward(np.array(tok_ids, dtype=np.uint32), np.arange(T, dtype=np.uint32), _pm)
 
     if logits.shape != (1, 1):
         raise RuntimeError(
@@ -99,7 +98,7 @@ def main() -> None:
             "model did not respect _greedy_decode=True"
         )
     decode_tok = int(logits[0, 0])
-    pos = len(tok_ids)
+    pos = T
     print(f"Prefill done in {(time.perf_counter()-t0)*1000:.1f}ms, first decode token: {decode_tok}")
 
     def _run_decode_step(token_id, p):

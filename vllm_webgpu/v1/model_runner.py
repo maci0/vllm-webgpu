@@ -735,12 +735,12 @@ class WebGPUModelRunner:
                 # producing corrupt output. Raise here so the bug surfaces immediately
                 # rather than silently corrupting generations.
                 num_scheduled = scheduler_output.num_scheduled_tokens[rid]
-                if is_resumed and num_scheduled > 1:
+                if num_scheduled > 1:
                     raise RuntimeError(
-                        f"req {rid}: resumed preempted request has num_scheduled_tokens="
-                        f"{num_scheduled} but the WebGPU decode loop can only process 1 "
-                        f"token per step. Routing through multi-token prefill for resumed "
-                        f"requests is not yet implemented. Disable preemption or set "
+                        f"req {rid}: cached request has num_scheduled_tokens="
+                        f"{num_scheduled} but the WebGPU decode loop processes exactly 1 "
+                        f"token per step. This would cause a KV-cache slot desync between "
+                        f"state['pos'] and num_computed_tokens. Disable preemption or set "
                         f"enable_prefix_caching=False to avoid this path."
                     )
 

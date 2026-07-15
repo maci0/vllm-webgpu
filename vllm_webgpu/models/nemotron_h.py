@@ -385,6 +385,9 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         if _get_layer_cfg is not None:
             _max_q_dim = self._q_dim
             _max_k_dim = self._k_dim
+            # Pre-compute per-attention-layer dims to avoid per-step config lookups
+            # in _attn_layer. Parallels _layer_int_size for MLP layers above.
+            _layer_attn_dims: list = [None] * self.num_layers
             for _li, _lt in enumerate(self._layer_types):
                 if _lt != "attention":
                     continue
@@ -397,8 +400,10 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 _nkv  = _nkv if isinstance(_nkv, int) else self.num_kv_heads
                 _max_q_dim = max(_max_q_dim, _nq  * _hd)
                 _max_k_dim = max(_max_k_dim, _nkv * _hd)
+                _layer_attn_dims[_li] = (_hd, _nq, _nkv)
             self._q_dim = _max_q_dim
             self._k_dim = _max_k_dim
+            self._layer_attn_dims: list = _layer_attn_dims
 
         # Persistent Mamba state buffers — allocated in _init_mamba_states()
         # after weights are loaded (device is available from __init__).
@@ -1381,23 +1386,14 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         p     = f"model.layers.{layer_idx}.mixer"
         H     = self.hidden_size
 
-        # Per-layer config override for puzzle/heterogeneous checkpoints.
-        # Falls back to global attributes when get_nemotron_h_config_for_layer
-        # is absent or the per-layer config does not override the attention fields.
-        # isinstance(val, int) guards ensure mock objects in tests fall through
-        # to the global defaults rather than producing wrong buffer sizes.
+        # Per-layer attention geometry. For heterogeneous (puzzle) checkpoints,
+        # dims are pre-computed at init time (self._layer_attn_dims) to avoid
+        # per-step config object lookups. For homogeneous models _get_layer_cfg
+        # is None and the global attributes are O(1) attribute reads.
         if self._get_layer_cfg is not None:
-            _lcfg = self._get_layer_cfg(layer_idx)
-            _hd = getattr(_lcfg, 'head_dim', None)
-            head_dim     = _hd if isinstance(_hd, int) else self.head_dim
-            _nq  = getattr(_lcfg, 'num_attention_heads', None)
-            num_q_heads  = _nq  if isinstance(_nq, int) else self.num_q_heads
-            _nkv = getattr(_lcfg, 'num_key_value_heads', None)
-            num_kv_heads = _nkv if isinstance(_nkv, int) else self.num_kv_heads
+            head_dim, num_q_heads, num_kv_heads = self._layer_attn_dims[layer_idx]
         else:
-            head_dim   = self.head_dim
-            num_q_heads  = self.num_q_heads
-            num_kv_heads = self.num_kv_heads
+            head_dim, num_q_heads, num_kv_heads = self.head_dim, self.num_q_heads, self.num_kv_heads
         q_dim      = num_q_heads  * head_dim
         k_dim      = num_kv_heads * head_dim
         attn_scale = head_dim ** -0.5

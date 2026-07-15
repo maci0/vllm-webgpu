@@ -118,17 +118,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total V dimension (v_heads * v_dim); kept for scratch buffer sizing.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim
-        # Conv dimension derived from the authoritative shape calculator (num_spec=0
-        # here; _alloc_lin_states passes the actual num_spec at allocation time).
-        # conv_shape[-1] is always the conv dimension in SD layout (the only layout
-        # accepted by this backend; DS is rejected in __init__ above).
-        _conv_shape_init, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
-            tp_world_size=1,
-            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
-            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
-            conv_kernel_size=self._lin_conv_kernel, num_spec=0,
-        )
-        self._lin_conv_dim: int = _conv_shape_init[-1]
+        # Conv dimension: head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads.
+        # This is conv_shape[-1] from MambaStateShapeCalculator.gated_delta_net_state_shape
+        # (SD layout, num_spec=0), expressed directly from the stored attributes.
+        # _alloc_lin_states calls gated_delta_net_state_shape with the actual num_spec.
+        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q (offset = K_heads * K_dim). V follows K+Q.
         self._gdn_k_offset: int = self._lin_k_heads * self._lin_k_dim

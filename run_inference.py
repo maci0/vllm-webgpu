@@ -11,25 +11,12 @@ import numpy as np
 from vllm_webgpu.utils import sample_token
 
 
-def _pick_token(
-    logits_2d,
-    greedy: bool,
-    temperature: float,
-    top_p: float,
-    top_k: int = 0,
-    min_p: float = 0.0,
-    generator=None,
-    use_fp64_gumbel: bool = False,
-) -> int:
+def _pick_token(logits_2d, greedy: bool, temperature: float, top_p: float) -> int:
     """Sample or greedily decode the next token from a (1, vocab_or_1) logits row."""
     row = logits_2d[0]
     if greedy and logits_2d.shape[-1] == 1:
         return int(row[0])
-    return sample_token(
-        row, temperature=temperature, top_p=top_p,
-        top_k=top_k, min_p=min_p, generator=generator,
-        use_fp64_gumbel=use_fp64_gumbel,
-    )
+    return sample_token(row, temperature=temperature, top_p=top_p)
 
 
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
@@ -98,7 +85,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # Prefill
     print(f"\nRunning prefill ({len(input_ids_list)} tokens)...")
     T = len(input_ids_list)
-    needed_blocks = min(cdiv(len(input_ids_list) + max_tokens, block_size), num_blocks)
+    needed_blocks = min(cdiv(T + max_tokens, block_size), num_blocks)
     block_table = np.arange(needed_blocks, dtype=np.uint32)
     slots = list(range(T))
 
@@ -134,12 +121,11 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
             break
         generated.append(last_token)
 
-        pos  = len(input_ids_list) + step
+        pos  = T + step
         if pos // block_size >= needed_blocks:
             print(f"  [KV cache full at step {step}]")
             break
-        slot = pos
-        meta   = SimpleNamespace(slot_mapping=[slot], block_tables=[block_table], max_decode_seq_len=pos + 1)
+        meta   = SimpleNamespace(slot_mapping=[pos], block_tables=[block_table], max_decode_seq_len=pos + 1)
         logits = model.forward(
             np.array([last_token], dtype=np.uint32),
             np.array([pos], dtype=np.uint32),
