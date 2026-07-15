@@ -555,7 +555,7 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
 
 
-def _extract_modelopt_algo(cfg: dict) -> str:
+def _extract_modelopt_algo(cfg: "dict | None") -> "str | None":
     """Extract the ModelOpt quantization algorithm string from a hf_quant_config dict.
 
     Mirrors ModelOptFp8Config._extract_modelopt_quant_algo (vllm/model_executor/layers/
@@ -568,9 +568,11 @@ def _extract_modelopt_algo(cfg: dict) -> str:
     On each vLLM bump, diff ModelOptFp8Config._extract_modelopt_quant_algo against
     the body below and update the version number above.
     """
+    if cfg is None:
+        return None
     _qcfg = cfg.get('quantization')
     if 'quantization' in cfg:
-        return str(_qcfg.get('quant_algo', '')).upper() if isinstance(_qcfg, dict) else ''
+        return str(_qcfg.get('quant_algo', '')).upper() if isinstance(_qcfg, dict) else None
     return str(cfg.get('quant_algo', '')).upper()
 
 
@@ -609,7 +611,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     # how far the partial import gets.
                     # cfg is a non-None dict (just parsed from JSON) and
                     # quant_method.startswith('modelopt') is already confirmed above.
-                    algo = _extract_modelopt_algo(cfg)
+                    algo = _extract_modelopt_algo(cfg) or ''
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:

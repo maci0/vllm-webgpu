@@ -35,7 +35,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nInitializing WebGPU device...")
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.utils import sample_token, GREEDY_TEMP
+    from vllm_webgpu.utils import sample_token
 
     def _pick_token(logits_2d, temperature: float, top_p: float) -> int:
         """Sample or greedily decode the next token from a (1, vocab_or_1) logits row."""
@@ -86,7 +86,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     block_table = np.arange(needed_blocks, dtype=np.uint32)
     slots = list(range(T))
 
-    _greedy = temperature < GREEDY_TEMP
+    _greedy = temperature < 1e-5
     model._greedy_decode = _greedy
 
     batch_meta = SimpleNamespace(slot_mapping=slots, block_tables=[block_table], max_decode_seq_len=T)

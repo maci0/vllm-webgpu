@@ -58,6 +58,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     hot path.
     """
 
+    # Tokens per command encoder in _prefill_chunked_forward. 6 tokens of 36
+    # Qwen3.5-9B layers generates ~6x less GPU work per submit than the full
+    # sequence, keeping each encoder well under Metal's per-command-buffer timeout.
+    _PREFILL_TOKEN_CHUNK: int = 6
+
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         # Set GDN + MoE + other Qwen3.5-specific attributes BEFORE calling
         # super().__init__(). LlamaWebGPUModel.__init__() calls
@@ -756,10 +761,6 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         hidden = self.hidden_size
         vocab = self.vocab_size
-        # Tokens per command encoder. 6 tokens of 36 Qwen3.5-9B layers
-        # generates ~6x less GPU work per submit than the full sequence,
-        # keeping each encoder well under Metal's per-command-buffer timeout.
-        _CHUNK = 6
 
         _rms_base = self._rms_consts
         sc = self._sc
@@ -790,7 +791,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         greedy = self._greedy_decode
 
-        for chunk_toks in batched(range(num_tokens), _CHUNK):
+        for chunk_toks in batched(range(num_tokens), self._PREFILL_TOKEN_CHUNK):
             # Open one encoder for this chunk.
             # Layer method _batched_dispatch calls become re-entrant no-ops
             # because _active_encoder is already set, so all dispatches land here.

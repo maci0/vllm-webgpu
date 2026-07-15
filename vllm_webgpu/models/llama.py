@@ -37,6 +37,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
     # Sliding-window size (set by MixtralWebGPUModel); None means full attention.
     _sw: int | None = None
+    # Number of transformer layers per GPU command-buffer chunk in batch prefill.
+    # Chunking prevents Metal from timing out on very long prefill sequences.
+    # At T=19 and inter=9728, a single 36-layer encoder generates ~37M threads and
+    # exceeds the ~4-8 s per-command-buffer limit. 4 layers at a time stays safe.
+    _PREFILL_CHUNK: int = 4
     # MoE flag (set by subclasses such as MixtralWebGPUModel); False in base class.
     _is_moe: bool = False
 
@@ -230,13 +235,10 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         if self._is_moe:
             self._batch_matmul_supported = False
         else:
-            proj_keys = [k for k in self.weights
-                         if k.startswith('model.layers.')
-                         and k.endswith(_PROJ_WEIGHT_SUFFIXES)]
-            self._batch_matmul_supported = (
-                bool(proj_keys)
-                and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
-            )
+            uqs = [self._uq_for_key(k) for k in self.weights
+                   if k.startswith('model.layers.')
+                   and k.endswith(_PROJ_WEIGHT_SUFFIXES)]
+            self._batch_matmul_supported = bool(uqs) and all(uq in (0, 3) for uq in uqs)
 
     def _decode_setup(
         self,
@@ -516,10 +518,6 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         slot_map_buf = WebGPUBuffer.from_numpy(dev, slot_map_arr)
         pos_buf      = WebGPUBuffer.from_numpy(dev, positions.astype(np.uint32, copy=False))
         ids_buf      = WebGPUBuffer.from_numpy(dev, input_ids.astype(np.uint32, copy=False))
-        # _CHUNK layers per command encoder keeps each submit under Metal's GPU timeout.
-        # At T=19 and inter=9728, a single 36-layer encoder generates ~37M threads and
-        # exceeds the ~4-8 s per-command-buffer limit. 4 layers at a time stays safe.
-        _CHUNK = 4
         _hstate = 0
         x_res    = b["x"]
         _pfill_rope_base = self._rope_consts
@@ -536,7 +534,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                             b["normed"]],
                            rms_base, (T, 1, 1))
 
-        for chunk_layers in batched(range(self.num_layers), _CHUNK):
+        for chunk_layers in batched(range(self.num_layers), self._PREFILL_CHUNK):
             with self._batched_dispatch():
                 for i in chunk_layers:
                     p    = f"model.layers.{i}"

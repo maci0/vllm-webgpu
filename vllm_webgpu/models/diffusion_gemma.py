@@ -507,7 +507,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     f"DiffusionGemma requires Q-norm on all layers including KV-shared ones. "
                     f"Check the checkpoint."
                 )
-            attn_scale = 1.0
             if _q_nw is not None and not is_kv_shared:
                 # Common non-KV-shared path: both Q and K have per-head norm weights and
                 # each lives in its own separate buffer. Use one fused_qk_norm_rope instead
@@ -534,13 +533,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 "HAS_WEIGHT": 1, "GEMMA_NORM": self._GEMMA_NORM,
                                 "INPUT_OFFSET": 0},
                                (self.num_q_heads, num_tokens, 1))
-            else:
-                # No norm weights: plain RoPE for Q.
-                self._dispatch("rope", [sc["q_buf"], pos_buf, sc["q_rope"], _freq_buf],
-                               {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
-                                "USE_FREQ_BUF": rc.use_freq_buf,
-                                "HEAD_DIM": head_dim, "NUM_HEADS": self.num_q_heads},
-                               (num_tokens, self.num_q_heads, 1))
             # Per-head RMSNorm (no weight) on V before caching — required for DiffusionGemma.
             # Matches DiffusionGemmaTextAttention.forward which calls self.v_norm(value_states)
             # unconditionally (DiffusionGemmaRMSNorm, dim=head_dim, with_scale=False).
@@ -577,7 +569,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                {"BLOCK_SIZE": self.block_size, "NUM_Q_HEADS": self.num_q_heads,
                                 "NUM_KV_HEADS": num_kv_heads, "HEAD_DIM": head_dim,
                                 "MAX_SEQ_LEN": ctx_len, "Q_TOKEN_OFFSET": _t_q_off,
-                                "SCALE": attn_scale},
+                                "SCALE": 1.0},
                                (self.num_q_heads, ctx_len, 1))
                 self._dispatch("softmax", [sc["scores_buf"], sc["sm_buf"]],
                                {"SEQ_LEN": ctx_len}, (self.num_q_heads, 1, 1))

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 import wgpu as wgpu_lib
 
 from vllm.logger import init_logger
@@ -16,7 +15,6 @@ from vllm.utils.math_utils import cdiv
 from vllm.model_executor.layers.rotary_embedding.common import (
     yarn_find_correction_range,
     yarn_get_mscale,
-    yarn_linear_ramp_mask,
 )
 
 from vllm_webgpu.utils import zero_bytes
@@ -139,7 +137,9 @@ def compute_yarn_freqs(
     inv_freq_extrap = 1.0 / pos_freqs
     inv_freq_interp = 1.0 / (factor * pos_freqs)
     low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    _ramp = yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float32).numpy()
+    if low == high:
+        high += 0.001
+    _ramp = np.clip((np.arange(rotary_dim // 2, dtype=np.float32) - low) / (high - low), 0, 1)
     mask = (1 - _ramp) * extrapolation_factor
     inv_freq = inv_freq_interp * (1 - mask) + inv_freq_extrap * mask
 
@@ -304,7 +304,7 @@ class BaseWebGPUModel(ABC):
             return "No profiling data. Set model.profiling=True before forward()."
         lines = ["Kernel timing (ms per call, averaged):"]
         rows = sorted(
-            [(lbl, sum(v) / len(v), sum(v), len(v)) for lbl, v in self._prof_stats.items() if v],
+            [(lbl, (s := sum(v)) / len(v), s, len(v)) for lbl, v in self._prof_stats.items() if v],
             key=lambda r: r[2], reverse=True,
         )
         total = sum(r[2] for r in rows)

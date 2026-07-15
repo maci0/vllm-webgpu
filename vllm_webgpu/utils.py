@@ -36,10 +36,6 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
     apply_top_k_top_p_pytorch,
     random_sample,
 )
-# SamplingParams clamps all sub-threshold temperatures to exactly 0.0 (greedy)
-# or >= 0.01 (stochastic) before they reach sample_token, so any value in
-# (0.0, 0.01) produces the same greedy/stochastic split.
-GREEDY_TEMP: float = 1e-5
 SHADERS_DIR = Path(__file__).parent / "shaders"
 
 
@@ -60,11 +56,11 @@ def sample_token(
 
     Applies (in order): temperature scaling, min-p filtering, top-k filtering,
     top-p nucleus filtering, then draws from the resulting categorical
-    distribution. Returns argmax when temperature < GREEDY_TEMP.
+    distribution. Returns argmax when temperature < 1e-5.
 
     Args:
         logits_1d: 1-D float32 logit vector of length vocab_size.
-        temperature: Softmax temperature. Values < GREEDY_TEMP produce greedy argmax.
+        temperature: Softmax temperature. Values < 1e-5 produce greedy argmax.
         top_p: Nucleus probability mass cutoff (0, 1]. 1.0 disables.
         top_k: Keep at most top_k tokens. 0 disables.
         min_p: Minimum probability relative to the top token. Tokens whose
@@ -77,7 +73,7 @@ def sample_token(
         use_fp64_gumbel: When True, Gumbel noise is sampled in fp64 for
             higher numerical precision. Mirrors ModelConfig.use_fp64_gumbel.
     """
-    if temperature < GREEDY_TEMP:
+    if temperature < 1e-5:
         return logits_1d.argmax().item()
 
     logits_t = torch.as_tensor(logits_1d, dtype=torch.float32).unsqueeze(0)

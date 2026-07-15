@@ -67,19 +67,10 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
                 f"{self.num_layers} layers"
             )
 
-        # _moe_inter does not need to precede super().__init__() because no code
-        # invoked during that call (including _init_scratch_buffers) references it.
-        # Moving it here consolidates config reads and lets us use self.intermediate_size
-        # (set by the parent) as the natural fallback instead of reaching back to model_config.
-        # Use walrus-operator None-check so an explicit moe_intermediate_size=0 is not
-        # silently treated as absent (the `or` form would fall back to intermediate_size
-        # for zero, which is wrong).
-        # Note: moe_intermediate_size=0 combined with _is_moe=True is a contradiction.
-        # _moe_inter=0 would pass the capacity check (0 <= buffer_size), dispatch zero
-        # workgroups from gelu_mul, and produce silently wrong (zero) expert outputs.
-        # No real model sets moe_intermediate_size=0; treat it as a configuration error
-        # if encountered.
-        self._moe_inter: int = v if (v := getattr(model_config, "moe_intermediate_size", None)) is not None else self.intermediate_size
+        # GptOssConfig has no moe_intermediate_size field, so _moe_inter is always
+        # equal to intermediate_size. The Qwen3.5-MoE model uses a separate
+        # moe_intermediate_size attribute (see qwen35.py), but GptOss does not.
+        self._moe_inter: int = self.intermediate_size
         # Batch prefill bypasses _attn_block and cannot honour per-layer context
         # overrides or inject attention biases. Force sequential prefill whenever
         # either condition is present. The dangerous case for layer_types is

@@ -208,7 +208,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                 "disable profiling before calling forward() on a Mixtral MoE model"
             )
         dev = self.wgpu_device.wgpu_device
-        num_tokens = 1
         vocab = self.vocab_size
         self._hstate = 0
 
@@ -225,7 +224,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         try:
             self._run_decode_dispatches(
                 ids_buf, pos_buf, slot_map, bt_buf, x_buf,
-                norm_out, logits_buf, ctx_len, num_tokens, vocab, greedy,
+                norm_out, logits_buf, ctx_len, 1, vocab, greedy,
             )
             dev.queue.submit([self._active_encoder.finish()])
         finally:

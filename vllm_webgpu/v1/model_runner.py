@@ -670,24 +670,7 @@ class WebGPUModelRunner:
                     num_prompt_logprobs,
                 )
                 if pt is not None:
-                    num_prompt_tokens = len(tok_ids)
-                    if num_computed > 0:
-                        # With prefix caching active, _compute_prompt_logprobs
-                        # returns only T-1 rows for the uncached tail, where
-                        # T = num_prompt_tokens - num_computed.  Allocate a
-                        # full-sized tensor matching the GPU runner contract
-                        # (num_prompt_tokens - 1 rows) and copy the tail result
-                        # into the correct slice so the engine infers the right
-                        # prompt length from logprobs.shape[0].
-                        cols = pt.logprob_token_ids.shape[1]
-                        full_pt = LogprobsTensors.empty_cpu(num_prompt_tokens - 1, cols)
-                        tail = slice(num_computed, num_computed + T - 1)
-                        full_pt.logprob_token_ids[tail].copy_(pt.logprob_token_ids)
-                        full_pt.logprobs[tail].copy_(pt.logprobs)
-                        full_pt.selected_token_ranks[tail].copy_(pt.selected_token_ranks)
-                        prompt_logprobs_dict[rid] = full_pt
-                    else:
-                        prompt_logprobs_dict[rid] = pt
+                    prompt_logprobs_dict[rid] = pt
 
             all_req_ids.append(rid)
             all_sampled.append(first_decode_tok)
