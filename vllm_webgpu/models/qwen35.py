@@ -119,11 +119,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         self._lin_conv_kernel: int = getattr(model_config, "linear_conv_kernel_dim", _LIN_CONV_KERNEL)
         # Total V dimension (v_heads * v_dim); kept for scratch buffer sizing.
         self._lin_val_dim: int  = self._lin_v_heads * self._lin_v_dim
-        # Conv dimension: head_k_dim * num_k_heads * 2 + head_v_dim * num_v_heads.
-        # This is conv_shape[-1] from MambaStateShapeCalculator.gated_delta_net_state_shape
-        # (SD layout, num_spec=0), expressed directly from the stored attributes.
-        # _alloc_lin_states calls gated_delta_net_state_shape with the actual num_spec.
-        self._lin_conv_dim: int = self._lin_k_heads * self._lin_k_dim * 2 + self._lin_v_heads * self._lin_v_dim
+        # Conv dimension derived from the canonical shape function (num_spec=0 for
+        # the per-token decode width; _alloc_lin_states uses the actual num_spec).
+        _conv_shape, _ = MambaStateShapeCalculator.gated_delta_net_state_shape(
+            tp_world_size=1,
+            num_k_heads=self._lin_k_heads, num_v_heads=self._lin_v_heads,
+            head_k_dim=self._lin_k_dim, head_v_dim=self._lin_v_dim,
+            conv_kernel_size=self._lin_conv_kernel, num_spec=0,
+        )
+        self._lin_conv_dim: int = _conv_shape[-1]
         # GDN QKV buffer offsets (f16 elements); constant across all layers and tokens.
         # Q is always at offset 0. K follows Q (offset = K_heads * K_dim). V follows K+Q.
         self._gdn_k_offset: int = self._lin_k_heads * self._lin_k_dim
@@ -511,10 +515,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         are float16 and are not directly compatible). The shader stores state
         in the same layout, so no transposition is needed on readback.
         """
-        return self._readback_recurrent_states([
-            *(("conv", i, b) for i, b in self._conv_gpu.items()),
-            *(("ssm",  i, b) for i, b in self._ssm_gpu.items()),
-        ])
+        return self._readback_recurrent_states(list(chain(
+            (("conv", i, b) for i, b in self._conv_gpu.items()),
+            (("ssm",  i, b) for i, b in self._ssm_gpu.items()),
+        )))
 
     def restore_recurrent_states(self, states: dict) -> None:
         """Write saved state bytes back into GDN conv/SSM GPU buffers.

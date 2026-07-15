@@ -47,7 +47,7 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
             f"req {rid}: logprob_token_ids (fixed-token-set logprobs) is not supported on the WebGPU backend; "
             "only top-k logprobs by probability rank are available, not for arbitrary token ID sets"
         )
-    num_logprobs = sp.num_logprobs
+    num_logprobs = sp.logprobs
     if num_logprobs == -1:
         raise NotImplementedError(
             f"req {rid}: logprobs=-1 (full-vocab) is not supported on the WebGPU backend; "
@@ -385,10 +385,6 @@ class WebGPUModelRunner:
 
         if lp_list and len(lp_list) == num_hidden_layers:
             for i, lp in enumerate(lp_list):
-                if lp["num_kv_heads"] == 0:
-                    # Non-attention layer: skip to avoid emitting a
-                    # zero-page-size FullAttentionSpec.
-                    continue
                 spec[f"model.layers.{i}{_attn_suffix}"] = FullAttentionSpec(
                     block_size=block_size,
                     num_kv_heads=lp["num_kv_heads"],

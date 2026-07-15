@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched, chain as _chain
+from itertools import batched, chain
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -237,7 +237,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             self._batch_matmul_supported = (
                 _first is not None
                 and all(self._uq_for_key(k) in (0, 3)
-                        for k in _chain([_first], _it))
+                        for k in chain([_first], _it))
             )
 
     def _decode_setup(
@@ -442,7 +442,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # place cdiv(T*dim, 1024) there, which can also exceed 65535 for large dim.
         # The sequential fallback handles arbitrary-length prompts without any
         # dispatch-dimension concern.
-        if T > 65535 or cdiv(T * self.intermediate_size, 1024) > 65535 or cdiv(T * self.hidden_size, 1024) > 65535:
+        if T > 65535 or cdiv(T * max(self.intermediate_size, self.hidden_size), 1024) > 65535:
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
 
         # APC prefix-cache hit: the first token's absolute position is > 0, meaning

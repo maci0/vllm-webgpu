@@ -8,16 +8,6 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from vllm_webgpu.utils import sample_token
-
-
-def _pick_token(logits_2d, temperature: float, top_p: float) -> int:
-    """Sample or greedily decode the next token from a (1, vocab_or_1) logits row."""
-    row = logits_2d[0]
-    if logits_2d.shape[-1] == 1:
-        return int(row[0])
-    return sample_token(row, temperature=temperature, top_p=top_p)
-
 
 def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
     print(f"\nLoading model from: {model_dir}")
@@ -45,7 +35,14 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print("\nInitializing WebGPU device...")
     from vllm_webgpu.webgpu.device import WebGPUDevice
     from vllm_webgpu.webgpu.pipeline import PipelineCache
-    from vllm_webgpu.utils import GREEDY_TEMP
+    from vllm_webgpu.utils import sample_token, GREEDY_TEMP
+
+    def _pick_token(logits_2d, temperature: float, top_p: float) -> int:
+        """Sample or greedily decode the next token from a (1, vocab_or_1) logits row."""
+        row = logits_2d[0]
+        if logits_2d.shape[-1] == 1:
+            return int(row[0])
+        return sample_token(row, temperature=temperature, top_p=top_p)
     from vllm_webgpu.config import get_config
 
     device = WebGPUDevice.initialize(get_config().power_preference)

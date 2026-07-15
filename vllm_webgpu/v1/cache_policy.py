@@ -209,7 +209,7 @@ def allocate_kv_from_tensors(
                     "used by hybrid KV cache managers for chunked local attention layers. "
                     "The WebGPU flash_attn_decode kernel does not implement chunked local attention masking."
                 )
-            elif isinstance(spec, FullAttentionSpec):
+            elif type(spec) is FullAttentionSpec:
                 if spec.sliding_window is not None:
                     raise NotImplementedError(
                         f"FullAttentionSpec with sliding_window={spec.sliding_window!r} is not supported by the WebGPU backend. "
@@ -230,11 +230,6 @@ def allocate_kv_from_tensors(
                     raise NotImplementedError(
                         "FullAttentionSpec with non_causal=True is not supported by the WebGPU backend; "
                         "flash_attn_decode implements causal masking only."
-                    )
-                if type(spec) is not FullAttentionSpec:
-                    raise NotImplementedError(
-                        f"FullAttentionSpec subclass {type(spec).__name__} overrides real_page_size_bytes; "
-                        "the head_size ratio split formula may be wrong. Add an explicit branch to handle it."
                     )
                 # Compute K and V buffer sizes directly from per-dimension fields.
                 # Using the direct formula avoids float division (head_size /

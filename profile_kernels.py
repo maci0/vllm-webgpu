@@ -72,7 +72,7 @@ def main() -> None:
 
     # ── Setup fake KV pool ────────────────────────────────────────────────────────
     # Compute block count before allocating so the pool covers every block ID in bt.
-    # Two separate decode_steps passes: production timing + profiling.
+    # production pass: warmup_steps + decode_steps; profiling pass: decode_steps; total = warmup_steps + 2*decode_steps
     bt_blocks = cdiv(len(tok_ids) + args.warmup_steps + 2 * args.decode_steps, block_size)
     num_blocks = max(512, bt_blocks)
 

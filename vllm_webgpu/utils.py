@@ -87,7 +87,7 @@ def sample_token(
         # threshold = max_logit/T + log(min_p) applied to temperature-scaled logits.
         # Triton cannot run on CPU; this is the CPU reimplementation.
         threshold = logits_t.amax(dim=-1, keepdim=True) + math.log(min_p)
-        logits_t = logits_t.masked_fill(logits_t < threshold, float('-inf'))
+        logits_t.masked_fill_(logits_t < threshold, float('-inf'))
     k_t = torch.tensor([top_k]) if top_k > 0 else None
     p_t = torch.tensor([top_p]) if 0.0 < top_p < 1.0 else None
     # allow_cpu_sync=True enables the faster partial-topk path (apply_top_k_only)

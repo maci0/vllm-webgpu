@@ -30,7 +30,6 @@ if _vllm_version != _EXPECTED_VLLM_VERSION:
         stacklevel=2,
     )
 from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
-from vllm_webgpu.webgpu.buffer import _ELEM_BYTES, _WGPU_DTYPE_TO_NP
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -621,8 +620,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                 self._layer_scales.append(1.0)
             else:
                 raw = _raw_by_layer[i]
-                expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
-                val = float(np.frombuffer(raw[:expected], dtype=_WGPU_DTYPE_TO_NP[buf.dtype]).item())
+                val = self._staged_scalar(raw, buf)
                 self._layer_scales.append(val)
         bad = [i for i, s in enumerate(self._layer_scales) if s <= 0]
         if bad:

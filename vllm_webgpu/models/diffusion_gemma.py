@@ -535,15 +535,6 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                                 "USE_FREQ_BUF": rc.use_freq_buf,
                                 "HEAD_DIM": head_dim, "NUM_HEADS": self.num_q_heads},
                                (num_tokens, self.num_q_heads, 1))
-            if not is_kv_shared and _q_nw is None:
-                # Both Q and K lack norm weights (invariant: non-KV-shared always pairs them).
-                # K was not processed in the combined dispatch above.
-                self._dispatch("rope", [sc["k_buf"], pos_buf, sc["k_rope"], _freq_buf],
-                               {"ROPE_BASE": rc.rope_base, "LN_ROPE_BASE": rc.ln_rope_base,
-                                "USE_FREQ_BUF": rc.use_freq_buf,
-                                "HEAD_DIM": head_dim, "NUM_HEADS": num_kv_heads},
-                               (num_tokens, num_kv_heads, 1))
-
             # Per-head RMSNorm (no weight) on V before caching — required for DiffusionGemma.
             # Matches DiffusionGemmaTextAttention.forward which calls self.v_norm(value_states)
             # unconditionally (DiffusionGemmaRMSNorm, dim=head_dim, with_scale=False).
