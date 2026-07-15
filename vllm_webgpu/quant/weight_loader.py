@@ -60,17 +60,6 @@ def _quant_type_str(cfg: dict) -> str:
     return (cfg.get("quant_type") or cfg.get("quant_method") or "").lower().strip()
 
 
-def _normalize_quant_cfg(quant_cfg: object) -> dict | None:
-    """Return quant_cfg unchanged when it is a plain dict, else None.
-
-    vLLM passes a pydantic QuantizationConfigArgs model when --quantization is
-    given as an online-quant shorthand. That object has no .get() method, so
-    any downstream caller that treats quant_cfg as a dict would crash with
-    AttributeError. Normalizing to None here lets callers fall back to
-    config.json instead.
-    """
-    return quant_cfg if isinstance(quant_cfg, dict) else None
-
 
 def _unpack_nibbles(packed: "np.ndarray", shifts: "np.ndarray") -> "np.ndarray":
     """Unpack 8 uint4 nibbles per int32 into a 2-D int32 array [out_rows, in_cols].
@@ -346,7 +335,7 @@ def load_safetensors_weights_sharded(
     index_path: pre-found str path to model.safetensors.index.json from detect_weight_format.
     When None, the directory is scanned again via _ct_find_index (backwards compatibility).
     """
-    _eff_quant_cfg = _normalize_quant_cfg(quant_cfg)
+    _eff_quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else None
     # Resolve the raw quant config once before the unsupported-format check so
     # the check sees the actual quant_type/quant_method even when quant_cfg was
     # None or a pydantic object (both normalize to None). Reading config.json
@@ -559,6 +548,25 @@ def _dequant_gptq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
 
 
 
+def _extract_modelopt_algo(cfg: dict) -> str:
+    """Extract the ModelOpt quantization algorithm string from a hf_quant_config dict.
+
+    Mirrors ModelOptFp8Config._extract_modelopt_quant_algo (vllm/model_executor/layers/
+    quantization/modelopt.py:245-262). Called when that class cannot be imported due to
+    top-level CUDA kernel imports (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe)
+    that fail on WebGPU. The logic is intentionally kept here rather than imported so
+    that each vLLM bump can be verified by diffing against the upstream method body.
+
+    VERSION SYNC: verified against vLLM 0.24.0 (modelopt.py:245-262).
+    On each vLLM bump, diff ModelOptFp8Config._extract_modelopt_quant_algo against
+    the body below and update the version number above.
+    """
+    _qcfg = cfg.get('quantization')
+    if 'quantization' in cfg:
+        return str(_qcfg.get('quant_algo', '')).upper() if isinstance(_qcfg, dict) else ''
+    return str(cfg.get('quant_algo', '')).upper()
+
+
 def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     """Detect MXFP4 or MXFP8 from config files in the model directory.
 
@@ -573,7 +581,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
     quantization/modelopt.py) to avoid duplicating the quant_method/quant_algo
     extraction. That import may fail on WebGPU because modelopt.py has top-level
     CUDA kernel imports (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe);
-    _extract_modelopt_algo (defined below) is used as the fallback in that case.
+    _extract_modelopt_algo (defined above) is used as the fallback in that case.
     """
     hf_quant = model_dir / "hf_quant_config.json"
     if hf_quant.exists():
@@ -592,11 +600,7 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     # that fail on WebGPU where no CUDA runtime is present.
                     # cfg is a non-None dict (just parsed from JSON) and
                     # quant_method.startswith('modelopt') is already confirmed above.
-                    _qcfg = cfg.get('quantization')
-                    if 'quantization' in cfg:
-                        algo = str(_qcfg.get('quant_algo', '')).upper() if isinstance(_qcfg, dict) else ''
-                    else:
-                        algo = str(cfg.get('quant_algo', '')).upper()
+                    algo = _extract_modelopt_algo(cfg)
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
@@ -731,7 +735,7 @@ def load_safetensors_weights(
         # re-reading config.json (the single-file caller reads it once in load_weights
         # and passes it here; the sharded caller passes ct_meta per shard).
         _config_json = Path(path).parent / "config.json"
-        _effective_quant_cfg = _normalize_quant_cfg(quant_cfg)
+        _effective_quant_cfg = quant_cfg if isinstance(quant_cfg, dict) else None
         _raw_quant_cfg = _effective_quant_cfg if _effective_quant_cfg is not None else (
             _ct_get_quant_cfg(str(_config_json)) or {} if _config_json.exists() else {}
         )

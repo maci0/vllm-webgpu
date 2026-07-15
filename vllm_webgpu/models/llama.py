@@ -1,6 +1,6 @@
 from __future__ import annotations
 import math
-from itertools import batched
+from itertools import batched, chain as _chain
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -174,12 +174,12 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             )
             return
 
-        rope_scaling = dict(
+        _rope_source = (
             _rope_parameters
             if _rope_parameters is not None
-            else getattr(self.model_config, "rope_scaling", None)
-            or {}
+            else getattr(self.model_config, "rope_scaling", None) or {}
         )
+        rope_scaling = dict(_rope_source)
         # Normalise legacy type keys ("su" -> "longrope", "mrope" -> "default", etc.)
         # so that rope_type is always the canonical vLLM name.
         patch_legacy_rope_type(rope_scaling)
@@ -230,12 +230,14 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         if self._is_moe:
             self._batch_matmul_supported = False
         else:
-            proj_keys = [k for k in self.weights
-                         if k.startswith('model.layers.')
-                         and k.endswith(_PROJ_WEIGHT_SUFFIXES)]
+            _it = (k for k in self.weights
+                   if k.startswith('model.layers.')
+                   and k.endswith(_PROJ_WEIGHT_SUFFIXES))
+            _first = next(_it, None)
             self._batch_matmul_supported = (
-                bool(proj_keys)
-                and all(self._uq_for_key(k) in (0, 3) for k in proj_keys)
+                _first is not None
+                and all(self._uq_for_key(k) in (0, 3)
+                        for k in _chain([_first], _it))
             )
 
     def _decode_setup(
@@ -609,7 +611,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                     self._gemm_batch(b["ffn_n"], uw_k, b["up_buf"],   hidden, inter, T)
                     self._dispatch("gelu_mul",
                                    [b["gate_buf"], b["up_buf"], b["ffn_act"]],
-                                   {"N": T * inter},
+                                   {"N": T * inter, "ACTIVATION": 0},
                                    _vec4_wg(T * inter))
                     self._gemm_batch(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden, T)
 
@@ -1016,7 +1018,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
                                {"K": hidden, "N": inter, "USE_QUANT": uq2, **qi2},
                                (inter, 1, 1))
             self._dispatch("gelu_mul", [sc["gate_buf"], sc["up_buf"], sc["ffn_act"]],
-                           {"N": inter}, _vec4_wg(inter))
+                           {"N": inter, "ACTIVATION": 0}, _vec4_wg(inter))
 
         # Down projection
         w_k = f"{p}.mlp.down_proj.weight"

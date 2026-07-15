@@ -595,12 +595,18 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         assumption used in rms_norm_add_f32_rms_norm. A non-positive value
         indicates a corrupt or incorrectly quantized checkpoint.
         """
+        # Precompute buffer list once to avoid duplicate dict lookups (one per layer
+        # in the staging comprehension, one more in the result loop below).
+        _layer_bufs = [
+            self.weights.get(f"{self._layer_key_prefix(i)}.layer_scalar")
+            for i in range(self.num_layers)
+        ]
         # Batch all layer_scalar GPU-to-CPU copies into a single staging readback
         # (one map_sync for all layers) rather than N individual to_numpy() calls.
         _scalar_triples = [
             ("s", i, buf)
-            for i in range(self.num_layers)
-            if (buf := self.weights.get(f"{self._layer_key_prefix(i)}.layer_scalar")) is not None
+            for i, buf in enumerate(_layer_bufs)
+            if buf is not None
         ]
         if _scalar_triples:
             _staged = self._readback_recurrent_states(_scalar_triples)
@@ -609,8 +615,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             _raw_by_layer = {}
 
         self._layer_scales: list[float] = []
-        for i in range(self.num_layers):
-            buf = self.weights.get(f"{self._layer_key_prefix(i)}.layer_scalar")
+        for i, buf in enumerate(_layer_bufs):
             if buf is None:
                 self._layer_scales.append(1.0)
             else:
@@ -1364,8 +1369,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                                         **self._quant_extra(f"{p}.self_attn.v_proj", uq_v)},
                                        (kv_dim, 1, 1))
                         _v_src = sc["v_buf"]
-                    else:
-                        _v_src = sc["k_buf"]  # global attention: V = K
                 _q_src = sc["q_buf"]
 
             # Per-head RMSNorm + RoPE for Q and K.

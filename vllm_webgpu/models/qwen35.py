@@ -25,16 +25,17 @@ logger = init_logger(__name__)
 assert_elem_bytes_stable()
 
 # Qwen3.5 linear attention layer constants.
-# These serve a dual purpose:
-#   1. getattr fallbacks in __init__ for objects that are not Qwen3_5TextConfig
-#      (e.g. test mocks that lack the Qwen3.5-specific attributes).
-#   2. Exported constants used in test assertions to verify computed offsets.
+# All five serve as getattr fallbacks in __init__ for objects that are not
+# Qwen3_5TextConfig (e.g. test mocks that lack the Qwen3.5-specific attributes).
 # For real Qwen3_5TextConfig instances the getattr calls always find the
 # attribute, so the fallback path is test-only.
+# _LIN_V_HEADS, _LIN_K_DIM, and _LIN_V_DIM are also imported by test assertions
+# to verify computed buffer offsets. _LIN_K_HEADS and _LIN_CONV_KERNEL are
+# internal defaults only and are not referenced by any test.
 _LIN_K_HEADS = 16    # Qwen3_5TextConfig.linear_num_key_heads
-_LIN_V_HEADS = 32    # Qwen3_5TextConfig.linear_num_value_heads
-_LIN_K_DIM = 128     # Qwen3_5TextConfig.linear_key_head_dim
-_LIN_V_DIM = 128     # Qwen3_5TextConfig.linear_value_head_dim
+_LIN_V_HEADS = 32    # Qwen3_5TextConfig.linear_num_value_heads  (test-exported)
+_LIN_K_DIM = 128     # Qwen3_5TextConfig.linear_key_head_dim     (test-exported)
+_LIN_V_DIM = 128     # Qwen3_5TextConfig.linear_value_head_dim   (test-exported)
 _LIN_CONV_KERNEL = 4 # Qwen3_5TextConfig.linear_conv_kernel_dim
 
 

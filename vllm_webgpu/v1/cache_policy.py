@@ -388,8 +388,11 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # On each vLLM bump, diff ModelConfig.get_num_layers_by_block_type
     # (vllm/config/model.py:1327-1369) against the probe sequence below and
     # update the version number above.
-    # The block_configs / has_noops path is the known gap; check whether vLLM
-    # has added any further probes beyond the three mirrored here.
+    # TODO(vLLM bump): check whether a new probe has been added beyond the three
+    # mirrored here; the block_configs / has_noops (Jamba) path is the known gap.
+    # If vLLM adds a fourth probe, this function silently falls through to None
+    # without picking it up, causing all layers to be treated as attention layers.
+    # A CI invariant or assertion on each vLLM bump is the correct long-term fix.
     #
     # Upstream request: vLLM does not expose a public ModelConfig.get_layer_types()
     # that returns the type list rather than a count. If it did, probes 1-3 below

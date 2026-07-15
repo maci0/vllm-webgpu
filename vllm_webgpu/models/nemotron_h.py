@@ -103,31 +103,30 @@ del _mapper
 # mamba2_state_shape. _validate_mamba_weights provides the authoritative runtime
 # guard by checking the actual in_proj.weight shape.
 
-try:
-    from vllm.model_executor.models.nemotron_h import _resolve_intermediate_size
-except ImportError:
-    # vLLM 0.24 does not export _resolve_intermediate_size at module scope.
-    # Local copy mirrors NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24).
-    # On each vLLM bump, re-run:
-    #   grep -n '_resolve_intermediate_size' \
-    #       .venv/lib/*/site-packages/vllm/model_executor/models/nemotron_h.py
-    # If the function appears at module scope (outside any class), remove the
-    # except branch and keep only the import above.
-    def _resolve_intermediate_size(v, idx: int) -> int:  # type: ignore[misc]
-        if isinstance(v, list):
-            return v[0] if len(v) == 1 else v[idx]
-        return v
+# _resolve_intermediate_size is not exported at module scope by vLLM 0.24.0.
+# vLLM's nemotron_h.py contains only class definitions; no module-level function
+# with this name exists. The local definition below mirrors the logic in
+# NemotronHMLPDecoderLayer.__init__ L286-292 (vLLM 0.24).
+# On each vLLM bump, re-run:
+#   grep -n 'def _resolve_intermediate_size' \
+#       .venv/lib/*/site-packages/vllm/model_executor/models/nemotron_h.py
+# If the function appears at module scope (outside any class), replace this
+# definition with a direct import from vllm.model_executor.models.nemotron_h.
+def _resolve_intermediate_size(v, idx: int) -> int:
+    if isinstance(v, list):
+        return v[0] if len(v) == 1 else v[idx]
+    return v
 
-    # Behavioral assertion: verify the two known cases match the upstream logic
-    # (NemotronHMLPDecoderLayer.__init__ L286-292). If vLLM adds a third branch
-    # (e.g. a dict case), this fires at import time rather than silently producing
-    # wrong per-layer intermediate sizes for heterogeneous checkpoints.
-    assert _resolve_intermediate_size([42], 0) == 42, \
-        "fallback _resolve_intermediate_size: single-element list case broken"
-    assert _resolve_intermediate_size([10, 20], 1) == 20, \
-        "fallback _resolve_intermediate_size: multi-element list case broken"
-    assert _resolve_intermediate_size(99, 0) == 99, \
-        "fallback _resolve_intermediate_size: scalar case broken"
+# Behavioral assertion: verify the two known cases match the upstream logic
+# (NemotronHMLPDecoderLayer.__init__ L286-292). If vLLM adds a third branch
+# (e.g. a dict case), this fires at import time rather than silently producing
+# wrong per-layer intermediate sizes for heterogeneous checkpoints.
+assert _resolve_intermediate_size([42], 0) == 42, \
+    "fallback _resolve_intermediate_size: single-element list case broken"
+assert _resolve_intermediate_size([10, 20], 1) == 20, \
+    "fallback _resolve_intermediate_size: multi-element list case broken"
+assert _resolve_intermediate_size(99, 0) == 99, \
+    "fallback _resolve_intermediate_size: scalar case broken"
 
 
 # Correctness of _resolve_intermediate_size is verified in

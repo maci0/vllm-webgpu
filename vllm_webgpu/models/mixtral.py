@@ -259,8 +259,11 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         combine them (gelu_mul, bias injection, etc.) without duplicating the
         _ensure_moe_expert_bufs + _quant_extra + _dispatch("matmul_quant", ...) sequence.
         """
-        self._ensure_moe_expert_bufs()
         msc = self._moe_sc
+        if "expert_gate" not in msc:
+            _act_sz = self._moe_act_sz
+            msc["expert_gate"] = self._make_buf(_act_sz * 2)
+            msc["expert_up"]   = self._make_buf(_act_sz * 2)
         if uq_g is None:
             uq_g = self._uq_for_key(gw_key)
         if uq_u is None:
@@ -333,14 +336,6 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         """
         if "expert_tmp" not in self._moe_sc:
             self._moe_sc["expert_tmp"] = self._make_buf(self.hidden_size * 2)
-
-    def _ensure_moe_expert_bufs(self) -> None:
-        """Lazily allocate expert_gate and expert_up scratch buffers on first quantized call."""
-        msc = self._moe_sc
-        if "expert_gate" not in msc:
-            _act_sz = self._moe_act_sz
-            msc["expert_gate"] = self._make_buf(_act_sz * 2)
-            msc["expert_up"]   = self._make_buf(_act_sz * 2)
 
     def _dispatch_expert_down(
         self,

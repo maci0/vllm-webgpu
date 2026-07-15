@@ -199,7 +199,7 @@ def _make_model_output(
     if widths:
         max_k = max(widths)
         # Short-circuit when all entries are present and share the same width.
-        all_present = not any(d is None for d in logprobs_data)
+        all_present = all(d is not None for d in logprobs_data)
         if all_present and len(set(widths)) == 1:
             built_logprobs = _stack_logprobs(cast("list[LogprobsTensors]", logprobs_data))
         else:
@@ -688,6 +688,7 @@ class WebGPUModelRunner:
                 "pos": num_computed + T, "block_ids": blk_ids,
                 "last_tok": first_decode_tok,
                 "sampling_params": sp,
+                "num_logprobs": num_logprobs,
                 "recurrent_states": prefill_recurrent_states,
                 "rng": rng,
                 **({"token_history": list(tok_ids) + [first_decode_tok], "prefix_offset": num_computed} if self._has_replay else {}),
@@ -723,7 +724,7 @@ class WebGPUModelRunner:
                 pos = state["pos"]
                 blk_ids = state["block_ids"]  # lazily copied below only when modified
                 sp = state["sampling_params"]
-                num_logprobs = _resolve_num_logprobs(sp, rid)
+                num_logprobs = state["num_logprobs"]
                 is_resumed = rid in resumed_req_ids
 
                 # Guard: a preempted request rescheduled with num_scheduled_tokens > 1
