@@ -592,7 +592,11 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                     # that fail on WebGPU where no CUDA runtime is present.
                     # cfg is a non-None dict (just parsed from JSON) and
                     # quant_method.startswith('modelopt') is already confirmed above.
-                    algo = str(cfg['quantization'].get('quant_algo', '')).upper() if isinstance(cfg.get('quantization'), dict) else str(cfg.get('quant_algo', '')).upper()
+                    _qcfg = cfg.get('quantization')
+                    if 'quantization' in cfg:
+                        algo = str(_qcfg.get('quant_algo', '')).upper() if isinstance(_qcfg, dict) else ''
+                    else:
+                        algo = str(cfg.get('quant_algo', '')).upper()
                 if "MXFP4" in algo:
                     return "mxfp4"
                 if "MXFP8" in algo:
