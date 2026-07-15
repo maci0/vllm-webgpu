@@ -143,10 +143,14 @@ def test_diffusion_gemma_moe_forward(wgpu_device):
     model.weights[f"{p}.post_feedforward_layernorm.weight"]= f16((hidden,))
 
     # Attention projections
-    model.weights[f"{p}.self_attn.q_proj.weight"] = f16((q_dim,  hidden))
-    model.weights[f"{p}.self_attn.k_proj.weight"] = f16((kv_dim, hidden))
-    model.weights[f"{p}.self_attn.v_proj.weight"] = f16((kv_dim, hidden))
-    model.weights[f"{p}.self_attn.o_proj.weight"] = f16((hidden, q_dim))
+    model.weights[f"{p}.self_attn.q_proj.weight"]  = f16((q_dim,  hidden))
+    model.weights[f"{p}.self_attn.k_proj.weight"]  = f16((kv_dim, hidden))
+    model.weights[f"{p}.self_attn.v_proj.weight"]  = f16((kv_dim, hidden))
+    model.weights[f"{p}.self_attn.o_proj.weight"]  = f16((hidden, q_dim))
+    # Q/K per-head RMS norm weights (always present in DiffusionGemma checkpoints;
+    # absence raises RuntimeError because Gemma4Attention.scaling is unconditionally 1.0)
+    model.weights[f"{p}.self_attn.q_norm.weight"]  = f16((head_dim,))
+    model.weights[f"{p}.self_attn.k_norm.weight"]  = f16((head_dim,))
 
     # Shared-expert FFN
     model.weights[f"{p}.mlp.gate_proj.weight"] = f16((inter,  hidden))

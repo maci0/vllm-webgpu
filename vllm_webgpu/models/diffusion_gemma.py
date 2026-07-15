@@ -494,8 +494,14 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                     f"on a non-KV-shared layer. DiffusionGemma requires both norms "
                     f"to be loaded together. Check the checkpoint."
                 )
-            _has_norms = _q_nw is not None and (is_kv_shared or _k_nw is not None)
-            attn_scale = 1.0 if _has_norms else head_dim ** -0.5
+            if _q_nw is None and not is_kv_shared:
+                raise RuntimeError(
+                    f"Layer {layer_idx}: Q/K norm weights absent on a non-KV-shared layer. "
+                    f"Gemma4Attention always applies Q/K norms (scaling=1.0); falling back "
+                    f"to 1/sqrt(head_dim) would produce wrong attention scores. "
+                    f"Check the checkpoint."
+                )
+            attn_scale = 1.0
             if _q_nw is not None and not is_kv_shared:
                 # Common non-KV-shared path: both Q and K have per-head norm weights and
                 # each lives in its own separate buffer. Use one fused_qk_norm_rope instead
