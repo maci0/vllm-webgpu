@@ -500,3 +500,96 @@ def test_prefill_chunked_forward_method_exists(wgpu_device):
             am, 3,
         )
         assert np.array_equal(result, sentinel)
+
+
+def test_gdn_forward_dispatch(wgpu_device):
+    """forward() with a GDN layer routes through _transformer_layer -> _gdn_layer_gpu.
+
+    Exercises the full forward() path for a non-MoE model with a single
+    linear_attention layer: embed -> layer 0 (GDN) -> final norm -> lm_head -> argmax.
+    Checks output shape (1, 1) int32 and that the token id is in-range.
+    """
+    import wgpu as wgpu_lib
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.models.qwen35 import Qwen35WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    # Single GDN layer; no full-attention layers, so no kv_pool is needed.
+    cfg = make_qwen35_config(num_layers=1)
+    cfg.layer_types = ["linear_attention"]
+
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = Qwen35WebGPUModel(cfg, wgpu_device, cache)
+
+    hidden = cfg.hidden_size
+    vocab  = cfg.vocab_size
+    inter  = cfg.intermediate_size
+    dev = wgpu_device.wgpu_device
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    rng = np.random.default_rng(99)
+
+    def f16(shape):
+        arr = (rng.standard_normal(shape) * 0.01).astype(np.float16)
+        return WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(arr), usage=rw)
+
+    def ones_f16(shape):
+        return WebGPUBuffer.from_numpy(dev, np.ones(shape, dtype=np.float16), usage=rw)
+
+    # Global weights needed by forward()
+    model.weights["model.embed_tokens.weight"] = f16((vocab, hidden))
+    model.weights["model.norm.weight"]         = ones_f16((hidden,))
+
+    # Layer 0 norm + FFN weights (input_layernorm is read by _run_decode_dispatches)
+    p  = "model.layers.0"
+    lp = "model.layers.0.linear_attn"
+    model.weights[f"{p}.input_layernorm.weight"]          = ones_f16((hidden,))
+    model.weights[f"{p}.post_attention_layernorm.weight"] = ones_f16((hidden,))
+    model.weights[f"{p}.mlp.gate_proj.weight"] = f16((inter, hidden))
+    model.weights[f"{p}.mlp.up_proj.weight"]   = f16((inter, hidden))
+    model.weights[f"{p}.mlp.down_proj.weight"] = f16((hidden, inter))
+
+    # GDN linear_attn weights: use config-derived dimensions from model attributes
+    # so the buffer sizes match what the shaders expect exactly.
+    cd = model._lin_conv_dim   # Q+K+V projection size (e.g. 6144 for k/v_heads=16)
+    vd = model._lin_val_dim    # V head total dim (e.g. 2048)
+    vh = model._lin_v_heads    # number of V heads (e.g. 16)
+    kern = model._lin_conv_kernel  # conv kernel size (e.g. 4)
+
+    model.weights[f"{lp}.in_proj_qkv.weight"] = f16((cd, hidden))
+    model.weights[f"{lp}.in_proj_z.weight"]   = f16((vd, hidden))
+    model.weights[f"{lp}.in_proj_a.weight"]   = f16((vh, hidden))
+    model.weights[f"{lp}.in_proj_b.weight"]   = f16((vh, hidden))
+    model.weights[f"{lp}.conv1d.weight"] = WebGPUBuffer.from_numpy(
+        dev, np.zeros((cd, kern), dtype=np.float16), usage=rw)
+    model.weights[f"{lp}.A_log"] = WebGPUBuffer.from_numpy(
+        dev, np.full(vh, -1.0, dtype=np.float16), usage=rw)
+    model.weights[f"{lp}.dt_bias"] = WebGPUBuffer.from_numpy(
+        dev, np.zeros(vh, dtype=np.float16), usage=rw)
+    model.weights[f"{lp}.norm.weight"]     = ones_f16((model._lin_v_dim,))
+    model.weights[f"{lp}.out_proj.weight"] = f16((hidden, vd))
+
+    # Allocate SSM and conv recurrent state buffers (zero-initialized by _make_buf).
+    model._alloc_lin_states()
+    # _postprocess_weights only acts when attn_output_gate=True; safe to call here.
+    model._postprocess_weights()
+    # Bypass the load_weights() scan check; set to False since MoE flag is irrelevant.
+    model._batch_matmul_supported = False
+
+    class _FakeMeta:
+        slot_mapping    = [0]
+        block_tables    = [np.zeros(8, dtype=np.uint32)]
+        max_decode_seq_len = 1
+
+    result = model.forward(
+        np.array([1], dtype=np.uint32),
+        np.array([0], dtype=np.uint32),
+        _FakeMeta(),
+    )
+
+    # forward() returns (1, 1) int32 containing the GPU-argmax token id.
+    assert result.shape == (1, 1), f"Expected (1, 1), got {result.shape}"
+    token_id = int(result[0, 0])
+    assert 0 <= token_id < vocab, (
+        f"token_id {token_id} out of range [0, {vocab})"
+    )
