@@ -21,8 +21,8 @@ override BLOCK_SIZE:   u32 = 16u;
 override NUM_KV_HEADS: u32 = 8u;
 override HEAD_DIM:     u32 = 128u;
 
-@group(0) @binding(0) var<storage, read_write> k_cache      : array<vec2<f16>>;
-@group(0) @binding(1) var<storage, read_write> v_cache      : array<vec2<f16>>;
+@group(0) @binding(0) var<storage, read>       k_cache      : array<vec2<f16>>;
+@group(0) @binding(1) var<storage, read>       v_cache      : array<vec2<f16>>;
 @group(0) @binding(2) var<storage, read>       slot_mapping : array<u32>;
 @group(0) @binding(3) var<storage, read_write> k_out        : array<vec2<f16>>;
 @group(0) @binding(4) var<storage, read_write> v_out        : array<vec2<f16>>;

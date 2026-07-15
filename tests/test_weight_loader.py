@@ -503,3 +503,140 @@ def test_detect_mx_quant_null_quantization(tmp_path):
     # With key-presence check: quantization branch entered, quant_algo=None -> "".
     # With falsy check (bug): quantization branch skipped, top-level quant_algo="MXFP4" -> "mxfp4".
     assert _detect_mx_quant(tmp_path) == ""
+
+
+# --- ct_pack_int4 (Gemma4 QAT W4A16) tests -----------------------------------
+
+def test_ct_pack_int4_weight_packed(wgpu_device, tmp_path):
+    """compressed-tensors W4A16 via .weight_packed (canonical Gemma4 QAT layout).
+
+    Weight: {base}.weight_packed  [N, K//8] I32   (8 nibbles per int32)
+    Scale:  {base}.weight_scale   [N, G]    F16   -> transposed to [G, N] on upload
+    Expect: weight uploaded as i32 [N, K//8], scales uploaded as f32 [G, N],
+            __quant_meta__ records fmt='gptq_sym' with correct group_size.
+    """
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
+
+    N, K, group_size = 32, 64, 32
+    G = K // group_size  # 2
+    base = "model.layers.0.self_attn.q_proj"
+
+    qw = np.random.randint(0, 2**31 - 1, size=(N, K // 8), dtype=np.int32)
+    sc = np.random.randn(N, G).astype(np.float16)
+
+    st_path = make_fake_safetensors(tmp_path, {
+        f"{base}.weight_packed": qw,
+        f"{base}.weight_scale": sc,
+    })
+
+    ct_meta = {"__global__": {"fmt": "gptq_gpu", "group_size": group_size}}
+    weights = load_safetensors_weights(
+        str(st_path), wgpu_device.wgpu_device,
+        ct_meta=ct_meta,
+    )
+
+    w_key = f"{base}.weight"
+    sc_key = f"{base}.weight.scales"
+
+    assert w_key in weights, f"{w_key} missing; keys={list(weights.keys())}"
+    assert sc_key in weights, f"{sc_key} missing; keys={list(weights.keys())}"
+
+    assert weights[w_key].dtype == "i32", f"weight dtype={weights[w_key].dtype}"
+    assert weights[w_key].shape == (N, K // 8), (
+        f"weight shape={weights[w_key].shape}, expected ({N}, {K // 8})"
+    )
+
+    # Scale must be transposed from [N, G] to [G, N] for the gptq_sym shader.
+    assert weights[sc_key].shape == (G, N), (
+        f"scale shape={weights[sc_key].shape}, expected ({G}, {N}); "
+        "ct_pack_int4 must transpose [N,G] to [G,N] before upload"
+    )
+    assert weights[sc_key].dtype == "f32", f"scale dtype={weights[sc_key].dtype}"
+
+    qmeta = weights.get("__quant_meta__", {})
+    entry = qmeta.get(base, {})
+    assert entry.get("fmt") == "gptq_sym", (
+        f"quant_meta fmt={entry.get('fmt')!r}, expected 'gptq_sym'"
+    )
+    assert entry.get("group_size") == group_size, (
+        f"quant_meta group_size={entry.get('group_size')!r}, expected {group_size}"
+    )
+
+
+def test_ct_pack_int4_weight_key_fallback(wgpu_device, tmp_path):
+    """compressed-tensors W4A16 via .weight I32 (fallback key naming convention).
+
+    Some checkpoints store the packed int4 weight as {base}.weight (I32) rather
+    than {base}.weight_packed. The loader must fall back to .weight when no
+    .weight_packed key is present.
+    """
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
+
+    N, K, group_size = 16, 32, 16
+    G = K // group_size  # 2
+    base = "model.layers.0.mlp.gate_proj"
+
+    qw = np.random.randint(0, 2**31 - 1, size=(N, K // 8), dtype=np.int32)
+    sc = np.random.randn(N, G).astype(np.float16)
+
+    st_path = make_fake_safetensors(tmp_path, {
+        f"{base}.weight": qw,
+        f"{base}.weight_scale": sc,
+    })
+
+    ct_meta = {"__global__": {"fmt": "gptq_gpu", "group_size": group_size}}
+    weights = load_safetensors_weights(
+        str(st_path), wgpu_device.wgpu_device,
+        ct_meta=ct_meta,
+    )
+
+    w_key = f"{base}.weight"
+    sc_key = f"{base}.weight.scales"
+
+    assert w_key in weights, f"{w_key} missing; keys={list(weights.keys())}"
+    assert sc_key in weights, f"{sc_key} missing; keys={list(weights.keys())}"
+    assert weights[sc_key].shape == (G, N), (
+        f"scale shape={weights[sc_key].shape}, expected ({G}, {N})"
+    )
+    qmeta = weights.get("__quant_meta__", {})
+    assert qmeta.get(base, {}).get("fmt") == "gptq_sym"
+
+
+def test_ct_pack_int4_weight_packed_wins_over_weight(wgpu_device, tmp_path):
+    """When both .weight_packed and .weight are present, .weight_packed wins.
+
+    The two-pass selection in the ct_pack_int4 loader always prefers .weight_packed
+    regardless of header iteration order.
+    """
+    from vllm_webgpu.quant.weight_loader import load_safetensors_weights
+
+    N, K, group_size = 16, 32, 16
+    G = K // group_size
+    base = "model.layers.0.mlp.up_proj"
+
+    qw_packed = np.random.randint(0, 2**31 - 1, size=(N, K // 8), dtype=np.int32)
+    qw_weight = np.random.randint(0, 2**31 - 1, size=(N, K // 8), dtype=np.int32)
+    sc = np.random.randn(N, G).astype(np.float16)
+
+    st_path = make_fake_safetensors(tmp_path, {
+        f"{base}.weight": qw_weight,
+        f"{base}.weight_packed": qw_packed,
+        f"{base}.weight_scale": sc,
+    })
+
+    ct_meta = {"__global__": {"fmt": "gptq_gpu", "group_size": group_size}}
+    weights = load_safetensors_weights(
+        str(st_path), wgpu_device.wgpu_device,
+        ct_meta=ct_meta,
+    )
+
+    w_key = f"{base}.weight"
+    assert w_key in weights, f"{w_key} missing; keys={list(weights.keys())}"
+    # Verify the uploaded data matches qw_packed (not qw_weight).
+    import wgpu as _wgpu
+    buf = weights[w_key].buf
+    raw = wgpu_device.wgpu_device.queue.read_buffer(buf)
+    uploaded = np.frombuffer(raw, dtype=np.int32).reshape(N, K // 8)
+    assert np.array_equal(uploaded, qw_packed), (
+        ".weight_packed data was not preferred over .weight data"
+    )
