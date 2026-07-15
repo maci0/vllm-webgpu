@@ -121,7 +121,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         avoid duplicating the same dict literal in both subclasses.
         """
         return {
-            "router_out":   self._make_buf(num_experts * 2),       # [N_E] f16 router logits
+            "router_out":   self._make_buf(num_experts * 4),       # [N_E] f32 router logits
             "topk_idx":     self._make_buf(top_k * 4),             # [K] u32 expert indices
             "topk_w":       self._make_buf(top_k * 4),             # [K] f32 softmax weights
             "expert_act":   self._make_buf(act_sz * 2),            # [max_inter] f16 activated
@@ -455,15 +455,20 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
         uq_r = self._uq_for_key(rw_k)
         qi_r = self._quant_extra(rw_k.removesuffix('.weight'), uq_r)
         router_bias = self.weights.get(f"{p}.{router_subkey}.bias")
+        if router_bias is not None:
+            raise NotImplementedError(
+                f"MoE router bias found at {p}.{router_subkey}.bias; "
+                "matmul_quant_f32out does not support HAS_BIAS. "
+                "No known checkpoint uses a router bias — check the checkpoint. "
+                "If router bias is required, add a separate f32 bias-add dispatch "
+                "after the router projection."
+            )
         router_bindings = [normed_x, self.weights[rw_k],
                            self._scales_buf(rw_k, uq_r, self._dummy_buf),
                            msc["router_out"]]
         router_consts: dict = {"K": hidden, "N": N_E, "USE_QUANT": uq_r, **qi_r}
-        if router_bias is not None:
-            router_bindings.append(router_bias)
-            router_consts["HAS_BIAS"] = 1
         self._dispatch(
-            "matmul_quant",
+            "matmul_quant_f32out",
             router_bindings,
             router_consts,
             (N_E, 1, 1),
