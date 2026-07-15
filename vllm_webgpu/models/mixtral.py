@@ -257,7 +257,7 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
 
         Returns the (gate, up) output buffers so callers can decide how to
         combine them (gelu_mul, bias injection, etc.) without duplicating the
-        _ensure_moe_expert_bufs + _quant_extra + _dispatch("matmul_quant", ...) sequence.
+        lazy expert_gate/expert_up allocation + _quant_extra + _dispatch("matmul_quant", ...) sequence.
         """
         msc = self._moe_sc
         if "expert_gate" not in msc:
@@ -581,6 +581,13 @@ class MixtralWebGPUModel(LlamaWebGPUModel):
                         [msc["router_out"], msc["expert_out"]],
                         {"N": hidden},
                         _vec4_wg(hidden),
+                    )
+                else:
+                    logger.warning(
+                        "shared_expert_gate_subkey=%r set but weight %r not found; "
+                        "shared expert output will NOT be scaled by the gate coefficient, "
+                        "producing incorrect results. Check checkpoint integrity.",
+                        shared_expert_gate_subkey, segate_k,
                     )
 
         for k_idx, exp_idx in enumerate(expert_indices):

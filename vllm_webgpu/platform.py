@@ -34,15 +34,13 @@ def _get_wgpu_adapter():
     try:
         from vllm_webgpu.config import get_config
         cfg = get_config()
+    except ImportError:
+        return None
+    try:
         import wgpu
         return wgpu.gpu.request_adapter_sync(power_preference=cfg.power_preference)
     except ImportError:
         return None
-    except ValueError:
-        # Re-raise config validation errors (ValueError from WebGPUConfig.__post_init__)
-        # so they propagate to the caller rather than being swallowed by the broad
-        # Exception handler below.
-        raise
     except Exception as exc:
         logger.debug("WebGPU adapter probe failed: %s", exc)
         return None

@@ -1,5 +1,4 @@
 from __future__ import annotations
-import math
 import time
 from abc import ABC, abstractmethod
 from collections import defaultdict
@@ -8,7 +7,6 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 import wgpu as wgpu_lib
 
 from vllm.logger import init_logger
@@ -16,7 +14,6 @@ from vllm.utils.math_utils import cdiv
 from vllm.model_executor.layers.rotary_embedding.common import (
     yarn_find_correction_range,
     yarn_get_mscale,
-    yarn_linear_ramp_mask,
 )
 
 from vllm_webgpu.utils import zero_bytes
@@ -139,7 +136,10 @@ def compute_yarn_freqs(
     inv_freq_extrap = 1.0 / pos_freqs
     inv_freq_interp = 1.0 / (factor * pos_freqs)
     low, high = yarn_find_correction_range(beta_fast, beta_slow, rotary_dim, rope_theta, orig_ctx, truncate)
-    mask = (1 - yarn_linear_ramp_mask(low, high, rotary_dim // 2, dtype=torch.float).numpy()) * extrapolation_factor
+    _n = rotary_dim // 2
+    _high_g = high + 0.001 if low == high else high  # singularity guard from yarn_linear_ramp_mask
+    _ramp = np.clip((np.arange(_n, dtype=np.float32) - low) / (_high_g - low), 0.0, 1.0)
+    mask = (1 - _ramp) * extrapolation_factor
     inv_freq = inv_freq_interp * (1 - mask) + inv_freq_extrap * mask
 
     mscale = (
@@ -221,7 +221,7 @@ class BaseWebGPUModel(ABC):
         f16 arrays; buf.shape holds the original unpadded shape. Raises KeyError
         for any dtype not in _WGPU_DTYPE_TO_NP so unknown types fail immediately.
         """
-        expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
+        expected = int(np.prod(buf.shape)) * _ELEM_BYTES[buf.dtype]
         return buf.to_numpy()[:expected].view(_WGPU_DTYPE_TO_NP[buf.dtype])
 
     def _staged_scalar(self, raw: bytes, buf: "WebGPUBuffer") -> float:
@@ -232,7 +232,7 @@ class BaseWebGPUModel(ABC):
         logical element count before the dtype view, matching _buf_to_numpy's
         4-byte-alignment strip.
         """
-        expected = math.prod(buf.shape) * _ELEM_BYTES[buf.dtype]
+        expected = int(np.prod(buf.shape)) * _ELEM_BYTES[buf.dtype]
         return float(np.frombuffer(raw[:expected], dtype=_WGPU_DTYPE_TO_NP[buf.dtype]).item())
 
     @contextmanager

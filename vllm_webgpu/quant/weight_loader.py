@@ -594,10 +594,12 @@ def _detect_mx_quant(model_dir: Path, quant_cfg: "dict | None" = None) -> str:
                         ModelOptFp8Config,
                     )
                     algo = ModelOptFp8Config._extract_modelopt_quant_algo(cfg) or ''
-                except ImportError:
+                except (ImportError, Exception):
                     # modelopt.py has top-level CUDA kernel imports
                     # (mxfp8_utils, marlin_utils, flashinfer_utils, fused_moe)
-                    # that fail on WebGPU where no CUDA runtime is present.
+                    # that fail on WebGPU where no CUDA runtime is present,
+                    # raising ImportError, RuntimeError, or OSError depending on
+                    # how far the partial import gets.
                     # cfg is a non-None dict (just parsed from JSON) and
                     # quant_method.startswith('modelopt') is already confirmed above.
                     algo = _extract_modelopt_algo(cfg)

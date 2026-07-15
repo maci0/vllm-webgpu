@@ -502,9 +502,9 @@ class WebGPUModelRunner:
             )
         if self.model is None:
             return EMPTY_MODEL_RUNNER_OUTPUT
-        return self._execute_model_v2(scheduler_output)
+        return self._execute_model(scheduler_output)
 
-    def _execute_model_v2(self, scheduler_output: "SchedulerOutput") -> "ModelRunnerOutput":
+    def _execute_model(self, scheduler_output: "SchedulerOutput") -> "ModelRunnerOutput":
         """vLLM >= 0.24 SchedulerOutput format."""
         # Zero recycled KV blocks before any forward pass. The block pool may
         # reuse blocks from completed requests; without zeroing, attention over

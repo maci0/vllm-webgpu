@@ -422,7 +422,7 @@ class GptOssWebGPUModel(MixtralWebGPUModel):
         uq_u = self._uq_for_key(uw_key)
 
         # Separate gate and up dispatches (needed to inject bias between matmul and activation).
-        # _dispatch_expert_projections handles _ensure_moe_expert_bufs + quant_extra + both matmuls.
+        # _dispatch_expert_projections handles lazy expert_gate/expert_up allocation + quant_extra + both matmuls.
         # expert_tmp is not allocated here; it is lazily allocated by _dispatch_expert_down via
         # _ensure_expert_tmp when a quantized down projection is encountered.
         gate_buf, up_buf = self._dispatch_expert_projections(normed_x, gw_key, uw_key, inter, uq_g=uq_g, uq_u=uq_u)
