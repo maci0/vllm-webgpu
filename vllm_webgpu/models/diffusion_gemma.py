@@ -625,11 +625,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # non-MoE layers only have the no-suffix key.
             if self.is_moe:
                 pfn1_w = self.weights.get(f"{p}.post_feedforward_layernorm_1.weight")
-                if pfn1_w is not None:
-                    self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
-                                   (num_tokens, 1, 1))
-                    hidden_states_1 = self._shared_res_buf
-                else:
+                if pfn1_w is None:
                     raise ValueError(
                         f"MoE layer {layer_idx} missing post_feedforward_layernorm_1.weight. "
                         "The shared-MLP output cannot be passed directly to the combine dispatch: "
@@ -637,6 +633,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         "the last expert's down-projection result instead of the shared expert output. "
                         "A correctly loaded DiffusionGemma checkpoint always has this weight."
                     )
+                self._dispatch("rms_norm", [sc["ffn_out"], pfn1_w, self._shared_res_buf], _rms,
+                               (num_tokens, 1, 1))
+                hidden_states_1 = self._shared_res_buf
             else:
                 hidden_states_1 = sc["ffn_out"]
 
@@ -861,11 +860,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
             # Post-MoE norm + single residual add (vLLM Gemma4 pattern)
             with self._batched_dispatch(label=f"L{layer_idx:02d}P"):
                 pfn2_out_w = self.weights.get(f"{p}.post_feedforward_layernorm_2.weight")
-                if pfn2_out_w is not None:
-                    self._dispatch("rms_norm", [moe_acc, pfn2_out_w, sc["o_proj_out"]], _rms,
-                                   (num_tokens, 1, 1))
-                    hidden_states_2 = sc["o_proj_out"]
-                else:
+                if pfn2_out_w is None:
                     raise ValueError(
                         f"MoE layer {layer_idx} missing post_feedforward_layernorm_2.weight. "
                         "The unnormed moe_acc cannot be passed directly to the combine dispatch: "
@@ -874,6 +869,9 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         "wrong MoE outputs. A correctly loaded DiffusionGemma checkpoint always "
                         "has this weight."
                     )
+                self._dispatch("rms_norm", [moe_acc, pfn2_out_w, sc["o_proj_out"]], _rms,
+                               (num_tokens, 1, 1))
+                hidden_states_2 = sc["o_proj_out"]
 
                 # Combine shared-MLP and MoE streams (f16 + f16 -> f16)
                 self._dispatch("add", [hidden_states_1, hidden_states_2, sc["normed"]],
@@ -908,8 +906,7 @@ class DiffusionGemmaWebGPUModel(Gemma4WebGPUModel):
                         "— vLLM applies this norm unconditionally; a missing weight "
                         "indicates a corrupt or incomplete checkpoint."
                     )
-                is_last = (layer_idx == self.num_layers - 1)
-                if not is_last:
+                if layer_idx < self.num_layers - 1:
                     # Fuse: rms_norm(ffn_out, post_ffw_w) + add_f32(residual) + rms_norm_f32in(next_ln_w)
                     # into one dispatch. Saves 2 dispatches vs the 3-op sequence, matching
                     # Gemma4WebGPUModel._transformer_layer (lines 1385-1394). RMSNorm is

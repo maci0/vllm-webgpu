@@ -274,6 +274,18 @@ def _make_model_output(
     )
 
 
+def _do_sample(logits_row: "np.ndarray", sp, rng, use_fp64_gumbel: bool) -> int:
+    """Sample a token from a 1-D logits row, using SamplingParams when non-greedy."""
+    if sp is None or logits_row.shape[-1] == 1:
+        return int(logits_row[0])
+    return _sample_token(
+        logits_row, temperature=sp.temperature,
+        top_p=sp.top_p, top_k=sp.top_k, min_p=sp.min_p,
+        generator=rng,
+        use_fp64_gumbel=use_fp64_gumbel,
+    )
+
+
 def _extract_logprob_data(
     logits: "np.ndarray",
     row_idx: int,
@@ -691,15 +703,7 @@ class WebGPUModelRunner:
                 rng.manual_seed(sp.seed)
             else:
                 rng = None
-            if sp is None or last_logits.shape[-1] == 1:
-                first_decode_tok = int(last_logits[-1, 0])
-            else:
-                first_decode_tok = _sample_token(
-                    last_logits[-1], temperature=sp.temperature,
-                    top_p=sp.top_p, top_k=sp.top_k, min_p=sp.min_p,
-                    generator=rng,
-                    use_fp64_gumbel=self._use_fp64_gumbel,
-                )
+            first_decode_tok = _do_sample(last_logits[-1], sp, rng, self._use_fp64_gumbel)
 
             # Compute logprobs for this prefill token if the request asked for them.
             lp_data = _extract_logprob_data(last_logits, -1, first_decode_tok, num_logprobs, rid)
@@ -898,15 +902,7 @@ class WebGPUModelRunner:
                 # Use the persisted per-request generator so the RNG state
                 # advances between steps (not reset to the same seed each step).
                 rng = state["rng"]
-                if sp is None or logits.shape[-1] == 1:
-                    stok = int(logits[0, 0])
-                else:
-                    stok = _sample_token(
-                        logits[0], temperature=sp.temperature,
-                        top_p=sp.top_p, top_k=sp.top_k, min_p=sp.min_p,
-                        generator=rng,
-                        use_fp64_gumbel=self._use_fp64_gumbel,
-                    )
+                stok = _do_sample(logits[0], sp, rng, self._use_fp64_gumbel)
 
                 # Compute logprobs if requested for this request.
                 lp_data = _extract_logprob_data(logits, 0, stok, num_logprobs, rid)

@@ -817,24 +817,17 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         Other quant types must use the sequential (GEMV) path.
         """
         uq = self._uq_for_key(wk)
-        if uq == 3:
-            sc_b = self._scales_buf(wk, uq, self._dummy_buf)
-            self._dispatch("matmul_quant_mr4",
-                           [src, self.weights[wk], sc_b, out_b],
-                           {"K": K, "N": N, "M": T, "USE_QUANT": 3,
-                            **self._quant_extra(wk.removesuffix(".weight"), uq)},
-                           (N, T, 1))
-        elif uq == 0:
-            self._dispatch("matmul_quant_mr4",
-                           [src, self.weights[wk], self._dummy_buf, out_b],
-                           {"K": K, "N": N, "M": T, "USE_QUANT": 0},
-                           (N, T, 1))
-        else:
+        if uq not in (0, 3):
             raise RuntimeError(
                 f"Batch prefill does not support USE_QUANT={uq} for weight {wk}. "
                 f"Only f16 (USE_QUANT=0) and GPTQ int4 (USE_QUANT=3) are handled by "
                 f"matmul_quant_mr4. Other quant types must use the sequential path."
             )
+        self._dispatch("matmul_quant_mr4",
+                       [src, self.weights[wk], self._scales_buf(wk, uq, self._dummy_buf), out_b],
+                       {"K": K, "N": N, "M": T, "USE_QUANT": uq,
+                        **self._quant_extra(wk.removesuffix(".weight"), uq)},
+                       (N, T, 1))
 
     def _prefill_batch_forward(  # noqa: C901
         self,
