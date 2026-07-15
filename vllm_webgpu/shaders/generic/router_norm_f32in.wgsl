@@ -14,7 +14,9 @@ enable f16;
 //
 // Input:  f32 residual (the pre-MoE residual stream, not pre_feedforward_layernorm_2 output)
 // Weight: f16 router.scale (per-dimension learned scale, shape [hidden_size])
-//         When NO_SCALE=1 the scale buffer is still bound but not read; pass any f16 buffer.
+//         When NO_SCALE=1 the scale buffer is bound and read (WGSL select evaluates both
+//         arms), but the result is discarded. The buffer must be at least HIDDEN_DIM f16
+//         elements; pass the router_dummy_buf (sized to hidden_size) to avoid OOB reads.
 // Output: f16 preprocessed router input, ready for the projection matmul
 //
 // Dispatch (num_tokens, 1, 1).
