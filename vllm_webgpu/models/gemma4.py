@@ -344,6 +344,19 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
             }
             self._lp = [uniform_lp.copy() for _ in range(self.num_layers)]
 
+        # Warn when sliding attention layers exist but no window size is configured.
+        # Without sliding_window the layers silently use full context, which produces
+        # wrong attention patterns for models that require local-window attention.
+        _has_sliding = any(lp.get("is_sliding", False) for lp in self._lp)
+        if _has_sliding and self._sliding_window is None:
+            warnings.warn(
+                f"{type(self).__name__}: layer_types contains 'sliding_attention' layers "
+                "but sliding_window is not set in the model config. Sliding attention layers "
+                "will attend full context, which produces incorrect outputs for models that "
+                "require local-window attention. Set sliding_window in the model config.",
+                stacklevel=3,
+            )
+
         # Validate even dimensions required by WGSL shaders
         for name, val in [("hidden_size", self.hidden_size),
                           ("intermediate_size", self.intermediate_size)]:
