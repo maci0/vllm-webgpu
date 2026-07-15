@@ -720,7 +720,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
             self.weight_meta = _NemotronHForCausalLM.hf_to_vllm_mapper.apply_dict(self.weight_meta)
             self.weight_meta = {
                 k: v for k, v in self.weight_meta.items()
-                if (k + ".weight") in self.weights
+                if (k + ".weight") in self.weights or k in self.weights
             }
         self._pack_attn_weights()
         # Release CPU-side scale accumulators and closures; they are only needed
