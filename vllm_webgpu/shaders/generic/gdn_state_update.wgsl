@@ -131,7 +131,7 @@ fn main(
             - dk * sh_old[v]
             + b_gate * kn * f32(qkv_buf[vh_v_base + v]);
     }
-    workgroupBarrier();
+    storageBarrier();
 
     // ── Phase 6: output[tid] = (1/sqrt(K_DIM)) * state_new @ q ──────────────
     // tid is the V-dimension index; same indexing as Phase 4.
