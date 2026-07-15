@@ -56,6 +56,47 @@ def _resolve_num_logprobs(sp, rid: str) -> "int | None":
     return num_logprobs
 
 
+def _validate_logit_processors(sp, rid: str) -> None:
+    """Raise NotImplementedError for logit processors the WebGPU backend cannot apply.
+
+    The GPU runner applies repetition/frequency/presence penalties and logit
+    biases to the full logit distribution before sampling. The WebGPU runner
+    has no equivalent: if any of these are set to non-default values the model
+    would silently produce incorrect output. Fail fast at request admission time
+    instead.
+
+    Called once per new request in the prefill loop; validated params do not
+    change between steps so no decode-path check is needed.
+    """
+    if sp is None:
+        return
+    if sp.logit_bias:
+        raise NotImplementedError(
+            f"req {rid}: logit_bias is not supported on the WebGPU backend; "
+            "set logit_bias=None or use a CPU/CUDA backend"
+        )
+    if sp.repetition_penalty != 1.0:
+        raise NotImplementedError(
+            f"req {rid}: repetition_penalty={sp.repetition_penalty} is not supported on the WebGPU backend; "
+            "only the default value of 1.0 (disabled) is accepted"
+        )
+    if sp.frequency_penalty != 0.0:
+        raise NotImplementedError(
+            f"req {rid}: frequency_penalty={sp.frequency_penalty} is not supported on the WebGPU backend; "
+            "only the default value of 0.0 (disabled) is accepted"
+        )
+    if sp.presence_penalty != 0.0:
+        raise NotImplementedError(
+            f"req {rid}: presence_penalty={sp.presence_penalty} is not supported on the WebGPU backend; "
+            "only the default value of 0.0 (disabled) is accepted"
+        )
+    if sp.bad_words:
+        raise NotImplementedError(
+            f"req {rid}: bad_words is not supported on the WebGPU backend; "
+            "use a CPU/CUDA backend for bad-words filtering"
+        )
+
+
 # KV cache dtype used by all WebGPU attention layers. Referenced in both
 # get_kv_cache_spec and get_cache_block_size_bytes so that changing it
 # keeps both methods consistent.
@@ -562,7 +603,12 @@ class WebGPUModelRunner:
                 )
 
             # Extract per-request logprob counts via the stable SamplingParams property.
+            # Validate that unsupported logit processors are not set: the WebGPU
+            # backend cannot apply repetition/frequency/presence penalties or logit
+            # biases to the logit distribution. Silently ignoring them would produce
+            # incorrect output without any user-visible warning.
             sp = req.sampling_params
+            _validate_logit_processors(sp, rid)
             num_logprobs = _resolve_num_logprobs(sp, rid)
             num_prompt_logprobs = sp.prompt_logprobs if sp is not None else None
 

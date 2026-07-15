@@ -172,6 +172,46 @@ def test_make_model_output_with_prompt_logprobs():
     assert out.prompt_logprobs_dict == pld
 
 
+def test_validate_logit_processors_defaults_ok():
+    """Default SamplingParams values pass validation without error."""
+    from vllm_webgpu.v1.model_runner import _validate_logit_processors
+    from unittest.mock import MagicMock
+
+    sp = MagicMock()
+    sp.logit_bias = None        # default
+    sp.repetition_penalty = 1.0  # default
+    sp.frequency_penalty = 0.0   # default
+    sp.presence_penalty = 0.0    # default
+    sp.bad_words = []            # default (after SamplingParams.__post_init__)
+
+    # Should not raise
+    _validate_logit_processors(sp, "req-test")
+
+
+@pytest.mark.parametrize("field,value,err_fragment", [
+    ("logit_bias",         {5: 1.0},  "logit_bias"),
+    ("repetition_penalty", 1.3,       "repetition_penalty"),
+    ("frequency_penalty",  0.5,       "frequency_penalty"),
+    ("presence_penalty",   0.1,       "presence_penalty"),
+    ("bad_words",          ["stop"],  "bad_words"),
+])
+def test_validate_logit_processors_raises(field, value, err_fragment):
+    """Non-default logit processor values raise NotImplementedError."""
+    from vllm_webgpu.v1.model_runner import _validate_logit_processors
+    from unittest.mock import MagicMock
+
+    sp = MagicMock()
+    sp.logit_bias = None
+    sp.repetition_penalty = 1.0
+    sp.frequency_penalty = 0.0
+    sp.presence_penalty = 0.0
+    sp.bad_words = []
+    setattr(sp, field, value)
+
+    with pytest.raises(NotImplementedError, match=err_fragment):
+        _validate_logit_processors(sp, "req-test")
+
+
 def test_worker_check_health_calls_dispatch(wgpu_device):
     """check_health submits a no-op dispatch — just verifies device is alive."""
     from vllm_webgpu.v1.worker import WebGPUWorker
