@@ -164,12 +164,12 @@ fn main(
             var awq_shift: u32;
             switch awq_pos {
                 case 0u: { awq_shift = 0u; }
-                case 1u: { awq_shift = 16u; }
-                case 2u: { awq_shift = 4u; }
-                case 3u: { awq_shift = 20u; }
-                case 4u: { awq_shift = 8u; }
-                case 5u: { awq_shift = 24u; }
-                case 6u: { awq_shift = 12u; }
+                case 1u: { awq_shift = 8u; }
+                case 2u: { awq_shift = 16u; }
+                case 3u: { awq_shift = 24u; }
+                case 4u: { awq_shift = 4u; }
+                case 5u: { awq_shift = 12u; }
+                case 6u: { awq_shift = 20u; }
                 default: { awq_shift = 28u; }
             }
             var k_awq = tid * 2u;
@@ -387,12 +387,12 @@ fn main(
         var awq_shift: u32;
         switch awq_pos {
             case 0u: { awq_shift = 0u; }
-            case 1u: { awq_shift = 16u; }
-            case 2u: { awq_shift = 4u; }
-            case 3u: { awq_shift = 20u; }
-            case 4u: { awq_shift = 8u; }
-            case 5u: { awq_shift = 24u; }
-            case 6u: { awq_shift = 12u; }
+            case 1u: { awq_shift = 8u; }
+            case 2u: { awq_shift = 16u; }
+            case 3u: { awq_shift = 24u; }
+            case 4u: { awq_shift = 4u; }
+            case 5u: { awq_shift = 12u; }
+            case 6u: { awq_shift = 20u; }
             default: { awq_shift = 28u; }
         }
         for (var k = 0u; k < K; k++) {

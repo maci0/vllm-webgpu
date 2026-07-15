@@ -53,8 +53,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     output[c] = f16(clamp(silu_out, -65504.0, 65504.0));
 
     // Shift conv_state left (drop oldest), append x[c] at position hist_len-1.
-    for (var i = 0u; i < hist_len - 1u; i++) {
-        conv_state[i * CONV_DIM + c] = conv_state[(i + 1u) * CONV_DIM + c];
+    // Guard: for hist_len <= 1 (KERNEL <= 2), hist_len-1u would underflow to u32::MAX.
+    if (hist_len > 1u) {
+        for (var i = 0u; i < hist_len - 1u; i++) {
+            conv_state[i * CONV_DIM + c] = conv_state[(i + 1u) * CONV_DIM + c];
+        }
     }
     if (hist_len > 0u) {
         conv_state[(hist_len - 1u) * CONV_DIM + c] = x[c];

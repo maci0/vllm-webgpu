@@ -182,8 +182,11 @@ fn main(
         } else if (USE_QUANT == 4u) {
             // GPU AWQ INT4 dequant (split-K, coalesced).
             // Weight layout: [K, N//8] INT32 stored as [K, N//8].
-            // AWQ nibble order within each INT32: positions [0,4,1,5,2,6,3,7]
-            // → bit shifts [0, 16, 4, 20, 8, 24, 12, 28].
+            // GPU AWQ INT4 dequant (split-K, coalesced).
+            // Weight layout: [K, N//8] INT32 stored as [K, N//8].
+            // AWQ nibble order within each INT32: pack positions [0,4,1,5,2,6,3,7]
+            // means channel c is at nibble inverse_pack[c] where inverse_pack=[0,2,4,6,1,3,5,7].
+            // → bit shift = inverse_pack[c] * 4, giving [0,8,16,24,4,12,20,28] for channels 0-7.
             // scales: [G, N] F32 where G = K // GROUP_K.
             // zero_point = 8 (symmetric AWQ — asymmetric qzeros handled at load time).
             //
@@ -195,16 +198,15 @@ fn main(
             let N8 = N / 8u;  // INT32 elements per K row
             // AWQ nibble shift for this output row within its INT32 pack
             let awq_pos = row % 8u;
-            // Mapping: position → bit shift using [0,4,1,5,2,6,3,7] nibble order
             var awq_shift: u32;
             switch awq_pos {
                 case 0u: { awq_shift = 0u; }
-                case 1u: { awq_shift = 16u; }
-                case 2u: { awq_shift = 4u; }
-                case 3u: { awq_shift = 20u; }
-                case 4u: { awq_shift = 8u; }
-                case 5u: { awq_shift = 24u; }
-                case 6u: { awq_shift = 12u; }
+                case 1u: { awq_shift = 8u; }
+                case 2u: { awq_shift = 16u; }
+                case 3u: { awq_shift = 24u; }
+                case 4u: { awq_shift = 4u; }
+                case 5u: { awq_shift = 12u; }
+                case 6u: { awq_shift = 20u; }
                 default: { awq_shift = 28u; }  // case 7u
             }
             var k_awq = tid * 2u;
@@ -471,19 +473,19 @@ fn main(
         // AWQ INT4, row-per-thread.
         // Weight layout: [K, N//8] INT32.
         // AWQ nibble order within each INT32: positions [0,4,1,5,2,6,3,7]
-        // → bit shifts [0, 16, 4, 20, 8, 24, 12, 28].
+        // → to extract channel c: shift = inverse_pack[c]*4 where inverse_pack=[0,2,4,6,1,3,5,7].
         // scales: [G, N] F32, zero_point = 8.
         let N8 = N / 8u;
         let awq_pos = row % 8u;
         var awq_shift: u32;
         switch awq_pos {
             case 0u: { awq_shift = 0u; }
-            case 1u: { awq_shift = 16u; }
-            case 2u: { awq_shift = 4u; }
-            case 3u: { awq_shift = 20u; }
-            case 4u: { awq_shift = 8u; }
-            case 5u: { awq_shift = 24u; }
-            case 6u: { awq_shift = 12u; }
+            case 1u: { awq_shift = 8u; }
+            case 2u: { awq_shift = 16u; }
+            case 3u: { awq_shift = 24u; }
+            case 4u: { awq_shift = 4u; }
+            case 5u: { awq_shift = 12u; }
+            case 6u: { awq_shift = 20u; }
             default: { awq_shift = 28u; }  // case 7u
         }
         for (var k = 0u; k < K; k++) {
