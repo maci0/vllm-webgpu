@@ -15,12 +15,12 @@ from vllm.transformers_utils.config import get_hf_text_config
 # attention-type dispatch, MLP-width guard) from vllm/model_executor/models/gemma4.py.
 # There is no public vLLM API to call instead; these are a necessary transcription
 # but drift silently on every vLLM bump. They are pinned to the vLLM version below.
-# Re-audit Gemma4Attention.__init__ (L461-471) and
-# Gemma4DecoderLayer.__init__ (L559-580, L599-607) and re-run
+# Re-audit Gemma4Attention.__init__ (L457-490) and
+# Gemma4DecoderLayer.__init__ (L560-620) and re-run
 # tests/test_gemma4_layer_params.py after any bump.
 # Upstream issue filed: github.com/vllm-project/vllm/issues/48661
 # Once vLLM exposes get_layer_params(config), replace both functions with a direct call.
-_EXPECTED_VLLM_VERSION = "0.24.0"
+_EXPECTED_VLLM_VERSION = "0.25.1"
 if _vllm_version != _EXPECTED_VLLM_VERSION:
     warnings.warn(
         f"vLLM {_vllm_version!r} differs from pinned {_EXPECTED_VLLM_VERSION!r}. "

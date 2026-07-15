@@ -379,9 +379,9 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # "hybrid" as an attention type unconditionally (matching Zamba2-family semantics). Zamba2
     # support is therefore already handled without any remapping step here.
     #
-    # VERSION SYNC: last verified against vLLM 0.24.0.
+    # VERSION SYNC: last verified against vLLM 0.25.1.
     # On each vLLM bump, diff ModelConfig.get_num_layers_by_block_type
-    # (vllm/config/model.py:1327-1369) against the probe sequence below and
+    # (vllm/config/model.py:1377-1421 as of 0.25.1) against the probe sequence below and
     # update the version number above.
     # TODO(vLLM bump): check whether a new probe has been added beyond the three
     # mirrored here; the block_configs / has_noops (Jamba) path is the known gap.

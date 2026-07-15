@@ -2,7 +2,7 @@
 
 These tests catch upstream renames or moves of internal APIs before they
 silently break at runtime. The pinned range is declared in pyproject.toml:
-  vllm>=0.24,<0.25
+  vllm>=0.25.1,<0.26
 
 When bumping the vLLM pin, re-run this file first and fix any failures before
 updating pyproject.toml.
@@ -27,7 +27,7 @@ When bumping vLLM and the hash fails:
   3. Update PINNED_EXTRACT_ALGO_HASH below to the new hash.
   4. Re-run this file to confirm green.
 
-VLLM_INLINE_COPY_VALIDATED: 0.24.0
+VLLM_INLINE_COPY_VALIDATED: 0.25.1
 
 Background: apply_top_k_top_p_pytorch and random_sample are not part of
 vLLM's documented public API. They live in
@@ -53,17 +53,17 @@ import pytest
 # Recompute with: hashlib.sha256('\n'.join(l.rstrip() for l in src.splitlines()).encode()).hexdigest()[:16]
 PINNED_EXTRACT_ALGO_HASH = "a12d15f39ac3f5ee"
 
-# SHA-256 (first 16 hex chars) of lines 1327-1369 of vllm/config/model.py in vLLM 0.24.0.
+# SHA-256 (first 16 hex chars) of lines 1377-1421 of vllm/config/model.py in vLLM 0.25.1.
 # Those lines are the hybrid-model probe sequence inside get_num_layers_by_block_type that
 # get_layer_types() in cache_policy.py mirrors.  Hashing the narrow range (rather than the
 # full function) avoids false failures when unrelated branches of the function change.
 # Any in-branch semantic change (e.g., truthiness vs. is-not-None for probe 2, new probe added)
 # flips this hash and requires a manual diff against get_layer_types() and a VERSION SYNC update.
-# Recompute with (0-based slice [1326:1369]):
+# Recompute with (0-based slice [1376:1421]):
 #   lines = pathlib.Path(vllm.__file__).parent / "config/model.py"
-#   probe_lines = lines.read_text().splitlines()[1326:1369]
+#   probe_lines = lines.read_text().splitlines()[1376:1421]
 #   hashlib.sha256('\n'.join(l.rstrip() for l in probe_lines).encode()).hexdigest()[:16]
-PINNED_GET_NUM_LAYERS_HASH = "d593900b0ecab216"
+PINNED_GET_NUM_LAYERS_HASH = "008d87a12917bc0f"
 
 
 def _attr_exists(module_path: str, attr: str) -> bool:
@@ -301,27 +301,27 @@ def test_get_num_layers_by_block_type_source_hash_pinned():
     """Fail when the hybrid-model probe sequence in get_num_layers_by_block_type changes.
 
     get_layer_types() in cache_policy.py mirrors the probe sequence at lines
-    1327-1369 of vllm/config/model.py (the ``else:`` branch that handles hybrid
-    models: Jamba, Minimax, Qwen3Next/Qwen3.5).  The probe-order and probe-attribute
-    tests catch renames and reorderings, but they do not catch in-branch semantic
-    changes such as:
+    1377-1421 of vllm/config/model.py (the ``else:`` branch that handles hybrid
+    models: Jamba, Minimax, Qwen3Next/Qwen3.5) as of vLLM 0.25.1.  The probe-order
+    and probe-attribute tests catch renames and reorderings, but they do not catch
+    in-branch semantic changes such as:
       - flipping probe 2 from truthiness to is-not-None (or vice versa)
       - changing the Zamba2 special-case mapping inside probe 1
       - adding an early-return or new conditional before the probe sequence
 
-    The hash covers only lines 1327-1369 (the probe-sequence block), not the full
+    The hash covers only lines 1377-1421 (the probe-sequence block), not the full
     function, so unrelated changes to the transformer/attention-free branches above
     it do not trigger a false failure.
 
     When this test fails after a vLLM bump:
-      1. Diff lines 1327-1369 of vllm/config/model.py against get_layer_types()
+      1. Diff the probe-sequence lines of vllm/config/model.py against get_layer_types()
          in vllm_webgpu/v1/cache_policy.py.
       2. Update get_layer_types() to match any probe-sequence changes.
-      3. Update PINNED_GET_NUM_LAYERS_HASH at the top of this file to the new hash.
+      3. Update the slice [1376:1421] and PINNED_GET_NUM_LAYERS_HASH to the new range and hash.
       4. Update the VERSION SYNC comment in cache_policy.py to the new vLLM version.
       5. Re-run this test and test_get_layer_types_version_sync to confirm they pass.
 
-    Pinned against vLLM 0.24.0.
+    Pinned against vLLM 0.25.1.
     """
     pytest.importorskip("vllm", reason="vllm not installed")
     import pathlib
@@ -329,16 +329,16 @@ def test_get_num_layers_by_block_type_source_hash_pinned():
 
     model_py = pathlib.Path(vllm.__file__).parent / "config" / "model.py"
     all_lines = model_py.read_text().splitlines()
-    # Lines 1327-1369 (1-based), i.e. 0-based slice [1326:1369].
+    # Lines 1377-1421 (1-based), i.e. 0-based slice [1376:1421].
     # This range covers the hybrid-model probe sequence (Jamba / Minimax /
-    # Qwen3Next) that get_layer_types() mirrors.  Narrowing to this range
+    # Qwen3Next/Qwen3.5) as of vLLM 0.25.1.  Narrowing to this range
     # avoids false positives when the surrounding branches change.
-    probe_lines = all_lines[1326:1369]
+    probe_lines = all_lines[1376:1421]
     normalized = "\n".join(line.rstrip() for line in probe_lines)
     actual_hash = hashlib.sha256(normalized.encode()).hexdigest()[:16]
 
     assert actual_hash == PINNED_GET_NUM_LAYERS_HASH, (
-        f"Hybrid-model probe sequence in vllm/config/model.py lines 1327-1369 "
+        f"Hybrid-model probe sequence in vllm/config/model.py lines 1377-1421 "
         f"changed (hash {actual_hash!r} != pinned {PINNED_GET_NUM_LAYERS_HASH!r}). "
         "Diff those lines against get_layer_types() in "
         "vllm_webgpu/v1/cache_policy.py, update the inline copy and "
