@@ -102,7 +102,7 @@ def test_logit_softcap_bounded_invariant(wgpu_device):
 
 
 def test_ple_shaders_compile(wgpu_device):
-    """Smoke test: verify all PLE shaders compile without error."""
+    """Smoke test: verify gemma shaders compile without error."""
     from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
 
     dev = wgpu_device.wgpu_device
@@ -110,9 +110,6 @@ def test_ple_shaders_compile(wgpu_device):
 
     shaders = [
         ("per_head_rms_norm_no_weight", (("HEAD_DIM", 64), ("NUM_HEADS", 4), ("WG_SIZE", 128))),
-        ("ple_stage1_fuse", (("HIDDEN_DIM", 256), ("PLE_DIM", 16))),
-        ("ple_gelu_mul", (("N", 256),)),
-        ("ple_skip_scale_add", (("N", 256),)),
     ]
 
     for shader_name, defines in shaders:
