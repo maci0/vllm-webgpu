@@ -643,7 +643,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                             self._ssm_gpu[layer_idx], sc["gdn_out"]],
                            {"K_DIM": self._lin_k_dim, "V_DIM": self._lin_v_dim,
                             "NUM_K_HEADS": kh, "NUM_V_HEADS": vh,
-                            "K_BASE": self._gdn_k_offset, "V_BASE": self._gdn_v_offset},
+                            "Q_BASE": 0, "K_BASE": self._gdn_k_offset, "V_BASE": self._gdn_v_offset},
                            (vh, 1, 1))
 
             # 7. Per-head RMSNorm + SiLU gate (z * sigmoid(z)) → gated
