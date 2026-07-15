@@ -94,10 +94,13 @@ def _make_convertor(hf_cfg):
     get_head_size() directly, and allocate_kv_from_tensors is used instead of
     allocate_kv_from_hf_config, so _make_convertor is never called there.
     """
-    # vLLM internal: MODEL_ARCH_CONFIG_CONVERTORS is a registry dict mapping
-    # model_type strings to arch-specific KV head/size convertor classes.
-    # Revisit when vLLM exposes a public factory for standalone (no VllmConfig)
-    # KV-head queries — at that point replace this block with that call.
+    # VERSION SYNC: MODEL_ARCH_CONFIG_CONVERTORS is a vLLM-internal registry
+    # dict mapping model_type strings to arch-specific KV head/size convertor
+    # classes. When vLLM exposes a public standalone factory for KV-head queries
+    # (one that does not require a VllmConfig), replace this block with that
+    # call. Until then, the import-time assertions at the top of this module are
+    # the correct mitigation against silent breakage if the registry is moved or
+    # renamed.
     from vllm.transformers_utils.model_arch_config_convertor import (
         MODEL_ARCH_CONFIG_CONVERTORS,
         ModelArchConfigConvertorBase,
@@ -107,7 +110,6 @@ def _make_convertor(hf_cfg):
     return MODEL_ARCH_CONFIG_CONVERTORS.get(
         getattr(hf_cfg, "model_type", ""), ModelArchConfigConvertorBase
     )(hf_cfg, hf_text)
-
 
 
 def _allocate_kv_pool_hybrid(
