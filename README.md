@@ -21,6 +21,8 @@ See [MODELS.md](MODELS.md) for the full matrix including quantization formats an
 | Qwen3_5MoeForConditionalGeneration | Qwen3.6-35B-A3B | same as Qwen3.5; MoE routing on GPU |
 | Gemma3/4ForCausalLM | Gemma3-1B–27B, Gemma4-12B | f16, Q4_K |
 | DiffusionGemmaForBlockDiffusion | DiffusionGemma | f16, Q4_K |
+| NemotronHForCausalLM | Nemotron-H (Mamba-2 hybrid) | f16, Q4_K, GPTQ, AWQ, FP8, NVFP4 |
+| GptOssForCausalLM | GPT-OSS (hybrid SWA+MoE) | f16, Q4_K, GPTQ, AWQ, FP8, NVFP4 |
 
 **Throughput** (Apple M3, single-sequence decode, no CPU↔GPU transfers):
 
@@ -39,12 +41,9 @@ source .venv/bin/activate
 
 # Install plugin + dependencies
 uv pip install -e .
-
-# Optional: for MLX format (Qwen3.5)
-uv pip install vllm>=0.24.0
 ```
 
-Python 3.12+ required. vLLM 0.24.0 tested.
+Python 3.12+ required. vLLM 0.25.1 tested.
 
 ## Standalone inference
 
@@ -204,7 +203,7 @@ Model paths are resolved through the HF cache (`~/.cache/huggingface/hub/`) auto
 pytest tests/ -q
 ```
 
-113 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma), vLLM platform integration, Qwen3.6 MoE routing.
+185 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss), vLLM platform integration, Qwen3.6 MoE routing.
 
 ## Limitations
 

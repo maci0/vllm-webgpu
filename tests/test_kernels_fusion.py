@@ -24,8 +24,11 @@ def tanh_gelu(x: np.ndarray) -> np.ndarray:
 def fused_gate_act_ref(x, gate_W, up_W, gelu=False):
     """Reference: activation(gate_proj(x)) * up_proj(x), f32 accumulation."""
     x32    = x.astype(np.float32)
-    gate32 = gate_W.astype(np.float32) @ x32   # [N]
-    up32   = up_W.astype(np.float32) @ x32     # [N]
+    # Apple Accelerate BLAS raises false-positive IEEE FP exceptions during f32
+    # matmul even when the result is finite; suppress them here.
+    with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+        gate32 = gate_W.astype(np.float32) @ x32   # [N]
+        up32   = up_W.astype(np.float32) @ x32     # [N]
     act    = tanh_gelu(gate32) if gelu else silu(gate32)
     return np.clip(act * up32, -65504.0, 65504.0).astype(np.float16)
 
@@ -65,7 +68,8 @@ def flash_attn_ref(Q, K, V, scale, num_q_heads, num_kv_heads):
         scores -= scores.max()
         weights = np.exp(scores)
         weights /= weights.sum()
-        out[qh] = weights @ V
+        with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+            out[qh] = weights @ V
     return out.astype(np.float16)
 
 
@@ -98,10 +102,11 @@ def test_fused_gate_act_silu(wgpu_device):
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
 
+    rng = np.random.default_rng(1)
     K, N = 256, 64
-    x      = np.random.randn(K).astype(np.float16)
-    gate_W = np.random.randn(N, K).astype(np.float16)
-    up_W   = np.random.randn(N, K).astype(np.float16)
+    x      = (rng.standard_normal(K) * 0.1).astype(np.float16)
+    gate_W = (rng.standard_normal((N, K)) * 0.1).astype(np.float16)
+    up_W   = (rng.standard_normal((N, K)) * 0.1).astype(np.float16)
 
     expected = fused_gate_act_ref(x, gate_W, up_W, gelu=False)
 
@@ -814,7 +819,8 @@ def test_fused_qk_norm_rope_k_separate_equivalence(wgpu_device):
 
 def moe_expert_down_accum_ref(act, down_w, accum, weight):
     """Reference: accum[row] += weight * (down_w[row, :] @ act)."""
-    result32 = down_w.astype(np.float32) @ act.astype(np.float32)  # [N]
+    with np.errstate(divide='ignore', over='ignore', invalid='ignore'):
+        result32 = down_w.astype(np.float32) @ act.astype(np.float32)  # [N]
     return np.clip(
         accum.astype(np.float32) + weight * result32,
         -65504.0, 65504.0,

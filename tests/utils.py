@@ -12,4 +12,4 @@ def _fp8_e4m3_to_f32(raw: "np.ndarray") -> "np.ndarray":
     """
     import torch
     flat = np.ascontiguousarray(raw).ravel().view(np.uint8)
-    return torch.frombuffer(flat.tobytes(), dtype=torch.float8_e4m3fn).to(torch.float32).numpy().reshape(raw.shape)
+    return torch.frombuffer(bytearray(flat.tobytes()), dtype=torch.float8_e4m3fn).to(torch.float32).numpy().reshape(raw.shape)

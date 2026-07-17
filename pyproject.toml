@@ -23,3 +23,11 @@ dev = ["pytest>=8.0", "pytest-timeout>=2.3"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["vllm_webgpu"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    # torch.jit.script_method is deprecated upstream; not vllm-webgpu code.
+    "ignore:`torch.jit.script_method` is deprecated:DeprecationWarning",
+    # SWIG internal type registration noise from the wgpu C extension.
+    "ignore:builtin type SwigPy:DeprecationWarning",
+]
