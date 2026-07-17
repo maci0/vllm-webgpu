@@ -32,11 +32,19 @@ class LlamaWebGPUModel(BaseWebGPUModel):
               kv_cache_store_both -> flash_attn_decode ->
               matmul_quant(o_proj) -> add_rms_norm ->
               fused_gate_act -> matmul_quant(down_proj) -> add_rms_norm)
-      -> rms_norm -> matmul_quant(lm_head) -> argmax_f16
+      -> matmul_quant(lm_head) -> argmax_f16
+    The final model rms_norm is fused into the last layer's residual-add
+    via add_rms_norm, eliminating the standalone rms_norm dispatch.
     """
 
     # Sliding-window size (set by MixtralWebGPUModel); None means full attention.
     _sw: int | None = None
+    # When True, _run_decode_dispatches fuses the last-layer residual-add with
+    # the final model RMSNorm into a single add_rms_norm dispatch, eliminating
+    # the standalone post-loop rms_norm call. Set to False in subclasses where
+    # the last transformer layer may not go through _transformer_layer
+    # (e.g. Qwen35WebGPUModel, whose last layer is typically a GDN recurrent layer).
+    _norm_fusion: bool = True
     # Number of transformer layers per GPU command-buffer chunk in batch prefill.
     # Chunking prevents Metal from timing out on very long prefill sequences.
     # At T=19 and inter=9728, a single 36-layer encoder generates ~37M threads and
@@ -360,17 +368,30 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         )
 
         normed_x = sc["normed"]
-        for i in range(self.num_layers):
-            normed_x, x_buf = self._transformer_layer(
-                i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
-        # Final norm
-        self._dispatch(
-            "rms_norm",
-            [x_buf, self.weights["model.norm.weight"], norm_out],
-            _rms_base,
-            (num_tokens, 1, 1),
-        )
+        if self._norm_fusion:
+            # All non-last layers.
+            for i in range(self.num_layers - 1):
+                normed_x, x_buf = self._transformer_layer(
+                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+            # Last layer: fuse the final residual-add with the model's output RMSNorm
+            # into one add_rms_norm dispatch, eliminating the standalone rms_norm call.
+            self._transformer_layer(
+                self.num_layers - 1, normed_x, x_buf,
+                pos_buf, slot_map, bt_buf, ctx_len, num_tokens,
+                _final_norm_w=self.weights["model.norm.weight"], _final_norm_out=norm_out,
+            )
+            # norm_out is now populated by the fused dispatch above.
+        else:
+            for i in range(self.num_layers):
+                normed_x, x_buf = self._transformer_layer(
+                    i, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+            self._dispatch(
+                "rms_norm",
+                [x_buf, self.weights["model.norm.weight"], norm_out],
+                _rms_base,
+                (num_tokens, 1, 1),
+            )
 
         self._decode_teardown(norm_out, logits_buf, vocab, greedy)
 
@@ -918,6 +939,8 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
+        _final_norm_w: "WebGPUBuffer | None" = None,
+        _final_norm_out: "WebGPUBuffer | None" = None,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
         """Returns (normed_out, raw_out).
 
@@ -927,6 +950,11 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         The initial rms_norm is handled by the CALLER before the loop. This
         allows fusing the final residual-add with the next layer's pre-norm into
         a single add_rms_norm dispatch, saving 2 dispatches per non-last layer.
+
+        _final_norm_w / _final_norm_out: when both are provided for the last layer,
+        the residual-add is fused with the model's output RMSNorm into a single
+        add_rms_norm dispatch instead of a plain add. The caller can then skip the
+        standalone post-loop rms_norm call. Only valid for layer_idx == num_layers-1.
         """
         sc = self._sc
         hidden = self.hidden_size
@@ -953,13 +981,22 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             ffn_out = self._ffn_dispatch(sc["ffn_normed"], layer_idx)
 
             # Final residual add: fuse with next layer's pre-norm when possible.
-            # Last layer: plain add; intermediate layers: add_rms_norm saves 1 dispatch.
+            # Non-last layers: add_rms_norm fuses add + pre-norm (saves 1 dispatch).
+            # Last layer with _final_norm_w: fuse add + model output norm (saves 1 dispatch).
+            # Last layer without _final_norm_w: plain add (caller handles the norm separately).
             if layer_idx < self.num_layers - 1:
                 next_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
                 self._dispatch("add_rms_norm",
                                [residual, ffn_out, next_w, out, sc["normed"]],
                                _rms_c, (num_tokens, 1, 1))
                 normed_out = sc["normed"]
+            elif _final_norm_w is not None and _final_norm_out is not None:
+                # Fused: last-layer residual-add + final model RMSNorm in one pass.
+                # Saves the standalone rms_norm dispatch that would otherwise follow.
+                self._dispatch("add_rms_norm",
+                               [residual, ffn_out, _final_norm_w, out, _final_norm_out],
+                               _rms_c, (num_tokens, 1, 1))
+                normed_out = out
             else:
                 self._dispatch("add", [residual, ffn_out, out],
                                {"N": add_n}, _vec4_wg(add_n))

@@ -62,6 +62,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     # Qwen3.5-9B layers generates ~6x less GPU work per submit than the full
     # sequence, keeping each encoder well under Metal's per-command-buffer timeout.
     _PREFILL_TOKEN_CHUNK: int = 6
+    # The last transformer layer of Qwen3.5 models is typically a GDN recurrent
+    # layer, not a full-attention layer. _run_decode_dispatches' final-norm fusion
+    # only works when the last layer goes through _transformer_layer's Llama path,
+    # so disable it here to keep the standalone post-loop rms_norm.
+    _norm_fusion: bool = False
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
         # Set GDN + MoE + other Qwen3.5-specific attributes BEFORE calling
@@ -700,11 +705,20 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
+        _final_norm_w=None,
+        _final_norm_out=None,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
-        """Route to GDN or full-attention based on layer type."""
+        """Route to GDN or full-attention based on layer type.
+
+        _final_norm_w / _final_norm_out are forwarded to the parent for
+        full-attention layers (unused in practice since _norm_fusion=False
+        prevents _run_decode_dispatches from passing them). GDN layers
+        ignore these kwargs entirely.
+        """
         if self._is_full_attn(layer_idx):
             return super()._transformer_layer(
-                layer_idx, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
+                layer_idx, normed_x, x_buf, pos_buf, slot_map, bt_buf, ctx_len, num_tokens,
+                _final_norm_w=_final_norm_w, _final_norm_out=_final_norm_out)
         assert num_tokens == 1, (
             f"GDN layer {layer_idx} received num_tokens={num_tokens}; "
             "multi-token GDN dispatch is not supported"
