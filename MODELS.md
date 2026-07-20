@@ -18,6 +18,10 @@
 | `DiffusionGemmaForBlockDiffusion` | `diffusion_gemma` | `DiffusionGemmaWebGPUModel` |
 | `GptOssForCausalLM` | `gpt_oss` | `GptOssWebGPUModel` |
 | `NemotronHForCausalLM` | `nemotron_h` | `NemotronHWebGPUModel` |
+| `Phi3ForCausalLM` | `phi` | `PhiWebGPUModel` |
+| `FalconH1ForCausalLM` | `falcon_h1` | `FalconH1WebGPUModel` |
+| `SmolLM3ForCausalLM` | `smollm3` | `SmolLM3WebGPUModel` |
+| `Olmo2ForCausalLM` | `olmo2` | `Olmo2WebGPUModel` |
 
 ## Quantization support
 
@@ -143,6 +147,99 @@ Extends `MixtralWebGPUModel`. GPT-OSS is a hybrid SWA+MoE model (similar layout 
 - Otherwise identical to `MixtralWebGPUModel`: SWA on attention layers, MoE router + Phase A/B expert dispatch.
 
 USE_QUANT 0–8 for attention projections; expert FFN weights typically loaded as MXFP4 (loader-side dequant to f16, USE_QUANT=0 at dispatch time).
+
+---
+
+### PhiWebGPUModel
+
+Extends `LlamaWebGPUModel`. Phi-3/4 checkpoints pre-fuse Q, K, V into `qkv_proj.weight` and gate + up projections into `gate_up_proj.weight`. `load_weights` splits these into the separate tensors (`q_proj`, `k_proj`, `v_proj`, `gate_proj`, `up_proj`) that `LlamaWebGPUModel._attn_block` and `_ffn_dispatch` expect. All subsequent dispatch is identical to Llama.
+
+Supported quantization formats for weight splitting: f16 (USE_QUANT=0) and GPTQ int4 (USE_QUANT=3). AWQ stores weights K-major and cannot be split by row bytes; attempting to load an AWQ Phi-4 checkpoint raises `NotImplementedError`.
+
+USE_QUANT 0–8 applies to the post-split projections; only the splitting step is format-restricted.
+
+---
+
+### SmolLM3WebGPUModel
+
+Extends `LlamaWebGPUModel`. SmolLM3 introduces NoPE (No Position Embeddings) layers: a subset of attention layers where Q and K are not rotated by RoPE before being stored in the KV cache or used in flash attention. NoPE layer indices are read from `model_config.no_rope_layers` (explicit index list) or `model_config.nope_layers`, or fall back to every 4th layer starting at index 3 (i.e. 3, 7, 11, ...).
+
+For NoPE layers, `_attn_block_nope` replaces `_attn_block`:
+- QKV projection and optional per-head norm applied without RoPE rotation.
+- Unrotated K and V are written to the KV cache.
+- `flash_attn_decode` reads KV by position index (not position value), so the absence of RoPE on KV is correct: the cache entries are addressed by cache slot, not by sequence position. Dot products use unrotated Q and K, producing raw attention without positional bias — the intended NoPE behavior.
+
+Batch prefill falls back to the sequential path when any NoPE layers are present, because the batch prefill shader applies RoPE unconditionally and would corrupt the NoPE K/V cache entries.
+
+USE_QUANT 0–8 for all projections.
+
+---
+
+### Olmo2WebGPUModel
+
+Extends `LlamaWebGPUModel`. OLMo-2 uses a post-norm architecture: attention and FFN outputs are normalized before the residual add, and there is no per-layer input pre-norm.
+
+Per-layer structure:
+```
+attn_out  = attn(x)                         # attention on raw residual
+x_mid     = x + post_attention_layernorm(attn_out)
+ffn_out   = mlp(x_mid)
+x_next    = x_mid + post_feedforward_layernorm(ffn_out)
+```
+
+A final `model.norm.weight` RMSNorm is applied after all layers. The `_norm_fusion` flag is disabled to prevent the fused last-layer add+norm from applying a non-existent `input_layernorm`. Both the decode path (`_run_decode_dispatches`) and the prefill paths are overridden to skip the initial layer-0 pre-norm.
+
+OLMo-2 uses per-tensor `q_norm` and `k_norm` weights (shape `[hidden_size]` and `[kv_dim]`). The inherited `fused_per_head_norm_rope` applies them per-head, which is a per-head approximation when norms are non-uniform across heads.
+
+USE_QUANT 0–8 for all projections.
+
+---
+
+### FalconH1WebGPUModel
+
+Extends `NemotronHWebGPUModel`. FalconH1 is a parallel-hybrid model: every layer runs attention AND Mamba-2 SSM branches on the same pre-normed input simultaneously. Their outputs are summed and added to the residual, then a feed-forward MLP follows.
+
+Per-layer structure:
+```
+normed   = rms_norm(x, input_layernorm)
+attn_out = attention(normed * attn_in_mult) * attn_out_mult
+ssm_out  = mamba(normed * ssm_in_mult)      * ssm_out_mult
+combined = x + attn_out + ssm_out
+ffn_out  = mlp(rms_norm(combined, pre_ff_layernorm))
+x_next   = combined + ffn_out
+```
+
+All scalar multipliers (`attention_in_multiplier`, `ssm_in_multiplier`, `mlp_multipliers`, etc.) must be 1.0; non-unit values raise `NotImplementedError` at init time (no vec_scale shader yet).
+
+Weight key differences from NemotronH:
+- Uses `model.` prefix directly (no `backbone.` → `model.` mapper)
+- Attention: `model.layers.{i}.self_attn.{q,k,v,o}_proj.weight`
+- Mamba: `model.layers.{i}.mamba.{in_proj,out_proj,conv1d,A_log,D,dt_bias,norm}`
+- FFN: `model.layers.{i}.feed_forward.{gate,up,down}_proj.weight`
+- Pre-norms: `model.layers.{i}.{input_layernorm,pre_ff_layernorm}.weight`
+- Final norm: `model.final_layernorm.weight`
+
+Config field mapping: `mamba_n_heads` → `mamba_num_heads`, `mamba_d_head` → `mamba_head_dim`, `mamba_n_groups` → `n_groups`, `mamba_d_state` → `ssm_state_size`, `mamba_d_conv` → `conv_kernel`.
+
+All layers are "attention"-typed for KV pool spec; Mamba states are allocated for all layers via an overridden `_init_mamba_states`. Separate Q, K, V weights are packed into a single `qkv_proj.weight` buffer at load time.
+
+RoPE is applied to Q and K in the attention branch; the Mamba branch receives the shared pre-normed input without rotation.
+
+USE_QUANT 0–3 for attention and FFN projections; Mamba in_proj/out_proj support the same range.
+
+---
+
+### Models working via existing ARCH_MAP entries
+
+The following model families run correctly without any additional code. They resolve to an existing architecture string in `ARCH_MAP` and exercise no novel dispatch paths.
+
+| Model family | Architecture string | Backend |
+|---|---|---|
+| Qwen2.5-Coder | `Qwen2ForCausalLM` | `llama` |
+| Codestral | `MistralForCausalLM` | `mixtral` |
+| SmolLM2 | `LlamaForCausalLM` | `llama` |
+| Falcon3 | `LlamaForCausalLM` | `llama` |
+| DeepSeek-R1-Distill | `LlamaForCausalLM` or `Qwen2ForCausalLM` | `llama` |
 
 ---
 

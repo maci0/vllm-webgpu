@@ -7,7 +7,7 @@
 
 `vllm-webgpu` is an out-of-tree vLLM platform plugin that runs LLM inference on any WebGPU-capable GPU using hand-tuned WGSL compute kernels. vLLM handles scheduling and serving; the plugin owns all compute via `wgpu-py` (Rust wgpu Python bindings).
 
-Target architectures: Llama 3.x, Qwen 2.5/3.x/3.5/3.6, Gemma 3/4, Mistral, Mixtral, GPT-OSS, NemotronH (Mamba-2 hybrid), DiffusionGemma.  
+Target architectures: Llama 3.x, Qwen 2.5/3.x/3.5/3.6, Gemma 3/4, Mistral, Mixtral, GPT-OSS, NemotronH (Mamba-2 hybrid), DiffusionGemma, Phi-4/Phi-4-mini, SmolLM3 (NoPE layers), OLMo-2 (post-norm), FalconH1 (Mamba-2 parallel hybrid).  
 Quantization: safetensors f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4, ct_pack_int4 (Gemma4 QAT), MXFP4/MXFP8 (load-time dequant), MLX affine-int4 (load-time dequant). GGUF format is not supported; use the vllm-gguf plugin instead.  
 Platform: cross-platform (macOS via Metal, Windows via DX12, Linux via Vulkan) via wgpu's backend abstraction.
 
@@ -85,7 +85,11 @@ vllm_webgpu/
 │   ├── gemma4.py
 │   ├── qwen35.py
 │   ├── nemotron_h.py
-│   └── diffusion_gemma.py
+│   ├── diffusion_gemma.py
+│   ├── phi.py
+│   ├── smollm3.py
+│   ├── olmo2.py
+│   └── falcon_h1.py
 ├── quant/
 │   ├── __init__.py
 │   └── weight_loader.py
@@ -361,6 +365,10 @@ ARCH_MAP = {
     "DiffusionGemmaForBlockDiffusion":           "diffusion_gemma",
     "GptOssForCausalLM":                         "gpt_oss",
     "NemotronHForCausalLM":                      "nemotron_h",
+    "Phi3ForCausalLM":                           "phi",
+    "FalconH1ForCausalLM":                       "falcon_h1",
+    "SmolLM3ForCausalLM":                        "smollm3",
+    "Olmo2ForCausalLM":                          "olmo2",
 }
 ```
 
@@ -505,7 +513,7 @@ webgpu = "vllm_webgpu:register"
 
 ## Testing
 
-185 tests cover: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss), vLLM platform integration, and Qwen3.6 MoE routing.
+211 tests cover: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, FalconH1), vLLM platform integration, and Qwen3.6 MoE routing.
 
 ```bash
 pytest tests/ -q

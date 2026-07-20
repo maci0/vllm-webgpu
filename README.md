@@ -23,6 +23,20 @@ See [MODELS.md](MODELS.md) for the full matrix including quantization formats an
 | DiffusionGemmaForBlockDiffusion | DiffusionGemma | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
 | NemotronHForCausalLM | Nemotron-H (Mamba-2 hybrid) | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
 | GptOssForCausalLM | GPT-OSS (hybrid SWA+MoE) | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4; MXFP4 expert weights |
+| Phi3ForCausalLM | Phi-4, Phi-4-mini | f16, GPTQ, AWQ |
+| SmolLM3ForCausalLM | SmolLM3 (NoPE layers) | f16, GPTQ |
+| Olmo2ForCausalLM | OLMo-2 (post-norm) | f16, GPTQ |
+| FalconH1ForCausalLM | FalconH1 (Mamba-2 hybrid) | f16, GPTQ |
+
+Models that work via existing architecture entries with no additional code:
+
+| Model family | Architecture string | Notes |
+|---|---|---|
+| Qwen2.5-Coder | `Qwen2ForCausalLM` | Code-tuned Qwen2.5; maps to `llama` backend |
+| Codestral | `MistralForCausalLM` | Mistral-based code model; maps to `mixtral` backend |
+| SmolLM2 | `LlamaForCausalLM` | HuggingFace SmolLM 2.x; maps to `llama` backend |
+| Falcon3 | `LlamaForCausalLM` | TII Falcon3; maps to `llama` backend |
+| DeepSeek-R1-Distill | `LlamaForCausalLM` or `Qwen2ForCausalLM` | Distilled from R1 using Llama or Qwen base |
 
 **Throughput** (Apple M3, single-sequence decode, no CPU↔GPU transfers):
 
@@ -120,7 +134,11 @@ vLLM engine  (scheduler, block allocator, request lifecycle)
                  ├─ Gemma4WebGPUModel       — Gemma3/4 (heterogeneous attention, f32 residual)
                  ├─ Qwen35WebGPUModel       — Qwen3.5/3.6 (hybrid GDN + standard attention)
                  ├─ NemotronHWebGPUModel    — NemotronH (Mamba-2 hybrid SSM+attention)
-                 └─ DiffusionGemmaWebGPUModel — DiffusionGemma (MoE, block diffusion)
+                 ├─ DiffusionGemmaWebGPUModel — DiffusionGemma (MoE, block diffusion)
+                 ├─ PhiWebGPUModel          — Phi-4/Phi-4-mini (fused weight splitting)
+                 ├─ SmolLM3WebGPUModel      — SmolLM3 (NoPE layers, extends Llama)
+                 ├─ Olmo2WebGPUModel        — OLMo-2 (post-norm, extends Llama)
+                 └─ FalconH1WebGPUModel     — FalconH1 (Mamba-2 parallel hybrid, extends NemotronH)
 ```
 
 ### Forward pass (single encoder, one GPU submit per token)
@@ -207,7 +225,7 @@ Model paths are resolved through the HF cache (`~/.cache/huggingface/hub/`) auto
 pytest tests/ -q
 ```
 
-185 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss), vLLM platform integration, Qwen3.6 MoE routing.
+211 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, FalconH1), vLLM platform integration, Qwen3.6 MoE routing.
 
 ## Limitations
 
