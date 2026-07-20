@@ -121,6 +121,7 @@ ARCH_MAP = {
     "FalconH1ForCausalLM": "falcon_h1",
     "SmolLM3ForCausalLM": "smollm3",
     "Olmo2ForCausalLM": "olmo2",
+    "Olmo3ForCausalLM": "olmo2",
 }
 
 

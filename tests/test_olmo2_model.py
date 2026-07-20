@@ -1,5 +1,7 @@
 """Tests for Olmo2WebGPUModel (post-norm architecture)."""
+import numpy as np
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
@@ -110,3 +112,96 @@ def test_olmo2_run_decode_dispatches_overridden(wgpu_device):
         "Olmo2WebGPUModel._run_decode_dispatches must be overridden "
         "(OLMo-2 has no input_layernorm, so the initial rms_norm dispatch must be skipped)"
     )
+
+
+def test_arch_map_includes_olmo3():
+    """Olmo3ForCausalLM is registered in ARCH_MAP (vLLM treats it as olmo2)."""
+    from vllm_webgpu.v1.model_runner import ARCH_MAP
+
+    assert "Olmo3ForCausalLM" in ARCH_MAP, (
+        "Olmo3ForCausalLM missing from ARCH_MAP. "
+        "vLLM maps Olmo3ForCausalLM to the olmo2 model; the WebGPU plugin must too."
+    )
+    assert ARCH_MAP["Olmo3ForCausalLM"] == "olmo2"
+
+
+@pytest.mark.integration
+def test_olmo2_decode_forward(wgpu_device):
+    """2-layer OLMo-2 decode step returns a valid token id.
+
+    OLMo-2 uses a post-norm architecture: no input_layernorm, post-attention
+    and post-feedforward norms applied to branch outputs. This test verifies
+    that the overridden _run_decode_dispatches and _transformer_layer run
+    end-to-end without error and produce a valid greedy token.
+    """
+    import wgpu as wgpu_lib
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.models.olmo2 import Olmo2WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    H          = 64
+    layers     = 2
+    q_h        = 4
+    kv_h       = 2
+    hd         = 16
+    inter      = 128
+    vocab      = 32
+    num_blocks = 8
+    block_size = 16
+    q_dim      = q_h * hd
+    kv_dim     = kv_h * hd
+
+    cfg   = make_tiny_olmo2_config()
+    dev   = wgpu_device.wgpu_device
+    cache = PipelineCache(dev, SHADERS_DIR)
+    model = Olmo2WebGPUModel(cfg, wgpu_device, cache)
+
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    rng = np.random.default_rng(1)
+
+    def f16(*shape):
+        return WebGPUBuffer.from_numpy(
+            dev, (rng.standard_normal(shape) * 0.01).astype(np.float16), usage=rw)
+
+    model.weights["model.embed_tokens.weight"] = f16(vocab, H)
+    model.weights["model.norm.weight"]          = f16(H)
+
+    for i in range(layers):
+        p = f"model.layers.{i}"
+        # OLMo-2: no input_layernorm; post-norms applied to branch outputs.
+        model.weights[f"{p}.post_attention_layernorm.weight"]  = f16(H)
+        model.weights[f"{p}.post_feedforward_layernorm.weight"] = f16(H)
+        # Per-tensor q/k norms (shape = full q_dim / kv_dim after tiling).
+        model.weights[f"{p}.self_attn.q_norm.weight"] = f16(q_dim)
+        model.weights[f"{p}.self_attn.k_norm.weight"] = f16(kv_dim)
+        model.weights[f"{p}.self_attn.q_proj.weight"] = f16(q_dim, H)
+        model.weights[f"{p}.self_attn.k_proj.weight"] = f16(kv_dim, H)
+        model.weights[f"{p}.self_attn.v_proj.weight"] = f16(kv_dim, H)
+        model.weights[f"{p}.self_attn.o_proj.weight"] = f16(H, q_dim)
+        model.weights[f"{p}.mlp.gate_proj.weight"]    = f16(inter, H)
+        model.weights[f"{p}.mlp.up_proj.weight"]      = f16(inter, H)
+        model.weights[f"{p}.mlp.down_proj.weight"]    = f16(H, inter)
+
+    kv_bytes = num_blocks * block_size * kv_h * hd * 2
+    for _ in range(layers):
+        model.kv_pool.append((
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+        ))
+
+    model._batch_matmul_supported = False  # sequential fallback; avoids input_layernorm scan
+
+    meta = SimpleNamespace(
+        slot_mapping=[0],
+        block_tables=[np.zeros(num_blocks, dtype=np.uint32)],
+        max_decode_seq_len=1,
+    )
+
+    result = model.forward(
+        np.array([0], dtype=np.uint32),
+        np.array([0], dtype=np.uint32),
+        meta,
+    )
+    tok = int(result[0, 0])
+    assert 0 <= tok < vocab, f"token id {tok} out of [0, {vocab})"

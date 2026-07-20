@@ -1,5 +1,7 @@
 """Tests for FalconH1WebGPUModel (parallel hybrid SSM + attention)."""
+import numpy as np
 import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
@@ -192,3 +194,107 @@ def test_falcon_h1_mlp_multipliers_weight_transforms_registered(wgpu_device):
         down_key = f"model.layers.{i}.feed_forward.down_proj.weight"
         assert gate_key in model._weight_transforms, f"Missing transform for {gate_key}"
         assert down_key in model._weight_transforms, f"Missing transform for {down_key}"
+
+
+@pytest.mark.integration
+def test_falcon_h1_decode_forward(wgpu_device):
+    """2-layer FalconH1 decode step runs both the SSM branch and the attention branch.
+
+    Each layer dispatches _mamba_branch and _attn_branch in parallel on the same
+    pre-normed input. The test injects synthetic weights in the post-load format
+    (qkv_proj packed, A already in -exp form) and manually calls _init_mamba_states
+    to allocate conv/SSM state buffers. Asserts that forward returns a valid token.
+    """
+    import wgpu as wgpu_lib
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.models.falcon_h1 import FalconH1WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    H          = 64
+    layers     = 2
+    q_h        = 4
+    kv_h       = 2
+    hd         = 16
+    inter      = 128   # FFN intermediate
+    vocab      = 32
+    num_blocks = 8
+    block_size = 16
+    q_dim      = q_h * hd    # 64
+    k_dim      = kv_h * hd   # 32
+
+    cfg   = make_tiny_falcon_h1_config()
+    dev   = wgpu_device.wgpu_device
+    cache = PipelineCache(dev, SHADERS_DIR)
+    model = FalconH1WebGPUModel(cfg, wgpu_device, cache)
+
+    # Derived Mamba dimensions from the model (set by __init__ after remapping cfg).
+    MI  = model.mamba_int        # 32  (mamba_n_heads * mamba_d_head)
+    CD  = model.conv_dim         # 48  (mamba_int + 2*n_groups*ssm_state_size)
+    MNH = model.mamba_num_heads  # 4
+    IPD = model.in_proj_dim      # 84  (MI + CD + MNH)
+    CK  = model.conv_kernel      # 4
+
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    rng = np.random.default_rng(4)
+
+    def f16(*shape):
+        return WebGPUBuffer.from_numpy(
+            dev, (rng.standard_normal(shape) * 0.01).astype(np.float16), usage=rw)
+
+    def f32(*shape):
+        return WebGPUBuffer.from_numpy(
+            dev, (rng.standard_normal(shape) * 0.01).astype(np.float32), usage=rw)
+
+    model.weights["model.embed_tokens.weight"]   = f16(vocab, H)
+    model.weights["model.final_layernorm.weight"] = f16(H)
+
+    for i in range(layers):
+        p = f"model.layers.{i}"
+        model.weights[f"{p}.input_layernorm.weight"] = f16(H)
+        model.weights[f"{p}.pre_ff_layernorm.weight"] = f16(H)
+
+        # Attention branch: packed qkv_proj (post _pack_falconh1_attn_weights).
+        model.weights[f"{p}.self_attn.qkv_proj.weight"] = f16(q_dim + 2 * k_dim, H)
+        model.weights[f"{p}.self_attn.o_proj.weight"]   = f16(H, q_dim)
+
+        # Mamba branch: weights in post-load format (A already = -exp(A_log)).
+        model.weights[f"{p}.mamba.in_proj.weight"]  = f16(IPD, H)
+        model.weights[f"{p}.mamba.conv1d.weight"]   = f16(CD * CK)
+        model.weights[f"{p}.mamba.out_proj.weight"] = f16(H, MI)
+        # A, D, dt_bias must be f32 (shader reads array<f32>); A negative.
+        A_arr = np.full((MNH,), -0.1, dtype=np.float32)
+        model.weights[f"{p}.mamba.A"]      = WebGPUBuffer.from_numpy(dev, A_arr, usage=rw)
+        model.weights[f"{p}.mamba.D"]      = f32(MNH)
+        model.weights[f"{p}.mamba.dt_bias"] = f32(MNH)
+        model.weights[f"{p}.mamba.norm.weight"] = f16(MI)
+
+        # FFN branch.
+        model.weights[f"{p}.feed_forward.gate_proj.weight"] = f16(inter, H)
+        model.weights[f"{p}.feed_forward.up_proj.weight"]   = f16(inter, H)
+        model.weights[f"{p}.feed_forward.down_proj.weight"] = f16(H, inter)
+
+    # Allocate Mamba conv/SSM state buffers (normally done at end of load_weights).
+    model._init_mamba_states()
+
+    # KV pool: FalconH1 has attention in every layer.
+    kv_bytes = num_blocks * block_size * kv_h * hd * 2
+    for _ in range(layers):
+        model.kv_pool.append((
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+        ))
+
+    meta = SimpleNamespace(
+        slot_mapping=[0],
+        block_tables=[np.zeros(num_blocks, dtype=np.uint32)],
+        max_decode_seq_len=1,
+    )
+
+    result = model.forward(
+        np.array([0], dtype=np.uint32),
+        np.array([0], dtype=np.uint32),
+        meta,
+    )
+    tok = int(result[0, 0])
+    assert 0 <= tok < vocab, f"token id {tok} out of [0, {vocab})"
