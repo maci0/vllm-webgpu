@@ -103,3 +103,27 @@ def test_smollm3_empty_nope_layers(wgpu_device):
     model = SmolLM3WebGPUModel(cfg, wgpu_device, cache)
 
     assert model._nope_layers == frozenset()
+
+
+def test_smollm3_flags_format_nope_layers(wgpu_device):
+    """no_rope_layers in flags format (0=NoPE, 1=RoPE) is converted to indices.
+
+    The actual SmolLM3-3B config supplies no_rope_layers as a per-layer
+    boolean array rather than an explicit index list. For 8 layers the
+    real format is [1,1,1,0,1,1,1,0], meaning layers 3 and 7 are NoPE.
+    """
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.models.smollm3 import SmolLM3WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    # Flags format: 8 entries, 0 at positions 3 and 7 (every 4th from layer 3).
+    flags = [1, 1, 1, 0, 1, 1, 1, 0]
+    cfg = make_tiny_smollm3_config(num_layers=8, nope_layers=flags)
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = SmolLM3WebGPUModel(cfg, wgpu_device, cache)
+
+    # Should yield indices {3, 7}, not frozenset({0, 1}) (the bug).
+    assert model._nope_layers == frozenset({3, 7}), (
+        f"Expected NoPE indices {{3, 7}} from flags list but got {model._nope_layers}. "
+        "Flags format (0=NoPE, 1=RoPE) must be converted to indices."
+    )

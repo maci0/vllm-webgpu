@@ -81,6 +81,15 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
                     "Non-unit scalar multipliers require a vec_scale shader that is "
                     "not yet implemented. Only multiplier=1.0 is supported."
                 )
+        # Guard: mlp_multipliers = [gate_multiplier, down_multiplier] must be [1.0, 1.0].
+        # Non-unit values are silently dropped by the FFN dispatch (no vec_scale shader).
+        mlp_mults = list(getattr(model_config, "mlp_multipliers", (1.0, 1.0)))
+        if any(float(m) != 1.0 for m in mlp_mults):
+            raise NotImplementedError(
+                f"FalconH1WebGPUModel: mlp_multipliers={mlp_mults!r} != [1.0, 1.0]. "
+                "Non-unit FFN scale factors (gate_multiplier, down_multiplier) are not "
+                "yet implemented. Only [1.0, 1.0] is supported."
+            )
 
         # Map FalconH1Config field names to NemotronH-compatible attribute names.
         model_config.mamba_num_heads  = model_config.mamba_n_heads

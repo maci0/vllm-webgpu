@@ -42,7 +42,16 @@ class SmolLM3WebGPUModel(LlamaWebGPUModel):
         no_rope = getattr(model_config, "no_rope_layers", None)
         if no_rope is None:
             no_rope = getattr(model_config, "nope_layers", None)
-        if no_rope is None:
+        if no_rope is not None:
+            # no_rope_layers may be a per-layer flags array (0 = NoPE, 1 = RoPE)
+            # rather than an explicit list of NoPE layer indices. SmolLM3 uses
+            # the same flags format as Llama4 (config.no_rope_layers[i] == 0 means
+            # the i-th layer has no positional encoding). Detect by length and
+            # value range, then convert to indices.
+            if (len(no_rope) == self.num_layers
+                    and all(v in (0, 1) for v in no_rope)):
+                no_rope = [i for i, v in enumerate(no_rope) if v == 0]
+        else:
             no_rope = list(range(3, self.num_layers, 4))
         self._nope_layers: frozenset[int] = frozenset(no_rope)
         logger.info(
