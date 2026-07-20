@@ -155,12 +155,13 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
         self._sc["attn_proj_out"] = self._make_buf(H * 2)
         # Pre-FFN norm output.
         self._sc["ffn_normed"]    = self._make_buf(H * 2)
-        # Gate and up projection buffers for the GPTQ FFN path.
-        # NemotronH allocates up_buf as max(_layer_int_size)*2 bytes, which is
+        # Gate, up, and FFN activation buffers for the FFN path.
+        # NemotronH allocates these as max(_layer_int_size)*2 bytes, which is
         # 4 bytes for FalconH1 (all "attention" layers → int_size=0 for all).
-        # Override both to the correct FFN intermediate size.
+        # Override all three to the correct FFN intermediate size.
         self._sc["gate_buf"]      = self._make_buf(inter * 2)
         self._sc["up_buf"]        = self._make_buf(inter * 2)
+        self._sc["ffn_act"]       = self._make_buf(inter * 2)
         # Dedicated FFN down-proj output buffer. Using sc["mamba_norm_out"] as a
         # temporary would overflow when mamba_int < hidden_size (e.g. test configs
         # or checkpoints with small SSM expand ratios).
