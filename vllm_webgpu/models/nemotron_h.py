@@ -623,21 +623,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                     token_ids[t:t+1].astype(np.uint32, copy=False).tobytes())
 
                 with self._batched_dispatch():
-                    self._dispatch(
-                        "embedding_lookup",
-                        [self.weights["model.embed_tokens.weight"], pre["ids"], pre["x"]],
-                        {"HIDDEN_DIM": self.hidden_size},
-                        (1, 1, 1),
-                    )
-                    self._dispatch(
-                        "rms_norm",
-                        [pre["x"],
-                         self._norm0_w,
-                         sc["normed"]],
-                        self._rms_base,
-                        (1, 1, 1),
-                    )
-
+                    self._dispatch_embed_norm0(1)
                     normed_x = sc["normed"]
                     x_buf    = pre["x"]
 
@@ -1074,6 +1060,43 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         if lm_key not in self.weights:
             raise ValueError(f"{lm_key} missing from loaded weights")
 
+    # ── Projection helper ─────────────────────────────────────────────────────
+
+    def _proj(
+        self,
+        wk: str,
+        in_buf: "WebGPUBuffer",
+        out_buf: "WebGPUBuffer",
+        K: int,
+        N: int,
+    ) -> None:
+        """Dispatch one matmul_quant projection. Must be inside _batched_dispatch."""
+        uq = self._uq_for_key(wk)
+        self._dispatch(
+            "matmul_quant",
+            [in_buf, self.weights[wk],
+             self._scales_buf(wk, uq, self._dummy_buf), out_buf],
+            {"K": K, "N": N, "USE_QUANT": uq,
+             **self._quant_extra(wk.removesuffix(".weight"), uq)},
+            (N, 1, 1),
+        )
+
+    def _dispatch_embed_norm0(self, num_tokens: int) -> None:
+        """Dispatch embedding lookup and layer-0 pre-norm. Must be inside _batched_dispatch."""
+        pre, sc = self._pre, self._sc
+        self._dispatch(
+            "embedding_lookup",
+            [self.weights["model.embed_tokens.weight"], pre["ids"], pre["x"]],
+            {"HIDDEN_DIM": self.hidden_size},
+            (num_tokens, 1, 1),
+        )
+        self._dispatch(
+            "rms_norm",
+            [pre["x"], self._norm0_w, sc["normed"]],
+            self._rms_base,
+            (num_tokens, 1, 1),
+        )
+
     # ── Forward pass ──────────────────────────────────────────────────────────
 
     def _finalize_output(self) -> np.ndarray:
@@ -1145,7 +1168,6 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
 
         # Decode path (T=1): zero-alloc hot path via pre-allocated buffers.
         dev = self.wgpu_device.wgpu_device
-        hidden = self.hidden_size
         ctx_len = int(attn_metadata.max_decode_seq_len)
 
         pre = self._pre
@@ -1159,24 +1181,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
 
         with self._batched_dispatch():
-            # Embedding lookup.
-            self._dispatch(
-                "embedding_lookup",
-                [self.weights["model.embed_tokens.weight"], pre["ids"], pre["x"]],
-                {"HIDDEN_DIM": hidden},
-                (num_tokens, 1, 1),
-            )
-
-            # Layer 0 pre-norm (initial case: no residual add yet).
-            self._dispatch(
-                "rms_norm",
-                [pre["x"],
-                 self._norm0_w,
-                 sc["normed"]],
-                self._rms_base,
-                (num_tokens, 1, 1),
-            )
-
+            self._dispatch_embed_norm0(num_tokens)
             normed_x = sc["normed"]
             x_buf    = pre["x"]  # initial residual = embedding
 
@@ -1287,16 +1292,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         NG  = self.n_groups
 
         # Step 1: in_proj — hidden -> [gate | x_B_C | dt]
-        in_w = f"{p}.in_proj.weight"
-        uq   = self._uq_for_key(in_w)
-        self._dispatch(
-            "matmul_quant",
-            [normed_x, self.weights[in_w],
-             self._scales_buf(in_w, uq, self._dummy_buf), sc["mamba_inproj"]],
-            {"K": H, "N": self.in_proj_dim, "USE_QUANT": uq,
-             **self._quant_extra(f"{p}.in_proj", uq)},
-            (self.in_proj_dim, 1, 1),
-        )
+        self._proj(f"{p}.in_proj.weight", normed_x, sc["mamba_inproj"], H, self.in_proj_dim)
 
         # GPU-side byte copies to extract the three portions of in_proj output.
         # gate:   bytes [0          .. MI*2)        -> sc["mamba_gate"]
@@ -1356,16 +1352,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         )
 
         # Step 5: out_proj — mamba_int -> hidden.
-        out_w = f"{p}.out_proj.weight"
-        uq2   = self._uq_for_key(out_w)
-        self._dispatch(
-            "matmul_quant",
-            [sc["mamba_norm_out"], self.weights[out_w],
-             self._scales_buf(out_w, uq2, self._dummy_buf), sc["mixer_out"]],
-            {"K": MI, "N": H, "USE_QUANT": uq2,
-             **self._quant_extra(f"{p}.out_proj", uq2)},
-            (H, 1, 1),
-        )
+        self._proj(f"{p}.out_proj.weight", sc["mamba_norm_out"], sc["mixer_out"], MI, H)
 
     def _attn_layer(
         self,
@@ -1398,17 +1385,8 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         attn_scale = head_dim ** -0.5
 
         # Fused QKV projection.
-        qkv_w    = f"{p}.qkv_proj.weight"
         total_qkv = q_dim + 2 * k_dim
-        uq = self._uq_for_key(qkv_w)
-        self._dispatch(
-            "matmul_quant",
-            [normed_x, self.weights[qkv_w],
-             self._scales_buf(qkv_w, uq, self._dummy_buf), sc["qkv_buf"]],
-            {"K": H, "N": total_qkv, "USE_QUANT": uq,
-             **self._quant_extra(f"{p}.qkv_proj", uq)},
-            (total_qkv, 1, 1),
-        )
+        self._proj(f"{p}.qkv_proj.weight", normed_x, sc["qkv_buf"], H, total_qkv)
 
         # GPU-side extraction: split QKV buffer into Q, K, V.
         enc = self._active_encoder
@@ -1445,16 +1423,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         )
 
         # Output projection.
-        ow  = f"{p}.o_proj.weight"
-        uq2 = self._uq_for_key(ow)
-        self._dispatch(
-            "matmul_quant",
-            [sc["attn_out"], self.weights[ow],
-             self._scales_buf(ow, uq2, self._dummy_buf), sc["mixer_out"]],
-            {"K": q_dim, "N": H, "USE_QUANT": uq2,
-             **self._quant_extra(f"{p}.o_proj", uq2)},
-            (H, 1, 1),
-        )
+        self._proj(f"{p}.o_proj.weight", sc["attn_out"], sc["mixer_out"], q_dim, H)
 
     def _mlp_layer(
         self,
@@ -1472,16 +1441,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         I   = self._layer_int_size[layer_idx]
 
         # up_proj: hidden -> intermediate
-        uw  = f"{p}.up_proj.weight"
-        uq  = self._uq_for_key(uw)
-        self._dispatch(
-            "matmul_quant",
-            [normed_x, self.weights[uw],
-             self._scales_buf(uw, uq, self._dummy_buf), sc["up_buf"]],
-            {"K": H, "N": I, "USE_QUANT": uq,
-             **self._quant_extra(f"{p}.up_proj", uq)},
-            (I, 1, 1),
-        )
+        self._proj(f"{p}.up_proj.weight", normed_x, sc["up_buf"], H, I)
 
         # relu^2 element-wise activation. One workgroup per 256 elements.
         # Inline cdiv(I, 256) rather than reusing _rows_wg whose semantic is
@@ -1495,16 +1455,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
         )
 
         # down_proj: intermediate -> hidden
-        dw  = f"{p}.down_proj.weight"
-        uq2 = self._uq_for_key(dw)
-        self._dispatch(
-            "matmul_quant",
-            [sc["ffn_act"], self.weights[dw],
-             self._scales_buf(dw, uq2, self._dummy_buf), sc["mixer_out"]],
-            {"K": I, "N": H, "USE_QUANT": uq2,
-             **self._quant_extra(f"{p}.down_proj", uq2)},
-            (H, 1, 1),
-        )
+        self._proj(f"{p}.down_proj.weight", sc["ffn_act"], sc["mixer_out"], I, H)
 
     # ── Prefill fallback ──────────────────────────────────────────────────────
 
@@ -1538,21 +1489,7 @@ class NemotronHWebGPUModel(BaseWebGPUModel):
                 np.asarray(attn_metadata.slot_mapping[t:t+1], dtype=np.uint32).tobytes())
 
             with self._batched_dispatch():
-                self._dispatch(
-                    "embedding_lookup",
-                    [self.weights["model.embed_tokens.weight"], pre["ids"], pre["x"]],
-                    {"HIDDEN_DIM": self.hidden_size},
-                    (1, 1, 1),
-                )
-                self._dispatch(
-                    "rms_norm",
-                    [pre["x"],
-                     self._norm0_w,
-                     sc["normed"]],
-                    self._rms_base,
-                    (1, 1, 1),
-                )
-
+                self._dispatch_embed_norm0(1)
                 normed_x = sc["normed"]
                 x_buf    = pre["x"]
 
