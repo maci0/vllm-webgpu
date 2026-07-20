@@ -133,11 +133,15 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
         """Extend NemotronH scratch buffers with FalconH1-specific additions.
 
         Added buffers:
-        - pos:          [1] u32 position for the current decode token
+        - pos:           [1] u32 position for the current decode token
         - attn_proj_out: [hidden_size] f16 attention output after o_proj
-        - ffn_normed:   [hidden_size] f16 pre-FFN normed input
-        - gate_buf:     [intermediate_size] f16 gate projection output (non-fused path)
-        - ffn_act:      re-use NemotronH's ffn_act (already present)
+        - ffn_normed:    [hidden_size] f16 pre-FFN normed input
+        - gate_buf:      [intermediate_size] f16 gate projection output (GPTQ path)
+        - up_buf:        [intermediate_size] f16 up projection output (GPTQ path);
+                         overrides the 4-byte placeholder from NemotronH (all layers
+                         are "attention"-typed so _layer_int_size is all zeros there)
+        - ffn_proj_out:  [hidden_size] f16 down projection output; dedicated buffer
+                         so the size is always H regardless of mamba_int
         """
         super()._init_scratch_buffers()
         H     = self.hidden_size
@@ -151,8 +155,16 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
         self._sc["attn_proj_out"] = self._make_buf(H * 2)
         # Pre-FFN norm output.
         self._sc["ffn_normed"]    = self._make_buf(H * 2)
-        # Gate buffer for the non-fused FFN path (GPTQ/quantized models).
+        # Gate and up projection buffers for the GPTQ FFN path.
+        # NemotronH allocates up_buf as max(_layer_int_size)*2 bytes, which is
+        # 4 bytes for FalconH1 (all "attention" layers → int_size=0 for all).
+        # Override both to the correct FFN intermediate size.
         self._sc["gate_buf"]      = self._make_buf(inter * 2)
+        self._sc["up_buf"]        = self._make_buf(inter * 2)
+        # Dedicated FFN down-proj output buffer. Using sc["mamba_norm_out"] as a
+        # temporary would overflow when mamba_int < hidden_size (e.g. test configs
+        # or checkpoints with small SSM expand ratios).
+        self._sc["ffn_proj_out"]  = self._make_buf(H * 2)
 
     # ── Mamba state allocation (all layers) ──────────────────────────────────
 
@@ -460,8 +472,12 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
 
             # Parallel residual merge (all multipliers are 1.0, checked at init).
             # merged = x + ssm_out + attn_out
-            self._dispatch("add", [x_buf,  ssm_out,  merged], {"N": add_n}, _vec4_wg(add_n))
-            self._dispatch("add", [merged, attn_out, merged], {"N": add_n}, _vec4_wg(add_n))
+            # Use 'out' as a non-aliased intermediate for the first add. Binding
+            # the same buffer to both the read (binding 0) and read_write (binding 2)
+            # slots of the add shader is invalid per the WebGPU spec; 'out' is a
+            # distinct h-buffer and is overwritten later by add_rms_norm / add.
+            self._dispatch("add", [x_buf, ssm_out, out],    {"N": add_n}, _vec4_wg(add_n))
+            self._dispatch("add", [out,   attn_out, merged], {"N": add_n}, _vec4_wg(add_n))
 
             # Feed-forward with pre-FFN norm.
             pre_ff_w = self.weights[f"{p}.pre_ff_layernorm.weight"]
@@ -491,7 +507,7 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
 
             dw_k = f"{p}.feed_forward.down_proj.weight"
             uq_d = self._uq_for_key(dw_k)
-            ffn_proj_out = sc["mamba_norm_out"]  # safe: already consumed by mamba branch
+            ffn_proj_out = sc["ffn_proj_out"]  # dedicated H-element buffer; mamba_norm_out
             self._dispatch("matmul_quant",
                            [sc["ffn_act"], self.weights[dw_k],
                             self._scales_buf(dw_k, uq_d, self._dummy_buf), ffn_proj_out],
