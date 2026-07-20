@@ -117,6 +117,10 @@ ARCH_MAP = {
     "DiffusionGemmaForBlockDiffusion": "diffusion_gemma",
     "GptOssForCausalLM": "gpt_oss",
     "NemotronHForCausalLM": "nemotron_h",
+    "Phi3ForCausalLM": "phi",
+    "FalconH1ForCausalLM": "falcon_h1",
+    "SmolLM3ForCausalLM": "smollm3",
+    "Olmo2ForCausalLM": "olmo2",
 }
 
 
@@ -128,6 +132,10 @@ _FAMILY_TO_CLASS: "dict[str, str]" = {
     "diffusion_gemma": "vllm_webgpu.models.diffusion_gemma.DiffusionGemmaWebGPUModel",
     "gpt_oss":         "vllm_webgpu.models.gpt_oss.GptOssWebGPUModel",
     "nemotron_h":      "vllm_webgpu.models.nemotron_h.NemotronHWebGPUModel",
+    "phi":             "vllm_webgpu.models.phi.PhiWebGPUModel",
+    "falcon_h1":       "vllm_webgpu.models.falcon_h1.FalconH1WebGPUModel",
+    "smollm3":         "vllm_webgpu.models.smollm3.SmolLM3WebGPUModel",
+    "olmo2":           "vllm_webgpu.models.olmo2.Olmo2WebGPUModel",
 }
 
 
@@ -371,10 +379,10 @@ class WebGPUModelRunner:
             )
 
         self.model = _build_model(arch, family, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
-        if family == "nemotron_h":
+        if family in ("nemotron_h", "falcon_h1"):
             # spec_config is None here: the raise above blocks any non-None value.
-            # Pass 0 so NemotronHWebGPUModel.load_weights can accept num_spec when
-            # speculative decoding is eventually implemented in execute_model.
+            # Pass num_spec=0 so load_weights can accept it when speculative decoding
+            # is eventually implemented in execute_model.
             self.model.load_weights(mc.model, num_spec=0)
         else:
             self.model.load_weights(mc.model)
