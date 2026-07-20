@@ -8,7 +8,7 @@ import numpy as np
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
+from vllm_webgpu.models.base import _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES, _STAGING_USAGE
 from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel, _a_log_transform
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
 
@@ -81,15 +81,11 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
                     "Non-unit scalar multipliers require a vec_scale shader that is "
                     "not yet implemented. Only multiplier=1.0 is supported."
                 )
-        # Guard: mlp_multipliers = [gate_multiplier, down_multiplier] must be [1.0, 1.0].
-        # Non-unit values are silently dropped by the FFN dispatch (no vec_scale shader).
+        # mlp_multipliers = [gate_multiplier, down_multiplier].
+        # Non-unit values are pre-absorbed into the gate_proj and down_proj weight
+        # matrices at load time (see _apply_mlp_weight_multipliers): equivalent to
+        # multiplying the argument to SiLU for gate and the output of down_proj.
         mlp_mults = list(getattr(model_config, "mlp_multipliers", (1.0, 1.0)))
-        if any(float(m) != 1.0 for m in mlp_mults):
-            raise NotImplementedError(
-                f"FalconH1WebGPUModel: mlp_multipliers={mlp_mults!r} != [1.0, 1.0]. "
-                "Non-unit FFN scale factors (gate_multiplier, down_multiplier) are not "
-                "yet implemented. Only [1.0, 1.0] is supported."
-            )
 
         # Map FalconH1Config field names to NemotronH-compatible attribute names.
         model_config.mamba_num_heads  = model_config.mamba_n_heads
@@ -114,6 +110,22 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
 
         super().__init__(model_config, wgpu_device, pipeline_cache, block_size)
 
+        # Store mlp multipliers and pre-absorb non-unit values into the f16 weight
+        # matrices via _weight_transforms (applied at upload time).  GPTQ scales are
+        # handled by _apply_mlp_weight_multipliers() after load_weights() completes.
+        self._gate_mult: float = float(mlp_mults[0])
+        self._down_mult: float = float(mlp_mults[1])
+        for i in range(self.num_layers):
+            p = f"model.layers.{i}.feed_forward"
+            if self._gate_mult != 1.0:
+                gw = f"{p}.gate_proj.weight"
+                self._weight_transforms[gw] = (
+                    lambda a, m=self._gate_mult: (a * m).astype(a.dtype))
+            if self._down_mult != 1.0:
+                dw = f"{p}.down_proj.weight"
+                self._weight_transforms[dw] = (
+                    lambda a, m=self._down_mult: (a * m).astype(a.dtype))
+
         # RoPE constants for the attention branch.
         _rp = getattr(model_config, "rope_parameters", {}) or {}
         self.rope_theta: float = float(_rp.get("rope_theta", 10000.0))
@@ -134,6 +146,8 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
 
         Added buffers:
         - pos:           [1] u32 position for the current decode token
+        - q_rope:        [q_dim] f16 RoPE-rotated Q (NemotronH has no RoPE)
+        - k_rope:        [k_dim] f16 RoPE-rotated K
         - attn_proj_out: [hidden_size] f16 attention output after o_proj
         - ffn_normed:    [hidden_size] f16 pre-FFN normed input
         - gate_buf:      [intermediate_size] f16 gate projection output (GPTQ path)
@@ -150,6 +164,11 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
 
         # Position buffer for RoPE in the attention branch.
         self._pre["pos"] = self._make_buf(4)
+
+        # RoPE output buffers: NemotronH has no RoPE so these are absent in the
+        # parent's scratch dict.  FalconH1 applies standard RoPE in _attn_branch.
+        self._sc["q_rope"] = self._make_buf(self._q_dim * 2)
+        self._sc["k_rope"] = self._make_buf(self._k_dim * 2)
 
         # Attention output scratch (avoids aliasing with sc["mixer_out"] from mamba).
         self._sc["attn_proj_out"] = self._make_buf(H * 2)
@@ -250,6 +269,7 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
                 self.weights[new_k] = self.weights.pop(old_k)
 
         self._pack_falconh1_attn_weights()
+        self._apply_mlp_weight_multipliers()
         self._init_mamba_states(num_spec)
 
         # Cache per-layer pre-norm weight buffers (input_layernorm in FalconH1).
@@ -292,6 +312,42 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
 
             self.weights[f"{p}.qkv_proj.weight"] = qkv_buf
             del self.weights[q_key], self.weights[k_key], self.weights[v_key]
+
+    def _apply_mlp_weight_multipliers(self) -> None:
+        """Post-load: absorb mlp_multipliers into GPTQ scale tensors.
+
+        f16 weights are handled at upload time via _weight_transforms.  GPTQ int4
+        checkpoints store quantization scales separately; multiplying the scale by the
+        respective multiplier is equivalent to multiplying the reconstructed weight row
+        by the same scalar (scale * int4_value == (scale * mult) * int4_value / mult),
+        so the reconstructed weight changes proportionally.
+
+        Skips layers where multipliers are already 1.0 or where no GPTQ scale exists.
+        """
+        import wgpu as _wgpu
+        dev = self.wgpu_device.wgpu_device
+        for mult, prefix in [
+            (self._gate_mult, "gate_proj"),
+            (self._down_mult, "down_proj"),
+        ]:
+            if mult == 1.0:
+                continue
+            for i in range(self.num_layers):
+                sc_key = f"model.layers.{i}.feed_forward.{prefix}.weight.scales"
+                if sc_key not in self.weights:
+                    continue  # f16 handled by _weight_transforms; skip
+                sc_buf = self.weights[sc_key]
+                nb = sc_buf.nbytes
+                staging = dev.create_buffer(size=nb, usage=_STAGING_USAGE)
+                enc = dev.create_command_encoder()
+                enc.copy_buffer_to_buffer(sc_buf.buf, 0, staging, 0, nb)
+                dev.queue.submit([enc.finish()])
+                staging.map_sync(mode=_wgpu.MapMode.READ)
+                arr = np.frombuffer(bytes(staging.read_mapped()), dtype=np.float32).copy()
+                staging.unmap()
+                arr *= mult
+                self.weights[sc_key] = WebGPUBuffer.from_numpy(
+                    dev, np.ascontiguousarray(arr.reshape(sc_buf.shape)))
 
     # ── Per-layer branch dispatches ───────────────────────────────────────────
 

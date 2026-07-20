@@ -34,13 +34,15 @@ def make_tiny_falcon_h1_config():
     cfg.mlp_hidden_act   = "relu2"
     cfg.mamba_hidden_act = "silu"
 
-    # Multipliers (must all be 1.0)
+    # Multipliers (must all be 1.0 for attention/ssm/embedding/key;
+    # mlp_multipliers are absorbed into weights at load time)
     cfg.attention_in_multiplier  = 1.0
     cfg.attention_out_multiplier = 1.0
     cfg.ssm_in_multiplier        = 1.0
     cfg.ssm_out_multiplier       = 1.0
     cfg.embedding_multiplier     = 1.0
     cfg.key_multiplier           = 1.0
+    cfg.mlp_multipliers          = [1.0, 1.0]
 
     # RoPE
     cfg.rope_parameters = {"rope_theta": 10000.0}
@@ -152,3 +154,41 @@ def test_falcon_h1_pos_buf_allocated(wgpu_device):
         "'pos' buffer not found in FalconH1WebGPUModel._pre; "
         "_init_scratch_buffers override must add it for RoPE dispatches"
     )
+
+
+def test_falcon_h1_rope_scratch_buffers_allocated(wgpu_device):
+    """FalconH1 allocates q_rope and k_rope in _sc (NemotronH parent does not)."""
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.models.falcon_h1 import FalconH1WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    cfg = make_tiny_falcon_h1_config()
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = FalconH1WebGPUModel(cfg, wgpu_device, cache)
+
+    assert "q_rope" in model._sc, "'q_rope' buffer missing from FalconH1 _sc"
+    assert "k_rope" in model._sc, "'k_rope' buffer missing from FalconH1 _sc"
+    q_dim = cfg.num_attention_heads * cfg.head_dim
+    k_dim = cfg.num_key_value_heads * cfg.head_dim
+    assert model._sc["q_rope"].nbytes == q_dim * 2
+    assert model._sc["k_rope"].nbytes == k_dim * 2
+
+
+def test_falcon_h1_mlp_multipliers_weight_transforms_registered(wgpu_device):
+    """Non-unit mlp_multipliers register _weight_transforms for gate/down projections."""
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.models.falcon_h1 import FalconH1WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    cfg = make_tiny_falcon_h1_config()
+    cfg.mlp_multipliers = [0.5, 0.25]
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = FalconH1WebGPUModel(cfg, wgpu_device, cache)
+
+    assert model._gate_mult == 0.5
+    assert model._down_mult == 0.25
+    for i in range(cfg.num_hidden_layers):
+        gate_key = f"model.layers.{i}.feed_forward.gate_proj.weight"
+        down_key = f"model.layers.{i}.feed_forward.down_proj.weight"
+        assert gate_key in model._weight_transforms, f"Missing transform for {gate_key}"
+        assert down_key in model._weight_transforms, f"Missing transform for {down_key}"
