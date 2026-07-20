@@ -13,18 +13,16 @@ For f16 weights with per-head Q+K norms (e.g., Qwen3-4B), the optimized decode p
 | 1 | `fused_qkv` | Q+K+V projections into one buffer |
 | 2 | `fused_qk_norm_rope` | Q+K per-head norm + RoPE in one dispatch |
 | 3 | `kv_cache_store_both` | K+V cache write |
-| 4 | `attn_score` | QK dot-products vs paged K cache |
-| 5 | `softmax` | Online softmax over attention scores |
-| 6 | `attn_output` | Weighted V sum from paged V cache |
-| 7 | `matmul_quant` | Output projection (o_proj) |
-| 8 | `add_rms_norm` | Post-attn residual add + FFN pre-norm (fused) |
-| 9 | `fused_gate_act` | Gate+up projection with inline SiLU |
-| 10 | `matmul_quant` | Down projection |
-| 11 | `add_rms_norm` | Post-FFN residual add + next layer pre-norm (cross-layer fused) |
+| 4 | `flash_attn_decode` | Fused QK scores + online softmax + V sum |
+| 5 | `matmul_quant` | Output projection (o_proj) |
+| 6 | `add_rms_norm` | Post-attn residual add + FFN pre-norm (fused) |
+| 7 | `fused_gate_act` | Gate+up projection with inline SiLU |
+| 8 | `matmul_quant` | Down projection |
+| 9 | `add_rms_norm` | Post-FFN residual add + next layer pre-norm (cross-layer fused) |
 
-**11 dispatches/layer** (down from 16 before fusion work).
+**9 dispatches/layer** (down from 16 before fusion work).
 
-Fallback paths (quantized weights, no per-head norms): 14-16 dispatches/layer.
+Fallback paths (quantized weights, no per-head norms): 12-14 dispatches/layer.
 
 ---
 
@@ -40,11 +38,10 @@ GEMV for single-token decode (M=1). Supports 7 quantization formats via `USE_QUA
 |----------|---------|-------------|
 | `K` | 4096 | Input (hidden) dimension |
 | `N` | 4096 | Output dimension |
-| `USE_QUANT` | 0 | 0=f16, 2=Q4_K, 3=GPTQ, 4=AWQ, 5=FP8, 6=NVFP4 |
+| `USE_QUANT` | 0 | 0=f16, 3=GPTQ, 4=AWQ, 5=FP8, 6=NVFP4, 7=Int8, 8=NF4 |
 | `SPLIT_K` | 1 | 1=split-K (coalesced, for large N), 0=row-per-thread (for N>65535) |
-| `GROUP_K` | 128 | Quantization group size (GPTQ/AWQ, USE_QUANT=3/4) |
+| `GROUP_K` | 128 | Quantization group size (GPTQ/AWQ: 128, NF4: 64, USE_QUANT=3/4/8) |
 | `GLOBAL_SCALE` | 1.0 | Weight scale constant (FP8/NVFP4, USE_QUANT=5/6) |
-| `BLOCK_K` | 256 | Q4_K block size (USE_QUANT=2) |
 
 **Bindings:** 0=x(f16), 1=weights(u32), 2=scales(f16), 3=output(f16)
 
@@ -53,6 +50,8 @@ GPU dequant formats:
 - `USE_QUANT=4` AWQ: weights `[K, N/8]` int32, AWQ nibble reorder `[0,4,1,5,2,6,3,7]`
 - `USE_QUANT=5` FP8 E4M3: weights `[N, K]` raw bytes as u32, GLOBAL_SCALE
 - `USE_QUANT=6` NVFP4: weights `[N, K/2]` packed FP4, scales `[N, K/16]` f16
+- `USE_QUANT=7` Int8: weights `[N, K]` raw i8 bytes, per-row scale
+- `USE_QUANT=8` NF4: weights `[N//2, K]` packed 4-bit codes, scales `[N, K//GROUP_K]` f16 absmax
 
 ---
 
@@ -344,24 +343,15 @@ Residual add. `add.wgsl` is f16→f16 (vec4); `add_f32.wgsl` is `f32 + SCALE*f16
 
 ---
 
-### gelu_mul.wgsl / gelu_mul_fused.wgsl
+### gelu_mul.wgsl
 
-SiLU/GELU activation applied to the gate projection, then multiplied by the up projection. Used in the quantized FFN fallback path (f16 path uses `fused_gate_act`).
-
-- `gelu_mul.wgsl`: reads from separate gate and up buffers.
-- `gelu_mul_fused.wgsl`: reads from a combined `[gate|up]` buffer (the `fused_gate_up` output). Override `GELU=0` for SiLU, `GELU=1` for tanh-GELU.
+SiLU/GELU activation applied to the gate projection, then multiplied by the up projection. Used in the quantized FFN fallback path (f16 path uses `fused_gate_act`). Reads from separate gate and up buffers. Override `GELU=0` for SiLU, `GELU=1` for tanh-GELU.
 
 ---
 
 ### kv_cache_store.wgsl
 
 Single-buffer KV cache write (K or V). Used in the quantized fallback path; prefer `kv_cache_store_both` for f16.
-
----
-
-### fused_gate_up.wgsl
-
-Gate+up projections into a combined `[gate|up]` buffer. Used in the quantized fallback path followed by `gelu_mul_fused`. For f16, `fused_gate_act` is preferred (no intermediate buffer).
 
 ---
 
@@ -434,7 +424,7 @@ GQA: `kv_head = q_head / (NUM_Q_HEADS / NUM_KV_HEADS)`. Each workgroup loads its
 
 ### flash_attn_decode.wgsl
 
-Fused QK dot-products + online Milakov-Divanov softmax + V-weighted sum for decode (M=1). Automatic fallback when ctx_len > 65535, where the three-pass approach (attn_score + softmax + attn_output) hits the WebGPU dispatch dimension limit. The fused shader loops over all KV positions inside the workgroup, so it has no per-axis dispatch limit. At short contexts, the three-pass approach has better GPU utilization (num_q_heads × ctx_len workgroups vs num_q_heads here); flash_attn_decode is selected only when ctx_len > 65535.
+Fused QK dot-products + online Milakov-Divanov softmax + V-weighted sum for decode (M=1). Always used for the single-token decode path. The fused shader loops over all KV positions inside the workgroup, so it has no per-axis dispatch limit (the former three-pass approach — attn_score + softmax + attn_output — dispatched one workgroup per (query head, context position) and hit the WebGPU 65535 per-axis limit at long contexts). Using flash_attn_decode unconditionally also saves 2 dispatches per layer per decode step.
 
 **Dispatch:** `(NUM_Q_HEADS, 1, 1)` — one WG per query head.
 
@@ -487,9 +477,6 @@ Iterative top-K over the full vocabulary with a mask buffer. For nucleus/top-k s
 | `gelu_mul.wgsl` | Tanh-GELU activation (Gemma3/4 FFN, separate gate/up buffers) |
 | `logit_softcap.wgsl` | `tanh(x/CAP) * CAP`, CAP=30.0 for Gemma4 |
 | `per_head_rms_norm_no_weight.wgsl` | Per-head V normalization before KV cache (Gemma4 only) |
-| `ple_gelu_mul.wgsl` | SiLU for PLE FFN (scalar f16) |
-| `ple_skip_scale_add.wgsl` | PLE residual add with per-scalar scale |
-| `ple_stage1_fuse.wgsl` | Fused PLE embedding projection into hidden state |
 
 ---
 
@@ -532,3 +519,37 @@ Per-head RMSNorm on the GDN output followed by sigmoid gating: `output = norm(gd
 **Dispatch:** `(num_v_heads, 1, 1)`
 
 **Bindings:** 0=gdn_in(f16), 1=norm_weight(f16), 2=z_in(f16), 3=output(f16)
+
+---
+
+## NemotronH Mamba-2 kernels (generic/)
+
+These three kernels implement Mamba-2 selective state space model (SSM) steps for NemotronH's SSM layers. They replace the standard attention + FFN computation in those layers.
+
+### mamba2_ssm_step.wgsl
+
+Single-step Mamba-2 SSM state update. Reads input and the current SSM state, applies the selective scan, writes the updated state and output.
+
+**Dispatch:** `(num_heads, 1, 1)`
+
+**Bindings:** 0=x(f16), 1=ssm_state(f32 rw), 2=A(f32), 3=B(f16), 4=C(f16), 5=dt(f16), 6=dt_bias(f32), 7=D(f32), 8=output(f16)
+
+---
+
+### mamba2_causal_conv.wgsl
+
+Single-step causal depthwise conv1d for NemotronH. Updates the conv ring buffer in-place, writes convolved output. Shared interface with Qwen3.5's `causal_conv_step.wgsl` but parameterized separately.
+
+**Dispatch:** `(ceil(CONV_DIM/WG_SIZE), 1, 1)`
+
+**Bindings:** 0=x(f16), 1=weight(f16), 2=conv_state(f16 rw), 3=output(f16)
+
+---
+
+### mamba2_norm_gate.wgsl
+
+Per-head RMSNorm followed by gated activation on the Mamba-2 output: `output = norm(x) * silu(z)`.
+
+**Dispatch:** `(num_heads, 1, 1)`
+
+**Bindings:** 0=x(f16), 1=norm_weight(f16), 2=z(f16), 3=output(f16)

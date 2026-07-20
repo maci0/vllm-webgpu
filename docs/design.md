@@ -1,14 +1,14 @@
 # vllm-webgpu Design Spec
 
-**Date:** 2026-06-29  
-**Status:** Approved
+**Date:** 2026-06-29 (updated 2026-07-20)
+**Status:** Implemented. This document reflects the shipped architecture.
 
 ## Overview
 
-`vllm-webgpu` is an out-of-tree vLLM platform plugin that runs LLM inference on any WebGPU-capable GPU using hand-tuned WGSL compute kernels. It mirrors the vllm-metal architecture: vLLM handles scheduling and serving; the plugin owns all compute via `wgpu-py` (Rust wgpu Python bindings).
+`vllm-webgpu` is an out-of-tree vLLM platform plugin that runs LLM inference on any WebGPU-capable GPU using hand-tuned WGSL compute kernels. vLLM handles scheduling and serving; the plugin owns all compute via `wgpu-py` (Rust wgpu Python bindings).
 
-Target architectures: Llama 3.x, Qwen 2.5/3.x, Gemma 4.  
-Quantization: GGUF Q4_K_M and safetensors f16.  
+Target architectures: Llama 3.x, Qwen 2.5/3.x/3.5/3.6, Gemma 3/4, Mistral, Mixtral, GPT-OSS, NemotronH (Mamba-2 hybrid), DiffusionGemma.  
+Quantization: safetensors f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4, ct_pack_int4 (Gemma4 QAT), MXFP4/MXFP8 (load-time dequant), MLX affine-int4 (load-time dequant). GGUF format is not supported; use the vllm-gguf plugin instead.  
 Platform: cross-platform (macOS via Metal, Windows via DX12, Linux via Vulkan) via wgpu's backend abstraction.
 
 ---
@@ -48,7 +48,6 @@ vllm_webgpu/
 ├── platform.py
 ├── config.py
 ├── envs.py
-├── compat.py
 ├── utils.py
 ├── webgpu/
 │   ├── __init__.py
@@ -56,37 +55,40 @@ vllm_webgpu/
 │   ├── buffer.py
 │   └── pipeline.py
 ├── shaders/
-│   ├── generic/
+│   ├── generic/          (40+ shaders — see KERNELS.md for full reference)
 │   │   ├── matmul_quant.wgsl
 │   │   ├── matmul_quant_mr4.wgsl
-│   │   ├── embedding_lookup.wgsl
-│   │   ├── rms_norm.wgsl
-│   │   ├── rope.wgsl
-│   │   ├── fused_per_head_norm_rope.wgsl
-│   │   ├── per_head_rms_norm.wgsl
-│   │   ├── attn_score.wgsl
-│   │   ├── attn_output.wgsl
-│   │   ├── kv_cache_store.wgsl
-│   │   ├── gelu_mul.wgsl
-│   │   ├── fused_norm_add.wgsl
-│   │   ├── add.wgsl
-│   │   ├── softmax.wgsl
-│   │   ├── argmax.wgsl
-│   │   └── topk256.wgsl
+│   │   ├── flash_attn_decode.wgsl
+│   │   ├── flash_attn_prefill.wgsl
+│   │   ├── fused_qkv.wgsl
+│   │   ├── fused_qk_norm_rope.wgsl
+│   │   ├── fused_gate_act.wgsl
+│   │   ├── add_rms_norm.wgsl
+│   │   ├── kv_cache_store_both.wgsl
+│   │   ├── mamba2_ssm_step.wgsl
+│   │   ├── mamba2_causal_conv.wgsl
+│   │   ├── mamba2_norm_gate.wgsl
+│   │   ├── causal_conv_step.wgsl
+│   │   ├── gdn_state_update.wgsl
+│   │   ├── topk_sort.wgsl
+│   │   └── ...
 │   └── gemma/
-│       ├── ple_stage1_fuse.wgsl
-│       ├── ple_gelu_mul.wgsl
-│       ├── ple_skip_scale_add.wgsl
+│       ├── gelu_mul.wgsl
 │       ├── logit_softcap.wgsl
 │       └── per_head_rms_norm_no_weight.wgsl
 ├── models/
 │   ├── __init__.py
 │   ├── base.py
 │   ├── llama.py
-│   └── gemma4.py
+│   ├── mixtral.py
+│   ├── gpt_oss.py
+│   ├── gemma4.py
+│   ├── qwen35.py
+│   ├── nemotron_h.py
+│   └── diffusion_gemma.py
 ├── quant/
 │   ├── __init__.py
-│   └── gguf_loader.py
+│   └── weight_loader.py
 └── v1/
     ├── __init__.py
     ├── worker.py
@@ -248,38 +250,43 @@ override NUM_Q_HEADS: u32 = 32u;
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) { ... }
 ```
 
-### Generic kernels (both Llama and Gemma)
+### Generic kernels
 
 | Kernel | Operation |
 |---|---|
-| `matmul_quant.wgsl` | GEMV for decode (batch=1); Q4_K_M dequant path or raw f16 path selected via `USE_QUANT` specialization constant |
-| `matmul_quant_mr4.wgsl` | Matmul with mr=4 tile for prefill; same Q4_K_M/f16 dual-path as above |
+| `matmul_quant.wgsl` | GEMV for decode (M=1); USE_QUANT selects f16/GPTQ/AWQ/FP8/NVFP4/Int8/NF4 |
+| `matmul_quant_mr4.wgsl` | Tiled GEMM for prefill (M>1, MR×4 output tile) |
+| `flash_attn_decode.wgsl` | Fused QK+softmax+V decode attention (always used for decode) |
+| `flash_attn_prefill.wgsl` | Causal self-attention for all T prompt tokens in one dispatch |
+| `fused_qkv.wgsl` | Q+K+V projections in one dispatch (f16 only) |
+| `fused_qk_norm_rope.wgsl` | Q+K per-head norm + RoPE in one dispatch |
+| `fused_gate_act.wgsl` | Gate+up GEMV with inline SiLU/GELU (f16 only) |
+| `add_rms_norm.wgsl` | Fused residual add + RMSNorm (f16) |
+| `add_f32_rms_norm.wgsl` | Fused residual add + RMSNorm (f32 residual, Gemma4) |
+| `rms_norm_add_f32_rms_norm.wgsl` | Double-norm fusion for Gemma4 sublayer pairs |
+| `kv_cache_store_both.wgsl` | K+V paged cache write in one dispatch |
 | `embedding_lookup.wgsl` | token_ids → f16 embedding rows |
-| `rms_norm.wgsl` | standard RMSNorm with weight |
-| `rope.wgsl` | standard RoPE (Llama-style frequencies) |
-| `fused_per_head_norm_rope.wgsl` | per-head RMSNorm + RoPE in one pass |
-| `per_head_rms_norm.wgsl` | per-head RMSNorm with weight |
-| `attn_score.wgsl` | Q·Kᵀ scaled dot product, GQA-aware, paged KV |
-| `attn_output.wgsl` | softmax(scores)·V, paged KV |
-| `kv_cache_store.wgsl` | write K/V tokens into paged block table |
-| `gelu_mul.wgsl` | SwiGLU: gate·SiLU(up) for Llama/Qwen FFN |
-| `fused_norm_add.wgsl` | residual add + RMSNorm fused |
-| `add.wgsl` | residual add |
-| `softmax.wgsl` | numerically stable softmax |
-| `argmax.wgsl` | greedy decode |
-| `topk256.wgsl` | top-k sampling (k <= 256) |
+| `embedding_lookup_f32.wgsl` | token_ids → f32 embedding rows with sqrt(hidden_dim) scale (Gemma4) |
+| `causal_conv_step.wgsl` | Single-step causal depthwise conv1d (Qwen3.5 GDN) |
+| `gdn_state_update.wgsl` | Delta-rule SSM state update (Qwen3.5 GDN) |
+| `linear_attn_norm_gate.wgsl` | GDN output norm + sigmoid gate |
+| `mamba2_ssm_step.wgsl` | Mamba-2 selective scan step (NemotronH) |
+| `mamba2_causal_conv.wgsl` | Mamba-2 causal depthwise conv1d (NemotronH) |
+| `mamba2_norm_gate.wgsl` | Mamba-2 output norm + silu gate (NemotronH) |
+| `topk_sort.wgsl` | GPU top-K expert selection for MoE routing |
+| `argmax_f16.wgsl` | GPU argmax over f16 logits (greedy decode) |
+| `softmax.wgsl` | Online 2-pass softmax |
+| `sigmoid_gate.wgsl` | Element-wise sigmoid(gate) * value (Qwen3.5 attn gate) |
 
-### Gemma-specific kernels
+### Gemma-specific kernels (shaders/gemma/)
 
 | Kernel | Operation |
 |---|---|
-| `ple_stage1_fuse.wgsl` | fused per-layer embedding stage 1 |
-| `ple_gelu_mul.wgsl` | PLE-variant gated GELU |
-| `ple_skip_scale_add.wgsl` | PLE skip connection + scale + add |
-| `logit_softcap.wgsl` | Gemma logit soft-cap (tanh(x / cap) * cap) |
-| `per_head_rms_norm_no_weight.wgsl` | weightless per-head RMSNorm (weight=1, dropped from ckpt) |
+| `gelu_mul.wgsl` | Tanh-GELU for Gemma3/4 FFN |
+| `logit_softcap.wgsl` | Gemma logit soft-cap: tanh(x / cap) * cap |
+| `per_head_rms_norm_no_weight.wgsl` | Weightless per-head RMSNorm for Gemma4 V normalization |
 
-For f16 safetensors checkpoints, `matmul_quant.wgsl` skips the dequant path and operates on raw f16 blocks.
+See [KERNELS.md](../KERNELS.md) for the full reference including dispatch shapes and override tables.
 
 ---
 
@@ -293,7 +300,7 @@ class BaseWebGPUModel:
     kv_pool: list[tuple[WebGPUBuffer, WebGPUBuffer]]  # per-layer (K, V) blocks
 
     def load_weights(self, path: str) -> None:
-        # detect GGUF vs safetensors
+        # detect safetensors format (HF hub, single-shard, or MLX)
         # map HF tensor names to weight dict
         # upload all tensors to GPU as WebGPUBuffer
 
@@ -338,36 +345,46 @@ Extends `BaseWebGPUModel` with PLE layer injection and Gemma-specific attention:
 ### Architecture detection
 
 ```python
-# v1/model_runner.py
+# v1/model_runner.py — maps HF architecture string to model family
 ARCH_MAP = {
-    "LlamaForCausalLM": LlamaWebGPUModel,
-    "Qwen2ForCausalLM": LlamaWebGPUModel,
-    "Qwen3ForCausalLM": LlamaWebGPUModel,
-    "Gemma3ForCausalLM": Gemma4WebGPUModel,
+    "LlamaForCausalLM":                         "llama",
+    "MistralForCausalLM":                        "mixtral",
+    "MixtralForCausalLM":                        "mixtral",
+    "Qwen2ForCausalLM":                          "llama",
+    "Qwen3ForCausalLM":                          "llama",
+    "Gemma3ForCausalLM":                         "gemma4",
+    "Gemma3ForConditionalGeneration":            "gemma4",
+    "Gemma4ForCausalLM":                         "gemma4",
+    "Gemma4UnifiedForConditionalGeneration":     "gemma4",
+    "Qwen3_5ForConditionalGeneration":           "qwen35",
+    "Qwen3_5MoeForConditionalGeneration":        "qwen35",
+    "DiffusionGemmaForBlockDiffusion":           "diffusion_gemma",
+    "GptOssForCausalLM":                         "gpt_oss",
+    "NemotronHForCausalLM":                      "nemotron_h",
 }
-arch = vllm_config.model_config.architectures[0]
-model_cls = ARCH_MAP.get(arch)
-if model_cls is None:
-    raise NotImplementedError(f"Unsupported architecture: {arch}")
 ```
 
 ---
 
 ## Weight Loading
 
-Two paths, same output: `dict[str, WebGPUBuffer]`.
+All weight loading is handled by `quant/weight_loader.py`. Output: `dict[str, WebGPUBuffer]`.
 
-**GGUF (Q4_K_M):**
-- `quant/gguf_loader.py` reads GGUF metadata and tensor blocks
-- Q4_K_M blocks uploaded as `u8` buffers (32 weights + f16 scale per block)
-- `matmul_quant.wgsl` dequantizes on the GPU during dispatch
+**Supported sources:**
+- HuggingFace model ID or local directory (detected by `model.safetensors.index.json`)
+- Single-shard `.safetensors` file (detected by extension)
+- MLX directory (detected by `.biases` keys in safetensors index)
 
-**Safetensors (f16/bf16):**
-- Load with `safetensors` library, cast bf16 to f16 via numpy
-- Upload as f16 WebGPUBuffer
-- `matmul_quant.wgsl` and `matmul_quant_mr4.wgsl` use `USE_QUANT=0` specialization constant, skipping dequant
+**Quantization handling at load time:**
+- f16/bf16 safetensors: cast to f16, upload as-is (USE_QUANT=0 at runtime)
+- GPTQ/AWQ/FP8/NVFP4/Int8/NF4: raw quantized tensors uploaded to GPU, dequantized on-device by `matmul_quant.wgsl`
+- MXFP4/MXFP8: exponent-scale dequantized to f16 at load time, run as USE_QUANT=0
+- MLX affine-int4: dequantized to f16 at load time
+- compressed-tensors ct_pack_int4: config_groups JSON parsed, routed to USE_QUANT=3/5/7 by sub-format
 
-Both paths map HF checkpoint tensor names to the plugin's weight key convention (`"layers.{i}.attn.q_proj"` etc.).
+GGUF format is not supported. Use the vllm-gguf plugin for GGUF checkpoints.
+
+Weight tensor names are mapped from HF checkpoint conventions to the plugin's internal key convention via model-specific key mapping (and for NemotronH, via vLLM's built-in `hf_to_vllm_mapper`).
 
 ---
 
@@ -452,14 +469,17 @@ class WebGPUCachePlanner:
 
 ---
 
-## Unsupported (initial release)
+## Known limitations
 
-- LoRA (no adapter injection in WGSL dispatch path)
-- Multi-GPU (single adapter only, `world_size=1`)
-- Chunked prefill (no varlen attention kernel)
-- Sleep/wake mode
-- BF16 at runtime (weights cast to f16 on upload; WGSL has no bf16)
-- MoE architectures (no expert routing kernels)
+- **Single-sequence only**: one request per `forward()` call. Multi-sequence batching is an architectural change, not planned.
+- **No speculative decoding**: no draft model support.
+- **No grammar/constrained decoding**: requires full logit distribution on-device, not available in the decode path.
+- **No LoRA**: no adapter injection in WGSL dispatch path.
+- **No multi-GPU**: single adapter only (`world_size=1`).
+- **No chunked prefill**: no varlen attention kernel.
+- **No bfloat16 at runtime**: WGSL has no bf16 type. Weights load as f16 (5-bit exponent). Use `--gdn_bf16` to partially mitigate for Qwen3.5 GDN layers.
+- **No GGUF**: use the vllm-gguf plugin for GGUF checkpoints.
+- **Max context**: 65535 tokens (WebGPU dispatch limit; DiffusionGemma is additionally constrained to canvas_length=256).
 
 ---
 
@@ -471,11 +491,10 @@ name = "vllm-webgpu"
 version = "0.1.0"
 
 [project.dependencies]
-vllm = ">=0.20"
+vllm = ">=0.25.1"
 wgpu = ">=0.20"
 numpy = ">=1.24"
 safetensors = ">=0.4"
-gguf = ">=0.10"
 psutil = ">=5.9"
 
 [project.entry-points."vllm.platform_plugins"]
@@ -486,9 +505,8 @@ webgpu = "vllm_webgpu:register"
 
 ## Testing
 
-- `tests/test_platform.py` - `is_available()`, `check_and_update_config()`
-- `tests/test_buffer.py` - round-trip upload/download, dtype handling
-- `tests/test_pipeline.py` - cache hit/miss, specialization constants
-- `tests/test_kernels.py` - each WGSL kernel vs numpy reference (rms_norm, rope, softmax, attn_score)
-- `tests/test_models.py` - single forward pass for Llama and Gemma4, compare logits to reference
-- `tests/test_gguf_loader.py` - Q4_K_M block loading and dequant correctness
+185 tests cover: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss), vLLM platform integration, and Qwen3.6 MoE routing.
+
+```bash
+pytest tests/ -q
+```

@@ -17,6 +17,7 @@
 | `Qwen3_5MoeForConditionalGeneration` | `qwen35` | `Qwen35WebGPUModel` |
 | `DiffusionGemmaForBlockDiffusion` | `diffusion_gemma` | `DiffusionGemmaWebGPUModel` |
 | `GptOssForCausalLM` | `gpt_oss` | `GptOssWebGPUModel` |
+| `NemotronHForCausalLM` | `nemotron_h` | `NemotronHWebGPUModel` |
 
 ## Quantization support
 
@@ -25,7 +26,6 @@ Quantization is handled inside `matmul_quant.wgsl` via the `USE_QUANT` override.
 | USE_QUANT | Format | vLLM name | Detection | Group size |
 |-----------|--------|-----------|-----------|------------|
 | 0 | f16 (plain) | — | default | — |
-| 1 | Simple Q4 + external scales | — | `.scales` key present | per-tensor |
 | 3 | GPTQ int4 | `gptq`, `gptq_marlin` | `dtype == "i32"`, `fmt != "awq_sym"` | 128 (configurable) |
 | 4 | AWQ int4 | `awq`, `awq_marlin` | `dtype == "i32"`, `fmt == "awq_sym"` | 128 (configurable) |
 | 5 | FP8 E4M3 | `fp8`, `modelopt` | `dtype == "u8"`, `fmt == "fp8_gpu"` | global scale |
@@ -133,6 +133,39 @@ Extends `Gemma4WebGPUModel`. Architecture differences:
 - MoE router: `topk_sort.wgsl` on GPU for 128 experts, top-8 active. Reads back 2×8 scalars (64 bytes) per MoE layer for Python-side dispatch. Expert FFN buffers (moe_ping/moe_pong) not pre-allocated.
 
 USE_QUANT 0–8. Scales key and `_quant_extra` overrides fixed in all dispatch sites (Q, K, V, o_proj, shared gate/up, shared down, router). Expert FFN dispatches already used `_scales_buf` and `_quant_extra` correctly.
+
+---
+
+### GptOssWebGPUModel
+
+Extends `MixtralWebGPUModel`. GPT-OSS is a hybrid SWA+MoE model (similar layout to Mixtral) with MXFP4 expert weights for the FFN. Architecture-level changes:
+- Expert gate/up/down weights may use MXFP4 format (OCP microscaling, exponent scales dequantized to f16 at load time, runs as USE_QUANT=0 at runtime).
+- Otherwise identical to `MixtralWebGPUModel`: SWA on attention layers, MoE router + Phase A/B expert dispatch.
+
+USE_QUANT 0–8 for attention projections; expert FFN weights typically loaded as MXFP4 (loader-side dequant to f16, USE_QUANT=0 at dispatch time).
+
+---
+
+### NemotronHWebGPUModel
+
+NemotronH is a hybrid model with interleaved Mamba-2 SSM layers and standard attention layers. The model config's `layer_types` field (read at load time) specifies which layers are SSM vs attention.
+
+**Attention layers:** standard GQA with flash_attn_decode, identical dispatch sequence to `LlamaWebGPUModel`. USE_QUANT 0–8 for all attention projections.
+
+**SSM layers (Mamba-2):** replace the full attention+FFN with a selective state space computation:
+1. `matmul_quant` — input linear projection (x, z, B, C, dt)
+2. `mamba2_causal_conv` — depthwise causal conv1d on x, B, C
+3. `mamba2_ssm_step` — selective scan: `dt = softplus(dt + dt_bias)`, `A^dt * state + outer(B, x)`, output `C @ state + D * x`
+4. `mamba2_norm_gate` — RMSNorm on SSM output, then `silu(z) * norm(out)`
+5. `matmul_quant` — output linear projection
+
+SSM recurrent state (SSM matrix + conv ring buffer) is stored in persistent GPU buffers, initialized to zero at sequence start. Call `reset_recurrent_states()` between sequences.
+
+Weight key mapping: NemotronH uses vLLM's built-in `NemotronHForCausalLM.hf_to_vllm_mapper` to normalize HF checkpoint names. The plugin validates this mapper's prefix/substr/rename tables at load time; a mismatch raises `AssertionError` to catch upstream key-mapping changes.
+
+USE_QUANT 0–8 for attention projection weights. SSM projection weights use USE_QUANT 0 (f16) or 3 (GPTQ).
+
+**Flash attention dispatch:** NemotronH attention layers use `flash_attn_decode.wgsl` unconditionally, same as other models. The key buffer is stored under `.mixer` (not `.self_attn`) in the HF checkpoint; the model runner handles the key suffix difference.
 
 ---
 

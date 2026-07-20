@@ -15,14 +15,14 @@ See [MODELS.md](MODELS.md) for the full matrix including quantization formats an
 
 | Architecture | Example models | Quant formats |
 |---|---|---|
-| LlamaForCausalLM / Qwen3ForCausalLM | Llama 3, Qwen3-0.6B–72B | f16, Q4_K, GPTQ, AWQ, FP8, NVFP4 |
-| Qwen2ForCausalLM / MistralForCausalLM | Qwen2.5, Mistral-7B | f16, Q4_K, GPTQ, AWQ, FP8, NVFP4 |
-| Qwen3_5ForConditionalGeneration | Qwen3.5-9B, Qwen3.6-27B | f16, Q4_K (attn/FFN); f16 only (GDN layers) |
+| LlamaForCausalLM / Qwen3ForCausalLM | Llama 3, Qwen3-0.6B–72B | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
+| Qwen2ForCausalLM / MistralForCausalLM | Qwen2.5, Mistral-7B | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
+| Qwen3_5ForConditionalGeneration | Qwen3.5-9B, Qwen3.6-27B | f16 (GDN layers); GPTQ/AWQ/FP8/NVFP4/Int8/NF4 (attn+FFN) |
 | Qwen3_5MoeForConditionalGeneration | Qwen3.6-35B-A3B | same as Qwen3.5; MoE routing on GPU |
-| Gemma3/4ForCausalLM | Gemma3-1B–27B, Gemma4-12B | f16, Q4_K |
-| DiffusionGemmaForBlockDiffusion | DiffusionGemma | f16, Q4_K |
-| NemotronHForCausalLM | Nemotron-H (Mamba-2 hybrid) | f16, Q4_K, GPTQ, AWQ, FP8, NVFP4 |
-| GptOssForCausalLM | GPT-OSS (hybrid SWA+MoE) | f16, Q4_K, GPTQ, AWQ, FP8, NVFP4 |
+| Gemma3/4ForCausalLM | Gemma3-1B–27B, Gemma4-12B | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4, ct_pack_int4 (QAT) |
+| DiffusionGemmaForBlockDiffusion | DiffusionGemma | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
+| NemotronHForCausalLM | Nemotron-H (Mamba-2 hybrid) | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
+| GptOssForCausalLM | GPT-OSS (hybrid SWA+MoE) | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4; MXFP4 expert weights |
 
 **Throughput** (Apple M3, single-sequence decode, no CPU↔GPU transfers):
 
@@ -115,8 +115,11 @@ vLLM engine  (scheduler, block allocator, request lifecycle)
            │
            └─ Model classes
                  ├─ LlamaWebGPUModel        — Llama/Qwen2/Qwen3
+                 ├─ MixtralWebGPUModel      — Mistral/Mixtral (extends Llama, adds SWA + MoE)
+                 ├─ GptOssWebGPUModel       — GPT-OSS (extends Mixtral, MXFP4 expert weights)
                  ├─ Gemma4WebGPUModel       — Gemma3/4 (heterogeneous attention, f32 residual)
                  ├─ Qwen35WebGPUModel       — Qwen3.5/3.6 (hybrid GDN + standard attention)
+                 ├─ NemotronHWebGPUModel    — NemotronH (Mamba-2 hybrid SSM+attention)
                  └─ DiffusionGemmaWebGPUModel — DiffusionGemma (MoE, block diffusion)
 ```
 
@@ -179,6 +182,7 @@ Fallback paths (quantized weights, no per-head norms): 12-14 dispatches/layer.
 - Sampling: `gumbel_sample`, `topk256`, `topk_sort`
 - Gemma-specific: `logit_softcap`, `per_head_rms_norm_no_weight`, `ple_gelu_mul`, `ple_skip_scale_add`, `ple_stage1_fuse`
 - Qwen3.5 GDN: `causal_conv_step`, `gdn_state_update`, `linear_attn_norm_gate`, `sigmoid_gate`
+- NemotronH Mamba-2: `mamba2_ssm_step`, `mamba2_causal_conv`, `mamba2_norm_gate`
 
 ## Weight loading
 

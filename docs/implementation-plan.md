@@ -6,13 +6,13 @@
 
 **Architecture:** Plugin registers via Python entry points; `WebGPUPlatform` wires into vLLM's v1 engine; `WebGPUWorker` owns a wgpu-py device; `WebGPUModelRunner` uploads weights to GPU buffers and dispatches WGSL compute shaders per layer. PyTorch stays on CPU (weight loading only); all compute goes through wgpu-py.
 
-**Tech Stack:** Python 3.12, wgpu-py >=0.20, vllm >=0.20, numpy, safetensors, gguf, uv, pytest.
+**Tech Stack:** Python 3.12, wgpu-py >=0.20, vllm 0.25.1, numpy, safetensors, uv, pytest.
 
 ## Global Constraints
 
 - Python >=3.12
 - wgpu >=0.20 (Rust wgpu backend, cross-platform: Metal/DX12/Vulkan)
-- vllm >=0.20 (v1 engine, `WorkerBase`, `Platform` from `vllm.platforms.interface`)
+- vllm 0.25.1 (v1 engine, `WorkerBase`, `Platform` from `vllm.platforms.interface`)
 - Never use `pip install --break-system-packages`; always use `uv` + `.venv`
 - All WGSL kernels use `override` constants (not string interpolation) for specialization
 - Block size = 16 throughout (KV cache, attention tile, workgroup width)
@@ -69,7 +69,7 @@ vllm_webgpu/
 │   └── gemma4.py            # Task 17
 ├── quant/
 │   ├── __init__.py          # Task 14
-│   └── gguf_loader.py       # Task 14
+│   └── weight_loader.py     # Task 14
 └── v1/
     ├── __init__.py          # Task 18
     ├── cache_policy.py      # Task 18
@@ -87,7 +87,7 @@ tests/
 ├── test_kernels_matmul.py   # Task 11
 ├── test_kernels_sample.py   # Task 12
 ├── test_kernels_gemma.py    # Task 13
-├── test_gguf_loader.py      # Task 14
+├── test_weight_loader.py    # Task 14
 ├── test_llama_model.py      # Task 16
 ├── test_gemma4_model.py     # Task 17
 └── test_worker.py           # Task 19
@@ -127,11 +127,10 @@ name = "vllm-webgpu"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "vllm>=0.20",
+    "vllm>=0.25.1",
     "wgpu>=0.20",
     "numpy>=1.24",
     "safetensors>=0.4",
-    "gguf>=0.10",
     "psutil>=5.9",
 ]
 
@@ -2099,7 +2098,7 @@ git commit -m "feat: attention WGSL kernels (attn_score, softmax, attn_output, k
 - Create: `tests/test_kernels_matmul.py`
 
 **Interfaces:**
-- Produces: matmul kernels for decode (GEMV) and prefill (tiled); `USE_QUANT` override selects Q4_K_M vs f16 path
+- Produces: matmul kernels for decode (GEMV) and prefill (tiled); `USE_QUANT` override selects quantization format
 
 - [ ] **Step 1: Write failing tests**
 
@@ -2264,20 +2263,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 - [ ] **Step 5: Create `vllm_webgpu/shaders/generic/matmul_quant.wgsl`**
 
-GEMV (decode, batch=1). `USE_QUANT=1` activates Q4_K_M dequant path; `USE_QUANT=0` uses raw f16.
+GEMV (decode, batch=1). `USE_QUANT` selects quantization format; `USE_QUANT=0` is raw f16.
 
 ```wgsl
 // matmul_quant.wgsl — GEMV for decode (M=1)
-// Weight layout for Q4_K_M (USE_QUANT=1):
-//   weights_u8: [N, K/2]  u8  (two 4-bit values packed per byte)
-//   scales_f16: [N, K/BLOCK_K]  f16
+// USE_QUANT selects quantization format (0=f16, 3=GPTQ, 4=AWQ, 5=FP8, 6=NVFP4, 7=Int8, 8=NF4)
 // Weight layout for f16 (USE_QUANT=0):
 //   weights_f16: same buffer, treated as f16
 
-override K: u32        = 4096u;
-override N: u32        = 4096u;
-override BLOCK_K: u32  = 32u;     // Q4_K_M block size
-override USE_QUANT: u32 = 1u;     // 1=Q4_K_M, 0=f16
+override K: u32         = 4096u;
+override N: u32         = 4096u;
+override USE_QUANT: u32 = 0u;     // 0=f16; see KERNELS.md for full format table
 
 @group(0) @binding(0) var<storage, read>       x       : array<f16>;   // [K]
 @group(0) @binding(1) var<storage, read>       weights : array<u32>;   // raw bytes, reinterpreted
@@ -2294,7 +2290,7 @@ fn main(
     var acc: f32 = 0.0;
 
     if (USE_QUANT != 0u) {
-        // Q4_K_M path: dequant on the fly
+        // quantized path: dequant on the fly (see KERNELS.md for full format support)
         let blocks = K / BLOCK_K;
         for (var blk = 0u; blk < blocks; blk++) {
             let scale = f32(scales[row * blocks + blk]);
@@ -2356,7 +2352,7 @@ fn main(
         if (row >= M) { break; }
 
         var acc: f32 = 0.0;
-        // Same Q4_K_M / f16 dual path as matmul_quant.wgsl, reading row `out_col`
+        // Same quantized / f16 dual path as matmul_quant.wgsl, reading row `out_col`
         // of weights and row `row` of X.
         // (Implementation mirrors matmul_quant.wgsl; omitted here for brevity —
         //  port the inner loop directly with the row indices adjusted.)
@@ -2824,247 +2820,23 @@ git commit -m "feat: Gemma-specific WGSL kernels (PLE, logit softcap, weightless
 
 ---
 
-### Task 14: GGUF loader + utilities
+### Task 14: Weight loader + utilities
+
+**Note:** The implemented weight loader is `vllm_webgpu/quant/weight_loader.py`, not the GGUF loader described in the original plan. GGUF loading was de-scoped; use the vllm-gguf plugin for GGUF checkpoints. The weight loader handles safetensors, HuggingFace Hub, MLX, and all quantization formats (GPTQ, AWQ, FP8, NVFP4, Int8, NF4, ct_pack_int4, MXFP4/MXFP8).
 
 **Files:**
 - Create: `vllm_webgpu/quant/__init__.py`
-- Create: `vllm_webgpu/quant/gguf_loader.py`
-- Create: `vllm_webgpu/compat.py`
+- Create: `vllm_webgpu/quant/weight_loader.py`
 - Create: `vllm_webgpu/utils.py`
-- Create: `tests/test_gguf_loader.py`
 
 **Interfaces:**
 - Produces:
-  - `load_gguf_weights(path: str, wgpu_device) -> dict[str, WebGPUBuffer]`
-  - `load_safetensors_weights(path: str, wgpu_device) -> dict[str, WebGPUBuffer]`
-  - `detect_weight_format(path: str) -> str`  returns `"gguf"` or `"safetensors"`
+  - `load_weights(path: str, wgpu_device, ...) -> dict[str, WebGPUBuffer]`
   - `apply_compat_patches() -> None`
 
-- [ ] **Step 1: Write failing tests**
+The original plan below described building a combined GGUF+safetensors loader. The actual implementation replaced this with `weight_loader.py` handling safetensors/HF/MLX formats and all GPU quantization paths (GPTQ, AWQ, FP8, NVFP4, Int8, NF4, ct_pack_int4, MXFP4/MXFP8). The historical steps are kept for reference only.
 
-```python
-# tests/test_gguf_loader.py
-import numpy as np
-import pytest
-from pathlib import Path
-import tempfile
-import struct
-
-
-def make_fake_safetensors(tmp_path: Path, tensors: dict) -> Path:
-    """Write a minimal safetensors file for testing."""
-    import json
-    metadata = {}
-    offset = 0
-    data_parts = []
-    for name, arr in tensors.items():
-        dtype_map = {np.float16: "F16", np.float32: "F32"}
-        dtype_str = dtype_map[arr.dtype.type]
-        nbytes = arr.nbytes
-        metadata[name] = {
-            "dtype": dtype_str,
-            "shape": list(arr.shape),
-            "data_offsets": [offset, offset + nbytes],
-        }
-        data_parts.append(arr.tobytes())
-        offset += nbytes
-    header_bytes = json.dumps(metadata).encode("utf-8")
-    header_len = struct.pack("<Q", len(header_bytes))
-    out = tmp_path / "model.safetensors"
-    out.write_bytes(header_len + header_bytes + b"".join(data_parts))
-    return out
-
-
-def test_detect_format_safetensors(tmp_path):
-    from vllm_webgpu.quant.gguf_loader import detect_weight_format
-    f = tmp_path / "model.safetensors"
-    f.write_bytes(b"\x00" * 16)
-    assert detect_weight_format(str(f)) == "safetensors"
-
-
-def test_detect_format_gguf(tmp_path):
-    from vllm_webgpu.quant.gguf_loader import detect_weight_format
-    f = tmp_path / "model.gguf"
-    f.write_bytes(b"GGUF" + b"\x00" * 12)
-    assert detect_weight_format(str(f)) == "gguf"
-
-
-def test_load_safetensors(wgpu_device, tmp_path):
-    from vllm_webgpu.quant.gguf_loader import load_safetensors_weights
-    tensors = {
-        "model.embed_tokens.weight": np.random.randn(32, 64).astype(np.float16),
-        "model.layers.0.self_attn.q_proj.weight": np.random.randn(64, 64).astype(np.float16),
-    }
-    st_path = make_fake_safetensors(tmp_path, tensors)
-    weights = load_safetensors_weights(str(st_path), wgpu_device.wgpu_device)
-    assert "model.embed_tokens.weight" in weights
-    assert weights["model.embed_tokens.weight"].dtype == "f16"
-    assert weights["model.embed_tokens.weight"].shape == (32, 64)
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-```bash
-pytest tests/test_gguf_loader.py -v
-```
-
-Expected: `ImportError`
-
-- [ ] **Step 3: Create `vllm_webgpu/quant/__init__.py`** (empty)
-
-- [ ] **Step 4: Create `vllm_webgpu/quant/gguf_loader.py`**
-
-```python
-from __future__ import annotations
-import logging
-import struct
-from pathlib import Path
-
-import numpy as np
-
-logger = logging.getLogger(__name__)
-
-_GGUF_MAGIC = b"GGUF"
-
-
-def detect_weight_format(path: str) -> str:
-    p = Path(path)
-    if p.suffix == ".gguf":
-        return "gguf"
-    if p.suffix in {".safetensors", ".bin"}:
-        return "safetensors"
-    # Try magic bytes
-    with open(p, "rb") as f:
-        magic = f.read(4)
-    if magic == _GGUF_MAGIC:
-        return "gguf"
-    return "safetensors"
-
-
-def load_safetensors_weights(path: str, wgpu_device) -> dict:
-    """Load safetensors weights, cast bf16->f16, upload to GPU."""
-    import json
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
-    with open(path, "rb") as f:
-        header_len = struct.unpack("<Q", f.read(8))[0]
-        header_raw = f.read(header_len)
-        data_start = 8 + header_len
-        header = json.loads(header_raw)
-        f.seek(data_start)
-        raw_data = f.read()
-
-    weights: dict = {}
-    for name, meta in header.items():
-        if name == "__metadata__":
-            continue
-        dtype_str = meta["dtype"]
-        shape = tuple(meta["shape"])
-        start, end = meta["data_offsets"]
-        raw = raw_data[start:end]
-
-        if dtype_str == "F16":
-            arr = np.frombuffer(raw, dtype=np.float16).reshape(shape)
-        elif dtype_str == "BF16":
-            # Cast bf16 -> f32 -> f16 via view trick
-            u16 = np.frombuffer(raw, dtype=np.uint16)
-            f32 = (u16.astype(np.uint32) << 16).view(np.float32)
-            arr = f32.reshape(shape).astype(np.float16)
-        elif dtype_str == "F32":
-            arr = np.frombuffer(raw, dtype=np.float32).reshape(shape).astype(np.float16)
-        else:
-            logger.warning("Unsupported dtype %s for tensor %s, skipping", dtype_str, name)
-            continue
-
-        weights[name] = WebGPUBuffer.from_numpy(wgpu_device, np.ascontiguousarray(arr))
-
-    logger.info("Loaded %d tensors from %s", len(weights), path)
-    return weights
-
-
-def load_gguf_weights(path: str, wgpu_device) -> dict:
-    """Load GGUF Q4_K_M weights. Raw quantized blocks uploaded as u8."""
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-    import wgpu as wgpu_lib
-
-    try:
-        import gguf
-    except ImportError as e:
-        raise ImportError("Install the 'gguf' package to load GGUF files.") from e
-
-    reader = gguf.GGUFReader(path)
-    weights: dict = {}
-
-    for tensor in reader.tensors:
-        name = tensor.name
-        data = tensor.data   # numpy array of raw bytes
-        # Upload raw quantized blocks as u8; matmul_quant.wgsl handles dequant
-        arr = np.frombuffer(data, dtype=np.uint8)
-        weights[name] = WebGPUBuffer.from_numpy(
-            wgpu_device,
-            arr,
-            usage=wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_DST,
-        )
-
-    logger.info("Loaded %d GGUF tensors from %s", len(weights), path)
-    return weights
-```
-
-- [ ] **Step 5: Create `vllm_webgpu/compat.py`**
-
-```python
-"""Compatibility patches for vLLM + vllm-webgpu version mismatches."""
-from __future__ import annotations
-import logging
-
-logger = logging.getLogger(__name__)
-_APPLIED = False
-
-
-def apply_compat_patches() -> None:
-    global _APPLIED
-    if _APPLIED:
-        return
-    _APPLIED = True
-    # Add patches here as vLLM API mismatches surface.
-    # Pattern: check for the issue, patch it, log at DEBUG level.
-    logger.debug("vllm-webgpu compat patches applied (none active)")
-```
-
-- [ ] **Step 6: Create `vllm_webgpu/utils.py`**
-
-```python
-"""Utility helpers for vllm-webgpu."""
-from __future__ import annotations
-import logging
-from pathlib import Path
-
-logger = logging.getLogger(__name__)
-
-SHADERS_DIR = Path(__file__).parent / "shaders"
-
-_OVERHEAD_BYTES = 512 * 1024 * 1024  # 512MB buffer for driver overhead + activations
-
-
-def shaders_dir(subdir: str = "generic") -> Path:
-    return SHADERS_DIR / subdir
-```
-
-- [ ] **Step 7: Run tests**
-
-```bash
-pytest tests/test_gguf_loader.py -v
-```
-
-Expected: `test_detect_format_safetensors`, `test_detect_format_gguf`, `test_load_safetensors` PASS.
-
-- [ ] **Step 8: Commit**
-
-```bash
-git add vllm_webgpu/quant/ vllm_webgpu/compat.py vllm_webgpu/utils.py tests/test_gguf_loader.py
-git commit -m "feat: GGUF and safetensors weight loaders"
-```
-
+GGUF loading was de-scoped. The actual implementation is in `vllm_webgpu/quant/weight_loader.py`.
 ---
 
 ### Task 15: Base model
@@ -3074,7 +2846,7 @@ git commit -m "feat: GGUF and safetensors weight loaders"
 - Create: `vllm_webgpu/models/base.py`
 
 **Interfaces:**
-- Consumes: `WebGPUBuffer` (Task 6), `PipelineCache` (Task 7), `load_safetensors_weights`/`load_gguf_weights` (Task 14)
+- Consumes: `WebGPUBuffer` (Task 6), `PipelineCache` (Task 7), `weight_loader` (Task 14)
 - Produces:
   - `BaseWebGPUModel(model_config, wgpu_device: WebGPUDevice, pipeline_cache: PipelineCache)`
   - `model.weights: dict[str, WebGPUBuffer]`
@@ -3116,17 +2888,9 @@ class BaseWebGPUModel:
         self.kv_pool: list[tuple["WebGPUBuffer", "WebGPUBuffer"]] = []
 
     def load_weights(self, path: str) -> None:
-        from vllm_webgpu.quant.gguf_loader import (
-            detect_weight_format, load_safetensors_weights, load_gguf_weights,
-        )
-        fmt = detect_weight_format(path)
-        if fmt == "safetensors":
-            self.weights = load_safetensors_weights(path, self.wgpu_device.wgpu_device)
-        elif fmt == "gguf":
-            self.weights = load_gguf_weights(path, self.wgpu_device.wgpu_device)
-        else:
-            raise ValueError(f"Unknown weight format for {path}")
-        logger.info("Loaded %d weight tensors (%s format)", len(self.weights), fmt)
+        from vllm_webgpu.quant.weight_loader import load_weights
+        self.weights = load_weights(path, self.wgpu_device.wgpu_device)
+        logger.info("Loaded %d weight tensors", len(self.weights))
 
     def _dispatch(
         self,
