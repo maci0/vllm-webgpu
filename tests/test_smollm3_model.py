@@ -127,3 +127,83 @@ def test_smollm3_flags_format_nope_layers(wgpu_device):
         f"Expected NoPE indices {{3, 7}} from flags list but got {model._nope_layers}. "
         "Flags format (0=NoPE, 1=RoPE) must be converted to indices."
     )
+
+
+def test_smollm3_batch_prefill_routes_to_sequential_for_nope(wgpu_device):
+    """_prefill_batch_forward falls back to sequential when NoPE layers are present.
+
+    The inherited Llama batch prefill dispatches RoPE for every layer
+    unconditionally and never calls _attn_block. For NoPE layers that means
+    wrong (rotated) Q/K are stored in the KV cache and used in attention.
+    SmolLM3 must override _prefill_batch_forward to call _prefill_sequential_fallback
+    instead, which goes through _transformer_layer -> _attn_block -> _attn_block_nope.
+    """
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.models.smollm3 import SmolLM3WebGPUModel
+    from vllm_webgpu.models.llama import LlamaWebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    # Model with NoPE layers (layers 3 and 7).
+    cfg = make_tiny_smollm3_config(num_layers=8)
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = SmolLM3WebGPUModel(cfg, wgpu_device, cache)
+
+    assert model._nope_layers, "Expected non-empty _nope_layers for this test"
+
+    # SmolLM3 must override _prefill_batch_forward.
+    smollm3_pbf = type(model)._prefill_batch_forward
+    llama_pbf   = LlamaWebGPUModel._prefill_batch_forward
+    assert smollm3_pbf is not llama_pbf, (
+        "SmolLM3WebGPUModel must override _prefill_batch_forward. "
+        "The Llama batch prefill applies RoPE to all layers unconditionally; "
+        "NoPE layers would receive rotated Q/K, silently corrupting the KV cache."
+    )
+
+
+def test_smollm3_batch_prefill_passthrough_without_nope(wgpu_device):
+    """_prefill_batch_forward delegates to Llama when no NoPE layers are configured.
+
+    With an empty _nope_layers set, all layers use RoPE and the Llama batch
+    prefill path is correct. The SmolLM3 override must not add unnecessary
+    overhead by always forcing the sequential path.
+    """
+    from unittest.mock import MagicMock, patch
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.models.smollm3 import SmolLM3WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    cfg = make_tiny_smollm3_config(num_layers=4, nope_layers=[])
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = SmolLM3WebGPUModel(cfg, wgpu_device, cache)
+
+    assert model._nope_layers == frozenset(), "Expected empty _nope_layers"
+
+    # When _nope_layers is empty, _prefill_batch_forward should call super(),
+    # not _prefill_sequential_fallback. Verify by patching both and checking
+    # which one gets invoked.
+    fallback_called = []
+    super_called    = []
+
+    original_fallback = model._prefill_sequential_fallback
+    original_super_pbf = SmolLM3WebGPUModel.__mro__[1]._prefill_batch_forward  # LlamaWebGPUModel
+
+    with patch.object(model, "_prefill_sequential_fallback",
+                      side_effect=lambda *a, **kw: fallback_called.append(True)):
+        with patch.object(
+            SmolLM3WebGPUModel.__mro__[1],
+            "_prefill_batch_forward",
+            side_effect=lambda *a, **kw: super_called.append(True),
+        ):
+            try:
+                model._prefill_batch_forward(None, None, None, 1)
+            except Exception:
+                pass  # errors from mock args are expected; call routing is what matters
+
+    assert not fallback_called, (
+        "_prefill_sequential_fallback was called even though _nope_layers is empty. "
+        "SmolLM3 should delegate to the Llama batch prefill when no NoPE layers are present."
+    )
+    assert super_called, (
+        "LlamaWebGPUModel._prefill_batch_forward was not called for a model "
+        "with empty _nope_layers. SmolLM3 must delegate to super() in that case."
+    )

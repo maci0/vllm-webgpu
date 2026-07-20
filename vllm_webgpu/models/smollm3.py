@@ -133,7 +133,7 @@ class SmolLM3WebGPUModel(LlamaWebGPUModel):
             _v_src    = sc["v_buf"]
             _v_offset = 0
 
-        # Apply per-head norm WITHOUT rope when norm weights exist.
+        # Apply per-head norm WITHOUT RoPE when norm weights exist.
         # SmolLM3 standard layers have no q_norm/k_norm, so this branch is
         # typically skipped. If per-head norms are present, we apply rms_norm
         # over the full q/k vector (per-head approximation) without rotation.
@@ -191,3 +191,25 @@ class SmolLM3WebGPUModel(LlamaWebGPUModel):
                        {"K": q_dim, "N": hidden, "USE_QUANT": uq, **qi},
                        (hidden, 1, 1))
         return sc["o_proj_out"]
+
+    def _prefill_batch_forward(
+        self,
+        input_ids,
+        positions,
+        attn_metadata: object,
+        T: int,
+    ):
+        """SmolLM3 prefill: route to sequential when NoPE layers are present.
+
+        The inherited batch prefill from LlamaWebGPUModel dispatches RoPE for
+        every layer unconditionally (it does not call _attn_block, so the
+        _attn_block_nope override is bypassed). NoPE layers must store
+        unrotated K in the KV cache and use unrotated Q for attention; applying
+        RoPE to them silently produces wrong keys and queries.
+
+        When all layers use RoPE (_nope_layers is empty), fall through to the
+        Llama batch prefill path, which is correct and faster.
+        """
+        if self._nope_layers:
+            return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
+        return super()._prefill_batch_forward(input_ids, positions, attn_metadata, T)
