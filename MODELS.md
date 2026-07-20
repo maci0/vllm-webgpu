@@ -22,6 +22,7 @@
 | `FalconH1ForCausalLM` | `falcon_h1` | `FalconH1WebGPUModel` |
 | `SmolLM3ForCausalLM` | `smollm3` | `SmolLM3WebGPUModel` |
 | `Olmo2ForCausalLM` | `olmo2` | `Olmo2WebGPUModel` |
+| `Olmo3ForCausalLM` | `olmo2` | `Olmo2WebGPUModel` |
 
 ## Quantization support
 

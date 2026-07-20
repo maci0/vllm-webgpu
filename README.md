@@ -225,7 +225,7 @@ Model paths are resolved through the HF cache (`~/.cache/huggingface/hub/`) auto
 pytest tests/ -q
 ```
 
-211 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, FalconH1), vLLM platform integration, Qwen3.6 MoE routing.
+220 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, OLMo-3, FalconH1), vLLM platform integration, Qwen3.6 MoE routing.
 
 ## Limitations
 
