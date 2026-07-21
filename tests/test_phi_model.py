@@ -113,6 +113,117 @@ def test_phi_split_row_major(wgpu_device):
     assert v_buf.nbytes == KV * H * 2
 
 
+def test_phi_split_row_major_gptq(wgpu_device):
+    """_split_row_major + _split_gptq_scales correctly split GPTQ int4 weights.
+
+    Sets up a synthetic qkv_proj with dtype=i32 (GPTQ-packed) and matching
+    f32 scales, then verifies that _split_fused_phi_weights produces three
+    weight buffers (q, k, v) with correct shape, dtype, and nbytes, plus three
+    scale buffers with the correct column slices and weight_meta propagated.
+    """
+    import numpy as np
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.models.phi import PhiWebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    cfg        = make_tiny_phi_config()
+    dev        = wgpu_device.wgpu_device
+    cache      = PipelineCache(dev, SHADERS_DIR)
+    model      = PhiWebGPUModel(cfg, wgpu_device, cache)
+
+    H          = 64          # hidden_size = K (input features)
+    Q          = 4 * 16      # q_dim  = 64
+    KV         = 2 * 16      # kv_dim = 32
+    N_total    = Q + 2 * KV  # 128 output neurons
+    group_size = 16
+    G          = H // group_size  # 4 quantization groups
+
+    # GPTQ weight: [N, K//8] i32 (transposed by weight_loader for coalesced access)
+    qw_arr = np.arange(N_total * (H // 8), dtype=np.int32).reshape(N_total, H // 8)
+    qkv_buf = WebGPUBuffer.from_numpy(dev, qw_arr)
+    qkv_buf.dtype  = "i32"
+    qkv_buf.shape  = qw_arr.shape
+    model.weights["model.layers.0.self_attn.qkv_proj.weight"] = qkv_buf
+
+    # GPTQ scales: [G, N_total] f32
+    rng       = np.random.default_rng(42)
+    sc_arr    = rng.standard_normal((G, N_total)).astype(np.float32)
+    sc_buf    = WebGPUBuffer.from_numpy(dev, sc_arr)
+    sc_buf.dtype  = "f32"
+    sc_buf.shape  = sc_arr.shape
+    model.weights["model.layers.0.self_attn.qkv_proj.weight.scales"] = sc_buf
+
+    # weight_meta mirrors what the weight_loader stores for gptq_sym.
+    model.weight_meta["model.layers.0.self_attn.qkv_proj"] = {
+        "fmt": "gptq_sym",
+        "group_size": group_size,
+    }
+
+    model._split_fused_phi_weights()
+
+    # Fused key must be gone.
+    assert "model.layers.0.self_attn.qkv_proj.weight" not in model.weights
+    assert "model.layers.0.self_attn.qkv_proj.weight.scales" not in model.weights
+
+    # All three split weight keys must be present.
+    for proj in ("q_proj", "k_proj", "v_proj"):
+        wk = f"model.layers.0.self_attn.{proj}.weight"
+        sk = f"{wk}.scales"
+        assert wk in model.weights,  f"missing weight key {wk!r}"
+        assert sk in model.weights,  f"missing scales key {sk!r}"
+
+    q_wbuf = model.weights["model.layers.0.self_attn.q_proj.weight"]
+    k_wbuf = model.weights["model.layers.0.self_attn.k_proj.weight"]
+    v_wbuf = model.weights["model.layers.0.self_attn.v_proj.weight"]
+
+    # Weight dtype must be i32 on all three.
+    assert q_wbuf.dtype == "i32", f"q_proj dtype {q_wbuf.dtype!r}, expected i32"
+    assert k_wbuf.dtype == "i32", f"k_proj dtype {k_wbuf.dtype!r}, expected i32"
+    assert v_wbuf.dtype == "i32", f"v_proj dtype {v_wbuf.dtype!r}, expected i32"
+
+    # Weight shapes: (n_rows, K//8).
+    assert q_wbuf.shape == (Q,  H // 8), f"q_proj shape {q_wbuf.shape}"
+    assert k_wbuf.shape == (KV, H // 8), f"k_proj shape {k_wbuf.shape}"
+    assert v_wbuf.shape == (KV, H // 8), f"v_proj shape {v_wbuf.shape}"
+
+    # Weight byte counts.
+    assert q_wbuf.nbytes == Q  * (H // 8) * 4
+    assert k_wbuf.nbytes == KV * (H // 8) * 4
+    assert v_wbuf.nbytes == KV * (H // 8) * 4
+
+    # Scales shapes: [G, n_rows_for_proj].
+    q_sbuf = model.weights["model.layers.0.self_attn.q_proj.weight.scales"]
+    k_sbuf = model.weights["model.layers.0.self_attn.k_proj.weight.scales"]
+    v_sbuf = model.weights["model.layers.0.self_attn.v_proj.weight.scales"]
+
+    assert q_sbuf.shape == (G, Q),  f"q scales shape {q_sbuf.shape}"
+    assert k_sbuf.shape == (G, KV), f"k scales shape {k_sbuf.shape}"
+    assert v_sbuf.shape == (G, KV), f"v scales shape {v_sbuf.shape}"
+
+    # Verify scale values are the correct column slices of the original array.
+    q_sc_back = np.frombuffer(q_sbuf.to_numpy(), dtype=np.float32).reshape(G, Q)
+    k_sc_back = np.frombuffer(k_sbuf.to_numpy(), dtype=np.float32).reshape(G, KV)
+    v_sc_back = np.frombuffer(v_sbuf.to_numpy(), dtype=np.float32).reshape(G, KV)
+
+    np.testing.assert_array_equal(q_sc_back, sc_arr[:, :Q])
+    np.testing.assert_array_equal(k_sc_back, sc_arr[:, Q:Q + KV])
+    np.testing.assert_array_equal(v_sc_back, sc_arr[:, Q + KV:])
+
+    # weight_meta must be propagated to split keys and removed for fused key.
+    assert "model.layers.0.self_attn.qkv_proj" not in model.weight_meta
+    for proj in ("q_proj", "k_proj", "v_proj"):
+        meta_key = f"model.layers.0.self_attn.{proj}"
+        assert meta_key in model.weight_meta, f"missing weight_meta for {meta_key!r}"
+        assert model.weight_meta[meta_key] == {"fmt": "gptq_sym", "group_size": group_size}
+
+    # _uq_for_key must return 3 (gptq_sym) for all three split weights.
+    for proj in ("q_proj", "k_proj", "v_proj"):
+        wk = f"model.layers.0.self_attn.{proj}.weight"
+        uq = model._uq_for_key(wk)
+        assert uq == 3, f"_uq_for_key({wk!r}) returned {uq}, expected 3"
+
+
 @pytest.mark.integration
 def test_phi_decode_forward(wgpu_device):
     """2-layer Phi decode step returns a valid token id.
