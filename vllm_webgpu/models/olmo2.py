@@ -5,7 +5,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import _vec4_wg, _H_NAMES, _vals_per_thread
+from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 
 if TYPE_CHECKING:
@@ -72,10 +72,8 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
         OLMo-2's next-layer attention also operates on the raw residual.
         """
         sc     = self._sc
-        hidden = self.hidden_size
         p      = f"model.layers.{layer_idx}"
         rms_c  = self._rms_consts
-        add_n  = num_tokens * hidden
 
         residual = sc[_H_NAMES[(self._hstate + 1) % 3]]
         out      = sc[_H_NAMES[(self._hstate + 2) % 3]]
@@ -85,43 +83,31 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
             o_proj_out = self._attn_block(
                 layer_idx, normed_x, pos_buf, slot_map, bt_buf, ctx_len, num_tokens)
 
-            # Post-attention norm applied to the attention output (not to residual+attn).
+            # Fused: rms_norm(attn_out) then add to residual.
+            # residual = x + rms_norm(o_proj_out, post_attention_layernorm)
             self._dispatch(
-                "rms_norm",
-                [o_proj_out,
+                "rms_norm_add",
+                [x_buf,
+                 o_proj_out,
                  self.weights[f"{p}.post_attention_layernorm.weight"],
-                 sc["normed"]],
+                 residual],
                 rms_c,
                 (num_tokens, 1, 1),
-            )
-
-            # Residual add: x_mid = x + norm_attn
-            self._dispatch(
-                "add",
-                [x_buf, sc["normed"], residual],
-                {"N": add_n},
-                _vec4_wg(add_n),
             )
 
             # FFN on the post-attention-normed residual.
             ffn_out = self._ffn_dispatch(residual, layer_idx)
 
-            # Post-feedforward norm applied to the FFN output.
+            # Fused: rms_norm(ffn_out) then add to residual.
+            # out = residual + rms_norm(ffn_out, post_feedforward_layernorm)
             self._dispatch(
-                "rms_norm",
-                [ffn_out,
+                "rms_norm_add",
+                [residual,
+                 ffn_out,
                  self.weights[f"{p}.post_feedforward_layernorm.weight"],
-                 sc["ffn_normed"]],
+                 out],
                 rms_c,
                 (num_tokens, 1, 1),
-            )
-
-            # Residual add: x_next = x_mid + norm_ffn
-            self._dispatch(
-                "add",
-                [residual, sc["ffn_normed"], out],
-                {"N": add_n},
-                _vec4_wg(add_n),
             )
 
         self._hstate = (self._hstate + 2) % 3
@@ -265,7 +251,6 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
         rms_base = self._rms_consts
         dev    = self.wgpu_device.wgpu_device
 
-        from vllm_webgpu.models.base import _H_NAMES
         q_dim  = self.q_dim
         kv_dim = self.kv_dim
         inter  = self.intermediate_size
@@ -280,7 +265,6 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
             "k_rope":   self._make_buf(T * kv_dim * 2),
             "attn_out": self._make_buf(T * q_dim * 2),
             "o_proj":   self._make_buf(T * hidden * 2),
-            "ffn_n":    self._make_buf(T * hidden * 2),
             "gate_buf": self._make_buf(T * inter * 2),
             "up_buf":   self._make_buf(T * inter * 2),
             "ffn_act":  self._make_buf(T * inter * 2),
@@ -362,19 +346,13 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
 
                     self._gemm_batch(b["attn_out"], ow, b["o_proj"], q_dim, hidden, T)
 
-                    # OLMo-2 post-attention norm applied to attn output.
-                    self._dispatch("rms_norm",
-                                   [b["o_proj"],
-                                    self.weights[f"{p}.post_attention_layernorm.weight"],
-                                    b["ffn_n"]],
-                                   rms_base, (T, 1, 1))
-
-                    # x_mid = x_res + norm_attn (OLMo-2 residual add)
+                    # Fused: rms_norm(attn_out) then add to residual.
                     residual = b[_H_NAMES[(_hstate + 1) % 3]]
-                    add_n = T * hidden
-                    self._dispatch("add",
-                                   [x_res, b["ffn_n"], residual],
-                                   {"N": add_n}, _vec4_wg(add_n))
+                    self._dispatch("rms_norm_add",
+                                   [x_res, b["o_proj"],
+                                    self.weights[f"{p}.post_attention_layernorm.weight"],
+                                    residual],
+                                   rms_base, (T, 1, 1))
 
                     # FFN
                     self._gemm_batch(residual, gw_k, b["gate_buf"], hidden, inter, T)
@@ -384,18 +362,13 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
                                    {"N": T * inter}, _vec4_wg(T * inter))
                     self._gemm_batch(b["ffn_act"], dw_k, b["ffn_out"], inter, hidden, T)
 
-                    # OLMo-2 post-feedforward norm applied to FFN output.
+                    # Fused: rms_norm(ffn_out) then add to residual.
                     out_h = b[_H_NAMES[(_hstate + 2) % 3]]
-                    self._dispatch("rms_norm",
-                                   [b["ffn_out"],
+                    self._dispatch("rms_norm_add",
+                                   [residual, b["ffn_out"],
                                     self.weights[f"{p}.post_feedforward_layernorm.weight"],
-                                    b["normed"]],
+                                    out_h],
                                    rms_base, (T, 1, 1))
-
-                    # x_next = x_mid + norm_ffn
-                    self._dispatch("add",
-                                   [residual, b["normed"], out_h],
-                                   {"N": add_n}, _vec4_wg(add_n))
 
                     # For the next layer: copy out_h into b["normed"] as the attention input.
                     # (OLMo-2 next-layer attention receives the raw residual = out_h.)
