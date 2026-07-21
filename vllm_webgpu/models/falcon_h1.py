@@ -583,6 +583,62 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
         self._hstate = (self._hstate + 2) % 3
         return None, out
 
+    # ── Recurrent state replay ────────────────────────────────────────────────
+
+    def replay_prefix_for_ssm(
+        self,
+        token_ids: np.ndarray,
+        block_ids: list,
+        start_pos: int = 0,
+    ) -> None:
+        """Replay tokens to reconstruct FalconH1 Mamba SSM state after preemption.
+
+        FalconH1's attention branch applies RoPE using self._pre["pos"], which
+        NemotronH's replay_prefix_for_ssm never writes (NemotronH has no RoPE).
+        Without writing the position buffer, Q is rotated with stale data, the
+        flash attention output is wrong, and the reconstructed SSM state is
+        corrupt. This override writes pre["pos"] for each token before dispatch.
+
+        FalconH1's _layer_dispatch ignores the normed_x argument (it computes
+        the pre-norm from x_buf internally), so _dispatch_embed_norm0 is not
+        called here. Instead we dispatch embedding directly and pass None for
+        normed_x.
+        """
+        dev = self.wgpu_device.wgpu_device
+        pre = self._pre
+
+        bt_arr = np.array(block_ids, dtype=np.uint32)
+        dev.queue.write_buffer(pre["bt"].buf, 0, bt_arr.tobytes())
+
+        self._replay_mode = True
+        try:
+            for t in range(len(token_ids)):
+                self._hstate = 0
+                tok_ctx = start_pos + t + 1
+                pos_val = np.array([start_pos + t], dtype=np.uint32)
+                dev.queue.write_buffer(
+                    pre["ids"].buf, 0,
+                    token_ids[t:t+1].astype(np.uint32, copy=False).tobytes())
+                dev.queue.write_buffer(pre["pos"].buf, 0, pos_val.tobytes())
+
+                with self._batched_dispatch():
+                    self._dispatch(
+                        "embedding_lookup",
+                        [self.weights["model.embed_tokens.weight"], pre["ids"], pre["x"]],
+                        {"HIDDEN_DIM": self.hidden_size},
+                        (1, 1, 1),
+                    )
+                    x_buf = pre["x"]
+                    for i in range(self.num_layers):
+                        _, x_buf = self._layer_dispatch(
+                            i, None, x_buf,
+                            pre["slot_map"], pre["bt"],
+                            tok_ctx, 1,
+                        )
+                    # No final norm or logit needed — SSM state is the goal.
+        finally:
+            self._replay_mode = False
+
     # ── Forward pass ──────────────────────────────────────────────────────────
 
     def forward(
