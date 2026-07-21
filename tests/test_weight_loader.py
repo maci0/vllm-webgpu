@@ -1,7 +1,5 @@
 import numpy as np
-import pytest
 from pathlib import Path
-import tempfile
 import struct
 
 
@@ -633,7 +631,6 @@ def test_ct_pack_int4_weight_packed_wins_over_weight(wgpu_device, tmp_path):
     w_key = f"{base}.weight"
     assert w_key in weights, f"{w_key} missing; keys={list(weights.keys())}"
     # Verify the uploaded data matches qw_packed (not qw_weight).
-    import wgpu as _wgpu
     buf = weights[w_key].buf
     raw = wgpu_device.wgpu_device.queue.read_buffer(buf)
     uploaded = np.frombuffer(raw, dtype=np.int32).reshape(N, K // 8)

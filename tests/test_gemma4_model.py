@@ -164,7 +164,7 @@ def test_gemma4_prefill_forward(wgpu_device):
     Uses the same fake f16 weights as the decode smoke test.
     """
     import wgpu as wgpu_lib
-    from unittest.mock import patch, MagicMock
+    from unittest.mock import patch
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
     from vllm_webgpu.models.gemma4 import Gemma4WebGPUModel

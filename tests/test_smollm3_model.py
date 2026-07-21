@@ -169,7 +169,7 @@ def test_smollm3_batch_prefill_passthrough_without_nope(wgpu_device):
     prefill path is correct. The SmolLM3 override must not add unnecessary
     overhead by always forcing the sequential path.
     """
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.models.smollm3 import SmolLM3WebGPUModel
     from vllm_webgpu.utils import SHADERS_DIR
@@ -185,9 +185,6 @@ def test_smollm3_batch_prefill_passthrough_without_nope(wgpu_device):
     # which one gets invoked.
     fallback_called = []
     super_called    = []
-
-    original_fallback = model._prefill_sequential_fallback
-    original_super_pbf = SmolLM3WebGPUModel.__mro__[1]._prefill_batch_forward  # LlamaWebGPUModel
 
     with patch.object(model, "_prefill_sequential_fallback",
                       side_effect=lambda *a, **kw: fallback_called.append(True)):

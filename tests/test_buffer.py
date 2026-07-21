@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 
 
 def test_from_numpy_f16(wgpu_device):

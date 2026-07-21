@@ -1,6 +1,5 @@
 """Tests for NemotronHForCausalLM — Mamba-2 SSM hybrid model."""
 import numpy as np
-import pytest
 from pathlib import Path
 
 SHADERS_DIR = Path(__file__).parent.parent / "vllm_webgpu" / "shaders"
@@ -232,7 +231,6 @@ def test_nemotron_h_mamba_forward(wgpu_device):
 
 def _dispatch_kernel(dev, pipeline_cache, shader_name, bindings, constants, n_groups):
     """Bind buffers and dispatch a compute shader synchronously."""
-    import wgpu
     from vllm_webgpu.webgpu.pipeline import PipelineKey
 
     key      = PipelineKey(shader_name, tuple(sorted(constants.items())))

@@ -1,5 +1,4 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
 
 import wgpu as wgpu_lib
 
@@ -8,9 +7,6 @@ from vllm_webgpu.models.base import _STAGING_USAGE
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
-if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.device import WebGPUDevice
-    from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 logger = init_logger(__name__)
 

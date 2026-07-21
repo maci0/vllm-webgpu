@@ -686,7 +686,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         positions: np.ndarray,
         attn_metadata: object,
     ) -> np.ndarray:
-        dev = self.wgpu_device.wgpu_device
         num_tokens = len(input_ids)
         hidden = self.hidden_size
         vocab = self.vocab_size
@@ -883,9 +882,6 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
         dev = self.wgpu_device.wgpu_device
         hidden = self.hidden_size
         vocab  = self.vocab_size
-        max_inter  = self._max_inter
-        max_q_dim  = self._max_q_dim
-        max_kv_dim = self._max_kv_dim
 
         # Reuse pre-allocated prefill buffers (sized to max_position_embeddings at init).
         # Dispatch sizes are based on T, so kernels only touch the first T*dim elements.

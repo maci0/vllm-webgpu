@@ -7,8 +7,7 @@ import numpy as np
 
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
 from vllm.logger import init_logger
-from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES, _STAGING_USAGE
+from vllm_webgpu.models.base import _vec4_wg, _rows_wg, _H_NAMES, _STAGING_USAGE
 from vllm_webgpu.models.nemotron_h import NemotronHWebGPUModel, _a_log_transform
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer, _ELEM_BYTES
 

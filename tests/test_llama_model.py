@@ -1,7 +1,4 @@
-import numpy as np
-import pytest
-from unittest.mock import MagicMock, patch
-from pathlib import Path
+from unittest.mock import MagicMock
 
 
 def make_tiny_llama_config():
@@ -61,7 +58,6 @@ def test_llama_rope_theta_from_top_level(wgpu_device):
 
 def test_llama_rope_theta_fallback_from_rope_scaling(wgpu_device):
     """rope_theta stored inside rope_scaling (Phi-4, SmolLM3 pattern) is picked up."""
-    from unittest.mock import MagicMock, PropertyMock
     from vllm_webgpu.webgpu.pipeline import PipelineCache
     from vllm_webgpu.models.llama import LlamaWebGPUModel
     from vllm_webgpu.utils import SHADERS_DIR

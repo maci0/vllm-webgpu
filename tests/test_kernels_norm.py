@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from pathlib import Path
 
 
@@ -32,7 +31,6 @@ def add_f32_rms_norm_ref(a, b, weight, scale=1.0, eps=1e-6, gemma_norm=True):
 
 def dispatch_kernel(wgpu_device, pipeline_cache, shader_name, bindings, constants, n_groups):
     """Helper: bind buffers and dispatch a compute shader."""
-    import wgpu
     dev = wgpu_device.wgpu_device
     pipeline = pipeline_cache.get_or_create(
         __import__("vllm_webgpu.webgpu.pipeline", fromlist=["PipelineKey"]).PipelineKey(

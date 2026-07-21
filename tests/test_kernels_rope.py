@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from pathlib import Path
 
 SHADERS_DIR = Path(__file__).parent.parent / "vllm_webgpu" / "shaders"

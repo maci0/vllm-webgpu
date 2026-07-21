@@ -1,7 +1,6 @@
 """Tests for Qwen3.5-9B hybrid model (GDN linear attention + full attention)."""
 import numpy as np
 import pytest
-import torch
 from unittest.mock import MagicMock
 
 
@@ -58,7 +57,7 @@ def _make_gdn_gpu_weights(wgpu_device, hidden: int = 4096) -> dict:
         arr = (rng.standard_normal(shape) * 0.01).astype(np.float16)
         return WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(arr), usage=rw)
 
-    from vllm_webgpu.models.qwen35 import _LIN_V_HEADS, _LIN_K_DIM, _LIN_V_DIM
+    from vllm_webgpu.models.qwen35 import _LIN_V_DIM
 
     weights = {
         "model.layers.0.linear_attn.in_proj_qkv.weight": r_f16(8192, hidden),
@@ -159,7 +158,6 @@ def _setup_gdn_model(wgpu_device):
     hidden = cfg.hidden_size
     dev = wgpu_device.wgpu_device
     rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
-    rng = np.random.default_rng(42)
 
     def f16(arr): return WebGPUBuffer.from_numpy(dev, np.ascontiguousarray(arr.astype(np.float16)), usage=rw)
 
@@ -167,8 +165,6 @@ def _setup_gdn_model(wgpu_device):
     model.weights.update(gdn_weights)
 
     # Stub out the norm/FFN weights that _gdn_layer_gpu needs
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-    import wgpu as wgpu_lib
     _dev = wgpu_device.wgpu_device
     _rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
     p = "model.layers.0"

@@ -137,8 +137,6 @@ class SmolLM3WebGPUModel(LlamaWebGPUModel):
         # SmolLM3 standard layers have no q_norm/k_norm, so this branch is
         # typically skipped. If per-head norms are present, we apply rms_norm
         # over the full q/k vector (per-head approximation) without rotation.
-        _freq_buf    = self._rope_freq_buf
-        _rope_consts = self._rope_consts
         if q_norm_w is not None:
             # Apply per-head norm to Q, storing result back in q_buf.
             # fused_per_head_norm_rope with pos_buf pointing to a zeroed position

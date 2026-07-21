@@ -3,7 +3,6 @@
 Focuses on the native-GPU-platform guard introduced to prevent WebGPU from
 preempting CUDA/ROCm on machines where wgpu can reach a GPU via Vulkan.
 """
-import importlib
 import sys
 from unittest.mock import MagicMock, patch
 

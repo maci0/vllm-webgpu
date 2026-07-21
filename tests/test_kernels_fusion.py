@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from pathlib import Path
 
 
@@ -57,11 +56,8 @@ def flash_attn_ref(Q, K, V, scale, num_q_heads, num_kv_heads):
     K: [ctx_len, head_dim] f32   (single KV head)
     V: [ctx_len, head_dim] f32
     """
-    head_dim = Q.shape[-1]
-    ctx_len = K.shape[0]
     out = np.zeros_like(Q, dtype=np.float32)
     for qh in range(num_q_heads):
-        kvh = qh * num_kv_heads // num_q_heads
         q = Q[qh]
         # For GQA with num_kv_heads=1 there is only one K/V head.
         scores = (K @ q) * scale    # [ctx_len]

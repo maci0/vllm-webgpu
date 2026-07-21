@@ -2,6 +2,10 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import torch
 
 import numpy as np
 import vllm_webgpu.envs as _webgpu_envs
@@ -487,7 +491,6 @@ def _dequant_awq(qweight: np.ndarray, scales: np.ndarray, qzeros: np.ndarray,
         g_idx:   (K,) int32 optional — group index per input dim (desc_act)
     """
     K, N8 = qweight.shape
-    N = N8 * 8
     G = scales.shape[0]
     group_size = K // G
 

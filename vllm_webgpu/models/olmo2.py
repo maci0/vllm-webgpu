@@ -4,14 +4,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
-from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-    from vllm_webgpu.webgpu.device import WebGPUDevice
-    from vllm_webgpu.webgpu.pipeline import PipelineCache
 
 logger = init_logger(__name__)
 
@@ -128,7 +125,6 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
         raw residual stream. The first layer's attention thus receives the embedding
         output without any normalization applied.
         """
-        sc       = self._sc
         rms_base = self._rms_consts
 
         self._dispatch(
@@ -171,7 +167,6 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
         vocab    = self.vocab_size
         rms_base = self._rms_consts
         pre      = self._pre
-        sc       = self._sc
 
         bt_bytes = self._bt_arr(attn_metadata).tobytes()
         slot_arr = np.asarray(attn_metadata.slot_mapping, dtype=np.uint32)

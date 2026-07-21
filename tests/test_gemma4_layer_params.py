@@ -27,7 +27,6 @@ import inspect
 import pathlib
 import re
 import types
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -282,7 +281,6 @@ def test_gemma4_layer_params_matches_vllm_reference(name):
     from vllm_webgpu.models.gemma4 import _gemma4_layer_params
 
     cfg = CONFIGS[name]
-    num_layers = cfg.num_hidden_layers
     default_hd = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
     default_kv = cfg.num_key_value_heads
     actual = _gemma4_layer_params(

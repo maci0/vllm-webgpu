@@ -215,7 +215,6 @@ def test_validate_logit_processors_raises(field, value, err_fragment):
 def test_worker_check_health_calls_dispatch(wgpu_device):
     """check_health submits a no-op dispatch — just verifies device is alive."""
     from vllm_webgpu.v1.worker import WebGPUWorker
-    import numpy as np
 
     vllm_config = MagicMock()
     vllm_config.parallel_config.world_size = 1
@@ -337,7 +336,6 @@ def test_get_kv_cache_spec_pre_load_gemma4_uniform_fallback():
     vllm_config.model_config.get_total_num_kv_heads.return_value = 4
     vllm_config.model_config.get_total_num_hidden_layers.return_value = 4
 
-    from vllm_webgpu.v1.model_runner import WebGPUModelRunner
     runner = MagicMock(spec=WebGPUModelRunner)
     runner.model = None
     runner.vllm_config = vllm_config

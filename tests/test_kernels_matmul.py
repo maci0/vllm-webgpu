@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from pathlib import Path
 
 SHADERS_DIR = Path(__file__).parent.parent / "vllm_webgpu" / "shaders"
@@ -274,14 +273,7 @@ def test_matmul_fp8_per_channel_scale(wgpu_device):
     K, N = 32, 8
     rng = np.random.default_rng(42)
 
-    # Build weight matrix in FP8 E4M3 (stored as uint8 bytes)
-    W_f32 = rng.uniform(-1.0, 1.0, (N, K)).astype(np.float32)
-    # Encode to FP8 E4M3 by rounding to representable values (use scale=1 for simplicity)
-    W_f32_clipped = np.clip(W_f32, -448.0, 448.0)
-    # Simple FP8 encoding: store as raw bytes (use float16 as proxy then re-decode for reference)
-    W_f16 = W_f32_clipped.astype(np.float16)
-    # Use the f16 values as "FP8 weights" by re-encoding to FP8 via CPU dequant reference
-    # For test purposes: just use small values that encode cleanly in FP8 E4M3
+    # Build weight matrix in FP8 E4M3 using small values that encode cleanly
     W_f32_small = rng.uniform(-1.0, 1.0, (N, K)).astype(np.float32) * 0.5
     # Pack as uint8 FP8 bytes: encode each float32 to FP8 E4M3
     def encode_fp8(v: float) -> int:

@@ -1,5 +1,4 @@
 import numpy as np
-import pytest
 from pathlib import Path
 
 SHADERS_DIR = Path(__file__).parent.parent / "vllm_webgpu" / "shaders"
@@ -466,8 +465,8 @@ def test_kv_cache_store_and_attn(wgpu_device):
     # block_table: one block per token for simplicity
     block_table = np.zeros((1, num_blocks), dtype=np.uint32)
     block_table[0, :seq_len] = np.arange(seq_len, dtype=np.uint32)
-    bt_buf = WebGPUBuffer.from_numpy(dev, block_table,
-                                     usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST)
+    WebGPUBuffer.from_numpy(dev, block_table,
+                            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_DST)
 
     # Just verify buffers allocated without error
     assert k_cache.nbytes > 0

@@ -1,5 +1,5 @@
 import os
-from vllm_webgpu.config import WebGPUConfig, get_config
+from vllm_webgpu.config import get_config
 
 
 def setup_function():
