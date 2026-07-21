@@ -420,12 +420,12 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     """
     Available memory for KV cache = OS-available RAM - overhead.
 
-    Uses psutil.virtual_memory().available rather than the system total so that
-    memory already consumed by other processes (browsers, other inference servers,
-    OS page cache that cannot be reclaimed quickly) is excluded from the budget.
-    On Apple Silicon this is still correct: the UMA pool is reflected in
-    virtual_memory() just as on x86, and available already excludes the model
-    weights this process has loaded.
+    Uses get_memory_node_info() from vllm.utils.cpu_resource_utils (which reads
+    available RAM, not the system total) so that memory already consumed by other
+    processes (browsers, other inference servers, OS page cache that cannot be
+    reclaimed quickly) is excluded from the budget. On Apple Silicon this is still
+    correct: the UMA pool is reflected in available memory just as on x86, and
+    already excludes the model weights this process has loaded.
 
     Overhead budget: max(_OVERHEAD_BYTES, model_mem * _ACTIVATION_OVERHEAD_FRACTION).
     The fraction-based term accounts for activation memory scaling with model size.

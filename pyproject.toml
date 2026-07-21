@@ -11,7 +11,7 @@ dependencies = [
     "wgpu>=0.20",
     "numpy>=1.24",
     "safetensors>=0.4",
-    "psutil>=5.9",
+    "compressed-tensors>=0.9",  # directly imported in quant/weight_loader.py; vllm 0.25.1 pins ==0.17.0
 ]
 
 [project.entry-points."vllm.platform_plugins"]
@@ -24,6 +24,8 @@ dev = ["pytest>=8.0", "pytest-timeout>=2.3", "ruff>=0.5"]
 packages = ["vllm_webgpu"]
 
 [tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 60
 filterwarnings = [
     # torch.jit.script_method is deprecated upstream; not vllm-webgpu code.
     "ignore:`torch.jit.script_method` is deprecated:DeprecationWarning",
