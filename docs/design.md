@@ -267,6 +267,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) { ... }
 | `fused_gate_act.wgsl` | Gate+up GEMV with inline SiLU/GELU (f16 only) |
 | `add_rms_norm.wgsl` | Fused residual add + RMSNorm (f16) |
 | `add_f32_rms_norm.wgsl` | Fused residual add + RMSNorm (f32 residual, Gemma4) |
+| `rms_norm_add.wgsl` | Fused RMSNorm + residual add for post-norm (OLMo-2) |
 | `rms_norm_add_f32_rms_norm.wgsl` | Double-norm fusion for Gemma4 sublayer pairs |
 | `kv_cache_store_both.wgsl` | K+V paged cache write in one dispatch |
 | `embedding_lookup.wgsl` | token_ids → f16 embedding rows |
@@ -513,7 +514,7 @@ webgpu = "vllm_webgpu:register"
 
 ## Testing
 
-211 tests cover: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, FalconH1), vLLM platform integration, and Qwen3.6 MoE routing.
+221 tests cover: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, FalconH1), vLLM platform integration, and Qwen3.6 MoE routing.
 
 ```bash
 pytest tests/ -q

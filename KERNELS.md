@@ -227,6 +227,28 @@ Same overrides and dispatch as `rms_norm.wgsl`.
 
 ---
 
+### rms_norm_add.wgsl
+
+Fused RMSNorm + residual add for post-norm architectures (OLMo-2). Replaces the two-dispatch sequence `rms_norm → add` with a single pass:
+
+```
+out[i] = residual[i] + rms_norm(branch_out[i], weight[i])
+```
+
+The branch output is kept in thread-local registers (register-tile path) so the second global read is avoided. A fallback re-read path handles `HIDDEN_DIM > WG_SIZE × 16`.
+
+**Dispatch:** `(num_tokens, 1, 1)` — one workgroup per token.
+
+| Override | Default | Description |
+|----------|---------|-------------|
+| `HIDDEN_DIM` | 4096 | Hidden dimension |
+| `WG_SIZE` | 256 | Workgroup size |
+| `VALS_PER_THREAD` | 16 | Register slots per thread (HIDDEN_DIM / WG_SIZE); 0=fallback re-read path |
+
+**Bindings:** 0=residual(f16), 1=branch_out(f16), 2=weight(f16), 3=out(f16 rw)
+
+---
+
 ### rms_norm_add_f32_rms_norm.wgsl
 
 Double-norm fusion for Gemma4 sublayer pairs. Replaces the two-dispatch sequence used at each sublayer boundary with a single pass that keeps the intermediate in thread registers:
