@@ -1,14 +1,14 @@
 from __future__ import annotations
+from itertools import batched
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
 from vllm_webgpu.models.llama import LlamaWebGPUModel
-
-if TYPE_CHECKING:
-    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
 logger = init_logger(__name__)
 
@@ -228,10 +228,6 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
         OLMo-2 has no input_layernorm. The layer loop and the rest of the batch
         path are then identical to the Llama version.
         """
-        from itertools import batched
-        from vllm.utils.math_utils import cdiv
-        from vllm_webgpu.webgpu.buffer import WebGPUBuffer
-
         if T > 65535 or cdiv(T * max(self.intermediate_size, self.hidden_size), 1024) > 65535:
             return self._prefill_sequential_fallback(input_ids, positions, attn_metadata, T)
         if int(positions[0]) > 0:

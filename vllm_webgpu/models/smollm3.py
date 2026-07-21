@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from vllm.logger import init_logger
+from vllm_webgpu.models.base import _vals_per_thread
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 
 if TYPE_CHECKING:
@@ -137,27 +138,18 @@ class SmolLM3WebGPUModel(LlamaWebGPUModel):
         # SmolLM3 standard layers have no q_norm/k_norm, so this branch is
         # typically skipped. If per-head norms are present, we apply rms_norm
         # over the full q/k vector (per-head approximation) without rotation.
-        if q_norm_w is not None:
-            # Apply per-head norm to Q, storing result back in q_buf.
-            # fused_per_head_norm_rope with pos_buf pointing to a zeroed position
-            # would apply no-op rotation (cos=1, sin=0). Instead we just apply
-            # rms_norm to the full Q vector using HIDDEN_DIM = q_dim.
-            from vllm_webgpu.models.base import _vals_per_thread
-            q_rms_c = {"HIDDEN_DIM": q_dim, "VALS_PER_THREAD": _vals_per_thread(q_dim)}
+        for norm_w, src_k, rope_k, dim in [
+            (q_norm_w, "q_buf", "q_rope", q_dim),
+            (k_norm_w, "k_buf", "k_rope", kv_dim),
+        ]:
+            if norm_w is None:
+                continue
             self._dispatch("rms_norm",
-                           [sc["q_buf"], q_norm_w, sc["q_rope"]],
-                           q_rms_c, (num_tokens, 1, 1))
-            # Copy normed Q back to q_buf so flash_attn_decode receives it there.
-            enc = self._active_encoder
-            enc.copy_buffer_to_buffer(sc["q_rope"].buf, 0, sc["q_buf"].buf, 0, q_dim * 2)
-        if k_norm_w is not None:
-            from vllm_webgpu.models.base import _vals_per_thread
-            k_rms_c = {"HIDDEN_DIM": kv_dim, "VALS_PER_THREAD": _vals_per_thread(kv_dim)}
-            self._dispatch("rms_norm",
-                           [sc["k_buf"], k_norm_w, sc["k_rope"]],
-                           k_rms_c, (num_tokens, 1, 1))
-            enc = self._active_encoder
-            enc.copy_buffer_to_buffer(sc["k_rope"].buf, 0, sc["k_buf"].buf, 0, kv_dim * 2)
+                           [sc[src_k], norm_w, sc[rope_k]],
+                           {"HIDDEN_DIM": dim, "VALS_PER_THREAD": _vals_per_thread(dim)},
+                           (num_tokens, 1, 1))
+            self._active_encoder.copy_buffer_to_buffer(
+                sc[rope_k].buf, 0, sc[src_k].buf, 0, dim * 2)
 
         # KV cache store using unrotated K (q_buf, k_buf, no rope applied).
         self._dispatch("kv_cache_store_both",
