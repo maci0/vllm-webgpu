@@ -12,6 +12,7 @@
 | `Gemma3ForCausalLM` | `gemma4` | `Gemma4WebGPUModel` |
 | `Gemma3ForConditionalGeneration` | `gemma4` | `Gemma4WebGPUModel` |
 | `Gemma4ForCausalLM` | `gemma4` | `Gemma4WebGPUModel` |
+| `Gemma4ForConditionalGeneration` | `gemma4` | `Gemma4WebGPUModel` |
 | `Gemma4UnifiedForConditionalGeneration` | `gemma4` | `Gemma4WebGPUModel` |
 | `Qwen3_5ForConditionalGeneration` | `qwen35` | `Qwen35WebGPUModel` |
 | `Qwen3_5MoeForConditionalGeneration` | `qwen35` | `Qwen35WebGPUModel` |

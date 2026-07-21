@@ -37,6 +37,7 @@ Models that work via existing architecture entries with no additional code:
 | SmolLM2 | `LlamaForCausalLM` | HuggingFace SmolLM 2.x; maps to `llama` backend |
 | Falcon3 | `LlamaForCausalLM` | TII Falcon3; maps to `llama` backend |
 | DeepSeek-R1-Distill | `LlamaForCausalLM` or `Qwen2ForCausalLM` | Distilled from R1 using Llama or Qwen base |
+| OLMo-3 | `Olmo3ForCausalLM` | OLMo-3 series; maps to `olmo2` backend |
 
 **Throughput** (Apple M3, single-sequence decode, no CPU↔GPU transfers):
 
@@ -225,7 +226,7 @@ Model paths are resolved through the HF cache (`~/.cache/huggingface/hub/`) auto
 pytest tests/ -q
 ```
 
-220 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, OLMo-3, FalconH1), vLLM platform integration, Qwen3.6 MoE routing.
+221 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, OLMo-3, FalconH1), vLLM platform integration, Qwen3.6 MoE routing.
 
 ## Limitations
 
