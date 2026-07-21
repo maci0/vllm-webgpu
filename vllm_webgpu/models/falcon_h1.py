@@ -73,7 +73,8 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
         # Guard: scalar multipliers must all be 1.0.
         for attr in ("attention_in_multiplier", "attention_out_multiplier",
                      "ssm_in_multiplier", "ssm_out_multiplier",
-                     "embedding_multiplier", "key_multiplier"):
+                     "embedding_multiplier", "key_multiplier",
+                     "lm_head_multiplier"):
             val = float(getattr(model_config, attr, 1.0))
             if val != 1.0:
                 raise NotImplementedError(
