@@ -574,23 +574,15 @@ class FalconH1WebGPUModel(NemotronHWebGPUModel):
                            (H, 1, 1))
 
             # Final residual: out = merged + ffn_proj_out.
-            # Fuse with next layer's pre-norm for non-last layers.
-            if layer_idx < self.num_layers - 1:
-                if self._layer_norm_weights:
-                    next_norm_w = self._layer_norm_weights[layer_idx + 1]
-                else:
-                    next_norm_w = self.weights[f"model.layers.{layer_idx+1}.input_layernorm.weight"]
-                self._dispatch("add_rms_norm",
-                               [merged, ffn_proj_out, next_norm_w, out, sc["normed"]],
-                               rms_c, (num_tokens, 1, 1))
-                normed_out = sc["normed"]
-            else:
-                self._dispatch("add", [merged, ffn_proj_out, out],
-                               {"N": add_n}, _vec4_wg(add_n))
-                normed_out = None
+            # Plain add for all layers. The normed side-output of add_rms_norm
+            # would be discarded by both callers (_, x_buf = _layer_dispatch(...))
+            # and immediately overwritten by the next layer's opening rms_norm
+            # dispatch, so the fused norm computation is pure waste.
+            self._dispatch("add", [merged, ffn_proj_out, out],
+                           {"N": add_n}, _vec4_wg(add_n))
 
         self._hstate = (self._hstate + 2) % 3
-        return normed_out, out
+        return None, out
 
     # ── Forward pass ──────────────────────────────────────────────────────────
 
