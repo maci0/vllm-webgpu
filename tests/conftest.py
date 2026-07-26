@@ -19,9 +19,16 @@ def pytest_configure(config):
 
 @pytest.fixture(scope="session")
 def wgpu_device():
-    """Session-scoped real WebGPU device. Skips if unavailable."""
+    """Session-scoped real WebGPU device. Skips if unavailable.
+
+    On headless CI runners without a Vulkan/Metal ICD, request_adapter_sync
+    may raise rather than return None; treat that as skip, not suite failure.
+    """
     wgpu = pytest.importorskip("wgpu")
-    adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+    try:
+        adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
+    except Exception as exc:
+        pytest.skip(f"No WebGPU adapter available ({exc})")
     if adapter is None:
         pytest.skip("No WebGPU adapter available")
     from vllm_webgpu.webgpu.device import WebGPUDevice

@@ -232,6 +232,67 @@ def test_add(wgpu_device):
 
 
 # ---------------------------------------------------------------------------
+# rms_norm_add — post-norm fusion (OLMo-2): residual + rms_norm(branch)
+# ---------------------------------------------------------------------------
+
+def rms_norm_add_ref(residual, branch_out, weight, eps=1e-6):
+    """Reference for rms_norm_add.wgsl: out = residual + rms_norm(branch_out)."""
+    x = branch_out.astype(np.float32)
+    rms = np.sqrt(np.mean(x ** 2, axis=-1, keepdims=True) + eps)
+    normed = (x / rms) * weight.astype(np.float32)
+    return (residual.astype(np.float32) + normed).astype(np.float16)
+
+
+def test_rms_norm_add(wgpu_device):
+    """Correctness: fused post-norm (residual + rms_norm(branch)) vs numpy."""
+    import wgpu
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.webgpu.pipeline import PipelineCache, PipelineKey
+
+    hidden = 64
+    seq = 4
+    residual = np.random.randn(seq, hidden).astype(np.float16)
+    branch = np.random.randn(seq, hidden).astype(np.float16)
+    weight = np.random.randn(hidden).astype(np.float16)
+    expected = rms_norm_add_ref(residual, branch, weight)
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST
+    res_buf = WebGPUBuffer.from_numpy(dev, residual)
+    branch_buf = WebGPUBuffer.from_numpy(dev, branch)
+    w_buf = WebGPUBuffer.from_numpy(dev, weight)
+    out_buf = WebGPUBuffer.empty(dev, residual.nbytes, usage=rw)
+
+    cache = PipelineCache(dev, SHADERS_DIR / "generic")
+    # VALS_PER_THREAD = ceil(hidden/256) for register-tile path
+    vpt = (hidden + 255) // 256
+    key = PipelineKey("rms_norm_add", (("HIDDEN_DIM", hidden), ("VALS_PER_THREAD", vpt)))
+    pipeline = cache.get_or_create(key)
+    bg = dev.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": res_buf.buf}},
+            {"binding": 1, "resource": {"buffer": branch_buf.buf}},
+            {"binding": 2, "resource": {"buffer": w_buf.buf}},
+            {"binding": 3, "resource": {"buffer": out_buf.buf}},
+        ],
+    )
+    encoder = dev.create_command_encoder()
+    cp = encoder.begin_compute_pass()
+    cp.set_pipeline(pipeline)
+    cp.set_bind_group(0, bg)
+    cp.dispatch_workgroups(seq, 1, 1)
+    cp.end()
+    dev.queue.submit([encoder.finish()])
+
+    result = out_buf.to_numpy().view(np.float16).reshape(seq, hidden)
+    np.testing.assert_allclose(
+        result.astype(np.float32), expected.astype(np.float32),
+        rtol=1e-2, atol=1e-2, err_msg="rms_norm_add mismatch vs numpy reference",
+    )
+
+
+# ---------------------------------------------------------------------------
 # add_rms_norm
 # ---------------------------------------------------------------------------
 

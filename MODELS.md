@@ -191,7 +191,7 @@ x_next    = x_mid + post_feedforward_layernorm(ffn_out)
 
 A final `model.norm.weight` RMSNorm is applied after all layers. The `_norm_fusion` flag is disabled to prevent the fused last-layer add+norm from applying a non-existent `input_layernorm`. Both the decode path (`_run_decode_dispatches`) and the prefill paths are overridden to skip the initial layer-0 pre-norm.
 
-OLMo-2 uses per-tensor `q_norm` and `k_norm` weights (shape `[hidden_size]` and `[kv_dim]`). The inherited `fused_per_head_norm_rope` applies them per-head, which is a per-head approximation when norms are non-uniform across heads.
+OLMo-2 uses per-tensor `q_norm` and `k_norm` weights (shape `[hidden_size]` and `[kv_dim]`). Decode and batch-prefill apply full-vector `rms_norm` over `q_dim`/`kv_dim` then `rope`, matching vLLM `Olmo2Attention`.
 
 USE_QUANT 0–8 for all projections.
 

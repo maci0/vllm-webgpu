@@ -33,12 +33,14 @@ def main() -> None:
     pipeline_cache = PipelineCache(wgpu_dev.wgpu_device)
 
     # ── Load model ────────────────────────────────────────────────────────────────
+    from vllm_webgpu.scripts import config_dir_for_model_path
     model_path = resolve_model_path(args.model)
+    config_dir = config_dir_for_model_path(model_path)
     print(f"Model: {model_path}")
 
     from transformers import AutoTokenizer
     from vllm.transformers_utils.config import get_config as _vllm_get_config
-    hf_cfg = _vllm_get_config(model_path, trust_remote_code=True)
+    hf_cfg = _vllm_get_config(config_dir, trust_remote_code=True)
     arch = (hf_cfg.architectures or ['LlamaForCausalLM'])[0]
     print(f"Architecture: {arch}")
 
@@ -64,7 +66,7 @@ def main() -> None:
     # ── Tokenize prompt ──────────────────────────────────────────────────────────
     from vllm_webgpu.scripts import apply_chat_template_or_encode
     try:
-        tok = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        tok = AutoTokenizer.from_pretrained(config_dir, trust_remote_code=True)
         tok_ids = apply_chat_template_or_encode(tok, args.prompt)
         print(f"Prompt: {len(tok_ids)} tokens")
     except Exception as e:

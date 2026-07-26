@@ -5,7 +5,7 @@ import numpy as np
 
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
-from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
+from vllm_webgpu.models.base import _vals_per_thread, _vec4_wg, _H_NAMES
 from vllm_webgpu.models.llama import LlamaWebGPUModel
 from vllm_webgpu.webgpu.buffer import WebGPUBuffer
 
@@ -31,10 +31,8 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
     - model.layers.{i}.self_attn.q_norm.weight           (per-tensor, shape [hidden_size])
     - model.layers.{i}.self_attn.k_norm.weight           (per-tensor, shape [kv_dim])
 
-    The q_norm and k_norm have shape [hidden_size] and [kv_dim] respectively.
-    LlamaWebGPUModel's fused_per_head_norm_rope applies these per-head, which is
-    a per-head approximation of OLMo-2's per-tensor norm. The approximation
-    differs from the reference when the weight is non-uniform across heads.
+    Q/K norms match vLLM Olmo2Attention: RMS over the full projected vector
+    (q_dim / kv_dim), then RoPE. Decode and batch-prefill both use that path.
 
     The final norm weight key is model.norm.weight (same as Llama).
     """
@@ -42,6 +40,102 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
     # OLMo-2 has no input_layernorm: disable the fused-final-norm path so that
     # _run_decode_dispatches uses the explicit rms_norm dispatch for model.norm.
     _norm_fusion: bool = False
+
+    def _attn_block(
+        self,
+        layer_idx: int,
+        normed_x: "WebGPUBuffer",
+        pos_buf: "WebGPUBuffer",
+        slot_map: "WebGPUBuffer",
+        bt_buf: "WebGPUBuffer",
+        ctx_len: int,
+        num_tokens: int,
+    ) -> "WebGPUBuffer":
+        """Attention with full-vector q/k RMSNorm (not per-head) then RoPE."""
+        sc = self._sc
+        hidden = self.hidden_size
+        p = f"model.layers.{layer_idx}"
+        q_dim = self.q_dim
+        kv_dim = self.kv_dim
+
+        k_cache, v_cache = self.kv_pool[layer_idx]
+
+        q_wk = f"{p}.self_attn.q_proj.weight"
+        k_wk = f"{p}.self_attn.k_proj.weight"
+        v_wk = f"{p}.self_attn.v_proj.weight"
+        uq_q, uq_k, uq_v = self._uq_for_key(q_wk), self._uq_for_key(k_wk), self._uq_for_key(v_wk)
+        q_norm_w = self.weights.get(f"{p}.self_attn.q_norm.weight")
+        k_norm_w = self.weights.get(f"{p}.self_attn.k_norm.weight")
+
+        # Separate QKV buffers so full-vector rms_norm can run without offsets.
+        _q_src, _k_src, _v_src = self._qkv_proj(normed_x, layer_idx, uq_q, uq_k, uq_v)
+        _v_offset = 0
+
+        _freq_buf = self._rope_freq_buf
+        _rope_consts = self._rope_consts
+
+        for src, dst, dim, n_heads, norm_w in [
+            (_q_src, sc["q_rope"], q_dim, self.num_q_heads, q_norm_w),
+            (_k_src, sc["k_rope"], kv_dim, self.num_kv_heads, k_norm_w),
+        ]:
+            if norm_w is not None:
+                # Full-vector RMSNorm into dst, RoPE back into src, then copy to dst.
+                # (Cannot bind the same buffer as read+write in one dispatch.)
+                self._dispatch(
+                    "rms_norm",
+                    [src, norm_w, dst],
+                    {"HIDDEN_DIM": dim, "VALS_PER_THREAD": _vals_per_thread(dim)},
+                    (num_tokens, 1, 1),
+                )
+                self._dispatch(
+                    "rope",
+                    [dst, pos_buf, src, _freq_buf],
+                    {**_rope_consts, "NUM_HEADS": n_heads, "INPUT_OFFSET": 0},
+                    (num_tokens, n_heads, 1),
+                )
+                self._active_encoder.copy_buffer_to_buffer(
+                    src.buf, 0, dst.buf, 0, dim * num_tokens * 2)
+            else:
+                self._dispatch(
+                    "rope",
+                    [src, pos_buf, dst, _freq_buf],
+                    {**_rope_consts, "NUM_HEADS": n_heads, "INPUT_OFFSET": 0},
+                    (num_tokens, n_heads, 1),
+                )
+
+        self._dispatch(
+            "kv_cache_store_both",
+            [sc["k_rope"], k_cache, _v_src, v_cache, slot_map],
+            {"BLOCK_SIZE": self.block_size, "NUM_KV_HEADS": self.num_kv_heads,
+             "HEAD_DIM": self.head_dim, "V_IN_OFFSET": _v_offset},
+            (num_tokens, self.num_kv_heads, 1),
+        )
+
+        _start_block, _eff_ctx_len = self._ctx_window(ctx_len)
+        self._dispatch(
+            "flash_attn_decode",
+            [sc["q_rope"], k_cache, v_cache, bt_buf, sc["attn_out"]],
+            {"BLOCK_SIZE": self.block_size,
+             "NUM_Q_HEADS": self.num_q_heads,
+             "NUM_KV_HEADS": self.num_kv_heads,
+             "HEAD_DIM": self.head_dim,
+             "CTX_LEN": _eff_ctx_len,
+             "START_BLOCK": _start_block,
+             "SCALE": self._attn_scale},
+            (self.num_q_heads, 1, 1),
+        )
+
+        w_key = f"{p}.self_attn.o_proj.weight"
+        uq = self._uq_for_key(w_key)
+        qi = self._quant_extra(f"{p}.self_attn.o_proj", uq)
+        self._dispatch(
+            "matmul_quant",
+            [sc["attn_out"], self.weights[w_key],
+             self._scales_buf(w_key, uq, self._dummy_buf), sc["o_proj_out"]],
+            {"K": q_dim, "N": hidden, "USE_QUANT": uq, **qi},
+            (hidden, 1, 1),
+        )
+        return sc["o_proj_out"]
 
     def _transformer_layer(
         self,
@@ -53,6 +147,8 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
         bt_buf: "WebGPUBuffer",
         ctx_len: int,
         num_tokens: int,
+        # Unused: kept for LlamaWebGPUModel fused-norm call-site compatibility.
+        # OLMo-2 disables fusion via _norm_fusion = False.
         _final_norm_w: "WebGPUBuffer | None" = None,
         _final_norm_out: "WebGPUBuffer | None" = None,
     ) -> "tuple[WebGPUBuffer, WebGPUBuffer]":
@@ -302,20 +398,34 @@ class Olmo2WebGPUModel(LlamaWebGPUModel):
                     self._gemm_batch(b["normed"], k_wk, b["k_buf"],    hidden, kv_dim, T)
                     self._gemm_batch(b["normed"], v_wk, b["v_buf"],    hidden, kv_dim, T)
 
-                    for src, dst, n_h, wk in [
-                        (b["q_buf"],  b["q_rope"], self.num_q_heads,  f"{p}.self_attn.q_norm.weight"),
-                        (b["k_buf"],  b["k_rope"], self.num_kv_heads, f"{p}.self_attn.k_norm.weight"),
+                    for src, dst, n_h, dim, wk in [
+                        (b["q_buf"], b["q_rope"], self.num_q_heads,  q_dim,  f"{p}.self_attn.q_norm.weight"),
+                        (b["k_buf"], b["k_rope"], self.num_kv_heads, kv_dim, f"{p}.self_attn.k_norm.weight"),
                     ]:
                         nw = self.weights.get(wk)
                         if nw is not None:
-                            self._dispatch("fused_per_head_norm_rope",
-                                           [src, nw, pos_buf, dst, _freq_buf],
-                                           {**_pfill_rope_base, "NUM_HEADS": n_h, "HAS_WEIGHT": 1, "INPUT_OFFSET": 0},
-                                           (n_h, T, 1))
+                            # Full-vector RMSNorm then RoPE (matches vLLM Olmo2Attention).
+                            self._dispatch(
+                                "rms_norm",
+                                [src, nw, dst],
+                                {"HIDDEN_DIM": dim, "VALS_PER_THREAD": _vals_per_thread(dim)},
+                                (T, 1, 1),
+                            )
+                            self._dispatch(
+                                "rope",
+                                [dst, pos_buf, src, _freq_buf],
+                                {**_pfill_rope_base, "NUM_HEADS": n_h, "INPUT_OFFSET": 0},
+                                (T, n_h, 1),
+                            )
+                            self._active_encoder.copy_buffer_to_buffer(
+                                src.buf, 0, dst.buf, 0, dim * T * 2)
                         else:
-                            self._dispatch("rope", [src, pos_buf, dst, _freq_buf],
-                                           {**_pfill_rope_base, "NUM_HEADS": n_h, "INPUT_OFFSET": 0},
-                                           (T, n_h, 1))
+                            self._dispatch(
+                                "rope",
+                                [src, pos_buf, dst, _freq_buf],
+                                {**_pfill_rope_base, "NUM_HEADS": n_h, "INPUT_OFFSET": 0},
+                                (T, n_h, 1),
+                            )
 
                     k_cache, v_cache = self.kv_pool[i]
                     self._dispatch("kv_cache_store_both",

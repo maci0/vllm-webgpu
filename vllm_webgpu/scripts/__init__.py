@@ -5,13 +5,27 @@ from __future__ import annotations
 def resolve_model_path(model_arg: str) -> str:
     """Return a local path for model_arg, downloading from HuggingFace if needed.
 
-    When model_arg is an existing local directory it is returned unchanged.
-    Otherwise snapshot_download is called to fetch the repo and the resulting
-    cache path is returned.
+    Existing local directories and files (e.g. a standalone ``.safetensors``
+    checkpoint) are returned unchanged. Only non-existent paths are treated as
+    HuggingFace repo IDs and passed to ``snapshot_download``.
     """
     from pathlib import Path
     from huggingface_hub import snapshot_download
-    return model_arg if Path(model_arg).is_dir() else snapshot_download(model_arg)
+    p = Path(model_arg)
+    if p.is_dir() or p.is_file():
+        return str(p)
+    return snapshot_download(model_arg)
+
+
+def config_dir_for_model_path(model_path: str) -> str:
+    """Directory that holds config.json / tokenizer files for model_path.
+
+    ``model_path`` may be a model directory or a single weight file; HF loaders
+    need the containing directory in the file case.
+    """
+    from pathlib import Path
+    p = Path(model_path)
+    return str(p.parent if p.is_file() else p)
 
 
 def apply_chat_template_or_encode(tok, prompt: str) -> list[int]:
