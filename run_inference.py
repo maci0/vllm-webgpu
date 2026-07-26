@@ -13,9 +13,12 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     print(f"\nLoading model from: {model_dir}")
 
     # Use vLLM's config loader so Mistral-format repos (params.json) are handled correctly.
+    # model_dir may be a weight file; config/tokenizer live in the parent directory.
     from transformers import AutoTokenizer
     from vllm.transformers_utils.config import get_config as _vllm_get_config
-    cfg = _vllm_get_config(model_dir, trust_remote_code=True)
+    from vllm_webgpu.scripts import config_dir_for_model_path
+    config_dir = config_dir_for_model_path(model_dir)
+    cfg = _vllm_get_config(config_dir, trust_remote_code=True)
 
     arch = (cfg.architectures or ["LlamaForCausalLM"])[0]
     print(f"Architecture: {arch}")
@@ -23,7 +26,7 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # AutoTokenizer handles chat templates, special tokens, and all tokenizer variants.
     print("\nLoading tokenizer...")
     from vllm_webgpu.scripts import apply_chat_template_or_encode
-    tok = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(config_dir, trust_remote_code=True)
     input_ids_list = apply_chat_template_or_encode(tok, prompt)
     _eos_raw = getattr(cfg, 'eos_token_id', None)
     _eos_raw = _eos_raw if _eos_raw is not None else tok.eos_token_id

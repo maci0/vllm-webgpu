@@ -413,8 +413,14 @@ def load_safetensors_weights_sharded(
     if ct_meta:
         logger.info("compressed-tensors format detected: %s", ct_meta.get("__global__", {}))
 
+    model_root = Path(model_dir).resolve()
     for shard in shard_files:
-        shard_path = str(Path(model_dir) / shard)
+        shard_path = (Path(model_dir) / shard).resolve()
+        if not shard_path.is_relative_to(model_root):
+            raise ValueError(
+                f"Shard path escapes model directory: {shard!r} (resolved {shard_path})"
+            )
+        shard_path = str(shard_path)
         logger.info("Loading shard %s", shard)
         shard_weights = load_safetensors_weights(
             shard_path, wgpu_device, ct_meta=ct_meta, f32_keys=f32_keys,
@@ -1652,7 +1658,15 @@ def load_mlx_weights(model_dir: str, wgpu_device, weight_map: "dict | None" = No
         weight_map = index.get("weight_map", {})
 
     # Pass 1: build key -> shard_path index without loading any tensor data.
-    key_to_shard: dict[str, str] = {k: str(p / v) for k, v in weight_map.items()}
+    model_root = p.resolve()
+    key_to_shard: dict[str, str] = {}
+    for k, v in weight_map.items():
+        shard_path = (p / v).resolve()
+        if not shard_path.is_relative_to(model_root):
+            raise ValueError(
+                f"Shard path escapes model directory: {v!r} (resolved {shard_path})"
+            )
+        key_to_shard[k] = str(shard_path)
     import safetensors.torch as _sft
     import wgpu as _wgpu
 

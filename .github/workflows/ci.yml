@@ -20,6 +20,8 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y mesa-vulkan-drivers
           uv venv .venv
           uv pip install -e ".[dev]"
 

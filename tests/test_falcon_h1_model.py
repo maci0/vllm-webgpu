@@ -298,3 +298,120 @@ def test_falcon_h1_decode_forward(wgpu_device):
     )
     tok = int(result[0, 0])
     assert 0 <= tok < vocab, f"token id {tok} out of [0, {vocab})"
+
+
+def _inject_falcon_h1_synth_weights(model, wgpu_device, cfg, *, num_blocks=8, block_size=16):
+    """Inject synthetic post-load weights and allocate KV/Mamba state for tests."""
+    import wgpu as wgpu_lib
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+
+    H = cfg.hidden_size
+    layers = cfg.num_hidden_layers
+    vocab = cfg.vocab_size
+    q_h = cfg.num_attention_heads
+    kv_h = cfg.num_key_value_heads
+    hd = cfg.head_dim
+    inter = cfg.intermediate_size
+    q_dim = q_h * hd
+    k_dim = kv_h * hd
+
+    MI = model.mamba_int
+    CD = model.conv_dim
+    MNH = model.mamba_num_heads
+    IPD = model.in_proj_dim
+    CK = model.conv_kernel
+
+    dev = wgpu_device.wgpu_device
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    rng = np.random.default_rng(4)
+
+    def f16(*shape):
+        return WebGPUBuffer.from_numpy(
+            dev, (rng.standard_normal(shape) * 0.01).astype(np.float16), usage=rw)
+
+    def f32(*shape):
+        return WebGPUBuffer.from_numpy(
+            dev, (rng.standard_normal(shape) * 0.01).astype(np.float32), usage=rw)
+
+    model.weights["model.embed_tokens.weight"] = f16(vocab, H)
+    model.weights["model.final_layernorm.weight"] = f16(H)
+
+    for i in range(layers):
+        p = f"model.layers.{i}"
+        model.weights[f"{p}.input_layernorm.weight"] = f16(H)
+        model.weights[f"{p}.pre_ff_layernorm.weight"] = f16(H)
+        model.weights[f"{p}.self_attn.qkv_proj.weight"] = f16(q_dim + 2 * k_dim, H)
+        model.weights[f"{p}.self_attn.o_proj.weight"] = f16(H, q_dim)
+        model.weights[f"{p}.mamba.in_proj.weight"] = f16(IPD, H)
+        model.weights[f"{p}.mamba.conv1d.weight"] = f16(CD * CK)
+        model.weights[f"{p}.mamba.out_proj.weight"] = f16(H, MI)
+        A_arr = np.full((MNH,), -0.1, dtype=np.float32)
+        model.weights[f"{p}.mamba.A"] = WebGPUBuffer.from_numpy(dev, A_arr, usage=rw)
+        model.weights[f"{p}.mamba.D"] = f32(MNH)
+        model.weights[f"{p}.mamba.dt_bias"] = f32(MNH)
+        model.weights[f"{p}.mamba.norm.weight"] = f16(MI)
+        model.weights[f"{p}.feed_forward.gate_proj.weight"] = f16(inter, H)
+        model.weights[f"{p}.feed_forward.up_proj.weight"] = f16(inter, H)
+        model.weights[f"{p}.feed_forward.down_proj.weight"] = f16(H, inter)
+
+    model._init_mamba_states()
+
+    kv_bytes = num_blocks * block_size * kv_h * hd * 2
+    model.kv_pool.clear()
+    for _ in range(layers):
+        model.kv_pool.append((
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+        ))
+    return num_blocks
+
+
+@pytest.mark.integration
+def test_falcon_h1_replay_prefix_for_ssm(wgpu_device):
+    """replay_prefix_for_ssm reconstructs SSM/conv state after a zeroing reset.
+
+    Simulates preemption: run a short prefix (populates KV + SSM), save SSM,
+    zero SSM while leaving KV intact, replay the prefix, and assert SSM matches.
+    """
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.models.falcon_h1 import FalconH1WebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+
+    cfg = make_tiny_falcon_h1_config()
+    cache = PipelineCache(wgpu_device.wgpu_device, SHADERS_DIR)
+    model = FalconH1WebGPUModel(cfg, wgpu_device, cache)
+    num_blocks = _inject_falcon_h1_synth_weights(model, wgpu_device, cfg)
+
+    prefix = np.array([1, 2, 3, 4], dtype=np.uint32)
+    T = len(prefix)
+    block_table = np.arange(num_blocks, dtype=np.uint32)
+    meta = SimpleNamespace(
+        slot_mapping=list(range(T)),
+        block_tables=[block_table],
+        max_decode_seq_len=T,
+    )
+
+    # Prefill populates KV cache and SSM state.
+    model.forward(prefix, np.arange(T, dtype=np.uint32), meta)
+    expected = model.save_recurrent_states()
+    assert expected["ssm"], "expected non-empty SSM state after prefill"
+    assert expected["conv"], "expected non-empty conv state after prefill"
+
+    # Preemption: SSM lost, KV retained.
+    model.reset_recurrent_states()
+    model.replay_prefix_for_ssm(prefix, list(block_table), start_pos=0)
+    reconstructed = model.save_recurrent_states()
+
+    for kind, dtype in (("ssm", np.float32), ("conv", np.float16)):
+        assert set(reconstructed[kind]) == set(expected[kind]), (
+            f"{kind} layer keys differ after replay"
+        )
+        for layer_idx, exp_bytes in expected[kind].items():
+            got = reconstructed[kind][layer_idx]
+            exp_arr = np.frombuffer(exp_bytes, dtype=dtype)
+            got_arr = np.frombuffer(got, dtype=dtype)
+            np.testing.assert_allclose(
+                got_arr.astype(np.float32), exp_arr.astype(np.float32),
+                rtol=1e-2, atol=1e-2,
+                err_msg=f"FalconH1 {kind} state layer {layer_idx} mismatch after replay",
+            )
