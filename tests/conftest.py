@@ -1,4 +1,10 @@
+import sys
+from pathlib import Path
+
 import pytest
+
+# Allow `import ref_transformer` from tests/ helpers.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def pytest_configure(config):
