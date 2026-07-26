@@ -301,3 +301,84 @@ def test_phi_decode_forward(wgpu_device):
     )
     tok = int(result[0, 0])
     assert 0 <= tok < vocab, f"token id {tok} out of [0, {vocab})"
+
+
+@pytest.mark.integration
+def test_phi_prefill_logits_match_numpy(wgpu_device):
+    """2-token Phi (post-split Llama path) prefill logits match a NumPy reference."""
+    import wgpu as wgpu_lib
+    from vllm_webgpu.webgpu.pipeline import PipelineCache
+    from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+    from vllm_webgpu.models.phi import PhiWebGPUModel
+    from vllm_webgpu.utils import SHADERS_DIR
+    from ref_transformer import llama_layer, prefill_logits
+
+    H, layers, q_h, kv_h, hd = 64, 2, 4, 2, 16
+    inter, vocab, num_blocks, block_size = 128, 32, 8, 16
+    q_dim, kv_dim = q_h * hd, kv_h * hd
+
+    cfg = make_tiny_phi_config()
+    dev = wgpu_device.wgpu_device
+    cache = PipelineCache(dev, SHADERS_DIR)
+    model = PhiWebGPUModel(cfg, wgpu_device, cache)
+
+    rw = wgpu_lib.BufferUsage.STORAGE | wgpu_lib.BufferUsage.COPY_SRC | wgpu_lib.BufferUsage.COPY_DST
+    rng = np.random.default_rng(12)
+
+    def both(*shape):
+        arr = (rng.standard_normal(shape) * 0.01).astype(np.float16)
+        return arr, WebGPUBuffer.from_numpy(dev, arr, usage=rw)
+
+    embed_np, embed_buf = both(vocab, H)
+    norm_np, norm_buf = both(H)
+    model.weights["model.embed_tokens.weight"] = embed_buf
+    model.weights["model.norm.weight"] = norm_buf
+
+    layers_w = []
+    for i in range(layers):
+        p = f"model.layers.{i}"
+        w = {}
+        for key, shape, np_key in [
+            ("input_layernorm.weight", (H,), "input_layernorm"),
+            ("post_attention_layernorm.weight", (H,), "post_attention_layernorm"),
+            ("self_attn.q_proj.weight", (q_dim, H), "q_proj"),
+            ("self_attn.k_proj.weight", (kv_dim, H), "k_proj"),
+            ("self_attn.v_proj.weight", (kv_dim, H), "v_proj"),
+            ("self_attn.o_proj.weight", (H, q_dim), "o_proj"),
+            ("mlp.gate_proj.weight", (inter, H), "gate_proj"),
+            ("mlp.up_proj.weight", (inter, H), "up_proj"),
+            ("mlp.down_proj.weight", (H, inter), "down_proj"),
+        ]:
+            arr, buf = both(*shape)
+            model.weights[f"{p}.{key}"] = buf
+            w[np_key] = arr
+        layers_w.append(w)
+
+    kv_bytes = num_blocks * block_size * kv_h * hd * 2
+    for _ in range(layers):
+        model.kv_pool.append((
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+            WebGPUBuffer.empty(dev, kv_bytes, usage=rw),
+        ))
+
+    model._batch_matmul_supported = False
+    model._greedy_decode = False
+
+    tokens = np.array([2, 5], dtype=np.uint32)
+    T = len(tokens)
+    meta = SimpleNamespace(
+        slot_mapping=list(range(T)),
+        block_tables=[np.arange(num_blocks, dtype=np.uint32)],
+        max_decode_seq_len=T,
+    )
+    gpu = model.forward(tokens, np.arange(T, dtype=np.uint32), meta)[0]
+
+    ref = prefill_logits(
+        tokens, embed_np, layers_w, norm_np, embed_np,
+        n_q=q_h, n_kv=kv_h, head_dim=hd, layer_fn=llama_layer,
+    )
+    np.testing.assert_allclose(
+        gpu, ref, rtol=5e-2, atol=5e-2,
+        err_msg="Phi WebGPU logits diverge from NumPy Llama-path reference",
+    )
+    assert int(gpu.argmax()) == int(ref.argmax())
