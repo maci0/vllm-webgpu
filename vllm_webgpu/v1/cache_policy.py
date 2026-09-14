@@ -28,6 +28,14 @@ _OVERHEAD_BYTES = 512 * MiB_bytes
 # This kicks in only when it exceeds the _OVERHEAD_BYTES floor.
 _ACTIVATION_OVERHEAD_FRACTION = 0.15
 MIN_WEBGPU_BUFFER_BYTES: int = 16  # WebGPU spec forbids zero-size buffers
+# Every DRM device node that reports VRAM. amdgpu and Intel's Xe expose these;
+# NVIDIA's proprietary driver does not, so absence is expected, not an error.
+_VRAM_TOTAL_GLOB = "/sys/class/drm/card*/device/mem_info_vram_total"
+# KV budget for a discrete GPU whose VRAM this process cannot measure. Small on
+# purpose: over-allocating VRAM does not raise, it loses the device context and
+# takes the process with it, so the failure is unrecoverable and the safe
+# direction is down. Override with --kv-cache-memory-bytes when it is too small.
+_UNMEASURABLE_VRAM_KV_BUDGET = 2 * 1024 * MiB_bytes
 
 if TYPE_CHECKING:
     import wgpu
@@ -446,6 +454,36 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     return None
 
 
+def _discrete_vram_bytes() -> "tuple[int, int] | None":
+    """(total, used) VRAM bytes for the one discrete GPU, or None if unknown.
+
+    Reads the DRM device's own accounting, which is the only figure that
+    reflects the pool a discrete GPU actually allocates from. `used` already
+    includes this process's uploaded weights and everything else on the card
+    (compositor, other clients), so free VRAM is total - used.
+
+    Returns None unless exactly one node reports VRAM: with two cards there is
+    no reliable way to tell which one the wgpu adapter opened, and guessing
+    wrong is worse than declining to answer.
+    """
+    import glob
+    from pathlib import Path
+
+    totals = sorted(glob.glob(_VRAM_TOTAL_GLOB))
+    if len(totals) != 1:
+        return None
+    total_path = Path(totals[0])
+    used_path = total_path.with_name("mem_info_vram_used")
+    try:
+        total = int(total_path.read_text())
+        used = int(used_path.read_text())
+    except (OSError, ValueError):
+        return None
+    if total <= 0 or used < 0:
+        return None
+    return total, used
+
+
 def determine_available_memory(worker: "WebGPUWorker") -> int:
     """
     Available memory for KV cache = OS-available RAM - overhead.
@@ -496,16 +534,44 @@ def determine_available_memory(worker: "WebGPUWorker") -> int:
     total_memory = sum(i.total_memory for i in node_infos)
     total_available = sum(i.available_memory for i in node_infos)
     overhead = max(_OVERHEAD_BYTES, int(model_mem * _ACTIVATION_OVERHEAD_FRACTION))
-    # total_available excludes memory held by other processes as well as by this
-    # process (including model weights already uploaded), so there is no need to
-    # subtract model_mem explicitly.
-    base = total_available - overhead
     fraction = worker.cache_config.gpu_memory_utilization
+    pool = "ram"
+
+    _device = worker.model_runner.wgpu_device if worker.model_runner is not None else None
+    if _device is not None and _device.is_discrete_gpu:
+        # A discrete GPU allocates from VRAM, which system RAM says nothing
+        # about. Sizing the KV cache off host memory on a card with less of it
+        # overcommits VRAM, and that does not fail like an ordinary allocation:
+        # it loses the device context and kills the process mid-warmup.
+        vram = _discrete_vram_bytes()
+        if vram is not None:
+            vram_total, vram_used = vram
+            total_memory, total_available = vram_total, vram_total - vram_used
+            base = total_available - overhead
+            pool = "vram"
+        else:
+            base = _UNMEASURABLE_VRAM_KV_BUDGET
+            fraction = 1.0
+            pool = "vram-unmeasured"
+            logger.warning(
+                "Discrete GPU detected but its VRAM could not be measured, so "
+                "the KV cache budget falls back to %dMiB. Sizing it from system "
+                "RAM instead would overcommit VRAM and lose the device context. "
+                "Pass --kv-cache-memory-bytes to set it explicitly.",
+                _UNMEASURABLE_VRAM_KV_BUDGET // MiB_bytes,
+            )
+    else:
+        # Unified or host-shared memory (Apple Silicon UMA, integrated GPUs, a
+        # software adapter): the host figures are the right pool. available
+        # already excludes memory held by other processes and by this one,
+        # including the weights just uploaded, so model_mem is not subtracted.
+        base = total_available - overhead
+
     available = max(int(base * fraction), 0)
     logger.info(
-        "WebGPU memory: total=%dMiB available_os=%dMiB model=%dMiB "
+        "WebGPU memory (%s): total=%dMiB available=%dMiB model=%dMiB "
         "overhead=%dMiB kv_budget=%dMiB",
-        total_memory // MiB_bytes, total_available // MiB_bytes,
+        pool, total_memory // MiB_bytes, total_available // MiB_bytes,
         model_mem // MiB_bytes, overhead // MiB_bytes, available // MiB_bytes,
     )
     return available
