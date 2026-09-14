@@ -2,6 +2,12 @@ import textwrap
 
 
 SIMPLE_WGSL = textwrap.dedent("""\
+    // `N` is declared because the cache-key tests below specialize on it.
+    // WebGPU rejects a pipeline constant the shader does not declare, so
+    // passing one at a shader without it is a validation error (wgpu enforced
+    // this from 0.32; earlier versions let it through).
+    override N: u32 = 1u;
+
     @group(0) @binding(0) var<storage, read> input: array<f32>;
     @group(0) @binding(1) var<storage, read_write> output: array<f32>;
 

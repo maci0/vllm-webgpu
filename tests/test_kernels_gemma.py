@@ -24,7 +24,7 @@ def test_logit_softcap(wgpu_device):
                                  usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC | wgpu.BufferUsage.COPY_DST)
 
     cache = PipelineCache(dev, SHADERS_DIR / "gemma")
-    key = PipelineKey("logit_softcap", (("N", vocab),))
+    key = PipelineKey("logit_softcap", (("VOCAB", vocab),))
     pipeline = cache.get_or_create(key)
 
     bg = dev.create_bind_group(
@@ -77,7 +77,7 @@ def test_logit_softcap_bounded_invariant(wgpu_device):
         x_buf = WebGPUBuffer.from_numpy(dev, x)
         out_buf = WebGPUBuffer.empty(dev, x.nbytes, usage=rw)
 
-        pipeline = cache.get_or_create(PipelineKey("logit_softcap", (("N", n),)))
+        pipeline = cache.get_or_create(PipelineKey("logit_softcap", (("VOCAB", n),)))
         bg = dev.create_bind_group(
             layout=pipeline.get_bind_group_layout(0),
             entries=[{"binding": 0, "resource": {"buffer": x_buf.buf}},
