@@ -8,11 +8,14 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "vllm>=0.29.0,<0.30",  # v1 internal paths verified against 0.29.0; update with care
-    # <0.32: wgpu 0.32.0 builds its on_submitted_work_done callback with the
-    # 3-argument signature while its bundled wgpu-native header declares 4
-    # (WGPUStringView added), so every queue flush raises TypeError from
-    # wgpu/backends/wgpu_native/_api.py. 0.31.1 is the last working release.
-    "wgpu>=0.20,<0.32",
+    # !=0.32.0 is the whole of it: that release builds its
+    # on_submitted_work_done callback with a 3-argument signature while its own
+    # bundled header declares 4 (a WGPUStringView was added), so every queue
+    # flush raises TypeError from inside wgpu/backends/wgpu_native/_api.py.
+    # Reported upstream as pygfx/wgpu-py#834. Nothing else about 0.32 is a
+    # problem: the full suite passes against it with that one line patched, so
+    # widen this to allow 0.32.x again once a fixed release ships.
+    "wgpu>=0.20,!=0.32.0",
     "numpy>=1.24",
     "safetensors>=0.4",
     "compressed-tensors>=0.9",  # directly imported in quant/weight_loader.py
