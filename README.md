@@ -58,7 +58,7 @@ source .venv/bin/activate
 uv pip install -e .
 ```
 
-Python 3.12+ required. vLLM 0.25.1 tested.
+Python 3.12+ required. vLLM 0.29.0 tested.
 
 ## Standalone inference
 

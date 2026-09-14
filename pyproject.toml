@@ -7,11 +7,15 @@ name = "vllm-webgpu"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "vllm>=0.25.1,<0.26",  # v1 internal paths verified against 0.25.1; update with care
-    "wgpu>=0.20",
+    "vllm>=0.29.0,<0.30",  # v1 internal paths verified against 0.29.0; update with care
+    # <0.32: wgpu 0.32.0 builds its on_submitted_work_done callback with the
+    # 3-argument signature while its bundled wgpu-native header declares 4
+    # (WGPUStringView added), so every queue flush raises TypeError from
+    # wgpu/backends/wgpu_native/_api.py. 0.31.1 is the last working release.
+    "wgpu>=0.20,<0.32",
     "numpy>=1.24",
     "safetensors>=0.4",
-    "compressed-tensors>=0.9",  # directly imported in quant/weight_loader.py; vllm 0.25.1 pins ==0.17.0
+    "compressed-tensors>=0.9",  # directly imported in quant/weight_loader.py
 ]
 
 [project.entry-points."vllm.platform_plugins"]

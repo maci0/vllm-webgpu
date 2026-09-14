@@ -15,6 +15,7 @@ from vllm.sampling_params import SamplingType
 
 from vllm.logger import init_logger
 from vllm.utils.import_utils import resolve_obj_by_qualname
+from vllm_webgpu.scripts import resolve_model_path
 from vllm_webgpu.utils import sample_token as _sample_token, zero_bytes
 from vllm_webgpu.v1.cache_policy import MIN_WEBGPU_BUFFER_BYTES, allocate_kv_from_tensors, get_layer_types, is_attn_layer
 from vllm_webgpu.webgpu.pipeline import PipelineCache
@@ -381,13 +382,20 @@ class WebGPUModelRunner:
             )
 
         self.model = _build_model(arch, family, hf_config, self.wgpu_device, self.pipeline_cache, block_size=block_size)
+        # `mc.model` is whatever the caller passed to LLM(model=...), which for a
+        # HuggingFace repo id ("Qwen/Qwen3-0.6B") is not a path on disk. vLLM's
+        # own loaders resolve it themselves, so ModelConfig never rewrites it;
+        # load_weights reads files directly and needs the local snapshot.
+        # resolve_model_path returns existing paths unchanged and downloads only
+        # a repo id, so this is a no-op for local checkpoints.
+        weights_path = resolve_model_path(mc.model)
         if family in ("nemotron_h", "falcon_h1"):
             # spec_config is None here: the raise above blocks any non-None value.
             # Pass num_spec=0 so load_weights can accept it when speculative decoding
             # is eventually implemented in execute_model.
-            self.model.load_weights(mc.model, num_spec=0)
+            self.model.load_weights(weights_path, num_spec=0)
         else:
-            self.model.load_weights(mc.model)
+            self.model.load_weights(weights_path)
         # Cache model capability flags once here; self.model is fixed after load_model()
         # and these attributes never change between inference steps.
         self._has_reset = hasattr(self.model, "reset_recurrent_states")

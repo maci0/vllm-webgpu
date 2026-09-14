@@ -9,13 +9,14 @@ from vllm.model_executor.models.utils import extract_layer_index
 from vllm.utils.mem_constants import MiB_bytes
 from vllm.utils.torch_utils import get_dtype_size
 from vllm.v1.kv_cache_interface import (ChunkedLocalAttentionSpec,
+                                         CircularBufferSpec,
                                          FullAttentionSpec,
                                          KVQuantMode,
                                          MLAAttentionSpec,
+                                         RSWASpec,
                                          SinkFullAttentionSpec,
                                          SlidingWindowMLASpec,
                                          SlidingWindowSpec,
-                                         TQFullAttentionSpec,
                                          UniformTypeKVCacheSpecs)
 
 # Minimum overhead budget: driver + runtime allocations for small models.
@@ -123,21 +124,19 @@ def allocate_kv_from_tensors(
     # Two distinct layer names that resolve to the same integer would silently overwrite
     # each other; the explicit collision check at the end of the loop catches that.
     # The name-to-index resolution uses extract_layer_index once per tensor entry.
-    # shared_by holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
+    # `layers` holds names like "model.layers.{i}.self_attn" or "model.layers.{i}.mixer".
     layer_idx_kv: dict[int, _LayerKV] = {}
     for tensor in kv_cache_tensors:
-        if tensor.block_stride > 0:
-            # block_stride > 0 means K and V data for multiple layers share one
-            # contiguous buffer, with each layer's slice separated by block_stride
-            # bytes (vLLM's packed/interleaved layout for small or shared pages).
-            # Supporting this would require reading tensor.size and tensor.offset
-            # to compute per-layer byte ranges instead of deriving sizes from
-            # spec fields (num_kv_heads, head_size, block_size, dtype_bytes).
-            raise NotImplementedError(
-                f"Packed KV cache layout (block_stride={tensor.block_stride}) is not supported by the WebGPU backend. "
-                "To add support: use tensor.size and tensor.offset to compute per-layer byte ranges "
-                "rather than deriving buffer sizes from spec fields."
-            )
+        # `block_stride` is NOT a "layers are packed together" flag. Up to 0.25 it
+        # was only set by the packed config builder, so rejecting it meant
+        # rejecting an interleaved layout; since 0.29 every tensor carries it as
+        # the ordinary per-layer bytes-per-block, and one KVCacheTensor covers all
+        # of a group's layers with `layer_stride` between them. Nothing here reads
+        # the buffer's bytes -- each layer gets its own wgpu buffer sized from the
+        # spec dims -- so the layout itself is not this backend's concern. What
+        # does matter is that vLLM and this backend agree on how many bytes a
+        # layer needs, which is cross-checked against block_stride below once
+        # k_bytes/v_bytes are known.
         # vLLM 0.24 never produces offset != 0 without block_stride > 0 (the only
         # non-zero-offset construction site, _get_kv_cache_config_packed, always sets
         # block_stride = total_num_bytes_per_block > 0, which is caught above).
@@ -147,22 +146,22 @@ def allocate_kv_from_tensors(
             raise NotImplementedError(
                 f"KVCacheTensor with non-zero offset ({tensor.offset}) is not supported by the WebGPU backend"
             )
-        if not tensor.shared_by:
+        if not tensor.layers:
             raise NotImplementedError(
-                "KVCacheTensor with empty shared_by is not supported by the WebGPU backend"
+                "KVCacheTensor with no layers is not supported by the WebGPU backend"
             )
         # Multi-group models (e.g. two kv_cache_groups with equal page sizes)
-        # produce tensors where shared_by contains one layer name per group.
+        # produce tensors where `layers` contains one layer name per group.
         # Each name is a distinct layer that needs its own wgpu buffers.
         # Prefer spec fields over tensor.size // 2. The latter includes
         # per-token-head scale bytes that inflate the allocation beyond what
         # the K or V data actually occupies, and also averages head_size and
         # head_size_v instead of allocating each buffer at its correct size.
-        for layer_name in tensor.shared_by:
+        for layer_name in tensor.layers:
             spec = layer_spec_map.get(layer_name)
             if spec is None:
                 raise RuntimeError(
-                    f"Layer {layer_name!r} appears in kv_cache_tensors.shared_by but is absent "
+                    f"Layer {layer_name!r} appears in kv_cache_tensors.layers but is absent "
                     "from every kv_cache_group.layer_names. This is a vLLM integration bug."
                 )
             k_bytes = v_bytes = 0
@@ -172,12 +171,22 @@ def allocate_kv_from_tensors(
                     "MLAAttentionSpec uses a compressed latent layout that differs from the standard "
                     "per-head K/V formula and cannot be sized with storage_block_size * head_size * dtype_bytes."
                 )
-            elif isinstance(spec, TQFullAttentionSpec):
+            elif isinstance(spec, RSWASpec):
                 raise NotImplementedError(
-                    "TQFullAttentionSpec KV cache is not supported by the WebGPU backend. "
-                    "TQFullAttentionSpec overrides real_page_size_bytes with a tq_slot_size-based formula "
-                    "that differs from the standard block_size * num_kv_heads * (head_size + head_size_v) * dtype_bytes. "
-                    "Allocating with head_size/head_size_v would produce wrong buffer sizes."
+                    "RSWASpec KV cache is not supported by the WebGPU backend. "
+                    "R-SWA keeps only the last rswa_window generated tokens, evicting gap "
+                    "blocks between the prefill tail and the decode window on every step. "
+                    "Buffer sizes would be allocated correctly, but flash_attn_decode "
+                    "attends over the whole block table with no eviction or windowing, "
+                    "producing silently wrong output."
+                )
+            elif isinstance(spec, CircularBufferSpec):
+                raise NotImplementedError(
+                    "CircularBufferSpec KV cache is not supported by the WebGPU backend. "
+                    "It holds one ring block per request of raw keys for the token group "
+                    "still being compressed, with block_size as the ring capacity rather "
+                    "than a paged-KV block length, and the WebGPU backend implements "
+                    "neither the compression nor the ring indexing."
                 )
             elif isinstance(spec, SinkFullAttentionSpec):
                 raise NotImplementedError(
@@ -242,6 +251,27 @@ def allocate_kv_from_tensors(
                 dtype_size = get_dtype_size(spec.dtype)
                 k_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size * dtype_size
                 v_bytes = num_blocks * spec.block_size * spec.num_kv_heads * spec.head_size_v * dtype_size
+
+                # Cross-check the spec-derived size against vLLM's own stride for
+                # this tensor. They are computed independently (spec dims here,
+                # `compute_layout_strides` there), so a mismatch means this
+                # backend would allocate a buffer of the wrong size for every
+                # layer -- silently, since nothing else compares the two.
+                expected_per_block = k_bytes + v_bytes
+                stride = getattr(tensor, "block_stride", None)
+                if stride and stride * num_blocks != expected_per_block:
+                    raise NotImplementedError(
+                        f"KV cache sizing disagrees with vLLM for {layer_name!r}: "
+                        f"block_stride={stride} over {num_blocks} blocks is "
+                        f"{stride * num_blocks} bytes, but this backend derives "
+                        f"{expected_per_block} bytes from the spec "
+                        f"(block_size={spec.block_size}, "
+                        f"num_kv_heads={spec.num_kv_heads}, "
+                        f"head_size={spec.head_size}, "
+                        f"head_size_v={spec.head_size_v}, "
+                        f"dtype={spec.dtype}). The KV cache layout is not the "
+                        "plain per-layer one this backend allocates for."
+                    )
             else:
                 raise NotImplementedError(
                     f"Unsupported KV cache spec type {type(spec).__name__} for {layer_name!r}; "
@@ -263,7 +293,7 @@ def allocate_kv_from_tensors(
                 # AssertionError fires when num_attn_module=1 but the name has two
                 # integers (multi-attn-module model) — unsupported by this backend.
                 logger.error(
-                    "Cannot parse layer index from KVCacheTensor.shared_by entry %r "
+                    "Cannot parse layer index from KVCacheTensor.layers entry %r "
                     "(spec=%s, k=%d, v=%d bytes lost): %s",
                     layer_name,
                     type(spec).__name__,
@@ -379,9 +409,9 @@ def get_layer_types(hf_text_config, hf_outer_config=None) -> list | None:
     # "hybrid" as an attention type unconditionally (matching Zamba2-family semantics). Zamba2
     # support is therefore already handled without any remapping step here.
     #
-    # VERSION SYNC: last verified against vLLM 0.25.1.
+    # VERSION SYNC: last verified against vLLM 0.29.0.
     # On each vLLM bump, diff ModelConfig.get_num_layers_by_block_type
-    # (vllm/config/model.py:1377-1421 as of 0.25.1) against the probe sequence below and
+    # (vllm/config/model.py:1606-1649 as of 0.29.0) against the probe sequence below and
     # update the version number above.
     # TODO(vLLM bump): check whether a new probe has been added beyond the three
     # mirrored here; the block_configs / has_noops (Jamba) path is the known gap.
