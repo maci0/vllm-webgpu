@@ -35,9 +35,14 @@ def _a_log_transform(arr: "np.ndarray") -> "np.ndarray":
 
 
 # Verify that the upstream mapper fields match the snapshot this code was written
-# against (vLLM 0.24.0). Catches upstream changes at import time.
+# against (vLLM 0.29.0). Catches upstream changes at import time.
+#
+# "mtp": None was added upstream between 0.24.0 and 0.29.0. None means "drop this
+# weight" (WeightsMapper._map_name_with_shard returns None for it), which is what
+# load_weights below already does for the raw "mtp." HF prefix -- see the
+# skip_prefixes set there. No behavioural change was needed, only this snapshot.
 _mapper = _NemotronHForCausalLM.hf_to_vllm_mapper
-if _mapper.orig_to_new_prefix != {"backbone": "model"}:
+if _mapper.orig_to_new_prefix != {"backbone": "model", "mtp": None}:
     raise AssertionError(
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_prefix changed upstream: "
         f"{_mapper.orig_to_new_prefix!r}. Review load_weights before removing this assertion."
@@ -47,10 +52,11 @@ if _mapper.orig_to_new_substr != {"A_log": "A", "embeddings": "embed_tokens"}:
         f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_substr changed upstream: "
         f"{_mapper.orig_to_new_substr!r}. Review load_weights before removing this assertion."
     )
-if _mapper.orig_to_new_renamings != []:
+# Renamed upstream from orig_to_new_renamings in 0.29.0.
+if _mapper.orig_to_new_renaming != []:
     raise AssertionError(
-        f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_renamings changed upstream: "
-        f"{_mapper.orig_to_new_renamings!r}. Review load_weights before removing this assertion."
+        f"NemotronHForCausalLM.hf_to_vllm_mapper.orig_to_new_renaming changed upstream: "
+        f"{_mapper.orig_to_new_renaming!r}. Review load_weights before removing this assertion."
     )
 if _mapper.orig_to_new_regex != {}:
     raise AssertionError(

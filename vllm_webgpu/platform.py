@@ -50,7 +50,14 @@ def _get_wgpu_adapter():
 
 class WebGPUPlatform(Platform):
     _enum = PlatformEnum.OOT
-    device_name: str = "webgpu"
+    # "cpu", not "webgpu": this is the torch device-type string, not a label.
+    # vLLM 0.29 builds `torch.device(f"{device_name}:{index}")` for out-of-tree
+    # platforms (GroupCoordinator.__init__, distributed/parallel_state.py), and
+    # torch rejects an unknown type outright. Every torch tensor this backend
+    # hands vLLM really is on CPU -- model compute runs in WGSL against wgpu
+    # buffers, not against a registered torch backend -- so "cpu" is also the
+    # honest answer. The human-readable name is `get_device_name()` below.
+    device_name: str = "cpu"
     device_type: str = "cpu"
 
     @classmethod
@@ -107,6 +114,19 @@ class WebGPUPlatform(Platform):
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
+        # Pin a layer-compact KV cache layout. vLLM 0.29 resolves a layout per
+        # run (KVCacheLayout in v1/kv_cache_layout.py) and, whenever the block
+        # dimension ends up outermost, emits KVCacheTensors that interleave
+        # several layers in one buffer with a block_stride between their slices.
+        # This backend allocates its own wgpu buffer per layer from the spec
+        # dims and never reads vLLM's torch KV tensors, so it needs each layer's
+        # region to be one contiguous run; allocate_kv_cache rejects a packed
+        # tensor rather than mis-sizing one. Any L-outermost layout gives that,
+        # and the physical order within a layer is irrelevant here for the same
+        # reason. Set only when the user has not asked for something specific.
+        if vllm_config.cache_config.kv_cache_layout is None:
+            vllm_config.cache_config.kv_cache_layout = "LBHNC"
+
         # macOS (Darwin): wgpu-native uses Metal, which is not fork-safe.
         # The parent process probes the wgpu adapter during is_available(),
         # and after fork the child cannot call request_device_sync() on Metal.

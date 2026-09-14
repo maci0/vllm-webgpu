@@ -46,18 +46,20 @@ _PINNED_VLLM_VERSION = _m.group(1)
 # Source-level guards
 # ---------------------------------------------------------------------------
 
+# Only formulas vllm_webgpu still transcribes are pinned here. The per-layer
+# head_dim / num_key_value_heads dispatch is no longer among them: 0.29 extracted
+# it into `gemma4_layer_config`, which `_build_layer_params_from_config` now
+# calls, so a change there reaches us directly instead of silently diverging.
+# The delegation itself is pinned, since reverting it to an inline formula would
+# otherwise go unnoticed.
 _VLLM_DECODER_LAYER_PATTERNS = [
-    # head_dim selection (Gemma4DecoderLayer.__init__ ~L563)
-    'head_dim = getattr(config, "global_head_dim", config.head_dim)',
-    # k_eq_v flag (~L569)
-    'use_k_eq_v = self.is_full_attention and getattr(',
-    # num_kv_heads for k_eq_v path (~L576)
-    '"num_global_key_value_heads", config.num_key_value_heads',
-    # num_kv_heads fallback (~L580)
-    "num_kv_heads = config.num_key_value_heads",
-    # intermediate_size boundary (~L599)
+    # delegation to the shared resolver
+    "layer_config = gemma4_layer_config(config, layer_idx)",
+    "head_dim = layer_config.head_dim",
+    "num_kv_heads = layer_config.num_key_value_heads",
+    # intermediate_size boundary
     "first_kv_shared_layer_idx = config.num_hidden_layers - getattr(",
-    # intermediate_size doubling (~L606)
+    # intermediate_size doubling
     "layer_intermediate_size = config.intermediate_size * (",
 ]
 
@@ -80,7 +82,8 @@ def test_vllm_version_pin():
     assert vllm.__version__ == _PINNED_VLLM_VERSION, (
         f"vLLM was bumped from {_PINNED_VLLM_VERSION} to {vllm.__version__!r}. "
         "Re-audit vllm/model_executor/models/gemma4.py "
-        "(Gemma4Attention.__init__ L461-483, Gemma4DecoderLayer.__init__ L559-608) "
+        "(Gemma4Attention.__init__, Gemma4DecoderLayer.__init__, and "
+        "gemma4_layer_config in transformers_utils/configs/gemma4.py) "
         "and update _build_layer_params_from_config + this test."
     )
 
@@ -117,9 +120,15 @@ def test_vllm_attention_source_patterns():
 def _vllm_reference_layer_params(config, num_layers: int) -> list[dict]:
     """Derive per-layer params using the same formulas as vLLM.
 
-    Source: vllm/model_executor/models/gemma4.py @ 0.24.0
-      Gemma4DecoderLayer.__init__ L559-608
-      Gemma4Attention.__init__    L461-483
+    Deliberately an independent transcription, not a call into vLLM: it is what
+    gives `test_build_layer_params_matches_vllm_reference` something to compare
+    against now that `_build_layer_params_from_config` delegates the head_dim /
+    num_key_value_heads dispatch to `gemma4_layer_config`.
+
+    Source (vLLM 0.29.0):
+      vllm/transformers_utils/configs/gemma4.py  gemma4_layer_config
+      vllm/model_executor/models/gemma4.py       Gemma4DecoderLayer.__init__
+      vllm/model_executor/models/gemma4.py       Gemma4Attention.__init__
     """
     # Replicate Gemma4Attention.__init__ L461-463
     num_kv_shared_layers = getattr(config, "num_kv_shared_layers", 0)
@@ -127,24 +136,25 @@ def _vllm_reference_layer_params(config, num_layers: int) -> list[dict]:
 
     results = []
     for layer_idx in range(num_layers):
-        # --- Gemma4DecoderLayer.__init__ L560-580 ---
+        # --- gemma4_layer_config (transformers_utils/configs/gemma4.py) ---
         layer_type = config.layer_types[layer_idx]
         is_full_attention = layer_type == "full_attention"
 
         if is_full_attention:
-            head_dim = getattr(config, "global_head_dim", config.head_dim)
+            head_dim = getattr(config, "global_head_dim", None) or config.head_dim
         else:
             head_dim = config.head_dim
 
         use_k_eq_v = is_full_attention and getattr(config, "attention_k_eq_v", False)
         if use_k_eq_v:
-            num_kv_heads = getattr(
-                config, "num_global_key_value_heads", config.num_key_value_heads
+            num_kv_heads = (
+                getattr(config, "num_global_key_value_heads", None)
+                or config.num_key_value_heads
             )
         else:
             num_kv_heads = config.num_key_value_heads
 
-        # --- Gemma4Attention.__init__ L462-483 (KV sharing) ---
+        # --- Gemma4Attention.__init__ (KV sharing) ---
         if num_kv_shared_layers > 0 and layer_idx >= first_kv_shared:
             is_kv_shared = True
             prev_layers = config.layer_types[:first_kv_shared]
@@ -156,7 +166,7 @@ def _vllm_reference_layer_params(config, num_layers: int) -> list[dict]:
             is_kv_shared = False
             kv_shared_target = -1
 
-        # --- Gemma4DecoderLayer.__init__ L599-608 (intermediate_size) ---
+        # --- Gemma4DecoderLayer.__init__ (intermediate_size) ---
         is_kv_shared_layer = layer_idx >= first_kv_shared > 0
         use_double_wide_mlp = (
             getattr(config, "use_double_wide_mlp", False) and is_kv_shared_layer
@@ -278,18 +288,19 @@ def test_build_layer_params_matches_vllm_reference(name):
 def test_gemma4_layer_params_matches_vllm_reference(name):
     """_gemma4_layer_params (the extracted pure formula helper) must produce the
     same results as the vLLM reference for every config combination."""
+    from vllm.transformers_utils.configs.gemma4 import gemma4_layer_config
+
     from vllm_webgpu.models.gemma4 import _gemma4_layer_params
 
     cfg = CONFIGS[name]
-    default_hd = getattr(cfg, "head_dim", cfg.hidden_size // cfg.num_attention_heads)
-    default_kv = cfg.num_key_value_heads
+    # Per-layer dims come from vLLM's resolver, the same way
+    # _build_layer_params_from_config supplies them in production.
+    layer_cfgs = [gemma4_layer_config(cfg, i) for i in range(len(cfg.layer_types))]
     actual = _gemma4_layer_params(
         layer_types=cfg.layer_types,
         num_q_heads=cfg.num_attention_heads,
-        default_hd=default_hd,
-        default_kv=default_kv,
-        global_hd=getattr(cfg, "global_head_dim", default_hd),
-        global_kv=getattr(cfg, "num_global_key_value_heads", default_kv),
+        head_dims=[lc.head_dim for lc in layer_cfgs],
+        kv_heads=[lc.num_key_value_heads for lc in layer_cfgs],
         k_eq_v=getattr(cfg, "attention_k_eq_v", False),
         intermediate_size=cfg.intermediate_size,
         num_kv_shared_layers=getattr(cfg, "num_kv_shared_layers", 0),
