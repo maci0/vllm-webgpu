@@ -90,6 +90,11 @@ fn main(
         }
 
         let rms_inv1 = inverseSqrt(shared_sum[0] / f32(HIDDEN_DIM) + eps);
+        // Every thread reads shared_sum[0] above, and Phase 2 below overwrites
+        // shared_sum[tid] -- including tid 0. Without this barrier a fast thread
+        // can land its sq_sum2 write on shared_sum[0] before a slower thread has
+        // read rms_inv1 from it.
+        workgroupBarrier();
 
         // Phase 2: apply first norm, fold into residual add, accumulate sq_sum2.
         // local_v[i] is overwritten with the updated f32 residual value for Phase 3.
@@ -155,6 +160,9 @@ fn main(
         }
 
         let rms_inv1 = inverseSqrt(shared_sum[0] / f32(HIDDEN_DIM) + eps);
+        // Same read-then-overwrite hazard on shared_sum[0] as the register-tiled
+        // path above.
+        workgroupBarrier();
 
         // Phase 2: re-read delta_in, apply first norm, update residual, accumulate sq_sum2.
         var sq_sum2: f32 = 0.0;

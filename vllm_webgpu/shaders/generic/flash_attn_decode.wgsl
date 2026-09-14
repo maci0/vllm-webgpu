@@ -127,8 +127,14 @@ fn main(
         }
 
         // Thread 0 holds the full dot product; broadcast via sh_dot[0].
-        let score = sh_dot[0] * scale;   // sh_dot[0] already visible to all threads
-        // (workgroupBarrier at end of reduction left sh_dot[0] visible)
+        // The reduction's trailing barrier makes sh_dot[0] visible to every
+        // thread here.
+        let score = sh_dot[0] * scale;
+        // That barrier does not protect the value from the NEXT iteration: this
+        // loop writes sh_dot[tid] again at the top, so without a barrier here a
+        // thread that has already come around can clobber sh_dot[0] while a
+        // slower thread is still reading this iteration's score.
+        workgroupBarrier();
 
         // ── Online softmax update (all threads in sync) ─────────────────────
         let m_new   = max(running_m, score);
