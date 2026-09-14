@@ -83,7 +83,7 @@ def compute_yarn_freqs(
     YaRNScalingRotaryEmbedding._compute_inv_freq in numpy without instantiating
     that class or calling any private method.
 
-    VERSION SYNC: formula last verified against vLLM 0.25.1.
+    VERSION SYNC: formula last verified against vLLM 0.29.0.
     Reference: YaRNScalingRotaryEmbedding._compute_inv_freq
     (vllm/model_executor/layers/rotary_embedding/yarn_scaling_rope.py:49-73).
     On each vLLM bump, run tests/test_yarn_freqs.py — the test constructs a
@@ -153,6 +153,19 @@ def compute_yarn_freqs(
 
 
 class BaseWebGPUModel(ABC):
+
+    def modules(self):
+        """Empty iterator, standing in for ``torch.nn.Module.modules()``.
+
+        vLLM 0.29 walks the driver model on engine teardown looking for
+        ``TorchCompileWithNoGuardsWrapper`` instances to unhook
+        (``LLMEngine._cleanup_instance_caches``). These models are plain objects
+        holding wgpu buffers, not nn.Modules, and torch.compile never touches
+        them, so there is nothing to walk -- but the call happens from a weakref
+        finalizer, where the AttributeError surfaces as an unraisable traceback
+        at interpreter shutdown on every run.
+        """
+        return iter(())
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache") -> None:
         self.model_config = model_config
