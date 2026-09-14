@@ -12,9 +12,9 @@ dependencies = [
     # on_submitted_work_done callback with a 3-argument signature while its own
     # bundled header declares 4 (a WGPUStringView was added), so every queue
     # flush raises TypeError from inside wgpu/backends/wgpu_native/_api.py.
-    # Reported upstream as pygfx/wgpu-py#834. Nothing else about 0.32 is a
-    # problem: the full suite passes against it with that one line patched, so
-    # widen this to allow 0.32.x again once a fixed release ships.
+    # Fix is pygfx/wgpu-py#824, open since 2026-07-24 and not yet released.
+    # Nothing else about 0.32 is a problem: the full suite passes against it
+    # with that one line patched, so drop this marker once #824 ships.
     "wgpu>=0.20,!=0.32.0",
     "numpy>=1.24",
     "safetensors>=0.4",
