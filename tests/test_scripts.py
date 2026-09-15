@@ -1,5 +1,4 @@
 """Tests for standalone script path helpers."""
-from pathlib import Path
 
 
 def test_resolve_model_path_local_dir(tmp_path):

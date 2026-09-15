@@ -41,7 +41,6 @@ def gqa_attn(
     """Single-query GQA over a K/V cache of shape [T, n_kv, head_dim]."""
     scale = head_dim ** -0.5
     qh = q.astype(np.float32).reshape(n_q, head_dim)
-    T = k_cache.shape[0]
     n_rep = n_q // n_kv
     out = np.zeros((n_q, head_dim), dtype=np.float32)
     for i in range(n_q):
@@ -75,9 +74,6 @@ def llama_layer(
     apply_rope: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """One Llama pre-norm layer. Returns (x_out, k_cache, v_cache)."""
-    q_dim = n_q * head_dim
-    kv_dim = n_kv * head_dim
-
     normed = rms_norm(x, w["input_layernorm"])
     q = w["q_proj"] @ normed.astype(np.float32)
     k = w["k_proj"] @ normed.astype(np.float32)

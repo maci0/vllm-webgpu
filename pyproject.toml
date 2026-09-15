@@ -30,6 +30,30 @@ dev = ["pytest>=8.0", "pytest-timeout>=2.3", "ruff>=0.5"]
 [tool.hatch.build.targets.wheel]
 packages = ["vllm_webgpu"]
 
+[tool.ruff.lint]
+# An explicit set, not ruff's defaults: this project declares `ruff>=0.5`, and
+# ruff's default rules have widened a lot since (0.16 reports ~600 findings
+# here against 22 for the set below). Pinning what is checked keeps a ruff
+# upgrade from turning into a lint bill: this set is clean on every ruff from
+# 0.5.7 through 0.16.7, which is why the dev floor above can stay at >=0.5.
+#
+# These are the families that catch mistakes -- undefined and unused names,
+# bugbear traps, stale suppressions -- rather than ones that would rewrite the
+# house style. Deliberately NOT selected:
+#   I   (import sorting)   several modules order imports around a version check
+#                          or a TYPE_CHECKING block, and sorting fights that.
+#   UP037 (quoted annotations) 309 findings, purely cosmetic.
+#   SIM, RUF012, BLE001    worth revisiting, but each is a real refactor.
+select = ["E4", "E7", "E9", "F", "W", "B", "PIE", "PGH", "RUF100"]
+ignore = [
+    # Aligned one-line lookup tables (`if fmt == "fp8_gpu":   return 5`) read
+    # better as a table than split across two lines.
+    "E701",
+    # Single capital letters are this codebase's dimension names (T, N, H, and
+    # I for intermediate size); `I` is ambiguous in general, not here.
+    "E741",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 timeout = 60
