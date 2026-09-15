@@ -246,7 +246,7 @@ def _assert_layer_params_match_reference(cfg, actual):
     num_layers = cfg.num_hidden_layers
     expected = _vllm_reference_layer_params(cfg, num_layers)
     assert len(actual) == num_layers
-    for i, (exp, got) in enumerate(zip(expected, actual)):
+    for i, (exp, got) in enumerate(zip(expected, actual, strict=True)):
         lt = cfg.layer_types[i]
         ctx = f"layer {i} (type={lt!r})"
         assert got["head_dim"] == exp["head_dim"], (

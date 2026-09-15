@@ -43,7 +43,8 @@ if TYPE_CHECKING:
     from vllm_webgpu.models.base import BaseWebGPUModel
     from vllm_webgpu.v1.worker import WebGPUWorker
 
-from vllm_webgpu.webgpu.buffer import WebGPUBuffer
+# Runtime import, deliberately after the TYPE_CHECKING block above.
+from vllm_webgpu.webgpu.buffer import WebGPUBuffer  # noqa: E402
 
 logger = init_logger(__name__)
 

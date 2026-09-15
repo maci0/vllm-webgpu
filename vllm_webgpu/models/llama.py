@@ -448,7 +448,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
 
         return self._finish_forward(greedy)
 
-    def _prefill_batch_forward(  # noqa: C901
+    def _prefill_batch_forward(
         self,
         input_ids: "np.ndarray",
         positions: "np.ndarray",
@@ -800,7 +800,7 @@ class LlamaWebGPUModel(BaseWebGPUModel):
             (sc["q_buf"], "q_proj", q_dim),
             (sc["k_buf"], "k_proj", kv_dim),
             (sc["v_buf"], "v_proj", kv_dim),
-        ], [uq_q, uq_k, uq_v]):
+        ], [uq_q, uq_k, uq_v], strict=True):
             w_key = f"{p}.self_attn.{proj}.weight"
             qi = self._quant_extra(f"{p}.self_attn.{proj}", uq)
             self._dispatch(

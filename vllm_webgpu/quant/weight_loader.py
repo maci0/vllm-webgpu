@@ -952,7 +952,7 @@ def load_safetensors_weights(
 
         # ── Helper: upload a single tensor from the header (plain dtypes) ──────────
         _gdn_bf16 = _webgpu_envs.GDN_BF16  # read once; constant during weight loading
-        def _upload_plain(name: str) -> bool:  # noqa: E501
+        def _upload_plain(name: str) -> bool:
             meta = header[name]
             dtype_str = meta["dtype"]
 

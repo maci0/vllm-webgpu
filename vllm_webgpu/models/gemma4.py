@@ -31,7 +31,15 @@ if _vllm_version != _EXPECTED_VLLM_VERSION:
         "and _build_layer_params_from_config are still correct.",
         stacklevel=2,
     )
-from vllm_webgpu.models.base import BaseWebGPUModel, _vals_per_thread, _vec4_wg, _rows_wg, _H_NAMES
+# E402 is expected: this import must follow the version check above, which has
+# to warn before any of this module's Gemma4 code is imported.
+from vllm_webgpu.models.base import (  # noqa: E402
+    _H_NAMES,
+    BaseWebGPUModel,
+    _rows_wg,
+    _vals_per_thread,
+    _vec4_wg,
+)
 
 if TYPE_CHECKING:
     from vllm_webgpu.webgpu.buffer import WebGPUBuffer
@@ -832,7 +840,7 @@ class Gemma4WebGPUModel(BaseWebGPUModel):
                         **self._quant_extra(wk.removesuffix(".weight"), uq)},
                        (N, T, 1))
 
-    def _prefill_batch_forward(  # noqa: C901
+    def _prefill_batch_forward(
         self,
         input_ids: "np.ndarray",
         positions: "np.ndarray",
