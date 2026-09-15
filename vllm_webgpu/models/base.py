@@ -449,7 +449,7 @@ class BaseWebGPUModel(ABC):
             usage=_STAGING_USAGE,
         )
         enc = dev.create_command_encoder()
-        for (_, _, buf), off in zip(bufs, offsets):
+        for (_, _, buf), off in zip(bufs, offsets, strict=True):
             enc.copy_buffer_to_buffer(buf.buf, 0, staging, off, buf.nbytes)
         dev.queue.submit([enc.finish()])
 
@@ -458,7 +458,7 @@ class BaseWebGPUModel(ABC):
         staging.unmap()
 
         result: dict[str, dict] = {}
-        for (kind, i, buf), off in zip(bufs, offsets):
+        for (kind, i, buf), off in zip(bufs, offsets, strict=True):
             result.setdefault(kind, {})[i] = raw[off : off + buf.nbytes]
         return result
 
