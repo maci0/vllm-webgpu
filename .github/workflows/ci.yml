@@ -51,8 +51,8 @@ jobs:
                   f"gemma4.py pin={pin!r}. "
                   "Re-audit the three formula sites in "
                   "vllm/model_executor/models/gemma4.py "
-                  "(Gemma4Attention.__init__ L461-483, "
-                  "Gemma4DecoderLayer.__init__ L559-608), "
+                  "(Gemma4Attention.__init__ and "
+                  "Gemma4DecoderLayer.__init__), "
                   "update _EXPECTED_VLLM_VERSION, and re-run "
                   "tests/test_gemma4_layer_params.py."
               )

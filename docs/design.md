@@ -500,7 +500,7 @@ name = "vllm-webgpu"
 version = "0.1.0"
 
 [project.dependencies]
-vllm = ">=0.25.1"
+vllm = "==0.33.0"
 wgpu = ">=0.20"
 numpy = ">=1.24"
 safetensors = ">=0.4"

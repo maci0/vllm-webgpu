@@ -12,6 +12,7 @@ def make_tiny_gemma4_config():
     cfg.intermediate_size = 128
     cfg.vocab_size = 32
     cfg.head_dim = 16
+    cfg.per_layer_config = None
     cfg.query_pre_attn_scalar = 1.0
     cfg.final_logit_softcapping = 30.0
     cfg.architectures = ["Gemma3ForCausalLM"]

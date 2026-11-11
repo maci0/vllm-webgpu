@@ -9,20 +9,18 @@ import numpy as np
 from vllm import __version__ as _vllm_version
 from vllm.utils.math_utils import cdiv
 from vllm.transformers_utils.config import get_hf_text_config
-from vllm.transformers_utils.configs.gemma4 import gemma4_layer_config
 
 # _gemma4_layer_params and _build_layer_params_from_config transcribe three
 # private formula groups (KV-routing guard, reversed-search KV-sharing target,
 # MLP-width guard) from vllm/model_executor/models/gemma4.py. There is no public
 # vLLM API for those; they are a necessary transcription that drifts silently on
 # every vLLM bump, so they are pinned to the vLLM version below.
-# The fourth group, the per-layer head_dim / num_key_value_heads dispatch, is no
-# longer transcribed: 0.29 extracted it into `gemma4_layer_config`, which this
-# module now calls directly.
+# Per-layer head_dim / num_key_value_heads come from config.per_layer_config
+# in vLLM 0.33. Legacy flat configs use the former resolver's field selection.
 # Re-audit Gemma4Attention.__init__ and Gemma4DecoderLayer.__init__ and re-run
 # tests/test_gemma4_layer_params.py after any bump.
 # Upstream issue filed: github.com/vllm-project/vllm/issues/48661
-_EXPECTED_VLLM_VERSION = "0.29.0"
+_EXPECTED_VLLM_VERSION = "0.33.0"
 if _vllm_version != _EXPECTED_VLLM_VERSION:
     warnings.warn(
         f"vLLM {_vllm_version!r} differs from pinned {_EXPECTED_VLLM_VERSION!r}. "
@@ -52,15 +50,13 @@ if TYPE_CHECKING:
 _SCALE_EPS = 1e-6
 
 
-# Three formula groups transcribed from vLLM 0.29.0 into _gemma4_layer_params below.
+# Three formula groups transcribed from vLLM 0.33.0 into _gemma4_layer_params below.
 # Pinned source locations in vllm/model_executor/models/gemma4.py:
-#   (1) KV-routing guard:                  Gemma4Attention.__init__    L471-475
-#   (2) Reversed-search KV-sharing target: Gemma4Attention.__init__    L476-480
-#   (3) head_dim / num_kv_heads dispatch:  NOT transcribed -- delegated to
-#       vllm.transformers_utils.configs.gemma4.gemma4_layer_config
-#   (4) MLP-width guard:                   Gemma4DecoderLayer.__init__ L599-607
-# On each vLLM bump: diff Gemma4Attention.__init__ (L461-471) and
-# Gemma4DecoderLayer.__init__ (L559-580, L599-607) against _gemma4_layer_params and
+#   (1) KV-routing guard:                  Gemma4Attention.__init__
+#   (2) Reversed-search KV-sharing target: Gemma4Attention.__init__
+#   (3) head_dim / num_kv_heads dispatch: read from config.per_layer_config
+#   (4) MLP-width guard:                   Gemma4DecoderLayer.__init__
+# On each vLLM bump: diff both constructors against _gemma4_layer_params and
 # _build_layer_params_from_config, re-run tests/test_gemma4_layer_params.py,
 # and update _EXPECTED_VLLM_VERSION together.
 # If vLLM ever exports a public get_layer_params() or equivalent,
@@ -146,8 +142,8 @@ def _gemma4_layer_params(
         else:
             kv_shared_target = -1
 
-        # Attention-type dispatch: head_dim and num_kv_heads come from vLLM's
-        # own `gemma4_layer_config` (resolved by the caller), not from a copy of
+        # Attention-type dispatch: head_dim and num_kv_heads come from the
+        # config resolved by the caller, not from a copy of
         # the formula. `has_v_proj` stays local: it describes the *checkpoint*
         # (k_eq_v full-attention layers ship no v_proj; vLLM remaps K into the V
         # slot in its `_weight_iterator`), which is not something the layer
@@ -192,15 +188,31 @@ def _build_layer_params_from_config(
     num_kv_shared_layers = getattr(model_config, "num_kv_shared_layers", 0)
     use_dwm           = getattr(model_config, "use_double_wide_mlp", False)
 
-    # Per-layer head_dim / num_key_value_heads come from vLLM's own resolver
-    # rather than a transcription of it. Besides removing one formula that had
-    # to be re-audited on every bump, this is the only path that handles a
-    # heterogeneous config (Transformers >= 5.15.0 puts the per-layer values in
-    # `per_layer_config` instead of flat attributes that `layer_types` selects
-    # between); the old flat-attribute copy silently read the wrong dims there.
-    layer_cfgs = [gemma4_layer_config(model_config, i) for i in range(len(layer_types))]
-    head_dims = [lc.head_dim for lc in layer_cfgs]
-    kv_heads = [lc.num_key_value_heads for lc in layer_cfgs]
+    # vLLM 0.33 reads per_layer_config directly. Legacy Gemma3/Gemma4 text
+    # configs still need the old local/global field selection.
+    layer_cfgs = getattr(model_config, "per_layer_config", None)
+    if layer_cfgs is not None:
+        if len(layer_cfgs) != len(layer_types):
+            raise ValueError("Gemma4 per_layer_config must have one entry per layer")
+        head_dims = [lc.head_dim for lc in layer_cfgs]
+        kv_heads = [lc.num_key_value_heads for lc in layer_cfgs]
+    else:
+        # Older Gemma3/Gemma4 configs keep the local and global dimensions on
+        # the text config. vLLM 0.33 reads per_layer_config for Gemma4, but the
+        # WebGPU model also accepts these legacy text-only configurations.
+        head_dims = []
+        kv_heads = []
+        for layer_type in layer_types:
+            is_full = layer_type == "full_attention"
+            head_dims.append(
+                (getattr(model_config, "global_head_dim", None) or model_config.head_dim)
+                if is_full else model_config.head_dim
+            )
+            kv_heads.append(
+                (getattr(model_config, "num_global_key_value_heads", None)
+                 or model_config.num_key_value_heads)
+                if is_full and k_eq_v else model_config.num_key_value_heads
+            )
 
     lp = _gemma4_layer_params(
         layer_types=layer_types,

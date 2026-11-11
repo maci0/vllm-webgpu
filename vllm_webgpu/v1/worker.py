@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-# vLLM v1 internals verified against vllm>=0.24,<0.25.
+# vLLM v1 internals verified against vLLM 0.33.0.
 # These paths have no stability guarantees; a patch release may move or rename
 # them. Pin vllm in pyproject.toml and run CI against the exact pinned version.
 # Update this comment and pyproject.toml when bumping the vLLM version.

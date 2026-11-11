@@ -15,11 +15,10 @@ and Gemma4Attention constructors. This test:
      formulas (applied in pure Python, no GPU required) and asserts they
      match what _build_layer_params_from_config produces.
 
-Source references pinned to vllm 0.24.0:
+Source references pinned to vLLM 0.33.0:
   vllm/model_executor/models/gemma4.py
-    Gemma4Attention.__init__    L461-483  (KV sharing)
-    Gemma4DecoderLayer.__init__ L559-580  (head_dim / num_kv_heads)
-    Gemma4DecoderLayer.__init__ L599-608  (intermediate_size)
+    Gemma4Attention.__init__ (KV sharing)
+    Gemma4DecoderLayer.__init__ (head_dim, num_kv_heads, intermediate_size)
 """
 from __future__ import annotations
 
@@ -47,14 +46,13 @@ _PINNED_VLLM_VERSION = _m.group(1)
 # ---------------------------------------------------------------------------
 
 # Only formulas vllm_webgpu still transcribes are pinned here. The per-layer
-# head_dim / num_key_value_heads dispatch is no longer among them: 0.29 extracted
-# it into `gemma4_layer_config`, which `_build_layer_params_from_config` now
-# calls, so a change there reaches us directly instead of silently diverging.
-# The delegation itself is pinned, since reverting it to an inline formula would
+# head_dim / num_key_value_heads dispatch is no longer among them: 0.33 reads
+# config.per_layer_config, which `_build_layer_params_from_config` now reads too.
+# The config access itself is pinned, since replacing it with an inline formula would
 # otherwise go unnoticed.
 _VLLM_DECODER_LAYER_PATTERNS = [
-    # delegation to the shared resolver
-    "layer_config = gemma4_layer_config(config, layer_idx)",
+    # per-layer config access
+    "layer_config = config.per_layer_config[layer_idx]",
     "head_dim = layer_config.head_dim",
     "num_kv_heads = layer_config.num_key_value_heads",
     # intermediate_size boundary
@@ -82,9 +80,8 @@ def test_vllm_version_pin():
     assert vllm.__version__ == _PINNED_VLLM_VERSION, (
         f"vLLM was bumped from {_PINNED_VLLM_VERSION} to {vllm.__version__!r}. "
         "Re-audit vllm/model_executor/models/gemma4.py "
-        "(Gemma4Attention.__init__, Gemma4DecoderLayer.__init__, and "
-        "gemma4_layer_config in transformers_utils/configs/gemma4.py) "
-        "and update _build_layer_params_from_config + this test."
+        "(Gemma4Attention.__init__ and Gemma4DecoderLayer.__init__), "
+        "then update _build_layer_params_from_config and this test."
     )
 
 
@@ -123,10 +120,9 @@ def _vllm_reference_layer_params(config, num_layers: int) -> list[dict]:
     Deliberately an independent transcription, not a call into vLLM: it is what
     gives `test_build_layer_params_matches_vllm_reference` something to compare
     against now that `_build_layer_params_from_config` delegates the head_dim /
-    num_key_value_heads dispatch to `gemma4_layer_config`.
+    num_key_value_heads dispatch to config.per_layer_config.
 
-    Source (vLLM 0.29.0):
-      vllm/transformers_utils/configs/gemma4.py  gemma4_layer_config
+    Source (vLLM 0.33.0):
       vllm/model_executor/models/gemma4.py       Gemma4DecoderLayer.__init__
       vllm/model_executor/models/gemma4.py       Gemma4Attention.__init__
     """
@@ -136,23 +132,24 @@ def _vllm_reference_layer_params(config, num_layers: int) -> list[dict]:
 
     results = []
     for layer_idx in range(num_layers):
-        # --- gemma4_layer_config (transformers_utils/configs/gemma4.py) ---
+        # --- Gemma4DecoderLayer.__init__ per-layer config ---
         layer_type = config.layer_types[layer_idx]
         is_full_attention = layer_type == "full_attention"
 
-        if is_full_attention:
-            head_dim = getattr(config, "global_head_dim", None) or config.head_dim
+        if getattr(config, "per_layer_config", None) is not None:
+            head_dim = config.per_layer_config[layer_idx].head_dim
+            num_kv_heads = config.per_layer_config[layer_idx].num_key_value_heads
         else:
-            head_dim = config.head_dim
-
-        use_k_eq_v = is_full_attention and getattr(config, "attention_k_eq_v", False)
-        if use_k_eq_v:
-            num_kv_heads = (
-                getattr(config, "num_global_key_value_heads", None)
-                or config.num_key_value_heads
+            head_dim = (
+                (getattr(config, "global_head_dim", None) or config.head_dim)
+                if is_full_attention else config.head_dim
             )
-        else:
-            num_kv_heads = config.num_key_value_heads
+            num_kv_heads = (
+                (getattr(config, "num_global_key_value_heads", None)
+                 or config.num_key_value_heads)
+                if is_full_attention and getattr(config, "attention_k_eq_v", False)
+                else config.num_key_value_heads
+            )
 
         # --- Gemma4Attention.__init__ (KV sharing) ---
         if num_kv_shared_layers > 0 and layer_idx >= first_kv_shared:
@@ -237,6 +234,20 @@ CONFIGS = {
 }
 
 
+def test_build_layer_params_uses_heterogeneous_layer_config():
+    from vllm_webgpu.models.gemma4 import _build_layer_params_from_config
+
+    cfg = _make_config()
+    cfg.per_layer_config = [
+        types.SimpleNamespace(
+            head_dim=192 if i % 6 != 5 else 384,
+            num_key_value_heads=4 if i % 6 != 5 else 2,
+        )
+        for i in range(cfg.num_hidden_layers)
+    ]
+    _assert_layer_params_match_reference(cfg, _build_layer_params_from_config(cfg))
+
+
 # ---------------------------------------------------------------------------
 # Parametrised comparison test
 # ---------------------------------------------------------------------------
@@ -288,14 +299,19 @@ def test_build_layer_params_matches_vllm_reference(name):
 def test_gemma4_layer_params_matches_vllm_reference(name):
     """_gemma4_layer_params (the extracted pure formula helper) must produce the
     same results as the vLLM reference for every config combination."""
-    from vllm.transformers_utils.configs.gemma4 import gemma4_layer_config
-
     from vllm_webgpu.models.gemma4 import _gemma4_layer_params
 
     cfg = CONFIGS[name]
-    # Per-layer dims come from vLLM's resolver, the same way
-    # _build_layer_params_from_config supplies them in production.
-    layer_cfgs = [gemma4_layer_config(cfg, i) for i in range(len(cfg.layer_types))]
+    # Flat config dimensions follow the legacy selection used by
+    # _build_layer_params_from_config when per_layer_config is absent.
+    layer_cfgs = [
+        types.SimpleNamespace(head_dim=h, num_key_value_heads=k)
+        for h, k in zip(
+            [cfg.global_head_dim if t == "full_attention" else cfg.head_dim for t in cfg.layer_types],
+            [cfg.num_global_key_value_heads if t == "full_attention" and cfg.attention_k_eq_v else cfg.num_key_value_heads for t in cfg.layer_types],
+            strict=True,
+        )
+    ]
     actual = _gemma4_layer_params(
         layer_types=cfg.layer_types,
         num_q_heads=cfg.num_attention_heads,

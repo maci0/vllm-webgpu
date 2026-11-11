@@ -35,7 +35,7 @@ def _a_log_transform(arr: "np.ndarray") -> "np.ndarray":
 
 
 # Verify that the upstream mapper fields match the snapshot this code was written
-# against (vLLM 0.29.0). Catches upstream changes at import time.
+# against (vLLM 0.33.0). Catches upstream changes at import time.
 #
 # "mtp": None was added upstream between 0.24.0 and 0.29.0. None means "drop this
 # weight" (WeightsMapper._map_name_with_shard returns None for it), which is what

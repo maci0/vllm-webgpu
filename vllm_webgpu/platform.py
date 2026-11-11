@@ -5,7 +5,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from vllm.logger import init_logger
-from vllm.utils.mem_utils import get_cpu_memory
+from vllm.utils.cpu_resource_utils import get_memory_node_info
 
 from vllm.platforms import Platform, PlatformEnum
 
@@ -51,7 +51,7 @@ def _get_wgpu_adapter():
 class WebGPUPlatform(Platform):
     _enum = PlatformEnum.OOT
     # "cpu", not "webgpu": this is the torch device-type string, not a label.
-    # vLLM 0.29 builds `torch.device(f"{device_name}:{index}")` for out-of-tree
+    # vLLM builds `torch.device(f"{device_name}:{index}")` for out-of-tree
     # platforms (GroupCoordinator.__init__, distributed/parallel_state.py), and
     # torch rejects an unknown type outright. Every torch tensor this backend
     # hands vLLM really is on CPU -- model compute runs in WGSL against wgpu
@@ -106,11 +106,10 @@ class WebGPUPlatform(Platform):
         # System RAM is the correct budget on all supported platforms.
         # On Apple Silicon, all memory is unified so this is exact.
         # On discrete-GPU Linux/Windows, the actual KV-cache budget is determined
-        # by determine_available_memory() in cache_policy.py, which already calls
-        # get_cpu_memory() directly; this value only affects vLLM scheduling
+        # by determine_available_memory() in cache_policy.py; this value only affects vLLM scheduling
         # heuristics. max_buffer_size (the per-buffer driver limit, often ≤4 GB)
         # is not VRAM and must not be used here.
-        return get_cpu_memory()
+        return get_memory_node_info(device_id).total_memory
 
     @classmethod
     def check_and_update_config(cls, vllm_config: VllmConfig) -> None:
@@ -195,10 +194,10 @@ class WebGPUPlatform(Platform):
         model_config = vllm_config.model_config
         if model_config is None or not model_config.is_hybrid:
             return
-        backend_cls = cls._find_non_ssm_backend(vllm_config)
-        if backend_cls is None:
+        backend_classes = cls._find_non_ssm_backends(vllm_config)
+        if not backend_classes:
             return
-        cls._align_hybrid_block_size(vllm_config, backend_cls)
+        cls._align_hybrid_block_size(vllm_config, backend_classes[0])
 
     @classmethod
     def get_attn_backend_cls(

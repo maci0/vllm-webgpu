@@ -7,7 +7,7 @@ name = "vllm-webgpu"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "vllm>=0.29.0,<0.30",  # v1 internal paths verified against 0.29.0; update with care
+    "vllm==0.33.0",  # v1 internal paths verified against this release
     # !=0.32.0 is the whole of it: that release builds its
     # on_submitted_work_done callback with a 3-argument signature while its own
     # bundled header declares 4 (a WGPUStringView was added), so every queue
