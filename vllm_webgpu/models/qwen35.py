@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from vllm.logger import init_logger
+from vllm.transformers_utils.config import get_hf_text_config
 from vllm.model_executor.layers.mamba.mamba_utils import MambaStateShapeCalculator, is_conv_state_dim_first
 from vllm.utils.math_utils import cdiv
 from vllm_webgpu.models.base import _vec4_wg, _H_NAMES
@@ -69,6 +70,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
     _norm_fusion: bool = False
 
     def __init__(self, model_config, wgpu_device: "WebGPUDevice", pipeline_cache: "PipelineCache", block_size: int = 16) -> None:
+        if getattr(model_config, "model_type", None) in ("qwen3_5", "qwen3_5_moe"):
+            model_config = get_hf_text_config(model_config)
+        # Qwen3.6 MoE has only routed and shared expert widths. The Llama base
+        # uses intermediate_size to size scratch buffers, so use the shared width.
+        if getattr(model_config, "num_experts", 0) and not hasattr(model_config, "intermediate_size"):
+            model_config.intermediate_size = model_config.shared_expert_intermediate_size
         # Set GDN + MoE + other Qwen3.5-specific attributes BEFORE calling
         # super().__init__(). LlamaWebGPUModel.__init__() calls
         # self._init_scratch_buffers() via Python's dynamic dispatch, which
@@ -223,6 +230,11 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
 
         # Mixtral.__init__ reads num_local_experts (0 for Qwen35) and overwrites _is_moe.
         # Re-assert the correct values from Qwen35-specific config fields.
+        # A 64-layer Qwen3.8-27B prefill with six tokens per encoder can stall
+        # Metal while finishing the command buffer. Keep each token's dispatches
+        # in its own encoder for models of this depth.
+        if self.num_layers >= 64:
+            self._PREFILL_TOKEN_CHUNK = 1
         self._num_experts = self._moe_num_experts
         self._top_k = self._moe_k
         self._is_moe = self._moe_num_experts > 0 and self._moe_k > 0
@@ -286,10 +298,10 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         returns only the Q half; the gate half is stashed in a local dict and uploaded
         immediately after super().load_weights() returns, with no GPU round-trip.
 
-        For quantized (I8) q_proj weights the loader skips transforms entirely, so the
-        weight arrives with its original [2*q_dim, H] shape and q_gate_proj.weight is
-        never created.  This method detects that case and raises a clear error rather
-        than letting the gate be silently bypassed at inference time.
+        For quantized formats without a split transform, the weight arrives with
+        its original [2*q_dim, H] shape and q_gate_proj.weight is never created.
+        This method detects that case and raises a clear error instead of letting
+        the gate be silently bypassed at inference time.
 
         Note: q_norm/k_norm tiling is handled at load time via _weight_transforms for
         all checkpoint formats. No GPU readback happens here for correctly split fp16 weights.
@@ -381,11 +393,15 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # as f16. Keeping them as f32 avoids ~3-bit mantissa loss in the decay
         # computation. Pass their checkpoint key names so they are uploaded as f32
         # directly, without a GPU round-trip. Matches the nemotron_h.py pattern.
-        f32_keys = frozenset(
+        canonical_f32_keys = frozenset(
             f"model.layers.{i}.linear_attn.{wk}"
             for i in range(self.num_layers)
             if not self._is_full_attn(i)
             for wk in ("A_log", "dt_bias")
+        )
+        f32_keys = canonical_f32_keys | frozenset(
+            k.replace("model.layers.", "model.language_model.layers.", 1)
+            for k in canonical_f32_keys
         )
 
         # Register CPU-side split transforms for q_proj.weight when attn_output_gate
@@ -398,6 +414,7 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
         # so the weight lands with its original shape.  _postprocess_weights
         # detects the missing gate key and raises a clear error in that case.
         _q_gate_pending: dict[str, np.ndarray] = {}
+        _q_gate_scales_pending: dict[str, np.ndarray] = {}
         if self._attn_output_gate:
             _q_dim = self.q_dim
 
@@ -405,24 +422,46 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                 def _split(arr):
                     if arr.shape[0] != 2 * _q_dim:
                         return arr  # already split or unexpected shape; pass through
-                    # arr is always float16: loader converts BF16/F32 before invoking transforms.
-                    # Reshape to (num_q_heads, 2*head_dim, hidden) to split along the
+                    # Plain weights have hidden columns; packed INT4 weights have
+                    # hidden//8 columns. Both have the same interleaved output rows.
+                    # Reshape to (num_q_heads, 2*head_dim, columns) to split along the
                     # per-head axis: each head contributes head_dim Q rows then head_dim
                     # gate rows ([Q_head0, Gate_head0, ...] interleaved). A midpoint slice
                     # arr[:q_dim] / arr[q_dim:] would interleave Q and gate across heads.
-                    a = arr.reshape(self.num_q_heads, 2 * self.head_dim, self.hidden_size)
-                    q_half    = a[:, :self.head_dim, :].reshape(_q_dim, self.hidden_size)
-                    gate_half = a[:, self.head_dim:, :].reshape(_q_dim, self.hidden_size)
+                    columns = arr.shape[1]
+                    a = arr.reshape(self.num_q_heads, 2 * self.head_dim, columns)
+                    q_half    = a[:, :self.head_dim, :].reshape(_q_dim, columns)
+                    gate_half = a[:, self.head_dim:, :].reshape(_q_dim, columns)
                     _q_gate_pending[gk] = gate_half
                     return q_half
                 return _split
+
+            def _make_scale_split(gsk):
+                def _split_scales(arr):
+                    if arr.ndim != 2 or arr.shape[1] != 2 * _q_dim:
+                        return arr
+                    groups = arr.shape[0]
+                    a = arr.reshape(groups, self.num_q_heads, 2 * self.head_dim)
+                    _q_gate_scales_pending[gsk] = a[:, :, self.head_dim:].reshape(groups, _q_dim)
+                    return a[:, :, :self.head_dim].reshape(groups, _q_dim)
+                return _split_scales
 
             for _i in range(self.num_layers):
                 if not self._is_full_attn(_i):
                     continue
                 _q_key = f"model.layers.{_i}.self_attn.q_proj.weight"
                 _g_key = f"model.layers.{_i}.self_attn.q_gate_proj.weight"
-                self._weight_transforms[_q_key] = _make_split(_g_key)
+                split = _make_split(_g_key)
+                self._weight_transforms[_q_key] = split
+                raw_q_key = _q_key.replace(
+                    "model.layers.", "model.language_model.layers.", 1
+                )
+                self._weight_transforms[raw_q_key] = split
+                scale_key = f"{_q_key}.scales"
+                raw_scale_key = f"{raw_q_key}.scales"
+                split_scales = _make_scale_split(f"{_g_key}.scales")
+                self._weight_transforms[scale_key] = split_scales
+                self._weight_transforms[raw_scale_key] = split_scales
 
         # Stash fused MoE expert weights on the CPU before GPU upload to avoid
         # synchronous GPU readback (WebGPUBuffer.to_numpy() / map_sync stall) at
@@ -442,8 +481,18 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             for _li in range(self.num_layers):
                 _pfx = f"model.layers.{_li}.mlp.experts"
                 for _wk in (f"{_pfx}.gate_up_proj", f"{_pfx}.down_proj"):
-                    self._weight_transforms[_wk] = _make_expert_stash(_wk)
+                    stash = _make_expert_stash(_wk)
+                    self._weight_transforms[_wk] = stash
+                    raw_wk = _wk.replace(
+                        "model.layers.", "model.language_model.layers.", 1
+                    )
+                    self._weight_transforms[raw_wk] = stash
 
+        # The WebGPU runner is text-only and does not use the vision tower or
+        # checkpoint MTP head. Exclude them before allocating GPU buffers.
+        skip_prefixes = (skip_prefixes or frozenset()) | frozenset(
+            ("model.visual.", "mtp.")
+        )
         super().load_weights(path, f32_keys=f32_keys, skip_prefixes=skip_prefixes,
                              scale_transforms=scale_transforms)
 
@@ -452,6 +501,12 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
             _dev = self.wgpu_device.wgpu_device
             for _gk, _gate_arr in _q_gate_pending.items():
                 self.weights[_gk] = WebGPUBuffer.from_numpy(_dev, _gate_arr)
+                if _gate_arr.dtype == np.int32:
+                    q_base = _gk.replace("q_gate_proj.weight", "q_proj")
+                    self.weight_meta[_gk.removesuffix(".weight")] = self._quant_info(q_base).copy()
+        for _gsk, _scales_arr in _q_gate_scales_pending.items():
+            self.weights[_gsk] = WebGPUBuffer.from_numpy(
+                self.wgpu_device.wgpu_device, _scales_arr)
 
         # Unfuse Qwen3.5 MoE expert weights from the HF checkpoint format.
         # The HF checkpoint stores all expert gate+up weights as a single fused
@@ -474,7 +529,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     continue
                 # Delete the placeholder GPU buffer and create per-expert slices from
                 # the stashed CPU arrays. No GPU readback needed.
-                del self.weights[_gu_key]
+                self.weights.pop(_gu_key, None)
+                self.weights.pop(_gu_key.replace(
+                    "model.layers.", "model.language_model.layers.", 1), None)
                 _gu_arr = _expert_weight_pending[_gu_key]
                 _n_exp, _two_inter, _hidden = _gu_arr.shape
                 _inter = _two_inter // 2
@@ -485,7 +542,9 @@ class Qwen35WebGPUModel(MixtralWebGPUModel):
                     self.weights[f"{_ep}.up_proj.weight"] = WebGPUBuffer.from_numpy(
                         _dev, _gu_arr[_j, _inter:])
                 if _d_key in _expert_weight_pending:
-                    del self.weights[_d_key]
+                    self.weights.pop(_d_key, None)
+                    self.weights.pop(_d_key.replace(
+                        "model.layers.", "model.language_model.layers.", 1), None)
                     _d_arr = _expert_weight_pending[_d_key]
                     for _j in range(_d_arr.shape[0]):
                         _ep = f"{_pfx}.{_j}"

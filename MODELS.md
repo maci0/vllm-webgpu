@@ -15,6 +15,7 @@
 | `Gemma4ForConditionalGeneration` | `gemma4` | `Gemma4WebGPUModel` |
 | `Gemma4UnifiedForConditionalGeneration` | `gemma4` | `Gemma4WebGPUModel` |
 | `Qwen3_5ForConditionalGeneration` | `qwen35` | `Qwen35WebGPUModel` |
+| `Qwen3_5ForCausalLM` | `qwen35` | `Qwen35WebGPUModel` |
 | `Qwen3_5MoeForConditionalGeneration` | `qwen35` | `Qwen35WebGPUModel` |
 | `DiffusionGemmaForBlockDiffusion` | `diffusion_gemma` | `DiffusionGemmaWebGPUModel` |
 | `GptOssForCausalLM` | `gpt_oss` | `GptOssWebGPUModel` |
@@ -115,7 +116,9 @@ GDN recurrent state (SSM matrix + conv history) is stored in persistent GPU buff
 
 Qwen3.6-27B: same architecture as Qwen3.5, maps here via `Qwen3_5ForConditionalGeneration`.
 
-Qwen3.6-35B-A3B (MoE): maps here via `Qwen3_5MoeForConditionalGeneration`. Dense GDN and full-attention layers work; MoE FFN routing dispatches `topk_sort.wgsl` on GPU (256 experts, top-8 selection). Expert FFN matmuls are dispatched sequentially per selected expert.
+[Qwen3.6-35B-A3B](https://huggingface.co/Qwen/Qwen3.6-35B-A3B/blob/main/config.json) (MoE): its published multimodal config maps here via `Qwen3_5MoeForConditionalGeneration`. The backend extracts its text config, reads the 10,000,000 RoPE base, unfuses expert weights from `model.language_model.*` keys, and skips vision and MTP weights. MoE routing uses 256 experts with top-8 selection. Only text input is supported. The published config and synthetic weight path are tested; the full 35B checkpoint has not been run here.
+
+[Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B/blob/main/config.json): its published multimodal config maps to `Qwen3_5ForConditionalGeneration`. The backend extracts its text config, reads the 10,000,000 RoPE base, splits gated Q weights from `model.language_model.*` keys, and skips vision and MTP weights. Only text input is supported. The [GPTQ INT4 checkpoint](https://huggingface.co/pearsonkyle/Qwen3.8-27B-GPTQ-W4A16) loaded 2,725 text tensors and generated `4` for `Q: What is 2+2? A:` on an M4 Pro with 48 GiB of memory. This is a short smoke test, not a quality evaluation; the original BF16 checkpoint has not been run.
 
 Interleaved RoPE (`mrope_interleaved=True` in config) is supported via `INTERLEAVED=1` override in `fused_per_head_norm_rope` / `fused_qk_norm_rope`. Partial RoPE (`partial_rotary_factor`) is supported via `ROTARY_DIM`.
 
@@ -291,7 +294,7 @@ KV cache allocation uses `min(max_position_embeddings, 65535)` as the slot count
 | No native bfloat16 | WebGPU/WGSL has no bf16 type. Weights and activations use f16 (5-bit exponent) instead of bf16 (8-bit exponent, same range as f32). GDN SSM parameters (A_log, dt_bias) are kept as f32 to preserve decay range. An experimental `GDN_BF16=1` env var (or `--gdn_bf16` flag) stores Qwen3.5 GDN projection weights as packed bf16 u16 to further reduce rounding loss. |
 | Logprobs | Supported when requested via `SamplingParams(num_logprobs=N)`. Top-N computed on CPU from full logit readback; adds latency proportional to vocab_size per step. Prompt logprobs supported for prefill passes. |
 | Grammar/structured output | Raises `NotImplementedError`. Applying token masks from a grammar FSM requires the full logit distribution, which is not available on the WebGPU decode path. |
-| Multi-modal inputs | Images, audio, and video are not implemented. Conditional-generation architectures (`Gemma3ForConditionalGeneration`, `Gemma4UnifiedForConditionalGeneration`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`) are registered for text-only use. Passing mm_inputs raises `NotImplementedError`. Use the `CausalLM` variant instead. |
+| Multi-modal inputs | Images, audio, and video are not implemented. Conditional-generation architectures (`Gemma3ForConditionalGeneration`, `Gemma4UnifiedForConditionalGeneration`, `Qwen3_5ForConditionalGeneration`, `Qwen3_5MoeForConditionalGeneration`) are registered for text-only use. Passing multimodal inputs raises `NotImplementedError`; text-only requests can use the checkpoint's published architecture. |
 | Speculative decoding | Not implemented. No draft model support. |
 | Multi-sequence batching | One sequence per `forward()` call. True batching requires N separate scratch-buffer sets and per-sequence block-table dispatch; it is an architectural change and not currently planned. |
 

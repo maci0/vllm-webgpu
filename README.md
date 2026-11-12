@@ -17,8 +17,8 @@ See [MODELS.md](MODELS.md) for the full matrix including quantization formats an
 |---|---|---|
 | LlamaForCausalLM / Qwen3ForCausalLM | Llama 3, Qwen3-0.6B–72B | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
 | Qwen2ForCausalLM / MistralForCausalLM | Qwen2.5, Mistral-7B | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
-| Qwen3_5ForConditionalGeneration | Qwen3.5-9B, Qwen3.6-27B | f16 (GDN layers); GPTQ/AWQ/FP8/NVFP4/Int8/NF4 (attn+FFN) |
-| Qwen3_5MoeForConditionalGeneration | Qwen3.6-35B-A3B | same as Qwen3.5; MoE routing on GPU |
+| Qwen3_5ForConditionalGeneration / Qwen3_5ForCausalLM | Qwen3.5-9B, Qwen3.6-27B, Qwen3.8-27B (text only) | f16 (GDN layers); GPTQ/AWQ/FP8/NVFP4/Int8/NF4 (attn+FFN) |
+| Qwen3_5MoeForConditionalGeneration | Qwen3.6-35B-A3B (text only) | f16; MoE routing on GPU (256 experts, top-8) |
 | Gemma3/4ForCausalLM | Gemma3-1B–27B, Gemma4-12B | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4, ct_pack_int4 (QAT) |
 | DiffusionGemmaForBlockDiffusion | DiffusionGemma | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
 | NemotronHForCausalLM | Nemotron-H (Mamba-2 hybrid) | f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4 |
@@ -27,6 +27,8 @@ See [MODELS.md](MODELS.md) for the full matrix including quantization formats an
 | SmolLM3ForCausalLM | SmolLM3 (NoPE layers) | f16, GPTQ |
 | Olmo2ForCausalLM | OLMo-2 (post-norm) | f16, GPTQ |
 | FalconH1ForCausalLM | FalconH1 (Mamba-2 hybrid) | f16, GPTQ |
+
+Qwen3.8-27B was smoke-tested with the [GPTQ INT4 checkpoint](https://huggingface.co/pearsonkyle/Qwen3.8-27B-GPTQ-W4A16): all 2,725 text tensors loaded, and an 11-token arithmetic prompt generated `4` on an M4 Pro with 48 GiB of memory. The original BF16 checkpoint has not been run. Qwen3.6-35B-A3B has config and synthetic weight tests but no full-checkpoint run. Both use conditional-generation architectures; this backend accepts text input only. See [MODELS.md](MODELS.md#qwen35webgpumodel) for details.
 
 Models that work via existing architecture entries with no additional code:
 
@@ -83,6 +85,24 @@ python run_inference.py \
   --prompt "Hello"
 ```
 
+For the Qwen3.8-27B GPTQ smoke test, download only the language weights. The model's vision and MTP files are separate and are not needed for text input:
+
+```bash
+model_dir=$(python - <<'PY'
+from huggingface_hub import snapshot_download
+print(snapshot_download(
+    "pearsonkyle/Qwen3.8-27B-GPTQ-W4A16",
+    allow_patterns=["model.safetensors", "model.safetensors.index.json",
+                    "config.json", "tokenizer*", "generation_config.json"],
+))
+PY
+)
+python run_inference.py --model "$model_dir" \
+  --prompt 'Q: What is 2+2? A:' --max_tokens 8 --skip-warmup
+```
+
+`--skip-warmup` avoids an extra dummy forward pass when testing a large model. The quantized checkpoint has no chat template, so the script encodes the prompt as plain text.
+
 `--gdn_bf16` (`GDN_BF16=1` env var): stores Qwen3.5 GDN projection weights as bf16 packed u16 instead of f16. Preserves the original 8-bit exponent range (same as f32/bf16) vs f16's 5-bit range. Only effective on safetensors BF16 checkpoints; has no effect on MLX/quantized weights.
 
 ## vLLM engine integration
@@ -105,7 +125,7 @@ outputs = llm.generate("Hello", SamplingParams(max_tokens=20, logprobs=5))
 print(outputs[0].outputs[0].logprobs)
 ```
 
-vLLM selects the WebGPU platform automatically when the plugin is installed and a WebGPU adapter is available.
+The `webgpu` entry point follows [vLLM's platform plugin interface](https://docs.vllm.ai/en/v0.33.0/design/plugin_system/). vLLM selects it when a hardware WebGPU adapter is available; software adapters are excluded. On a machine with a native CUDA or ROCm platform, the plugin yields to that platform. Set `VLLM_WEBGPU_FORCE=1` to select WebGPU there. To load only this vLLM plugin, set `VLLM_PLUGINS=webgpu` (which also excludes other installed vLLM plugins).
 
 ## Kernel profiling
 
@@ -133,7 +153,7 @@ vLLM engine  (scheduler, block allocator, request lifecycle)
                  ├─ MixtralWebGPUModel      — Mistral/Mixtral (extends Llama, adds SWA + MoE)
                  ├─ GptOssWebGPUModel       — GPT-OSS (extends Mixtral, MXFP4 expert weights)
                  ├─ Gemma4WebGPUModel       — Gemma3/4 (heterogeneous attention, f32 residual)
-                 ├─ Qwen35WebGPUModel       — Qwen3.5/3.6 (hybrid GDN + standard attention)
+                 ├─ Qwen35WebGPUModel       — Qwen3.5/3.6/3.8 (hybrid GDN + standard attention)
                  ├─ NemotronHWebGPUModel    — NemotronH (Mamba-2 hybrid SSM+attention)
                  ├─ DiffusionGemmaWebGPUModel — DiffusionGemma (MoE, block diffusion)
                  ├─ PhiWebGPUModel          — Phi-4/Phi-4-mini (fused weight splitting)
@@ -226,7 +246,7 @@ Model paths are resolved through the HF cache (`~/.cache/huggingface/hub/`) auto
 pytest tests/ -q
 ```
 
-221 tests covering: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, OLMo-3, FalconH1), vLLM platform integration, Qwen3.6 MoE routing.
+Tests cover kernel correctness, quantization, model construction and forward passes, vLLM platform integration, Qwen3.6 MoE config and synthetic weight loading, and Qwen3.8 dense config and packed INT4 weight loading.
 
 ## Limitations
 
@@ -235,7 +255,7 @@ pytest tests/ -q
 - **No bfloat16**: WebGPU/WGSL has no bf16 type. Weights load as f16 (5-bit exponent vs bf16's 8-bit). Use `--gdn_bf16` to partially mitigate for Qwen3.5 GDN layers. See [MODELS.md](MODELS.md) for the full constraint list.
 - **No speculative decoding**, no draft model support.
 - **Grammar/constrained decoding** raises `NotImplementedError` — WebGPU cannot run guided-decoding logic on-device.
-- **Multi-modal inputs** raise `NotImplementedError` — use CausalLM architecture variants for text-only inference.
+- **Multi-modal inputs** raise `NotImplementedError`. Conditional-generation checkpoints can be used for text-only inference.
 - **Block table**: 4096 blocks per sequence (65536 tokens at block_size=16).
 
 See [MODELS.md](MODELS.md) for per-model quantization support, known issues, and WebGPU platform constraints.

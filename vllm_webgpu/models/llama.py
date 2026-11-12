@@ -71,11 +71,16 @@ class LlamaWebGPUModel(BaseWebGPUModel):
         # Same pattern as self.intermediate_size above.
         self.q_dim: int = self.num_q_heads * self.head_dim
         self.kv_dim: int = self.num_kv_heads * self.head_dim
-        # Phi-4 and SmolLM3 store rope_theta inside rope_scaling (not at the top level).
-        # Fall back to rope_scaling["rope_theta"] when the top-level attribute is absent.
+        # Qwen3.8 stores rope_theta in rope_parameters; Phi-4 and SmolLM3
+        # may store it in rope_scaling instead of at the top level.
         _top_theta = getattr(model_config, "rope_theta", None)
-        self.rope_theta: float = float(_top_theta) if _top_theta is not None else float(
-            (getattr(model_config, "rope_scaling", None) or {}).get("rope_theta", 10000.0)
+        _rope_params = getattr(model_config, "rope_parameters", None)
+        if not isinstance(_rope_params, dict):
+            _rope_params = {}
+        _rope_scaling = getattr(model_config, "rope_scaling", None) or {}
+        self.rope_theta: float = float(
+            _top_theta if _top_theta is not None else
+            _rope_params.get("rope_theta", _rope_scaling.get("rope_theta", 10000.0))
         )
         self.block_size: int = block_size
         # add.wgsl and gelu_mul.wgsl use vec4<f16>: dimensions must be divisible by 4.

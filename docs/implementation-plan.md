@@ -1,6 +1,8 @@
 # vllm-webgpu Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+This is the original implementation plan, retained as a historical record. Its dependency versions and code examples are not current. See [pyproject.toml](../pyproject.toml) for the pinned vLLM version and [design.md](design.md) for the current plugin architecture.
+
+The checklist below records the original implementation work and is not an active task list.
 
 **Goal:** Build a vLLM out-of-tree platform plugin that runs LLM inference on WebGPU via wgpu-py and hand-tuned WGSL compute kernels.
 

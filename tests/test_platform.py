@@ -1,6 +1,10 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+# Load config before tests replace the wgpu package with a small mock.
+# config.py imports wgpu.enums to validate adapter power preferences.
+import vllm_webgpu.config  # noqa: F401
+
 
 def test_is_available_no_wgpu():
     with patch.dict("sys.modules", {"wgpu": None}):

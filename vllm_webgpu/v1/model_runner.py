@@ -115,6 +115,7 @@ ARCH_MAP = {
     "Gemma4ForConditionalGeneration": "gemma4",  # vision-language variant; text-only inference supported
     "Gemma4UnifiedForConditionalGeneration": "gemma4",
     "Qwen3_5ForConditionalGeneration": "qwen35",
+    "Qwen3_5ForCausalLM": "qwen35",
     "Qwen3_5MoeForConditionalGeneration": "qwen35",  # MoE variant; FFN routing on GPU via topk_sort
     "DiffusionGemmaForBlockDiffusion": "diffusion_gemma",
     "GptOssForCausalLM": "gpt_oss",

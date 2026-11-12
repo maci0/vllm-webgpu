@@ -1,13 +1,13 @@
 # vllm-webgpu Design Spec
 
-**Date:** 2026-06-29 (updated 2026-07-20)
-**Status:** Implemented. This document reflects the shipped architecture.
+**Date:** 2026-06-29 (updated 2026-11-12)
+**Status:** Architecture overview. The source code defines the exact interfaces and runtime behavior.
 
 ## Overview
 
 `vllm-webgpu` is an out-of-tree vLLM platform plugin that runs LLM inference on any WebGPU-capable GPU using hand-tuned WGSL compute kernels. vLLM handles scheduling and serving; the plugin owns all compute via `wgpu-py` (Rust wgpu Python bindings).
 
-Target architectures: Llama 3.x, Qwen 2.5/3.x/3.5/3.6, Gemma 3/4, Mistral, Mixtral, GPT-OSS, NemotronH (Mamba-2 hybrid), DiffusionGemma, Phi-4/Phi-4-mini, SmolLM3 (NoPE layers), OLMo-2 (post-norm), FalconH1 (Mamba-2 parallel hybrid).  
+Target architectures: Llama 3.x, Qwen 2.5/3.x/3.5/3.6/3.8, Gemma 3/4, Mistral, Mixtral, GPT-OSS, NemotronH (Mamba-2 hybrid), DiffusionGemma, Phi-4/Phi-4-mini, SmolLM3 (NoPE layers), OLMo-2/3, FalconH1 (Mamba-2 parallel hybrid).
 Quantization: safetensors f16, GPTQ, AWQ, FP8, NVFP4, Int8, NF4, ct_pack_int4 (Gemma4 QAT), MXFP4/MXFP8 (load-time dequant), MLX affine-int4 (load-time dequant). GGUF format is not supported; use the vllm-gguf plugin instead.  
 Platform: cross-platform (macOS via Metal, Windows via DX12, Linux via Vulkan) via wgpu's backend abstraction.
 
@@ -15,7 +15,7 @@ Platform: cross-platform (macOS via Metal, Windows via DX12, Linux via Vulkan) v
 
 ## Plugin Registration
 
-vLLM discovers plugins via Python entry points. Registration is a single callable that returns the platform class path if the platform is available, or `None` if not.
+vLLM discovers this package through the `vllm.platform_plugins` entry point. The registration callable can run more than once, so it registers environment variables without overwriting existing entries. It returns the platform class path when a hardware WebGPU adapter is available and `None` otherwise. It also yields to native CUDA and ROCm platforms unless `VLLM_WEBGPU_FORCE=1` is set. See [vLLM 0.33.0's platform plugin guide](https://docs.vllm.ai/en/v0.33.0/design/plugin_system/) for the entry point and platform contracts.
 
 ```toml
 # pyproject.toml
@@ -23,20 +23,7 @@ vLLM discovers plugins via Python entry points. Registration is a single callabl
 webgpu = "vllm_webgpu:register"
 ```
 
-```python
-# vllm_webgpu/__init__.py
-def _register() -> str | None:
-    _configure_logging()
-    import vllm.envs
-    from vllm_webgpu.envs import environment_variables
-    vllm.envs.environment_variables.update(environment_variables)
-    from vllm_webgpu.compat import apply_compat_patches
-    apply_compat_patches()
-    from vllm_webgpu.platform import WebGPUPlatform
-    if WebGPUPlatform.is_available():
-        return "vllm_webgpu.platform.WebGPUPlatform"
-    return None
-```
+The installed entry point resolves `register` through the package's `__getattr__`. Registration defers platform imports until called. vLLM loads plugins in each process, so the plugin function must remain safe to call repeatedly. `WebGPUPlatform` uses `PlatformEnum.OOT` and `cpu` for its PyTorch device type; model computation runs in WebGPU buffers. `check_and_update_config` selects `WebGPUWorker`, and `get_attn_backend_cls` returns the CPU attention backend class required by vLLM's interface. The single-device worker uses the base device communicator with the `gloo` backend. This package pins vLLM because its worker and model runner use v1 internals whose interfaces can change between releases.
 
 ---
 
@@ -104,81 +91,34 @@ vllm_webgpu/
 
 ## Platform
 
-`WebGPUPlatform` extends vLLM's `Platform` base. PyTorch device stays CPU throughout; all compute goes through wgpu-py buffers.
+`WebGPUPlatform` extends vLLM's `Platform` base with `PlatformEnum.OOT`. It advertises `cpu` as the PyTorch device type because vLLM's bookkeeping tensors stay on CPU; model computation uses wgpu buffers and WGSL shaders. `is_available()` probes for a hardware WebGPU adapter and rejects software fallback adapters.
 
-```python
-class WebGPUPlatform(Platform):
-    _enum = PlatformEnum.OOT
-    device_name = "cpu"
-    device_type = "cpu"
-    dispatch_key = "CPU"
+During `check_and_update_config`, the platform selects `WebGPUWorker`, the single-process `uni` executor, a compatible KV cache layout, and a WebGPU block size unless the user specified one. It disables chunked prefill, asynchronous scheduling, dual batch overlap, and CUDA graph capture. On macOS it uses the `spawn` worker start method because a Metal device cannot be safely reused after `fork`.
 
-    @classmethod
-    def is_available(cls) -> bool:
-        try:
-            import wgpu
-            adapter = wgpu.gpu.request_adapter_sync(power_preference="high-performance")
-            return adapter is not None
-        except Exception:
-            return False
-
-    @classmethod
-    def get_device_capability(cls, device_id=0) -> DeviceCapability:
-        return DeviceCapability(major=8, minor=0)  # compatibility shim
-
-    @classmethod
-    def get_device_count(cls) -> int:
-        return 1
-
-    @classmethod
-    def check_and_update_config(cls, vllm_config) -> None:
-        parallel_config = vllm_config.parallel_config
-        if parallel_config.worker_cls == "auto":
-            parallel_config.worker_cls = "vllm_webgpu.v1.worker.WebGPUWorker"
-        parallel_config.distributed_executor_backend = "uni"
-        parallel_config.disable_custom_all_reduce = True
-        # no varlen kernel yet; disable chunked prefill
-        vllm_config.scheduler_config.enable_chunked_prefill = False
-
-    @classmethod
-    def get_attn_backend_cls(cls, selected_backend, attn_selector_config, num_heads=None) -> str:
-        # attention is handled by WGSL kernels in the model runner
-        return AttentionBackendEnum.CPU_ATTN.get_path()
-
-    @classmethod
-    def is_pin_memory_available(cls) -> bool:
-        return False
-```
+The platform implements vLLM's attention backend hook with `CPU_ATTN` for metadata. Its model runner dispatches the actual attention kernels through WebGPU. The default device communicator suffices for this single-device `gloo` worker.
 
 ---
 
 ## Config and Environment Variables
 
-Single global singleton, loaded lazily from env vars at first access.
+`WebGPUConfig` is loaded lazily and validates the adapter power preference. It currently contains `power_preference`; cache sizing and other settings use vLLM's config or the variables below.
 
 ```python
-@dataclass
+@dataclass(frozen=True)
 class WebGPUConfig:
-    memory_fraction: float    # -1.0 = auto
     power_preference: str     # "high-performance" | "low-power"
-    quantization: str         # "q4_k_m" | "f16" | "auto"
-    block_size: int           # KV cache block size, default 16
-    debug: bool
-
-    @property
-    def is_auto_memory(self) -> bool:
-        return self.memory_fraction == -1.0
 ```
 
-Environment variables (merged into `vllm.envs` at registration):
+Environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `VLLM_WEBGPU_MEMORY_FRACTION` | `"auto"` | Fraction of GPU memory for KV cache, or "auto" |
 | `VLLM_WEBGPU_POWER_PREFERENCE` | `"high-performance"` | Adapter power hint |
-| `VLLM_WEBGPU_QUANTIZATION` | `"auto"` | Force quantization format, or detect from checkpoint |
 | `VLLM_WEBGPU_BLOCK_SIZE` | `"16"` | KV cache block size (tokens per block) |
-| `VLLM_WEBGPU_DEBUG` | `"0"` | Enable verbose kernel dispatch logging |
+| `GDN_BF16` | `"0"` | Preserve BF16 GDN projection weights in packed buffers when set to `1` |
+| `VLLM_WEBGPU_FORCE` | unset | Select WebGPU even when a native CUDA or ROCm platform is available |
+
+The first three variables are registered in `vllm.envs` on plugin load. `VLLM_WEBGPU_FORCE` is read directly by the entry point.
 
 ---
 
@@ -350,7 +290,7 @@ Extends `BaseWebGPUModel` with PLE layer injection and Gemma-specific attention:
 ### Architecture detection
 
 ```python
-# v1/model_runner.py — maps HF architecture string to model family
+# v1/model_runner.py — selected HF architecture mappings; see MODELS.md for the full map
 ARCH_MAP = {
     "LlamaForCausalLM":                         "llama",
     "MistralForCausalLM":                        "mixtral",
@@ -362,6 +302,7 @@ ARCH_MAP = {
     "Gemma4ForCausalLM":                         "gemma4",
     "Gemma4UnifiedForConditionalGeneration":     "gemma4",
     "Qwen3_5ForConditionalGeneration":           "qwen35",
+    "Qwen3_5ForCausalLM":                        "qwen35",
     "Qwen3_5MoeForConditionalGeneration":        "qwen35",
     "DiffusionGemmaForBlockDiffusion":           "diffusion_gemma",
     "GptOssForCausalLM":                         "gpt_oss",
@@ -370,8 +311,11 @@ ARCH_MAP = {
     "FalconH1ForCausalLM":                       "falcon_h1",
     "SmolLM3ForCausalLM":                        "smollm3",
     "Olmo2ForCausalLM":                          "olmo2",
+    "Olmo3ForCausalLM":                          "olmo2",
 }
 ```
+
+Qwen3.8-27B and Qwen3.6-35B-A3B use the `qwen35` backend for text input. Qwen3.8-27B also passed an end-to-end smoke test with a GPTQ INT4 checkpoint; its original BF16 checkpoint has not been run. Qwen3.6-35B-A3B has published-config and synthetic-weight tests only. The latter uses 256 experts and selects eight per token. See [MODELS.md](../MODELS.md#qwen35webgpumodel) for details.
 
 ---
 
@@ -399,40 +343,7 @@ Weight tensor names are mapped from HF checkpoint conventions to the plugin's in
 
 ## Worker
 
-```python
-class WebGPUWorker(WorkerBase):
-
-    def init_device(self) -> None:
-        self.wgpu_device = WebGPUDevice.initialize(
-            power_preference=self.webgpu_config.power_preference
-        )
-        self.device = torch.device("cpu")   # PyTorch stays CPU
-        init_worker_distributed_environment(...)  # gloo backend
-        set_random_seed(self.model_config.seed)
-        self.model_runner = WebGPUModelRunner(self.vllm_config, self.wgpu_device)
-
-    def load_model(self) -> None:
-        self.model_runner.load_model()
-
-    def determine_available_memory(self) -> int:
-        limits = self.wgpu_device.device.limits
-        total = limits["max_buffer_size"]
-        model_mem = sum(buf.buf.size for buf in self.model_runner.model.weights.values())
-        config = get_config()
-        if config.is_auto_memory:
-            return total - model_mem - _OVERHEAD_BYTES
-        return int(total * config.memory_fraction) - model_mem
-
-    def initialize_from_config(self, kv_cache_config) -> None:
-        self.model_runner.initialize_kv_cache(kv_cache_config)
-
-    def execute_model(self, scheduler_output) -> ModelRunnerOutput | None:
-        return self.model_runner.execute_model(scheduler_output)
-
-    def check_health(self) -> None:
-        # submit a trivial 1-element dispatch to verify device is alive
-        ...
-```
+`WebGPUWorker` inherits vLLM's `WorkerBase`. `init_device` creates the wgpu device, initializes CPU `gloo` distributed state, seeds the process, and creates `WebGPUModelRunner`. `load_model`, `get_kv_cache_spec`, `initialize_from_config`, and `execute_model` delegate to the runner. `determine_available_memory` calls the policy in `v1/cache_policy.py`, which accounts for model weights, device memory, and activation overhead rather than treating WebGPU's per-buffer size limit as total VRAM. `check_health` submits an empty command buffer to verify that the device still responds.
 
 ---
 
@@ -488,7 +399,7 @@ class WebGPUCachePlanner:
 - **No chunked prefill**: no varlen attention kernel.
 - **No bfloat16 at runtime**: WGSL has no bf16 type. Weights load as f16 (5-bit exponent). Use `--gdn_bf16` to partially mitigate for Qwen3.5 GDN layers.
 - **No GGUF**: use the vllm-gguf plugin for GGUF checkpoints.
-- **Max context**: 65535 tokens (WebGPU dispatch limit; DiffusionGemma is additionally constrained to canvas_length=256).
+- **Max context**: 65535 KV slots from the 4096-block table with 16-token blocks; DiffusionGemma is additionally constrained to canvas_length=256.
 
 ---
 
@@ -499,12 +410,13 @@ class WebGPUCachePlanner:
 name = "vllm-webgpu"
 version = "0.1.0"
 
-[project.dependencies]
-vllm = "==0.33.0"
-wgpu = ">=0.20"
-numpy = ">=1.24"
-safetensors = ">=0.4"
-psutil = ">=5.9"
+dependencies = [
+    "vllm==0.33.0",
+    "wgpu>=0.20,!=0.32.0",
+    "numpy>=1.24",
+    "safetensors>=0.4",
+    "compressed-tensors>=0.9",
+]
 
 [project.entry-points."vllm.platform_plugins"]
 webgpu = "vllm_webgpu:register"
@@ -514,7 +426,7 @@ webgpu = "vllm_webgpu:register"
 
 ## Testing
 
-221 tests cover: kernel correctness (softmax, RMSNorm, RoPE, matmul, flash attention, fused kernels), quantization round-trips (GPTQ/AWQ/FP8/NF4/Int8/BnB), model instantiation and forward pass (Llama, Gemma4, Qwen3.5, DiffusionGemma, NemotronH, GptOss, Phi, SmolLM3, OLMo-2, FalconH1), vLLM platform integration, and Qwen3.6 MoE routing.
+Tests cover kernel correctness, quantization, model construction and forward passes, vLLM platform integration, and Qwen3.6 MoE and Qwen3.8 dense config and synthetic weight loading. CI installs the pinned vLLM version and runs the full suite, lint, and version checks.
 
 ```bash
 pytest tests/ -q

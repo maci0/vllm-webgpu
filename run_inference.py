@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import numpy as np
 
 
-def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0, top_p: float = 0.9):
+def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 0.0,
+        top_p: float = 0.9, skip_warmup: bool = False):
     print(f"\nLoading model from: {model_dir}")
 
     # Use vLLM's config loader so Mistral-format repos (params.json) are handled correctly.
@@ -72,13 +73,17 @@ def run(model_dir: str, prompt: str, max_tokens: int = 64, temperature: float = 
     # KV cache
     from vllm_webgpu.scripts.kv_utils import allocate_kv_from_hf_config
     from vllm.utils.math_utils import cdiv
+    # Allocate for this run's prompt and generation, not the checkpoint's
+    # advertised maximum context (which can reserve many GiB unnecessarily).
     # num_blocks is capped at 4096 (the KV pool ceiling for this script).
     max_ctx = getattr(cfg, "max_position_embeddings", 8192)
-    num_blocks = min(cdiv(max_ctx, block_size) + 4, 4096)
+    requested_ctx = min(max_ctx, len(input_ids_list) + max_tokens)
+    num_blocks = min(cdiv(requested_ctx, block_size) + 4, 4096)
 
     allocate_kv_from_hf_config(device.wgpu_device, model, cfg, num_blocks=num_blocks, block_size=block_size)
 
-    model.warmup()
+    if not skip_warmup:
+        model.warmup()
     if hasattr(model, 'reset_recurrent_states'):
         model.reset_recurrent_states()
 
@@ -160,6 +165,8 @@ if __name__ == "__main__":
     parser.add_argument("--max_tokens",  type=int,   default=64)
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top_p",       type=float, default=0.9)
+    parser.add_argument("--skip-warmup", action="store_true",
+                        help="Skip dummy shader warmup; useful for large models on Metal")
     parser.add_argument("--gdn-bf16",    action="store_true",
                         help="Experimental: bf16 GDN weights for Qwen3.5 (safetensors BF16 only)")
     args = parser.parse_args()
@@ -169,4 +176,5 @@ if __name__ == "__main__":
 
     from vllm_webgpu.scripts import resolve_model_path
     model_path = resolve_model_path(args.model)
-    run(model_path, args.prompt, args.max_tokens, args.temperature, args.top_p)
+    run(model_path, args.prompt, args.max_tokens, args.temperature, args.top_p,
+        skip_warmup=args.skip_warmup)

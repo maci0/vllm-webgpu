@@ -390,7 +390,11 @@ def load_safetensors_weights_sharded(
                                 weight_transforms=weight_transforms,
                                 skip_prefixes=skip_prefixes)
 
-    shard_files = sorted(set(weight_map.values()))
+    needed_keys = (
+        (key for key in weight_map if not key.startswith(tuple(skip_prefixes)))
+        if skip_prefixes else weight_map
+    )
+    shard_files = sorted({weight_map[key] for key in needed_keys})
     weights: dict = {}
     # IMPORTANT: keep shard_weights as a local variable (not inline with update()).
     # Inlining as weights.update(load_safetensors_weights(...)) causes Python's GC
@@ -415,8 +419,20 @@ def load_safetensors_weights_sharded(
 
     model_root = Path(model_dir).resolve()
     for shard in shard_files:
+        relative_shard = Path(shard)
+        if relative_shard.is_absolute() or ".." in relative_shard.parts:
+            raise ValueError(f"Shard path escapes model directory: {shard!r}")
         shard_path = (Path(model_dir) / shard).resolve()
-        if not shard_path.is_relative_to(model_root):
+        in_model = shard_path.is_relative_to(model_root)
+        # Hugging Face cache snapshots contain symlinks to their repository's
+        # sibling blobs directory. Accept only that cache layout, not arbitrary
+        # symlinks to files elsewhere on the host.
+        cache_blobs = model_root.parent.parent / "blobs"
+        in_cache_blobs = (
+            model_root.parent.name == "snapshots"
+            and shard_path.is_relative_to(cache_blobs)
+        )
+        if not (in_model or in_cache_blobs):
             raise ValueError(
                 f"Shard path escapes model directory: {shard!r} (resolved {shard_path})"
             )
@@ -1563,8 +1579,13 @@ def load_safetensors_weights(
                     if sc.ndim == 2:
                         sc = np.ascontiguousarray(sc.T)
 
+                    out_key = f"{base}.weight"
+                    if weight_transforms and out_key in weight_transforms:
+                        qw = weight_transforms[out_key](qw)
                     _upload(qw, np.int32, 'i32', f"{base}.weight")
                     sc_key = f"{base}.weight.scales"
+                    if weight_transforms and sc_key in weight_transforms:
+                        sc = weight_transforms[sc_key](sc)
                     if scale_transforms and sc_key in scale_transforms:
                         scale_transforms[sc_key](sc)
                     else:
